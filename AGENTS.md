@@ -71,7 +71,11 @@ that commit pins the drowse source. Evidence closures may name files inside the
 submodule (`drowse/drowse/core/...`); the tracked-file checks resolve those in
 the submodule's own repository. A submodule bump is a change to executable
 source, so evidence recorded against the previous pin no longer qualifies.
-Deployment is a manual upload of `webui/dist-hosted`; see
+`./deploy.sh` builds the release from a clean, pushed HEAD, uploads `webui/dist-hosted` to the
+`drowse-web` Pages project with Wrangler and verifies the live site. It skips the runtime-lock and
+distribution gates unless given `--full`, which changes to the runtime, its locks or the pin need;
+`--dry-run` stops before the upload. The Cloudflare account is not a9's: deploying needs access
+granted by its owner. The gated process behind it is in
 `browser-runtime/README.md#cloudflare-pages-deployment`.
 
 ## Neuron Lens data
@@ -101,4 +105,5 @@ npm run dev:hosted
 npm run check && npm run check:hosted && npm run test:hosted
 npm run test:e2e
 npm run build:hosted:release   # release gate; needs verified locks
+../deploy.sh                   # deploy; see Release provenance
 ```
