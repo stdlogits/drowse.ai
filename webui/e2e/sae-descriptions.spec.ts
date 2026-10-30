@@ -6,7 +6,7 @@ const storesUrl = `/@fs/${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
 const registryUrl = `/@fs${resolve("../drowse/webui/src/lib/runtime/registry.ts")}`;
 
 async function openFeatures(page: Page, size: string, layer: number) {
-  const index = JSON.parse(await readFile(resolve(`src/lib/data/sae-descriptions/gemma-3-${size}-it.json`), "utf8"));
+  const index = JSON.parse(await readFile(resolve(`../drowse/webui/src/lib/data/sae-descriptions/gemma-3-${size}-it.json`), "utf8"));
   await page.evaluate(async ({ storesUrl, registryUrl, source, layer }) => {
     const { chatLog, openDrawer, saeSourceState } = await import(storesUrl);
     const runtime = (await import(registryUrl)).getRuntimeClient();
