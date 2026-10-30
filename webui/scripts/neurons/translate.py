@@ -20,7 +20,10 @@ Stages (state under ``--work``; nothing is sent to the API without an explicit s
 - ``submit``: every remaining request, in batches under the API's limits; refuses unless a pilot
   projected under ``--cap`` dollars;
 - ``status``, ``results`` (collect finished batches into ``translations.jsonl``), ``retry`` (failed
-  requests, once).
+  requests, once);
+- ``fill``: after ``results``, one batch of what the first pass skipped but can't be English (items
+  with non-Latin letters and no translation, plus the failed requests' items), in smaller requests
+  that ask for every item. Haiku at low effort sometimes answers a long list only in part.
 
 The builder (``build-neuron-catalog.py``) reads ``translations.jsonl``. The API key comes from
 ``ANTHROPIC_API_KEY`` or ``~/.config/anthropic/api_key``.
@@ -39,6 +42,7 @@ from pathlib import Path
 MODEL = "claude-haiku-5-5"
 PRICE = {"input": 0.05, "output": 0.25, "cache_read": 0.005, "cache_write": 0.0625}  # $/MTok, Haiku 5.5 batch prices
 PER_REQUEST = {"term": 120, "context": 24}
+FILL_PER_REQUEST = {"term": 40, "context": 8}
 MAX_TOKENS = {"term": 6000, "context": 6000}
 BATCH_REQUESTS = 50_000
 MIN_COUNT = 5  # the catalog's kept tokens: seen 5+ times in the activation corpora
@@ -207,15 +211,19 @@ def plan(work: Path) -> dict[str, list[str]]:
     return out
 
 
+FILL_NOTE = "Every item below contains text in another language: return an entry for each one you can translate.\n\n"
+
+
 def request(cid: str, items: list[str]) -> dict:
     kind = cid.split("-")[0]
     listing = "\n".join(json.dumps({"i": i, "t": s}, ensure_ascii=False) for i, s in enumerate(items))
+    note = FILL_NOTE if "-fill" in cid else ""
     return {"custom_id": cid, "params": {
         "model": MODEL, "max_tokens": MAX_TOKENS[kind],
         "thinking": {"type": "disabled"},  # allowed at effort high or below
         "output_config": {"effort": "low", "format": {"type": "json_schema", "schema": schema(kind)}},
         "system": [{"type": "text", "text": TERM_SYSTEM if kind == "term" else CONTEXT_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        "messages": [{"role": "user", "content": f"Items, one JSON object a line:\n{listing}"}],
+        "messages": [{"role": "user", "content": f"{note}Items, one JSON object a line:\n{listing}"}],
     }}
 
 
@@ -340,7 +348,8 @@ def status(args) -> None:
 
 def results(args) -> None:
     work = Path(args.work)
-    c, allc, s = client(), plan(work), load_state(work)
+    c, s = client(), load_state(work)
+    allc = plan(work) | s.get("fill", {})
     done, failed = set(s["done"]), set(s["failed"])
     spent = collections.Counter(s.get("usage", {}))
     with open(work / "translations.jsonl", "a", encoding="utf-8") as f:
@@ -367,7 +376,8 @@ def results(args) -> None:
 
 def retry(args) -> None:
     work = Path(args.work)
-    c, allc, s = client(), plan(work), load_state(work)
+    c, s = client(), load_state(work)
+    allc = plan(work) | s.get("fill", {})
     if not s["failed"]:
         print("nothing to retry")
         return
@@ -377,9 +387,39 @@ def retry(args) -> None:
     print("retry batch", b.id, len(s["failed"]))
 
 
+def fill(args) -> None:
+    work = Path(args.work)
+    c, allc, s = client(), plan(work), load_state(work)
+    have = {(r["k"], r["s"]) for r in map(json.loads, open(work / "translations.jsonl", encoding="utf-8"))}
+    todo = {"term": {}, "context": {}}  # dicts as ordered sets
+    for cid in s["failed"]:
+        todo[cid.split("-")[0]].update(dict.fromkeys(allc[cid]))
+    for cid, items in allc.items():
+        kind = cid.split("-")[0]
+        need = 2 if kind == "context" else 1  # a lone CJK character in an English snippet is usually a name
+        todo[kind].update(dict.fromkeys(x for x in items if (kind, x) not in have and sum(map(foreign_letter, x)) >= need))
+    fills = s.setdefault("fill", {})
+    ids = []
+    for kind, items in todo.items():
+        items, n = list(items), FILL_PER_REQUEST[kind]
+        for j in range(0, len(items), n):
+            cid = f"{kind}-fill{len(fills):05d}"
+            fills[cid] = items[j:j + n]
+            ids.append(cid)
+        print(kind, len(items), "items", flush=True)
+    if not ids:
+        print("nothing to fill")
+        return
+    b = c.messages.batches.create(requests=[request(cid, fills[cid]) for cid in ids])
+    s["batches"][b.id] = {"ids": ids, "collected": False, "fill": True}
+    s["failed"] = []  # their items ride in the fill batch
+    save_state(work, s)
+    print("fill batch", b.id, len(ids), "requests", flush=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("stage", choices=("collect", "pilot", "submit", "status", "results", "retry"))
+    ap.add_argument("stage", choices=("collect", "pilot", "submit", "status", "results", "retry", "fill"))
     ap.add_argument("--catalog", default=str(Path.home() / "Work/neuron-lens/data/catalog/qwen3-8b"))
     ap.add_argument("--token-counts", default=str(Path.home() / "Work/neuron-lens/data/token_counts.pt"))
     ap.add_argument("--tokenizer")
@@ -387,7 +427,7 @@ def main() -> None:
     ap.add_argument("--n", type=int, default=12, help="pilot requests per kind")
     ap.add_argument("--cap", type=float, default=25.0, help="refuse to submit if the pilot projects more dollars")
     args = ap.parse_args()
-    {"collect": collect, "pilot": pilot, "submit": submit, "status": status, "results": results, "retry": retry}[args.stage](args)
+    {"collect": collect, "pilot": pilot, "submit": submit, "status": status, "results": results, "retry": retry, "fill": fill}[args.stage](args)
 
 
 if __name__ == "__main__":

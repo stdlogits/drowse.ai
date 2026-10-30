@@ -81,9 +81,9 @@ neuron-lens catalog (`~/Work/neuron-lens/data/catalog/qwen3-8b`) and gitignored 
 stages, run from `webui/` (each script's docstring has the full invocation):
 
 1. `scripts/neurons/translate.py` machine-translates non-English tokens, label terms and example
-   contexts with Claude Haiku 5.5 on the Batch API (`collect`, `pilot`, `submit --cap`, `results`),
-   caching them in `webui/.neuron-lens/translations.jsonl`. Rerun it only when the catalog's
-   vocabulary, labels or contexts change.
+   contexts with Claude Haiku 5.5 on the Batch API (`collect`, `pilot`, `submit --cap`, `results`,
+   then `fill` for what Haiku skipped), caching them in `webui/.neuron-lens/translations.jsonl`.
+   Rerun it only when the catalog's vocabulary, labels or contexts change.
 2. `scripts/neurons/build-neuron-catalog.py <catalog> <tokenizer.json> public-hosted/neurons-data
    .neuron-lens/translations.jsonl` writes every neuron and head. `NEURON_LAYERS=8,21` builds a
    subset for development.
