@@ -11,7 +11,20 @@ interface FilterClause {
 }
 
 const AGGREGATE_OPERATORS = new Set<AggregateOperator>(["agg", "any", "last"]);
-const PROBE_NAME = /^(?:[A-Za-z][A-Za-z0-9_-]*\/)?[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)?(?:\[[0-9]+\])?$/u;
+// A persisted reading key's probe name (drowse/loom/filter.py): `[ns/]name[.pole]`
+// for geometry and J-lens probes, `sae/<feature id>` for SAE features.
+const PROBE_NAME = /^(?:(?:[A-Za-z][A-Za-z0-9_-]*\/)?[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)?|sae\/[0-9]+)$/u;
+
+type GateChannel =
+  | { kind: "axis"; index: number }
+  | { kind: "fraction" | "membership" | "distance" | "assignment" };
+
+const CHANNEL_WORDS: Record<Exclude<GateChannel["kind"], "axis">, string> = {
+  fraction: "subspace fraction",
+  membership: "tube membership",
+  distance: "label distance",
+  assignment: "soft assignment",
+};
 const COMPARISON = /(>=|<=|>|<)/u;
 const PYTHON_FLOAT = /^[+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?|inf(?:inity)?|nan)$/iu;
 
@@ -79,11 +92,7 @@ function parseClause(raw: string): FilterClause {
       `clause ${JSON.stringify(raw)} missing probe name before ${JSON.stringify(comparison)}`,
     );
   }
-  if (!PROBE_NAME.test(probe)) {
-    throw new BrowserTreeFilterError(
-      `clause ${JSON.stringify(raw)}: probe ${JSON.stringify(probe)} is not a valid identifier (letter, then [A-Za-z0-9_-], optional .pole)`,
-    );
-  }
+  const key = probeKey(raw, probe);
   if (!thresholdText) {
     throw new BrowserTreeFilterError(
       `clause ${JSON.stringify(raw)}: missing threshold after ${JSON.stringify(comparison)}`,
@@ -95,7 +104,54 @@ function parseClause(raw: string): FilterClause {
     );
   }
   const threshold = pythonFloat(thresholdText);
-  return { aggregate, probe, comparison, threshold };
+  return { aggregate, probe: key, comparison, threshold };
+}
+
+/** Validate `probe` as a persisted axis-0 reading key and return it. Loom
+ *  nodes persist coordinate axis 0 only, so `name[0]` reads `name` and every
+ *  other channel is refused rather than silently matching nothing. */
+function probeKey(raw: string, probe: string): string {
+  const ref = parseGateRef(probe);
+  if (ref.channel.kind !== "axis" || ref.channel.index !== 0) {
+    const reads = ref.channel.kind === "axis"
+      ? `coordinate axis ${ref.channel.index}`
+      : `the ${CHANNEL_WORDS[ref.channel.kind]} channel`;
+    throw new BrowserTreeFilterError(
+      `clause ${JSON.stringify(raw)}: ${JSON.stringify(probe)} reads ${reads}, but loom nodes persist axis-0 readings only — filter on ${JSON.stringify(ref.probe)}`,
+    );
+  }
+  if (!PROBE_NAME.test(ref.probe)) {
+    throw new BrowserTreeFilterError(
+      `clause ${JSON.stringify(raw)}: probe ${JSON.stringify(probe)} is not a valid identifier ([ns/]name[.pole] or sae/<id>)`,
+    );
+  }
+  return ref.probe;
+}
+
+/** drowse/readout/types.py `parse_gate_ref`: split a gate scalar key into its
+ *  probe and channel. */
+function parseGateRef(key: string): { probe: string; channel: GateChannel } {
+  if (key.endsWith("]")) {
+    const open = key.lastIndexOf("[", key.length - 2);
+    const head = open >= 0 ? key.slice(0, open) : "";
+    const index = open >= 0 ? key.slice(open + 1, -1) : "";
+    if (head && /^[0-9]+$/u.test(index)) {
+      return { probe: head, channel: { kind: "axis", index: Number(index) } };
+    }
+  }
+  if (key.endsWith(":fraction")) {
+    return { probe: key.slice(0, -":fraction".length), channel: { kind: "fraction" } };
+  }
+  if (key.endsWith(":membership")) {
+    return { probe: key.slice(0, -":membership".length), channel: { kind: "membership" } };
+  }
+  for (const [separator, kind] of [["@", "distance"], ["~", "assignment"]] as const) {
+    const at = key.indexOf(separator);
+    if (at > 0 && at < key.length - 1) {
+      return { probe: key.slice(0, at), channel: { kind } };
+    }
+  }
+  return { probe: key, channel: { kind: "axis", index: 0 } };
 }
 
 function matchesClause(node: LoomNodeJSON, clause: FilterClause): boolean {
@@ -131,7 +187,7 @@ function tokenSeries(node: LoomNodeJSON, probe: string): number[] {
 }
 
 function rowScores(row: LoomTokenRowJSON): Record<string, number> | undefined {
-  return row.measurements?.scores ?? row.probes;
+  return row.measurements?.scores;
 }
 
 function compare(left: number, operator: ComparisonOperator, right: number): boolean {

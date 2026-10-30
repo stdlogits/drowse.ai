@@ -17,22 +17,30 @@ try {
   );
   const rows = [
     node("root", {}, []),
-    node("a", { confidence: 0.4, "default/personas[1]": -0.2 }, [
-      token({ confidence: 0.1 }),
+    node("a", { confidence: 0.4, "default/personas": -0.2, "sae/12": 3 }, [
+      token({ confidence: 0.1, "sae/12": 0.5 }),
       token({ confidence: 0.8 }),
     ]),
-    node("b", { confidence: 0.7, "default/personas[1]": 0.3 }, [
+    node("b", { confidence: 0.7, "default/personas": 0.3 }, [
       token({ confidence: 0.6 }),
-      token({ confidence: 0.5 }),
+      token({ confidence: 0.5, "sae/12": 4 }),
     ]),
     node("c", { confidence: 0.9 }, [
-      legacyToken({ confidence: 0.2 }),
-      legacyToken({ confidence: 0.4 }),
+      token({ confidence: 0.2 }),
+      token({ confidence: 0.4 }),
+    ]),
+    node("d", { confidence: 0.1 }, [
+      legacyToken({ confidence: 0.05 }),
     ]),
   ];
 
   assert.deepEqual(filterBrowserTree(rows, ""), []);
   assert.deepEqual(filterBrowserTree(rows, "confidence >= 0.7"), ["b", "c"]);
+  assert.deepEqual(
+    filterBrowserTree(rows, "any:confidence < 0.1"),
+    [],
+    "rows outside the measurement envelope carry no readings",
+  );
   assert.deepEqual(filterBrowserTree(rows, "agg:confidence > 0.3,"), ["a", "b", "c"]);
   assert.deepEqual(filterBrowserTree(rows, "any:confidence > 0.7"), ["a"]);
   assert.deepEqual(filterBrowserTree(rows, "any:confidence < 0.3"), ["a", "c"]);
@@ -41,10 +49,29 @@ try {
     filterBrowserTree(rows, "agg:confidence > 0.5, last:confidence < 0.5"),
     ["c"],
   );
-  assert.deepEqual(
-    filterBrowserTree(rows, "default/personas[1] >= 0"),
-    ["b"],
-  );
+  assert.deepEqual(filterBrowserTree(rows, "default/personas >= 0"), ["b"]);
+  assert.deepEqual(filterBrowserTree(rows, "default/personas[0] >= 0"), ["b"]);
+  assert.deepEqual(parseBrowserTreeFilter("agg:sae/12[0] > 1").map((clause) => clause.probe), ["sae/12"]);
+  assert.deepEqual(filterBrowserTree(rows, "agg:sae/12 > 1"), ["a"]);
+  assert.deepEqual(filterBrowserTree(rows, "any:sae/12 > 1"), ["b"]);
+  assert.deepEqual(filterBrowserTree(rows, "last:sae/12 < 1"), ["a"]);
+  for (const [expression, reads] of [
+    ["default/personas[1] >= 0", "coordinate axis 1"],
+    ["x[01] > 0", "coordinate axis 1"],
+    ["agg:emotions:fraction > 0.5", "the subspace fraction channel"],
+    ["agg:emotions:membership > 0.5", "the tube membership channel"],
+    ["emotions@happy > 0", "the label distance channel"],
+    ["any:emotions~happy > 0.5", "the soft assignment channel"],
+  ]) {
+    assert.throws(
+      () => parseBrowserTreeFilter(expression),
+      (error) => error.message.includes(`reads ${reads}, but loom nodes persist axis-0 readings only`),
+      expression,
+    );
+  }
+  for (const expression of ["sae/1.5 > 0", "default/sae/1 > 0", "x[ 0] > 0", "jlens/#7 > 0"]) {
+    assert.throws(() => parseBrowserTreeFilter(expression), /not a valid identifier/, expression);
+  }
   assert.deepEqual(filterBrowserTree(rows, "agg:missing > 0"), []);
 
   assert.throws(() => parseBrowserTreeFilter("unknown:confidence > 0"), /unknown agg op/);
