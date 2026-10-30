@@ -50,9 +50,10 @@ export interface SteeringExpression {
 }
 
 /** Namespaces that name instrument units rather than fitted manifolds
- *  (drowse/naming.py `RESERVED_NAMESPACES`): their names are kept verbatim
- *  and they take no variant suffix. */
-export const RESERVED_STEERING_NAMESPACES: ReadonlySet<string> = new Set([
+ *  (drowse/naming.py `RESERVED_NAMESPACES`): no manifold or pack may live
+ *  under one, and a steering atom in one keeps its name verbatim and takes
+ *  no variant suffix. */
+export const RESERVED_NAMESPACES: ReadonlySet<string> = new Set([
   "jlens", "slens", "sae", "neuron", "head",
 ]);
 /** Lens namespaces whose units may also be named by an exact vocab id, `#<id>`. */
@@ -359,7 +360,7 @@ class Parser {
       this.consume();
       const suffix = this.expect("IDENT");
       variant = String(suffix.value);
-      if (namespace !== null && RESERVED_STEERING_NAMESPACES.has(namespace)) {
+      if (namespace !== null && RESERVED_NAMESPACES.has(namespace)) {
         throw this.error(
           `'${namespace}/' atoms name instrument units and take no ':${variant}' variant`,
           suffix,

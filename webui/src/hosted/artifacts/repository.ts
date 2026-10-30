@@ -1,6 +1,7 @@
 import { Zip, ZipPassThrough } from "fflate";
 import { parseExactJson } from "./json";
 import { validateDrowseArchive } from "./drowseArchive";
+import { RESERVED_NAMESPACES } from "../runtime/steeringExpression";
 import { randomUuid } from "../runtime/randomId";
 import { migrateLegacyDatabase, drowseStorageRoot } from "../../../../drowse/webui/src/lib/brandMigration";
 import {
@@ -29,7 +30,6 @@ const EXPORT_RETENTION_MS = 24 * 60 * 60 * 1_000;
 const NAME = /^[a-z][a-z0-9._-]{0,63}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const RESERVED_MANIFOLD_NAMESPACES = new Set(["jlens", "sae"]);
 
 interface ArtifactTransactionRecord {
   id: string;
@@ -926,7 +926,7 @@ function validIdentity(value: unknown, root: "manifolds" | "templates"): value i
   if (typeof value !== "string") return false;
   const parts = value.split("/");
   return parts.length === 3 && parts[0] === root && NAME.test(parts[1]) && NAME.test(parts[2]) &&
-    (root !== "manifolds" || !RESERVED_MANIFOLD_NAMESPACES.has(parts[1]));
+    (root !== "manifolds" || !RESERVED_NAMESPACES.has(parts[1]));
 }
 
 function validManifestPath(path: string): boolean {

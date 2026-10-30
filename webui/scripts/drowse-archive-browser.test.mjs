@@ -1011,18 +1011,44 @@ try {
     );
 
     const fixture = manifoldFixture();
-    const renamedPayloads = Object.fromEntries(Object.entries(fixture.payloads).map(([path, data]) => [
-      path.replace("manifolds/local/demo", "manifolds/jlens/demo"),
-      data,
-    ]));
-    const reservedManifest = makeManifest(renamedPayloads, { primary: "manifolds/jlens/demo" });
-    await assert.rejects(
-      inspectDrowseArchive(makeZip([
-        { name: "pack.json", data: json(reservedManifest) },
-        ...Object.entries(renamedPayloads).map(([name, data]) => ({ name, data })),
-      ])),
-      (error) => error.code === "MANIFEST_INVALID" && /reserved/.test(error.message),
+    for (const namespace of ["jlens", "slens", "sae", "neuron", "head"]) {
+      const renamedPayloads = Object.fromEntries(Object.entries(fixture.payloads).map(([path, data]) => [
+        path.replace("manifolds/local/demo", `manifolds/${namespace}/demo`),
+        data,
+      ]));
+      const reservedManifest = makeManifest(renamedPayloads, { primary: `manifolds/${namespace}/demo` });
+      await assert.rejects(
+        inspectDrowseArchive(makeZip([
+          { name: "pack.json", data: json(reservedManifest) },
+          ...Object.entries(renamedPayloads).map(([name, data]) => ({ name, data })),
+        ])),
+        (error) => error.code === "MANIFEST_INVALID" && /reserved/.test(error.message),
+        namespace,
+      );
+    }
+  });
+
+  test("mirrors drowse's method/fit_mode table and reserved namespaces", async () => {
+    const { METHOD_FIT_MODES } = await server.ssrLoadModule("/src/hosted/artifacts/drowseArchive.ts");
+    const { RESERVED_NAMESPACES } = await server.ssrLoadModule("/src/hosted/runtime/steeringExpression.ts");
+    const drowseRoot = fileURLToPath(new URL("../../drowse", import.meta.url));
+    const result = spawnSync(
+      process.env.PYTHON ?? "python3",
+      ["-c", [
+        "import json",
+        "from drowse.naming import RESERVED_NAMESPACES",
+        "from drowse.store.manifold_schema import METHOD_FIT_MODES",
+        "print(json.dumps({'methods': {k: sorted(v) for k, v in METHOD_FIT_MODES.items()}, 'reserved': sorted(RESERVED_NAMESPACES)}))",
+      ].join("; ")],
+      { cwd: drowseRoot, encoding: "utf8", env: { ...process.env, PYTHONPATH: drowseRoot, PYTHONDONTWRITEBYTECODE: "1" } },
     );
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const python = JSON.parse(result.stdout);
+    assert.deepEqual(
+      Object.fromEntries(Object.entries(METHOD_FIT_MODES).map(([method, modes]) => [method, [...modes].sort()])),
+      python.methods,
+    );
+    assert.deepEqual([...RESERVED_NAMESPACES].sort(), python.reserved);
   });
 
   test("enforces authored node floors and discover hyperparameter contracts", async () => {

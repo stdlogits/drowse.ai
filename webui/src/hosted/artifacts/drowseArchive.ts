@@ -17,6 +17,7 @@ import {
   type VerifyDrowseArchiveOptions,
 } from "./types";
 import { openZip, readZipEntry, type ZipArchive, type ZipEntry } from "./zip";
+import { RESERVED_NAMESPACES } from "../runtime/steeringExpression";
 
 const NAME = /^[a-z][a-z0-9._-]{0,63}$/;
 const LABEL = /^[a-z][a-z0-9_-]{0,63}$/;
@@ -25,7 +26,6 @@ const METADATA_MAX_BYTES = 4 * 1024 * 1024;
 const NODE_MAX_BYTES = 64 * 1024 * 1024;
 const MANIFOLD_FORMAT_VERSION = 10;
 const TEMPLATE_FORMAT_VERSION = 2;
-const RESERVED_MANIFOLD_NAMESPACES = new Set(["jlens", "sae"]);
 const MERGE_BAKE_POLICY = "additive_union_v1";
 
 type FitMode = "authored" | "baked" | "pca" | "spectral" | "auto";
@@ -39,18 +39,18 @@ const HYPERPARAMS_BY_MODE: Readonly<Record<"pca" | "spectral" | "auto", Readonly
   ]),
 };
 
-const METHOD_FIT_MODES: Readonly<Record<string, ReadonlySet<FitMode>>> = {
+/** drowse/store/manifold_schema.py `METHOD_FIT_MODES`, mirrored exactly. */
+export const METHOD_FIT_MODES: Readonly<Record<string, ReadonlySet<FitMode>>> = {
   manifold_pca: new Set(["authored"]),
   manifold_sae: new Set(["authored"]),
-  manifold_monopolar: new Set(["authored", "pca"]),
-  manifold_monopolar_sae: new Set(["authored", "pca"]),
+  manifold_monopolar: new Set(["pca"]),
+  manifold_monopolar_sae: new Set(["pca"]),
   manifold_discover_auto: new Set(["auto"]),
   manifold_discover_pca: new Set(["pca"]),
   manifold_discover_spectral: new Set(["spectral"]),
   manifold_discover_sae: new Set(["pca", "spectral", "auto"]),
   manifold_procrustes_transfer: new Set(["authored", "baked", "pca", "spectral", "auto"]),
   merge: new Set(["baked"]),
-  folded_vector: new Set(["baked"]),
 };
 
 interface InternalInspection {
@@ -1153,7 +1153,7 @@ function archivePath(value: unknown, root: "manifolds" | "templates"): string {
   if (parts.length !== 3 || parts[0] !== root || !NAME.test(parts[1]) || !NAME.test(parts[2])) {
     manifestError(`pack.json path ${JSON.stringify(value)} must be ${root}/<namespace>/<name>`);
   }
-  if (root === "manifolds" && RESERVED_MANIFOLD_NAMESPACES.has(parts[1])) {
+  if (root === "manifolds" && RESERVED_NAMESPACES.has(parts[1])) {
     manifestError(`pack.json manifold namespace ${JSON.stringify(parts[1])} is reserved`);
   }
   return value;
