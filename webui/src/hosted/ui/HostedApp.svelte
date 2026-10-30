@@ -25,7 +25,7 @@
   import { contentIn, contentOut } from "../../../../drowse/webui/src/lib/motion";
   import { userFacingError } from "../../../../drowse/webui/src/lib/runtime/userFacingError";
   import { reloadInstructions, appRefreshSafetyMessage } from "../runtime/chunkRecovery";
-  import { clearConversationOpen } from "../../../../drowse/webui/src/lib/entryExperience";
+  import { clearConversationOpen } from "../../../../drowse/webui/src/lib/conversationOpen";
   import {
     defaultModelSelection,
     downloadSizeSummary,

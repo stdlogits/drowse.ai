@@ -38,10 +38,10 @@
   import {
     clearConversationOpen,
     forgetEntryModel,
-    queueConversationOpen,
     readEntryMemory,
     rememberCompletedOnboarding,
-  } from "../../../../drowse/webui/src/lib/entryExperience";
+  } from "./entryMemory";
+  import { queueConversationOpen } from "../../../../drowse/webui/src/lib/conversationOpen";
 
   type EntryView = "resolving" | "home" | "models";
   type HistoryMode = "push" | "replace";

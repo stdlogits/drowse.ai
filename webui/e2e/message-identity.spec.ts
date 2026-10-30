@@ -115,7 +115,7 @@ test("updating a saved avatar and opening another chat keeps model pictures in s
   const reopenedAvatar = await page.locator(".model-avatar img").getAttribute("src");
   await page.evaluate(async ({ url, another }) => {
     (await import(url)).queueConversationOpen(another.id, another.modelId);
-  }, { url: `/@fs${resolve("../drowse/webui/src/lib/entryExperience.ts")}`, another });
+  }, { url: `/@fs${resolve("../drowse/webui/src/lib/conversationOpen.ts")}`, another });
   await page.reload();
   await expect(page.locator(".model-avatar img")).toHaveAttribute("src", reopenedAvatar!);
 });

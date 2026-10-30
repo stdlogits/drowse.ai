@@ -62,10 +62,12 @@ try {
     clearConversationOpen,
     peekConversationOpen,
     queueConversationOpen,
+  } = await server.ssrLoadModule("/../drowse/webui/src/lib/conversationOpen.ts");
+  const {
     forgetEntryModel,
     readEntryMemory,
     rememberCompletedOnboarding,
-  } = await server.ssrLoadModule("/../drowse/webui/src/lib/entryExperience.ts");
+  } = await server.ssrLoadModule("/src/hosted/ui/entryMemory.ts");
 
   const local = memoryStorage();
   assert.equal(readEntryMemory(local), null);

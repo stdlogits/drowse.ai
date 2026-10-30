@@ -32,8 +32,8 @@
   import {
     clearConversationOpen,
     queueConversationOpen,
-    readEntryMemory,
-  } from "../../../../drowse/webui/src/lib/entryExperience";
+  } from "../../../../drowse/webui/src/lib/conversationOpen";
+  import { readEntryMemory } from "./entryMemory";
   import type { HostedModelOption, HostedShellController, HostedShellSnapshot } from "../../../../drowse/webui/src/lib/shell";
 
   let {
