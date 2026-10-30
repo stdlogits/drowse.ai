@@ -38,7 +38,7 @@ def main():
     import transformers
     import drowse
     from drowse import DrowseSession, SamplingConfig
-    from drowse.io.manifold_authoring import create_discover_manifold_folder
+    from drowse.store.manifold_authoring import create_discover_manifold_folder
     from drowse.server.session_models import default_role_labels, role_support
     from huggingface_hub import snapshot_download
 
@@ -115,7 +115,7 @@ def main():
                 session.config = replace(session.config, system_prompt=system)
                 started = time.monotonic()
                 try:
-                    ids = session._prepare_input(prompt, raw=session.is_base_model, thinking=False,
+                    ids = session.renderer.prepare_input(prompt, raw=session.is_base_model, thinking=False,
                         stateless=True, assistant_role=role, to_device=False)
                     rendered = session.tokenizer.decode(ids[0].tolist(), skip_special_tokens=False)
                     effective_role = None if session.is_base_model else "pirate" if rendered.endswith("<|im_start|>pirate\n") else "assistant" if rendered.endswith("<|im_start|>assistant\n") else "unidentified"

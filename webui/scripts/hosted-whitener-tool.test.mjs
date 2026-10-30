@@ -78,12 +78,12 @@ const loaded = await exec(python, [
   [
     "import json, sys",
     "from pathlib import Path",
-    "from drowse.io.manifold_folder import ManifoldFolder",
+    "from drowse.store.manifold_folder import ManifoldFolder",
     "folder = ManifoldFolder.load(Path(sys.argv[1]))",
     "print(json.dumps({'name': folder.name, 'fit_mode': folder.fit_mode, 'nodes': folder.node_labels, 'groups': [len(rows) for _, rows in folder.node_groups()], 'files': folder.files}))",
   ].join("; "),
   seedSource,
-], { cwd: repositoryRoot, env: { ...process.env, PYTHONPATH: repositoryRoot } });
+], { cwd: repositoryRoot, env: { ...process.env, PYTHONPATH: resolve(repositoryRoot, "drowse") } });
 assert.deepEqual(JSON.parse(loaded.stdout), {
   name: "welcoming.detached",
   fit_mode: "pca",

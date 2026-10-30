@@ -321,7 +321,7 @@ try {
   fitArguments.push("--source-layers", selectedSourceLayers.join(","));
   const fitted = await exec(pythonExecutable, fitArguments, {
     cwd: repositoryRoot,
-    env: { ...process.env, PYTHONPATH: repositoryRoot },
+    env: { ...process.env, PYTHONPATH: resolve(repositoryRoot, "drowse") },
     maxBuffer: 4 * 1024 * 1024,
     timeout: options.timeoutMs,
   });

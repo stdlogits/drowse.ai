@@ -148,7 +148,7 @@ export const htmlGuides = [
       {
         heading: "Score completion choices",
         paragraphs: ["The template lab defines a slot, candidate values, and one or more contexts. Restricted-choice scoring compares the model's likelihoods for those candidates, optionally under steering. Multi-token choices expose both summed log probability and a length-normalized view, with separate probabilities across the candidate set.", "Use this when you want to compare a distribution rather than only the sampled completion. The result is conditional on the chosen candidates and contexts. A template can also supply the examples for a fitted manifold, connecting authoring and evaluation."],
-        links: [{ label: "Browser template scoring source", href: source("webui/src/hosted/runtime/browserManifoldFitting.ts") }, { label: "Template format and validation", href: source("drowse/drowse/io/templates.py") }],
+        links: [{ label: "Browser template scoring source", href: source("webui/src/hosted/runtime/browserManifoldFitting.ts") }, { label: "Template format and validation", href: source("drowse/drowse/store/templates.py") }],
       },
       {
         heading: "Record and share the evidence",

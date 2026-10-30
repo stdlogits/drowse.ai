@@ -71,7 +71,7 @@ await assert.rejects(
 const python = process.env.PYTHON ?? "python3";
 const pythonHelp = await exec(python, [fitter, "--help"], {
   cwd: repositoryRoot,
-  env: { ...process.env, PYTHONPATH: repositoryRoot },
+  env: { ...process.env, PYTHONPATH: resolve(repositoryRoot, "drowse") },
 });
 assert.match(pythonHelp.stdout, /--dim-batch/);
 assert.match(pythonHelp.stdout, /--source-layers/);

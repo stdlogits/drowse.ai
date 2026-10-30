@@ -69,7 +69,7 @@ Browser-only fixtures stay in `browser-runtime/fixtures/`.
 Release builds record this repository's exact HEAD as the source revision
 (`drowse-source-url` points at `stdlogits/drowse.ai/tree/<sha>`); the gitlink at
 that commit pins the drowse source. Evidence closures may name files inside the
-submodule (`drowse/drowse/core/...`); the tracked-file checks resolve those in
+submodule (`drowse/drowse/geometry/...`); the tracked-file checks resolve those in
 the submodule's own repository. A submodule bump is a change to executable
 source, so evidence recorded against the previous pin no longer qualifies.
 `./deploy.sh` builds the release from a clean, pushed HEAD, uploads `webui/dist-hosted` to the
