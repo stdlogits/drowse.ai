@@ -4,7 +4,8 @@
 #
 #   ./deploy.sh            release build and its output checks, upload, verify
 #   ./deploy.sh --full     also run the runtime-lock and distribution gates; needed after changes to
-#                          the browser runtime, its locks or the drowse pin, and slow
+#                          the browser runtime, its locks or the drowse pin. Takes about two hours:
+#                          the distribution preflight downloads and hashes every model artifact (~12 GB)
 #   ./deploy.sh --dry-run  build and check only
 #
 # Wrangler is webui/contact-worker's pinned copy. It needs access to the Cloudflare account that
