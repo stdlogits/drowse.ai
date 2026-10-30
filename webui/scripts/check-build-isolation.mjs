@@ -43,10 +43,7 @@ for (const header of [
 ]) {
   if (!headers.includes(header)) throw new Error(`hosted headers are missing ${header}`);
 }
-// Neuron Lens's image and sound packs are .bin files on purpose (scripts/neurons/media.py); any other
-// .bin is a fixture's weights.
-const mediaPack = /^neurons-data\/[^/]+\/media\/(?:image|audio)\/p\d+\.bin$/;
-const fixtureAssets = paths.filter((path) => /fixture/i.test(path) || (/\.bin$/i.test(path) && !mediaPack.test(path)));
+const fixtureAssets = paths.filter((path) => /fixture|\.bin$/i.test(path));
 if (fixtureAssets.length) {
   throw new Error(`development fixture assets leaked into hosted build: ${fixtureAssets.join(", ")}`);
 }

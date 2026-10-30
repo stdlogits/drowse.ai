@@ -107,11 +107,6 @@ try {
   } else if (path === "/contribute") {
     component = (await import("../src/hosted/ui/pages/Contribute.svelte")).default;
     prerenderedKey = "contribute";
-  } else if (path === "/neuron-lens" || path === "/neurons") {
-    // /neurons was the explorer's first address; the edge redirects it, and so does a local server.
-    if (path === "/neurons") history.replaceState(history.state, "", `/neuron-lens${window.location.search}${window.location.hash}`);
-    component = (await import("../src/hosted/ui/pages/NeuronLens.svelte")).default;
-    prerenderedKey = "neuron-lens";
   } else if (path === "/third-party-licenses") {
     component = (await import("../src/hosted/ui/pages/ThirdPartyLicenses.svelte")).default;
     prerenderedKey = "third-party-licenses";

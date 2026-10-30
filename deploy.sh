@@ -37,14 +37,6 @@ if ! git merge-base --is-ancestor HEAD origin/main; then
 fi
 rev=$(git rev-parse HEAD)
 
-# Neuron Lens data is gitignored and built separately (AGENTS.md); an upload without it would take
-# the explorer's data off the site.
-for model in qwen3-8b gemma-4-12b; do
-  if [[ ! -f "webui/public-hosted/neurons-data/$model/index.json" ]]; then
-    echo "deploy: webui/public-hosted/neurons-data/$model is missing; build it first (AGENTS.md, Neuron Lens data)" >&2
-    exit 1
-  fi
-done
 
 wrangler="$PWD/webui/contact-worker/node_modules/.bin/wrangler"
 [[ -x "$wrangler" ]] || npm ci --prefix webui/contact-worker

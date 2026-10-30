@@ -25,7 +25,10 @@ test("only the app routes rewrite to the shell; pages are real documents with ca
   assert.deepEqual(rules.slice(0, 2), [["/app", "/app-shell", "200"], ["/app/", "/app-shell", "200"]]);
   for (const [, target] of rules) assert.doesNotMatch(target, /\.html$/);
   assert.ok(!rules.some(([path]) => path.includes("*")), "unknown /app/* paths must remain real 404s");
-  const slashRedirects = rules.slice(2);
+  // Neuron Lens moved to its own site; its old addresses follow it there, query strings and all.
+  const moved = rules.filter(([, target]) => target.startsWith("https://"));
+  assert.deepEqual(moved, ["/neuron-lens", "/neuron-lens/", "/neurons", "/neurons/"].map(path => [path, "https://neuron-lens.com/", "301"]));
+  const slashRedirects = rules.slice(2).filter(rule => !moved.includes(rule));
   assert.deepEqual(slashRedirects, sitemapPaths.filter(path => path !== "/").map(path => [`${path}/`, path, "301"]));
 });
 

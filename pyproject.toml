@@ -24,5 +24,3 @@ ignore = ["E501", "E741", "E402", "E731"]
 # Build, validation, and catalog tools report progress on stdout.
 "browser-runtime/*.py" = ["T20"]
 "browser-runtime/forks/*.py" = ["T20"]
-"webui/scripts/neurons/build-neuron-catalog.py" = ["T20"]
-"webui/scripts/neurons/pack-scores.py" = ["T20"]
