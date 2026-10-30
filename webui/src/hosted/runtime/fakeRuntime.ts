@@ -144,9 +144,6 @@ export class DeterministicFakeRuntime implements RuntimeClient {
     } satisfies RuntimeProbesService;
     this.manifolds = {
       list: async () => ({ manifolds: [] }),
-      inspectSurface: async () => {
-        throw fakeArtifactRoutingRequired("manifolds.inspectSurface");
-      },
       get: async (namespace: string, name: string) => {
         throw fakeError(
           "CORE_PACK_SELECTOR_NOT_FOUND",

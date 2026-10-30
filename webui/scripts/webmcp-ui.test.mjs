@@ -39,7 +39,7 @@ try {
     runtime.templates.list = async () => ({ templates: [template] });
     runtime.templates.get = async () => template;
     runtime.profiles.list = async () => ({ profiles: [{ name: "fixture/a" }, { name: "fixture/b" }] });
-    runtime.manifolds.list = async () => ({ manifolds: ["a", "b"].map(name => ({ namespace: "fixture", name, fit_mode: "pca", fitted_for_session: true, node_count: 2, intrinsic_dim: 1, node_labels: ["left", "right"] })) });
+    runtime.manifolds.list = async () => ({ manifolds: ["a", "b"].map(name => ({ namespace: "fixture", name, fit_mode: "pca", is_discover: true, fitted_for_session: true, node_count: 2, intrinsic_dim: 1, node_labels: ["left", "right"] })) });
   }, root);
   await invoke("drowse_navigate", { drawer: "manifold_builder", params: { mode: "discover" } });
   await mounted("manifold_discover");

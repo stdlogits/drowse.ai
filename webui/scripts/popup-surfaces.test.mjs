@@ -14,7 +14,7 @@ const surfaces = [
   ["src/hosted/ui/HostedRoot.svelte", ".runtime-dialog"],
   ["../drowse/webui/src/panels/CommandPalette.svelte", ".palette"],
   ["../drowse/webui/src/panels/loom/LoomSidebar.svelte", ".loom-menu"],
-  ["../drowse/webui/src/panels/loom/LoomSidebar.svelte", ".loom-modal"],
+  ["../drowse/webui/src/panels/loom/LoomDialog.svelte", ".loom-modal"],
 ];
 const tokens = await readFile("../drowse/webui/src/lib/style/tokens.css", "utf8");
 const app = await readFile("../drowse/webui/src/App.svelte", "utf8");

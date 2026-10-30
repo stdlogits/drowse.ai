@@ -23,7 +23,6 @@ export async function runServiceActionCases({ server, tools, validateInput, JobR
     drowse_fit_manifold: [{ ...address, layers: "workspace", force: false }, "manifolds.fit", ["local", "example", { layers: "workspace", force: false }]],
     drowse_merge_manifolds: [{ ...address, sources: [address, { namespace: "default", name: "other" }] }, "manifolds.merge"],
     drowse_delete_manifold: [address, "manifolds.delete", ["local", "example"]],
-    drowse_inspect_surface: [{ points: [[0], [1]] }, "manifolds.inspectSurface", [[[0], [1]]]],
     drowse_list_manifold_packs: [{}, "manifolds.drowseArchiveList", [], "browser"],
     drowse_delete_manifold_pack: [{ primary: "local/example" }, "manifolds.drowseArchiveDelete", ["local/example"], "browser"],
     drowse_import_manifold_pack: [{ file_id: transfer.file_id, force: true }, "manifolds.drowseArchiveInstall", [getTransferredFile(transfer.file_id), { force: true }], "browser"],

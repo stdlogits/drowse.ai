@@ -21,7 +21,7 @@ try {
 
   const registrySource = await readFile(new URL("../../drowse/webui/src/drawers/index.ts", import.meta.url), "utf8");
   const drawerNames = [...registrySource.slice(registrySource.indexOf("export const DRAWERS:")).matchAll(/^  ([a-z_]+): \{/gm)].map((match) => match[1]);
-  assert.equal(drawerNames.length, 25);
+  assert.equal(drawerNames.length, 24);
   assert.deepEqual(Object.keys(INTERFACE_CATALOGUE).sort(), drawerNames.sort(), "every drawer needs a conscious coverage decision");
   assert.deepEqual(Object.keys(RUNTIME_SERVICE_CATALOGUE).sort(), Object.keys(RUNTIME_SERVICE_METHODS).sort());
   for (const [service, methods] of Object.entries(RUNTIME_SERVICE_METHODS)) {

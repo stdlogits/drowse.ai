@@ -39,7 +39,6 @@ export const RUNTIME_SERVICE_ROUTES = Object.freeze({
     geometry: "model",
   }),
   manifolds: Object.freeze({
-    inspectSurface: "model",
     list: "hybrid_manifold_read",
     get: "hybrid_manifold_read",
     create: "artifact",

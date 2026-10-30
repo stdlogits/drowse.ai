@@ -145,7 +145,7 @@ try {
     resolved_fit_mode: "pca",
   };
   assert.deepEqual(
-    manifoldSelectorOptions(manifold, "fixture/model", true).map((option) => [
+    manifoldSelectorOptions(manifold, "fixture/model").map((option) => [
       option.selector,
       option.variant,
       option.available,
@@ -156,7 +156,7 @@ try {
     ],
   );
   assert.deepEqual(
-    manifoldSelectorOptions({ ...manifold, node_roles: ["scholar", "scholar"] }, "fixture/model", true)
+    manifoldSelectorOptions({ ...manifold, node_roles: ["scholar", "scholar"] }, "fixture/model")
       .map((option) => [option.selector, option.available]),
     [
       ["local/demo:role-scholar", true],
@@ -166,7 +166,6 @@ try {
   const mixedRoleOptions = manifoldSelectorOptions(
     { ...manifold, node_roles: ["pirate", "scholar"] },
     "fixture/model",
-    true,
   );
   assert.equal(mixedRoleOptions.every((option) => option.available), true);
   assert.equal(mixedRoleOptions[0].label, "nearest node role");
