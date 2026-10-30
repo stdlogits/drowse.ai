@@ -36,12 +36,14 @@
     scrimOut,
   } from "../../../../drowse/webui/src/lib/motion";
   import {
-    clearConversationOpen,
     forgetEntryModel,
     readEntryMemory,
     rememberCompletedOnboarding,
   } from "./entryMemory";
-  import { queueConversationOpen } from "../../../../drowse/webui/src/lib/conversationOpen";
+  import {
+    clearConversationOpen,
+    queueConversationOpen,
+  } from "../../../../drowse/webui/src/lib/conversationOpen";
 
   type EntryView = "resolving" | "home" | "models";
   type HistoryMode = "push" | "replace";
