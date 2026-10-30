@@ -160,8 +160,10 @@ export function expectedCsp(distributionLock) {
     ["font-src", ["'self'", "data:"]],
     ["form-action", ["'self'"]],
     ["frame-ancestors", ["'none'"]],
-    ["img-src", ["'self'", "data:"]],
+    // Neuron Lens shows each image and sound from its media pack as a blob: URL.
+    ["img-src", ["'self'", "data:", "blob:"]],
     ["manifest-src", ["'self'"]],
+    ["media-src", ["'self'", "blob:"]],
     ["object-src", ["'none'"]],
     ["script-src", ["'self'", "'wasm-unsafe-eval'"]],
     ["style-src", ["'self'", "'unsafe-inline'"]],
