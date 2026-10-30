@@ -115,7 +115,7 @@ test("clearing during generation finishes before the next queued message", async
       }
       return navigate(nodeId);
     };
-  }, `/@fs${resolve("src")}`);
+  }, `/@fs${resolve("../drowse/webui/src")}`);
   await compose(page).fill("Before clear");
   await send(page).click();
   await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeEnabled();
@@ -140,7 +140,7 @@ test("clearing during generation finishes before the next queued message", async
     const { getRuntimeClient } = await import(`${sourceRoot}/lib/runtime/registry.ts`);
     const tree = await getRuntimeClient().tree.get();
     return tree.nodes.some((node: { text: string }) => node.text === "Before clear");
-  }, `/@fs${resolve("src")}`);
+  }, `/@fs${resolve("../drowse/webui/src")}`);
   expect(oldBranchKept).toBe(true);
 });
 

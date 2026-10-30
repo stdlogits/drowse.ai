@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 
-const sourceRoot = `/@fs${resolve("src")}`;
+const sourceRoot = `/@fs${resolve("../drowse/webui/src")}`;
 
 for (const width of [390, 1440]) {
   for (const focused of [false, true]) {
