@@ -117,7 +117,7 @@ function probeKey(raw: string, probe: string): string {
       ? `coordinate axis ${ref.channel.index}`
       : `the ${CHANNEL_WORDS[ref.channel.kind]} channel`;
     throw new BrowserTreeFilterError(
-      `clause ${JSON.stringify(raw)}: ${JSON.stringify(probe)} reads ${reads}, but loom nodes persist axis-0 readings only — filter on ${JSON.stringify(ref.probe)}`,
+      `clause ${JSON.stringify(raw)}: ${JSON.stringify(probe)} reads ${reads}, but loom nodes persist axis-0 readings only (filter on ${JSON.stringify(ref.probe)})`,
     );
   }
   if (!PROBE_NAME.test(ref.probe)) {
