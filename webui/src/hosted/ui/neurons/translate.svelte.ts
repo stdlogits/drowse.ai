@@ -2,17 +2,29 @@
 // (scripts/neurons/translate.py). Tokens and quoted terms come from terms.json, loaded on first need;
 // whole contexts carry their translation in the detail files.
 import { loadTerms, type Terms } from "./data";
+import { DEFAULT_MODEL, type ModelId } from "./models";
 
 const KEY = "drowse.neuronLens.translate";
 
 export const translation = $state<{ on: boolean; terms: Terms | null; failed: boolean }>({ on: false, terms: null, failed: false });
 
+// Each model has its own vocabulary, so its own terms file.
+let model: ModelId = DEFAULT_MODEL;
 let pending: Promise<void> | null = null;
 export function ensureTerms(): Promise<void> {
-  pending ??= loadTerms()
-    .then((terms) => { translation.terms = terms; translation.failed = false; })
+  const asked = model;
+  pending ??= loadTerms(asked)
+    .then((terms) => { if (asked === model) { translation.terms = terms; translation.failed = false; } })
     .catch(() => { pending = null; translation.failed = true; });
   return pending;
+}
+
+export function setTermsModel(next: ModelId) {
+  if (next === model) return;
+  model = next;
+  pending = null;
+  translation.terms = null;
+  if (translation.on) void ensureTerms();
 }
 
 /** The switch remembers its state per viewer; the page works the same without storage. */

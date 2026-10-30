@@ -23,7 +23,7 @@ const pole = (sign: 1 | -1) => ({
   reads: sign > 0 ? [[90, [0, 1, 2, 3]], [80, [1, 4, 0, 2]]] : [[10, [5]], [5, []]],
 });
 const index: CatalogIndex = {
-  model: "Qwen3-8B", layers: 36, neuronsPerLayer: 12288, headsPerLayer: 32, chunk: 64,
+  model: "Qwen3-8B", id: "qwen3-8b", layers: 36, neuronsPerLayer: 12288, headsPerLayer: 32, chunk: 256, docBlock: 2048, labelled: true, media: [],
   layerMeta: [{ layer: 8, band: "crossover", count: 1 }],
   neurons: [[8, 344, "rain words (下雨, 雨水)", "dry weather", 5, 0, 80, 30]],
 };
@@ -31,12 +31,12 @@ const headRow: HeadRow = [20, 17, 4, "after 'with' and 'that'", "gendered tokens
 
 async function serve(page: Page) {
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.route("**/neurons-data/index.json", route => route.fulfill({ json: index }));
-  await page.route("**/neurons-data/vocab.json", route => route.fulfill({ json: vocab }));
-  await page.route("**/neurons-data/terms.json", route => route.fulfill({ json: terms }));
-  await page.route("**/neurons-data/neurons/L08/c005.json", route => route.fulfill({ json: { layer: 8, reads: header, neurons: [{ n: 344, poles: [pole(1), pole(-1)] }] } }));
-  await page.route("**/neurons-data/heads/index.json", route => route.fulfill({ json: { heads: [headRow] } }));
-  await page.route("**/neurons-data/heads/L20.json", route => route.fulfill({ json: {
+  await page.route("**/neurons-data/qwen3-8b/index.json", route => route.fulfill({ json: index }));
+  await page.route("**/neurons-data/qwen3-8b/vocab.json", route => route.fulfill({ json: vocab }));
+  await page.route("**/neurons-data/qwen3-8b/terms.json", route => route.fulfill({ json: terms }));
+  await page.route("**/neurons-data/qwen3-8b/neurons/L08/c001.json", route => route.fulfill({ json: { layer: 8, reads: header, neurons: [{ n: 344, poles: [pole(1), pole(-1)] }] } }));
+  await page.route("**/neurons-data/qwen3-8b/heads/index.json", route => route.fulfill({ json: { heads: [headRow] } }));
+  await page.route("**/neurons-data/qwen3-8b/heads/L20.json", route => route.fulfill({ json: {
     layer: 20,
     reads: [{ col: "ov_R", trust: "primary", twin: false }, { col: "qk_S", trust: "primary", twin: false }],
     heads: [{

@@ -11,10 +11,12 @@
   // inline, so without this a comma after a focusable term can wrap onto a line of its own.
   const OPEN = /[(\[{«「『《“‘"']+$/u;
   const CLOSE = /^[)\]}»」』》”’"'.,;:!?、。，；：！？…]+/u;
+  // A term Haiku already glossed, as in "也 (also)", keeps its own script: the gloss is the translation.
+  const GLOSS = /^\s*\(/u;
 
   const parts = $derived.by(() => {
     const source = text || fallback;
-    const out: { text: string; term: boolean; lead?: string; tail?: string }[] = [];
+    const out: { text: string; term: boolean; lead?: string; tail?: string; glossed?: boolean }[] = [];
     let last = 0;
     for (const match of source.matchAll(FOREIGN_RUN)) {
       const at = match.index ?? 0;
@@ -23,7 +25,7 @@
       if (before.length > lead.length) out.push({ text: before.slice(0, before.length - lead.length), term: false });
       const end = at + match[0].length;
       const tail = source.slice(end).match(CLOSE)?.[0] ?? "";
-      out.push({ text: match[0], term: true, lead, tail });
+      out.push({ text: match[0], term: true, lead, tail, glossed: !tail && GLOSS.test(source.slice(end)) });
       last = end + tail.length;
     }
     if (last < source.length) out.push({ text: source.slice(last), term: false });
@@ -31,7 +33,7 @@
   });
 </script>
 
-<span class="label-text">{#each parts as part, i (i)}{#if part.term}{@const english = inlineEnglish(part.text)}<span class="glue">{part.lead}<svelte:element this={interactive ? "button" : "span"} type={interactive ? "button" : undefined} class="term" class:translated={english !== ""} data-term={part.text} lang={english ? "en" : undefined}><MorphText text={english || part.text} numbers={false} duration={260} />{#if english}<span class="sr-only">{` (translated from ${part.text})`}</span>{/if}</svelte:element>{part.tail}</span>{:else}{part.text}{/if}{/each}</span>
+<span class="label-text">{#each parts as part, i (i)}{#if part.term}{@const english = part.glossed ? "" : inlineEnglish(part.text)}<span class="glue">{part.lead}<svelte:element this={interactive ? "button" : "span"} type={interactive ? "button" : undefined} class="term" class:translated={english !== ""} data-term={part.text} lang={english ? "en" : undefined}><MorphText text={english || part.text} numbers={false} duration={260} />{#if english}<span class="sr-only">{` (translated from ${part.text})`}</span>{/if}</svelte:element>{part.tail}</span>{:else}{part.text}{/if}{/each}</span>
 
 <style>
   .label-text { overflow-wrap: anywhere; }

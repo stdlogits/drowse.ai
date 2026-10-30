@@ -6,9 +6,10 @@
   import TranslateSwitch from "./TranslateSwitch.svelte";
 
   // The top of a neuron or head: its ID and tags, stepping through the layer's list, and the translate switch.
-  let { id, caution, unitName, onstep, position, total, hrefFor, tags }: {
+  let { id, caution, cautionLabel = "Why this depth is harder to read", unitName, onstep, position, total, hrefFor, tags }: {
     id: string;
     caution?: string;
+    cautionLabel?: string;
     unitName: string;
     /** Move to the previous (-1) or next (+1) unit in the layer's list. */
     onstep: (delta: -1 | 1) => void;
@@ -37,7 +38,7 @@
 <div class="detail-bar">
   <div class="id-row">
     <h2 id="unit-title" tabindex="-1"><MorphText text={id} duration={340} /></h2>
-    {#if caution}<span class="caution"><InfoTip icon="info" label="Why layers 13–20 are harder to read" text={caution} /></span>{/if}
+    {#if caution}<span class="caution"><InfoTip icon="info" label={cautionLabel} text={caution} /></span>{/if}
     {@render tags?.()}
   </div>
   <div class="tools">

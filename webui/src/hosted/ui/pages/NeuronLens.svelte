@@ -11,18 +11,24 @@
   import NeuronDetail from "../neurons/NeuronDetail.svelte";
   import HeadDetail from "../neurons/HeadDetail.svelte";
   import NeuronSearch from "../neurons/NeuronSearch.svelte";
+  import MediaCredits from "../neurons/MediaCredits.svelte";
   import { tokenHover } from "../neurons/tokenHover";
-  import { restoreTranslate } from "../neurons/translate.svelte";
+  import { restoreTranslate, setTermsModel } from "../neurons/translate.svelte";
   import {
-    FLAG_DETECTOR, FLAG_MINUS_WRITES, FLAG_PLUS_WRITES, FLAG_PREDICTS, FLAG_SUPPRESSES, HEADS, LAYERS, MLP, ROLES,
-    ROLE_COPY, ROLE_DUPLICATE, ROLE_INDUCTION, ROLE_NEXT, TOTAL_HEADS, TOTAL_NEURONS,
-    chunkOf, depthColor, headId, loadHeadIndex, loadHeadLayer, loadIndex, loadLayerIndex, loadNeuronChunk, loadScores, neuronId, rolesOf,
+    FLAG_AUDIO, FLAG_CROSSMODAL, FLAG_DETECTOR, FLAG_IMAGE, FLAG_MINUS_WRITES, FLAG_PLUS_WRITES, FLAG_PREDICTS, FLAG_SUPPRESSES, ROLES,
+    ROLE_CARRIES, ROLE_COPY, ROLE_DUPLICATE, ROLE_INDUCTION, ROLE_NAMES, ROLE_NEXT,
+    chunkOf, headId, loadHeadIndex, loadHeadLayer, loadIndex, loadLayerIndex, loadNeuronChunk, loadScores, neuronId, rolesOf,
     type CatalogIndex, type HeadDetail as Head, type HeadRow, type IndexRow, type NeuronDetail as Neuron, type StripCard, type StripFilter, type Unit,
   } from "../neurons/data";
+  import { DEFAULT_MODEL, MODELS, MODEL_ORDER, depthColor, isModelId, type ModelId } from "../neurons/models";
 
   const format = (value: number) => value.toLocaleString("en-US");
   const PATH = "/neuron-lens";
 
+  let modelId = $state<ModelId>(DEFAULT_MODEL);
+  const model = $derived(MODELS[modelId]);
+  const totalNeurons = $derived(model.layers * model.mlp);
+  const totalHeads = $derived(model.layers * model.heads);
   let index = $state<CatalogIndex | null>(null);
   let headRows = $state<HeadRow[] | null>(null);
   let failed = $state(false);
@@ -31,7 +37,7 @@
   /** The neuron or head named in the URL. Without one, the layer's easiest is shown. */
   let neuron = $state<number | null>(null);
   let head = $state<number | null>(null);
-  // "All" lists every one of the 442,368 neurons; the default lists the easiest to read.
+  // "All" lists every neuron of the model; the default lists the easiest to read.
   let everyNeuron = $state(false);
   let allScores = $state<Uint8Array[] | null>(null);
   let layerRows = $state<{ layer: number; rows: IndexRow[] } | null>(null);
@@ -73,19 +79,23 @@
       { mark: "−", markLabel: (row[5] & FLAG_MINUS_WRITES) ? "Minus pole writes" : "Minus pole", text: writesMark((row[5] & FLAG_MINUS_WRITES) !== 0) + row[3], conf: row[7] / 100 },
     ],
     tags: [
+      ...((row[5] & FLAG_IMAGE) ? [{ label: "Images" }] : []),
+      ...((row[5] & FLAG_AUDIO) ? [{ label: "Sound" }] : []),
       ...((row[5] & FLAG_PREDICTS) ? [{ label: "Predicts" }] : []),
       ...((row[5] & FLAG_SUPPRESSES) ? [{ label: "Suppresses" }] : []),
       ...((row[5] & FLAG_DETECTOR) ? [{ label: "One token" }] : []),
     ],
     flags: row[5],
   })));
+  // A head row's labels and confidences by field; each model's cards show the two that held up blind.
+  const HEAD_FIELDS = { fires: [3, 6, "Fires when"], attends: [4, 7, "Attends to"], writes: [5, 8, "Writes"] } as const;
   const headCards = $derived(layerHeads.map((row): StripCard => ({
     key: row[1],
     id: headId(row[0], row[1]),
-    lines: [
-      { mark: "attends", markLabel: "Attends to", text: row[4], conf: row[7] / 100 },
-      { mark: "writes", markLabel: "Writes", text: row[5], conf: row[8] / 100 },
-    ],
+    lines: model.headCard.map((field) => {
+      const [text, conf, label] = HEAD_FIELDS[field];
+      return { mark: field, markLabel: label, text: row[text] as string, conf: (row[conf] as number) / 100 };
+    }),
     tags: rolesOf(row[9]).slice(0, 2).map((role) => ({ label: role.short, color: role.color })),
     flags: row[9],
   })));
@@ -95,32 +105,45 @@
     { value: "predicts", label: "Predictors", test: (card) => (card.flags & FLAG_PREDICTS) !== 0 },
     { value: "suppresses", label: "Suppressors", test: (card) => (card.flags & FLAG_SUPPRESSES) !== 0 },
     { value: "detector", label: "One-token", test: (card) => (card.flags & FLAG_DETECTOR) !== 0 },
+    ...(model.media.length ? [
+      { value: "image", label: "Images", test: (card: StripCard) => (card.flags & FLAG_IMAGE) !== 0 },
+      { value: "audio", label: "Sound", test: (card: StripCard) => (card.flags & FLAG_AUDIO) !== 0 },
+      { value: "crossmodal", label: "Text and media", test: (card: StripCard) => (card.flags & FLAG_CROSSMODAL) !== 0 },
+    ] : []),
   ]);
-  const headFilters: StripFilter[] = [
-    { value: "all", label: `All ${HEADS}` },
-    ...ROLES.filter((role) => [ROLE_INDUCTION, ROLE_DUPLICATE, ROLE_NEXT, ROLE_COPY].includes(role.bit))
+  const headFilters = $derived<StripFilter[]>([
+    { value: "all", label: `All ${model.heads}` },
+    ...ROLES.filter((role) => [ROLE_INDUCTION, ROLE_DUPLICATE, ROLE_NEXT, ROLE_COPY, ROLE_CARRIES, ROLE_NAMES].includes(role.bit))
       .map((role) => ({ value: String(role.bit), label: role.short, test: (card: StripCard) => (card.flags & role.bit) !== 0 })),
-  ];
+  ]);
+  const layerGlobal = $derived(index?.layerMeta[layer]?.global ?? model.globalLayers.includes(layer));
+  // Query heads that share the selected head's key-value head (Gemma 4's global layers share one among all 16).
+  const groupSize = $derived(headDetail ? layerHeads.filter((row) => row[2] === headDetail.kv).length : 1);
 
-  // ---------- URL state: /neuron-lens?layer=8&neuron=344, ?layer=20&head=17
+  // ---------- URL state: /neuron-lens?layer=8&neuron=344, ?layer=20&head=17, ?model=gemma-4-12b&layer=14&neuron=8313
 
   function readUrl() {
     const params = new URLSearchParams(window.location.search);
+    const id = params.get("model");
+    const m = MODELS[isModelId(id) ? id : DEFAULT_MODEL];
     const L = Number(params.get("layer"));
     const n = params.get("neuron");
     const h = params.get("head");
-    const validHead = h !== null && /^\d{1,2}$/.test(h) && Number(h) < HEADS;
+    const validHead = h !== null && /^\d{1,2}$/.test(h) && Number(h) < m.heads;
+    const unit = (validHead || params.get("unit") === "heads" ? "heads" : "neurons") as Unit;
     return {
-      layer: params.has("layer") && Number.isInteger(L) && L >= 0 && L < LAYERS ? L : validHead ? 20 : 8,
-      neuron: n !== null && /^\d{1,5}$/.test(n) && Number(n) < MLP ? Number(n) : null,
+      model: m.id,
+      layer: params.has("layer") && Number.isInteger(L) && L >= 0 && L < m.layers ? L : m.start[unit],
+      neuron: n !== null && /^\d{1,5}$/.test(n) && Number(n) < m.mlp ? Number(n) : null,
       head: validHead ? Number(h) : null,
-      unit: (validHead || params.get("unit") === "heads" ? "heads" : "neurons") as Unit,
+      unit,
       all: params.get("all") === "1",
     };
   }
 
   function urlFor(u: Unit, L: number, key: number | null): string {
-    const params = new URLSearchParams({ layer: String(L) });
+    const params = new URLSearchParams(modelId === DEFAULT_MODEL ? {} : { model: modelId });
+    params.set("layer", String(L));
     if (u === "heads") {
       if (key !== null) params.set("head", String(key));
       else params.set("unit", "heads");
@@ -139,37 +162,42 @@
 
   // ---------- loading
 
+  // Every load checks on arrival that the model and layer it was for are still the ones shown.
+  const current = (m: ModelId, L: number) => modelId === m && layer === L;
+
   async function ensureHeads(L: number) {
+    const m = modelId;
     failed = false;
     try {
-      if (!headRows) headRows = await loadHeadIndex();
+      if (!headRows) { const rows = await loadHeadIndex(m); if (modelId === m) headRows = rows; }
       if (headLayer?.layer !== L) {
-        const heads = await loadHeadLayer(L);
-        if (layer === L) headLayer = { layer: L, heads };
+        const heads = await loadHeadLayer(m, L);
+        if (current(m, L)) headLayer = { layer: L, heads };
       }
     } catch {
-      if (layer === L) failed = true;
+      if (current(m, L)) failed = true;
     }
   }
 
   async function ensureNeurons(L: number) {
+    const m = modelId;
     failed = false;
     try {
       if (everyNeuron) {
-        if (!allScores) loadScores().then((scores) => { allScores = scores; }).catch(() => undefined);
+        if (!allScores) loadScores(m).then((scores) => { if (modelId === m) allScores = scores; }).catch(() => undefined);
         if (layerRows?.layer !== L) {
-          const rows = await loadLayerIndex(L);
-          if (layer === L) layerRows = { layer: L, rows };
+          const rows = await loadLayerIndex(m, L);
+          if (current(m, L)) layerRows = { layer: L, rows };
         }
       }
       const n = neuron ?? neuronRows[0]?.[1];
       if (n === undefined || n === null) return;
       const chunk = chunkOf(n, chunkSize);
       if (neuronChunk?.layer === L && neuronChunk.chunk === chunk) return;
-      const neurons = await loadNeuronChunk(L, chunk);
-      if (layer === L) neuronChunk = { layer: L, chunk, neurons };
+      const neurons = await loadNeuronChunk(m, L, chunk);
+      if (current(m, L)) neuronChunk = { layer: L, chunk, neurons };
     } catch {
-      if (layer === L) failed = true;
+      if (current(m, L)) failed = true;
     }
   }
 
@@ -190,8 +218,10 @@
     const rows = peekCache[L];
     if (rows) return rows[n] ?? null;
     if (!peekRequested.has(L)) {
+      const m = modelId;
       peekRequested.add(L);
-      loadLayerIndex(L).then((file) => {
+      loadLayerIndex(m, L).then((file) => {
+        if (modelId !== m) return;
         const byNeuron: IndexRow[] = [];
         for (const row of file) byNeuron[row[1]] = row;
         peekCache = { ...peekCache, [L]: byNeuron };
@@ -201,6 +231,48 @@
   }
 
   // ---------- navigation
+
+  /** Switch the catalog: everything loaded for the other model is dropped, and its own index loads. */
+  function loadModel(next: ModelId) {
+    modelId = next;
+    index = null;
+    headRows = null;
+    allScores = null;
+    layerRows = null;
+    neuronChunk = null;
+    headLayer = null;
+    highlight = { neurons: new Set(), heads: new Set() };
+    roleFocus = null;
+    peekCache = {};
+    peekRequested.clear();
+    neuronCount = 0;
+    headCount = 0;
+    setTermsModel(next);
+    loadIndex(next).then((loaded) => {
+      if (modelId !== next) return;
+      index = loaded;
+      countUp();
+      // A neuron named in the URL that isn't among the easiest opens in the All list.
+      if (unit === "neurons" && neuron !== null && !everyNeuron && !loaded.neurons.some((row) => row[0] === layer && row[1] === neuron)) {
+        everyNeuron = true;
+        writeUrl(false);
+        void ensureNeurons(layer);
+      }
+    }).catch(() => { if (modelId === next) failed = true; });
+    // Heads are few: their index loads up front, for search and the Heads view.
+    loadHeadIndex(next).then((rows) => { if (modelId === next) headRows = rows; }).catch(() => undefined);
+  }
+
+  function setModel(next: ModelId) {
+    if (next === modelId) return;
+    loadModel(next);
+    layer = MODELS[next].start[unit];
+    neuron = null;
+    head = null;
+    everyNeuron = false;
+    writeUrl(true);
+    void ensure(layer);
+  }
 
   function setUnit(next: Unit) {
     if (unit === next) return;
@@ -267,14 +339,16 @@
   }
 
   function countUp() {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) { neuronCount = TOTAL_NEURONS; headCount = TOTAL_HEADS; return; }
+    const [neurons, heads] = [totalNeurons, totalHeads];
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) { neuronCount = neurons; headCount = heads; return; }
     const steps = [0.02, 0.09, 0.22, 0.41, 0.63, 0.82, 0.94, 1];
-    steps.forEach((share, i) => setTimeout(() => { neuronCount = Math.round(TOTAL_NEURONS * share); headCount = Math.round(TOTAL_HEADS * share); }, 160 * (i + 1)));
+    steps.forEach((share, i) => setTimeout(() => { neuronCount = Math.round(neurons * share); headCount = Math.round(heads * share); }, 160 * (i + 1)));
   }
 
   function applyUrl() {
     const state = readUrl();
     unit = state.unit;
+    if (state.model !== modelId || !index) loadModel(state.model);
     layer = state.layer;
     neuron = state.neuron;
     head = state.head;
@@ -286,18 +360,6 @@
     mounted = true;
     restoreTranslate();
     applyUrl();
-    loadIndex().then((loaded) => {
-      index = loaded;
-      countUp();
-      // A neuron named in the URL that isn't among the easiest opens in the All list.
-      if (unit === "neurons" && neuron !== null && !everyNeuron && !loaded.neurons.some((row) => row[0] === layer && row[1] === neuron)) {
-        everyNeuron = true;
-        writeUrl(false);
-        void ensureNeurons(layer);
-      }
-    }).catch(() => { failed = true; });
-    // Heads are few: their index loads up front, for search and the Heads view.
-    loadHeadIndex().then((rows) => { headRows = rows; }).catch(() => undefined);
     window.addEventListener("popstate", applyUrl);
     document.addEventListener("keydown", pageKeys);
     const header = document.querySelector<HTMLElement>(".page-header");
@@ -311,26 +373,33 @@
   });
 
   const selectedId = $derived(selected === null ? null : unit === "heads" ? headId(layer, selected) : neuronId(layer, selected));
-  const pageTitle = $derived(selectedId && (unit === "heads" ? head : neuron) !== null ? `${selectedId} · Neuron Lens · Drowse` : "Neuron Lens · Drowse");
+  const pageTitle = $derived(selectedId && (unit === "heads" ? head : neuron) !== null ? `${selectedId} · ${model.name} · Neuron Lens · Drowse` : "Neuron Lens · Drowse");
   const loadingDetail = $derived(unit === "heads" ? !headDetail : !neuronDetail);
 </script>
 
 <TabIdentity title={pageTitle} />
 {#if mounted}<PwaUpdatePrompt />{/if}
 
-<div class="lens-page" style:--neuron-tint={depthColor(layer)} style:--neuron-sticky-top={`${headerHeight + 8}px`}>
+<div class="lens-page" style:--neuron-tint={depthColor(model, layer)} style:--neuron-sticky-top={`${headerHeight + 8}px`}>
   <a class="skip-link" href="#explore">Skip to the explorer</a>
   <PageHeader current="neurons" />
   <main id="neuron-lens-main" use:tokenHover>
     <section class="intro" aria-labelledby="lens-title">
       <h1 id="lens-title">Neuron Lens</h1>
-      <p class="lede">What the neurons and attention heads inside Qwen3-8B respond to and what they make the model say, read from their weights and from 15 million tokens of text.</p>
+      <div class="segmented model-switch" role="group" aria-label="Model">
+        {#each MODEL_ORDER as id (id)}
+          <button type="button" aria-pressed={modelId === id} onclick={() => setModel(id)}>{MODELS[id].name}{#if MODELS[id].media.length}<small>+ images, sound</small>{/if}</button>
+        {/each}
+      </div>
+      {#key modelId}<p class="lede">{model.lede}</p>{/key}
       <dl class="figures">
         <div><dt>Neurons</dt><dd><MorphText text={format(neuronCount)} duration={200} /></dd></div>
         <div><dt>Attention heads</dt><dd><MorphText text={format(headCount)} duration={200} /></dd></div>
-        <div><dt>Layers</dt><dd>{LAYERS}</dd></div>
+        <div><dt>Layers</dt><dd><MorphText text={String(model.layers)} duration={200} /></dd></div>
       </dl>
-      <NeuronSearch {index} heads={headRows} anyNeuron onopen={(u, L, k) => void openUnit(u, L, k, true)} onmatches={(keys) => (highlight = keys)} examples={["owl", "Bible", "she", "money", "圣经", "L20h17"]} />
+      {#key modelId}
+        <NeuronSearch {model} {index} heads={headRows} anyNeuron onopen={(u, L, k) => void openUnit(u, L, k, true)} onmatches={(keys) => (highlight = keys)} examples={model.examples} />
+      {/key}
     </section>
 
     <section class="explorer" id="explore" aria-label="Explorer" bind:this={explorer} tabindex="-1">
@@ -343,15 +412,15 @@
           {#if unit === "neurons"}
             <div class="segmented" role="group" aria-label="Neurons listed">
               <button type="button" aria-pressed={!everyNeuron} onclick={() => setEveryNeuron(false)}>Easiest <span>{index ? format(index.neurons.length) : ""}</span></button>
-              <button type="button" aria-pressed={everyNeuron} onclick={() => setEveryNeuron(true)}>All <span>{format(TOTAL_NEURONS)}</span></button>
+              <button type="button" aria-pressed={everyNeuron} onclick={() => setEveryNeuron(true)}>All <span>{format(totalNeurons)}</span></button>
             </div>
           {/if}
         </div>
         {#if unit === "heads"}
-          <HeadGrid rows={headRows} {layer} head={selected} highlight={highlight.heads} role={roleFocus} onlayer={setLayer} onhead={(L, h) => void openUnit("heads", L, h, false, false)} onrole={(bit) => (roleFocus = bit)} />
+          <HeadGrid {model} rows={headRows} {layer} head={selected} highlight={highlight.heads} role={roleFocus} onlayer={setLayer} onhead={(L, h) => void openUnit("heads", L, h, false, false)} onrole={(bit) => (roleFocus = bit)} />
         {:else}
-          <DepthRibbon {index} {layer} neuron={selected} highlight={highlight.neurons} scores={everyNeuron ? allScores : null} {peek} onlayer={setLayer} onneuron={(L, n) => void openUnit("neurons", L, n)} />
-          {#if everyNeuron}<p class="ribbon-caption">Each column holds a layer's 12,288 neurons in order. Brighter cells are easier to read.</p>{/if}
+          <DepthRibbon {model} {index} {layer} neuron={selected} highlight={highlight.neurons} scores={everyNeuron ? allScores : null} {peek} onlayer={setLayer} onneuron={(L, n) => void openUnit("neurons", L, n)} />
+          {#if everyNeuron}<p class="ribbon-caption">Each column holds a layer's {format(model.mlp)} neurons in order. Brighter cells are easier to read.</p>{/if}
         {/if}
       </div>
 
@@ -359,16 +428,16 @@
         <p class="panel notice" role="alert">Unable to load the catalog. Check your connection and reload the page.</p>
       {:else}
         {#if unit === "heads"}
-          <LayerStrip {layer} unitName="heads" cards={headCards} filters={headFilters} {selected} onselect={(h) => void openUnit("heads", layer, h)} hrefFor={(h) => urlFor("heads", layer, h)} />
+          <LayerStrip {model} {layer} global={layerGlobal} unitName="heads" cards={headCards} filters={headFilters} {selected} onselect={(h) => void openUnit("heads", layer, h)} hrefFor={(h) => urlFor("heads", layer, h)} />
         {:else}
-          <LayerStrip {layer} unitName="neurons" cards={neuronCards} filters={neuronFilters} {selected} onselect={(n) => void openUnit("neurons", layer, n)} hrefFor={(n) => urlFor("neurons", layer, n)} />
+          <LayerStrip {model} {layer} global={layerGlobal} unitName="neurons" cards={neuronCards} filters={neuronFilters} {selected} onselect={(n) => void openUnit("neurons", layer, n)} hrefFor={(n) => urlFor("neurons", layer, n)} />
         {/if}
 
         <div class="panel stage" bind:this={stage}>
           {#if unit === "heads" && headDetail}
-            <HeadDetail head={headDetail} {layer} onstep={step} position={Math.max(0, position)} total={order.length} hrefFor={stepHref} />
+            <HeadDetail {model} head={headDetail} {layer} labelled={index?.labelled ?? true} {groupSize} onstep={step} position={Math.max(0, position)} total={order.length} hrefFor={stepHref} />
           {:else if unit === "neurons" && neuronDetail}
-            <NeuronDetail neuron={neuronDetail} {layer} onstep={step} position={Math.max(0, position)} total={order.length} hrefFor={stepHref} />
+            <NeuronDetail {model} neuron={neuronDetail} {layer} labelled={index?.labelled ?? true} docBlock={index?.docBlock} onstep={step} position={Math.max(0, position)} total={order.length} hrefFor={stepHref} />
           {:else if failed}
             <div class="notice" role="alert">
               <p>Unable to load layer {layer}. Check your connection and try again.</p>
@@ -384,6 +453,7 @@
         </div>
       {/if}
     </section>
+    {#if model.media.length}<MediaCredits {model} />{/if}
   </main>
   <PageFooter current="neurons" />
 </div>
@@ -421,6 +491,10 @@
 
   .intro { display: grid; justify-items: start; gap: var(--space-5); padding-block-start: var(--space-2xl); }
   h1 { margin: 0; color: var(--fg); font-family: var(--font-structure); font-weight: var(--weight-display); font-size: var(--text-explorer-title); line-height: 1.02; letter-spacing: -0.045em; text-wrap: balance; animation: rise-in 600ms var(--ease-enter) backwards; }
+  .model-switch { animation: rise-in 600ms var(--ease-enter) 40ms backwards; }
+  .segmented.model-switch button { min-height: 40px; padding-inline: var(--space-5); font-size: var(--text-md); }
+  .model-switch small { color: var(--fg-muted); font-size: var(--text-xs); font-weight: var(--weight-reading, 400); }
+  .segmented.model-switch button[aria-pressed="true"] small { color: color-mix(in srgb, var(--bg) 72%, var(--fg)); }
   .lede { max-width: 54ch; margin: 0; color: var(--fg-dim); font-size: var(--text-lg); line-height: 1.5; text-wrap: pretty; animation: rise-in 600ms var(--ease-enter) 80ms backwards; }
   @keyframes rise-in { from { opacity: 0; translate: 0 10px; } }
   .figures { display: flex; flex-wrap: wrap; gap: var(--space-4) var(--space-xl); margin: 0; animation: rise-in 600ms var(--ease-enter) 160ms backwards; }

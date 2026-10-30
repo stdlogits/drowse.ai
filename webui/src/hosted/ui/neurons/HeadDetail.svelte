@@ -8,12 +8,17 @@
   import Facts from "./Facts.svelte";
   import Token from "./Token.svelte";
   import {
-    LENSES, MIDDLE_CAUTION, PATTERN_NAMES, PATTERN_THRESHOLDS, bandOf, headBandNote, headId, headline, rolesOf,
-    type HeadDetail, type LensRead, type LensToken, type ReadColumn,
+    LENSES, PATTERN_NAMES, PATTERN_THRESHOLDS, describeRole, headId, headline, rolesOf,
+    type HeadDetail, type HeadMedia, type LensRead, type LensToken, type ReadColumn,
   } from "./data";
+  import { MODALITY_NAMES, bandOf, headBandNote, type Modality, type ModelInfo } from "./models";
 
-  let { head, layer, onstep, position, total, hrefFor }: {
+  let { model, head, layer, labelled = true, groupSize, onstep, position, total, hrefFor }: {
+    model: ModelInfo;
     head: HeadDetail;
+    labelled?: boolean;
+    /** Query heads that read this head's key-value head, itself included. */
+    groupSize: number;
     layer: number;
     onstep: (delta: -1 | 1) => void;
     position: number;
@@ -27,6 +32,10 @@
   const shown = $derived(new Set<ReadColumn>(["qk_S", ovFamily, `${ovFamily}_neg` as ReadColumn, "qk_self_S"]));
   const more = $derived(head.reads.filter((r) => !shown.has(r.col)));
   const roles = $derived(rolesOf(head.roles));
+  const band = $derived(bandOf(model, layer));
+  const stat = $derived(model.headTest);
+  const mediaEntries = $derived(Object.entries(head.media ?? {}) as [Modality, HeadMedia][]);
+  const fmt = (v: number | null, digits = 2) => (v === null ? "–" : v.toFixed(digits));
   const tests = $derived([
     ["OV·R predicts the next token", head.legible.ov_R],
     ["it promotes what it attends to", head.legible.ov_copy],
@@ -44,10 +53,11 @@
 </script>
 
 <section class="detail" aria-labelledby="unit-title" data-link-scope>
-  <DetailBar id={headId(layer, head.h)} unitName="head" caution={bandOf(layer) === "dark" ? MIDDLE_CAUTION : undefined} {onstep} {position} {total} {hrefFor}>
+  <DetailBar id={headId(layer, head.h)} unitName="head" caution={band.dark ? model.caution : undefined} cautionLabel={model.cautionLabel} {onstep} {position} {total} {hrefFor}>
     {#snippet tags()}
-      <span class="kv" data-help="The key-value head it shares with three other query heads">kv {head.kv}</span>
-      {#each roles as role (role.bit)}<span class="role" style:--role={role.color} data-help={role.describe}>{role.name}</span>{/each}
+      <span class="kv" data-help={groupSize > 1 ? `The key-value head it shares with ${groupSize - 1 === 1 ? "one other query head" : `${groupSize - 1} other query heads`}` : "Its own key-value head"}>kv {head.kv}</span>
+      {#if model.globalLayers.includes(layer)}<span class="kv" data-help="This layer attends over the whole text, with one key-value head whose keys are also its values; the others attend within the last 1,024 tokens">global</span>{/if}
+      {#each roles as role (role.bit)}<span class="role" style:--role={role.color} data-help={describeRole(role, model)}>{role.name}</span>{/each}
     {/snippet}
   </DetailBar>
 
@@ -62,7 +72,7 @@
         <LabelCell label={head.label.writes} confidence={head.label.wc} tokens={topOf(ovPrimary)} source={ovPrimary ? LENSES[ovPrimary.col].short : ""} sourceHelp={ovPrimary ? LENSES[ovPrimary.col].describe : ""} /></div>
     </div>
     {#if head.label.note}<p class="note"><LabelText text={head.label.note} interactive /></p>{/if}
-    <p class="credit">Labels by Claude Haiku 5.5, written from these reads, the attention pattern and the first firings below. Confidence is Haiku's own.</p>
+    {#if labelled}<p class="credit">Labels by Claude Haiku 5.5, written from these reads, the attention pattern and the first firings below. Confidence is Haiku's own. {model.labelChecks.heads}</p>{/if}
   </section>
 
   <div class="body">
@@ -80,8 +90,27 @@
           </div>
         {/each}
       </dl>
-      <p class="hint">{headBandNote(layer)} Ticks mark where the catalog names a pattern.</p>
+      <p class="hint">{headBandNote(model, layer)} Ticks mark where the catalog names a pattern.</p>
     </section>
+
+    {#if mediaEntries.length}
+      <section class="part">
+        <h3>In images and sound</h3>
+        <div class="media-grid">
+          {#each mediaEntries as [modality, m] (modality)}
+            {@const names = MODALITY_NAMES[modality]}
+            <dl class="scores media-scores" aria-label={names.title}>
+              <div class="media-title">{names.title}</div>
+              <div data-help={`Attention from the text after the ${names.noun} to its slots, as a multiple of an even spread over the keys`}><dt>Reads the {names.noun}</dt><dd>{fmt(m.read)}×</dd></div>
+              <div data-help={`From each slot of the ${names.noun}, attention to the other slots, and to its neighbours`}><dt>Looks within it</dt><dd>{fmt(m.within)}{#if m.nbr !== null}<span class="sub"> · neighbours {fmt(m.nbr)}</span>{/if}</dd></div>
+              <div class:on={(m.content ?? 0) > 3} data-help={`Zeroing the head, how much worse the model tells the ${names.noun}'s label from another's, as a z over 64 ${names.plural} (past 3 is notable)`}><dt>Carries its content</dt><dd>z {fmt(m.content, 1)}</dd></div>
+              <div class:on={m.writeQ !== null && m.writeQ <= 0.05} data-help={`At the word after the ${names.noun}, the right class's mean percentile among the classes in what the head writes (0.5 by chance), with its q over all heads`}><dt>Names it</dt><dd>{fmt(m.write)}{#if m.writeQ !== null}<span class="sub"> · q {m.writeQ < 0.001 ? "< 0.001" : fmt(m.writeQ, 3)}</span>{/if}</dd></div>
+            </dl>
+          {/each}
+        </div>
+        <p class="hint">From 64 images and 64 sounds, each followed by its label (findings §16). The model tells images apart far better than sounds, so the sound scores say little.</p>
+      </section>
+    {/if}
 
     <section class="part">
       <h3>Where it fires</h3>
@@ -117,7 +146,7 @@
           <div><dt>Attends to what it copies</dt><dd>{head.copy.qkOv >= 0 ? "+" : ""}{head.copy.qkOv.toFixed(2)}</dd></div>
         </dl>
         <p class="tests">
-          {#if tests.length}Tests that hold at its own top firings: {tests.map(([name, q]) => `${name} (q ${q < 0.001 ? "< 0.001" : q.toFixed(3)})`).join("; ")}.
+          {#if tests.length}Tests that hold at its own top firings: {tests.map(([name, q]) => `${name} (${stat} ${q < 0.001 ? "< 0.001" : q.toFixed(3)})`).join("; ")}{stat === "p" ? ", uncorrected: with 16 heads a layer, no test can pass a false-discovery correction" : ""}.
           {:else if head.dark}No test holds at its own top firings, and it has no token mode or pattern.
           {:else}No read holds at its own top firings{head.modes[0] >= 1 / 3 || head.modes[1] >= 1 / 3 ? ", but a third of its firings share a token" : ""}.{/if}
         </p>
@@ -185,5 +214,11 @@
   .scores dt { color: var(--fg-muted); font-size: var(--text-xs); }
   .scores dd { margin: 0; color: var(--fg); font-family: var(--font-mono); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
   .tests { margin: 0; color: var(--fg-dim); font-size: var(--text-sm); line-height: 1.55; }
+  .media-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: var(--space-4) var(--space-8); }
+  .media-scores { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3) var(--space-5); }
+  .media-title { grid-column: 1 / -1; color: var(--fg-dim); font-size: var(--text-sm); font-weight: var(--weight-structure); }
+  .media-scores .on dt { color: var(--fg); font-weight: var(--weight-structure); }
+  .media-scores .on dd { color: var(--neuron-tint-ink); }
+  .sub { color: var(--fg-muted); font-size: var(--text-xs); }
   @media (prefers-reduced-motion: reduce) { .summary, .body, .contexts > div { animation: none; } }
 </style>

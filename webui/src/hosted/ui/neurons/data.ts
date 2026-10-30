@@ -1,15 +1,11 @@
 // Data for the Neuron Lens explorer. The files are prebuilt by scripts/neurons/build-neuron-catalog.py
 // from the neuron-lens catalog and served as static JSON next to the page.
 
+import type { ModelId, ModelInfo, Modality } from "./models";
+
 export const DATA_BASE = "/neurons-data";
-export const LAYERS = 36;
-export const MLP = 12288;
-export const HEADS = 32;
-export const TOTAL_NEURONS = LAYERS * MLP;
-export const TOTAL_HEADS = LAYERS * HEADS;
 
 export type Unit = "neurons" | "heads";
-export type Band = "embed" | "early" | "crossover" | "concept" | "dark" | "predict" | "suppress";
 export type Trust = "primary" | "trusted" | "weak";
 export type NeuronColumn =
   | "read_S" | "read_S_z" | "read_R" | "read_R_z"
@@ -57,6 +53,27 @@ export interface Pole {
   detector: "token" | "next" | null;
   shape?: { kurtPct: number; skew: number; kind: "predicts" | "suppresses" | null };
   score: number;
+  /** Gemma 4: what the pole responds to in images and sound. */
+  media?: Partial<Record<Modality, PoleMedia>>;
+}
+/** Optimised read (findings §14): a patch or 40 ms frame that raises the pole, and its held-out gain over the base activation. */
+export interface Optimised { gain: number | null; lens: number | null; base: number | null; png?: string; wave?: string }
+export interface PoleMedia {
+  /** The label whose documents it fires on most, its z over all documents, and its held-out AUROC. */
+  label: string;
+  z: number | null;
+  auroc: number | null;
+  /** Past the shuffled-label null and in the top 5 of both halves of the documents. */
+  reliable: boolean;
+  labels: string[];
+  /** Top documents: [document, mean activation]. */
+  top: [number, number][];
+  /** The media R-lens read of its write: what it makes the model say in image or audio contexts. */
+  write: LensToken[];
+  writeZ: LensToken[];
+  /** The label's rank on the text side (findings §15): its words fire it, the text S-lens reads it, the text R-lens writes it. */
+  ranks: [number | null, number | null, number | null] | null;
+  opt?: Optimised;
 }
 export interface NeuronDetail { n: number; poles: [Pole, Pole] }
 
@@ -85,7 +102,11 @@ export interface HeadDetail {
   modes: [number, number];
   dark: boolean;
   score: number;
+  /** Gemma 4: the head in image and audio contexts (findings §16). */
+  media?: Record<Modality, HeadMedia>;
 }
+/** Reading the media against an even spread; attention within it and to its neighbours; zeroing it, the z of what it costs the right label; the right class's mean percentile in its output, and that score's q. */
+export interface HeadMedia { read: number | null; within: number | null; nbr: number | null; content: number | null; write: number | null; writeQ: number | null }
 
 /** [layer, neuron, title of the + pole, title of the − pole, score, flags, each title's confidence 0–100]. */
 export type IndexRow = [number, number, string, string, number, number, number, number];
@@ -96,20 +117,29 @@ export const FLAG_SUPPRESSES = 4;
 export const FLAG_PLUS_WRITES = 8;
 export const FLAG_MINUS_WRITES = 16;
 export const FLAG_DARK = 32;
+/** A pole with a reliable image or sound label, or one that holds a concept across text and media. */
+export const FLAG_IMAGE = 64;
+export const FLAG_AUDIO = 128;
+export const FLAG_CROSSMODAL = 256;
 
 /** [layer, head, kv head, fires, attends, writes, their confidences 0–100, roles, score, pattern]. */
 export type HeadRow = [number, number, number, string, string, string, number, number, number, number, number, HeadDetail["pattern"]];
 
 export interface LayerMeta {
   layer: number;
-  band: Band;
+  band: string;
   missing?: boolean;
+  global?: boolean;
   count?: number;
-  stats?: { silent: number; detector: number; legible: number; dark: number };
+  stats?: { silent: number; detector: number; legible: number; dark: number; image?: number; audio?: number };
 }
 
 export interface CatalogIndex {
   model: string;
+  id: ModelId;
+  docBlock: number;
+  labelled: boolean;
+  media: Modality[];
   layers: number;
   neuronsPerLayer: number;
   headsPerLayer: number;
@@ -119,10 +149,15 @@ export interface CatalogIndex {
   neurons: IndexRow[];
 }
 
-/** Word -> [ref, side, weight]: side 0/1 is a curated neuron's + or − pole (ref indexes CatalogIndex.neurons), 2 a head (ref = layer × 32 + head). */
+/** Word -> [ref, side, weight]: side 0/1 is a curated neuron's + or − pole (ref indexes CatalogIndex.neurons), 2 a head (ref = layer × heads + head). */
 export interface SearchFile { forms: Record<string, [number, 0 | 1 | 2, number][]>; display: Record<string, string> }
 /** Token or quoted term -> [English, romanization, ISO 639-1 language]. */
 export type Terms = Record<string, [string, string, string]>;
+/** An image or sound: its collection, labels, caption, link; a translated caption ([English, language]); and,
+ * when this site can show it, where scripts/neurons/media.py packed it ([pack, offset, length]). */
+export interface MediaDoc { s: string; l: string[]; c: string; u: string; en?: [string, string]; h?: [number, number, number] }
+/** Per modality and collection: the name, licence and credit of each one whose images or sounds are shown. */
+export type MediaCredits = Record<Modality, Record<string, { name: string; license: string; credit: string }>>;
 
 // ---------- loading
 
@@ -139,7 +174,7 @@ function memo<T>(key: string, make: () => Promise<T>): Promise<T> {
   return pending;
 }
 
-const load = <T>(name: string) => memo(name, () => fetch(`${DATA_BASE}/${name}`).then((response) => {
+const load = <T>(model: ModelId, name: string) => memo(`${model}/${name}`, () => fetch(`${DATA_BASE}/${model}/${name}`).then((response) => {
   if (!response.ok) throw new Error(`${name}: ${response.status}`);
   return response.json() as Promise<T>;
 }));
@@ -149,42 +184,49 @@ const pad = (value: number, width = 2) => String(value).padStart(width, "0");
 type RawToken = number | [number, number, number];
 type RawRead = [number, RawToken[]];
 type RawPairs = [number, number][];
-type RawPole = Omit<Pole, "reads" | "drivers"> & { reads: RawRead[]; drivers: RawPairs };
+type RawMedia = Omit<PoleMedia, "write" | "writeZ"> & { write: RawToken[]; writeZ: RawToken[] };
+type RawPole = Omit<Pole, "reads" | "drivers" | "media"> & { reads: RawRead[]; drivers: RawPairs; media?: Partial<Record<Modality, RawMedia>> };
 type RawHead = Omit<HeadDetail, "reads" | "drivers" | "keys" | "outRz"> & { reads: RawRead[]; drivers: RawPairs; keys: RawPairs; outRz: RawToken[] };
 
 // Details name tokens by id; vocab.json decodes every id once.
-const loadVocab = () => load<string[]>("vocab.json");
+const loadVocab = (model: ModelId) => load<string[]>(model, "vocab.json");
 const tokensOf = (raw: RawToken[], vocab: string[]): LensToken[] =>
   raw.map((t) => (typeof t === "number" ? [vocab[t] ?? "", 1, 0] : [vocab[t[0]] ?? "", t[1], t[2]]));
 const readsOf = (header: ReadInfo[], raw: RawRead[], vocab: string[]): LensRead[] =>
   header.map((info, i) => ({ ...info, pct: raw[i]?.[0] ?? 0, tokens: tokensOf(raw[i]?.[1] ?? [], vocab) }));
 const pairsOf = (raw: RawPairs, vocab: string[]): [string, number][] => raw.map(([t, value]) => [vocab[t] ?? "", value]);
+function mediaOf(raw: RawPole["media"], vocab: string[]): Pole["media"] {
+  if (!raw) return undefined;
+  const out: Partial<Record<Modality, PoleMedia>> = {};
+  for (const [modality, m] of Object.entries(raw) as [Modality, RawMedia][]) out[modality] = { ...m, write: tokensOf(m.write, vocab), writeZ: tokensOf(m.writeZ, vocab) };
+  return out;
+}
 
-export const loadIndex = () => load<CatalogIndex>("index.json");
-export const loadSearch = () => load<SearchFile>("search.json");
-export const loadTerms = () => load<Terms>("terms.json");
+export const loadIndex = (model: ModelId) => load<CatalogIndex>(model, "index.json");
+export const loadSearch = (model: ModelId) => load<SearchFile>(model, "search.json");
+export const loadTerms = (model: ModelId) => load<Terms>(model, "terms.json");
 /** Every neuron of a layer: [neuron, title +, title −, score, flags, confidence +, confidence −]. */
-export const loadLayerIndex = (layer: number) => memo(`rows:${layer}`, async () => {
-  const file = await load<{ layer: number; neurons: [number, string, string, number, number, number, number][] }>(`neurons/L${pad(layer)}/index.json`);
+export const loadLayerIndex = (model: ModelId, layer: number) => memo(`${model}/rows:${layer}`, async () => {
+  const file = await load<{ layer: number; neurons: [number, string, string, number, number, number, number][] }>(model, `neurons/L${pad(layer)}/index.json`);
   return file.neurons.map((row): IndexRow => [layer, ...row]);
 });
-/** Per layer, a base64 string of 12,288 bytes: each neuron's readability, 0–255. */
-export const loadScores = () => memo("scores", async () => (await load<{ layers: string[] }>("scores.json")).layers.map(decodeScores));
-export const loadHeadIndex = () => memo("heads", async () => (await load<{ heads: HeadRow[] }>("heads/index.json")).heads);
+/** Per layer, a base64 string of one byte per neuron: its readability, 0–255. */
+export const loadScores = (model: ModelId) => memo(`${model}/scores`, async () => (await load<{ layers: string[] }>(model, "scores.json")).layers.map(decodeScores));
+export const loadHeadIndex = (model: ModelId) => memo(`${model}/heads`, async () => (await load<{ heads: HeadRow[] }>(model, "heads/index.json")).heads);
 
 export const chunkOf = (neuron: number, size: number) => Math.floor(neuron / size);
-export const loadNeuronChunk = (layer: number, chunk: number) => memo(`chunk:${layer}:${chunk}`, async () => {
+export const loadNeuronChunk = (model: ModelId, layer: number, chunk: number) => memo(`${model}/chunk:${layer}:${chunk}`, async () => {
   const [file, vocab] = await Promise.all([
-    load<{ layer: number; reads: ReadInfo[]; neurons: { n: number; poles: [RawPole, RawPole] }[] }>(`neurons/L${pad(layer)}/c${pad(chunk, 3)}.json`),
-    loadVocab(),
+    load<{ layer: number; reads: ReadInfo[]; neurons: { n: number; poles: [RawPole, RawPole] }[] }>(model, `neurons/L${pad(layer)}/c${pad(chunk, 3)}.json`),
+    loadVocab(model),
   ]);
   return file.neurons.map((neuron): NeuronDetail => ({
     n: neuron.n,
-    poles: neuron.poles.map((pole) => ({ ...pole, reads: readsOf(file.reads, pole.reads, vocab), drivers: pairsOf(pole.drivers, vocab) })) as [Pole, Pole],
+    poles: neuron.poles.map((pole) => ({ ...pole, reads: readsOf(file.reads, pole.reads, vocab), drivers: pairsOf(pole.drivers, vocab), media: mediaOf(pole.media, vocab) })) as [Pole, Pole],
   }));
 });
-export const loadHeadLayer = (layer: number) => memo(`heads:${layer}`, async () => {
-  const [file, vocab] = await Promise.all([load<{ layer: number; reads: ReadInfo[]; heads: RawHead[] }>(`heads/L${pad(layer)}.json`), loadVocab()]);
+export const loadHeadLayer = (model: ModelId, layer: number) => memo(`${model}/heads:${layer}`, async () => {
+  const [file, vocab] = await Promise.all([load<{ layer: number; reads: ReadInfo[]; heads: RawHead[] }>(model, `heads/L${pad(layer)}.json`), loadVocab(model)]);
   return file.heads.map((head): HeadDetail => ({
     ...head,
     reads: readsOf(file.reads, head.reads, vocab),
@@ -193,77 +235,45 @@ export const loadHeadLayer = (layer: number) => memo(`heads:${layer}`, async () 
     keys: pairsOf(head.keys, vocab),
   }));
 });
+/** An image or sound by number, from its block of the media document files. */
+export async function loadMediaDoc(model: ModelId, modality: Modality, doc: number, block: number): Promise<MediaDoc | null> {
+  const file = await load<{ first: number; docs: MediaDoc[] }>(model, `media/${modality}/d${pad(Math.floor(doc / block), 3)}.json`);
+  return file.docs[doc - file.first] ?? null;
+}
+export const loadMediaCredits = (model: ModelId) => load<MediaCredits>(model, "media/credits.json");
+
+// Shown images and sounds live end to end in pack files, one fetched by an HTTP range. A server that
+// ignores the range sends the whole pack, which is then kept and sliced.
+const wholePacks = new Map<string, Promise<ArrayBuffer>>();
+const mediaUrls = new Map<string, Promise<string>>();
+export function mediaUrl(model: ModelId, modality: Modality, [pack, offset, length]: [number, number, number]): Promise<string> {
+  const url = `${DATA_BASE}/${model}/media/${modality}/p${pad(pack, 3)}.bin`;
+  const key = `${url}#${offset}`;
+  let pending = mediaUrls.get(key);
+  if (!pending) {
+    const type = modality === "image" ? "image/webp" : "audio/mpeg";
+    pending = (async () => {
+      const whole = wholePacks.get(url);
+      if (!whole) {
+        const response = await fetch(url, { headers: { Range: `bytes=${offset}-${offset + length - 1}` } });
+        if (!response.ok) throw new Error(`${url}: ${response.status}`);
+        if (response.status === 206) return URL.createObjectURL(new Blob([await response.arrayBuffer()], { type }));
+        wholePacks.set(url, response.arrayBuffer());
+      }
+      const buffer = await wholePacks.get(url)!;
+      return URL.createObjectURL(new Blob([buffer.slice(offset, offset + length)], { type }));
+    })();
+    pending.catch(() => mediaUrls.delete(key));
+    mediaUrls.set(key, pending);
+  }
+  return pending;
+}
 
 function decodeScores(encoded: string): Uint8Array {
   const binary = atob(encoded);
   const out = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
   return out;
-}
-
-// ---------- depth bands: what the catalog's checks say to trust at each depth (neuron-lens findings §6, §7)
-
-export interface BandInfo { name: string; range: string; summary: string; reading: string }
-
-export const BANDS: Record<Band, BandInfo> = {
-  embed: {
-    name: "Token layer", range: "L0",
-    summary: "Neurons here mostly respond to one literal input token.",
-    reading: "The input-token read (in·S) holds for 78% of poles at their own top firings. Writes are weak this early.",
-  },
-  early: {
-    name: "Early layers", range: "L1–L7",
-    summary: "Neurons respond to input tokens a few positions back, and often write back what they detect.",
-    reading: "Trust the input-token reads (in·S). From about L4, the write read (out·R) predicts what pushing the neuron does.",
-  },
-  crossover: {
-    name: "Crossover", range: "L8",
-    summary: "The layer where the input-token reads and the concept reads both carry signal.",
-    reading: "Both lenses read both sides here, and agree most. Tokens they share are the strongest evidence.",
-  },
-  concept: {
-    name: "Concept layers", range: "L9–L12",
-    summary: "Neurons respond to concepts more than to literal tokens.",
-    reading: "The concept read (in·R) takes over from in·S, which has gone to noise. out·R predicts steering, rarely the next word.",
-  },
-  dark: {
-    name: "Middle layers", range: "L13–L20",
-    summary: "82% of poles here pass no test of a weight-only read. They respond to context.",
-    reading: "Read the examples and the words that set it off in real text first. Lens reads are only a cross-check here.",
-  },
-  predict: {
-    name: "Prediction layers", range: "L21–L31",
-    summary: "Neurons fire just before a predictable word, and many write that word.",
-    reading: "in·R is often the word about to come next. From about L23 the write read names the next word.",
-  },
-  suppress: {
-    name: "Suppression layers", range: "L32–L35",
-    summary: "Many neurons push down the word the model is about to say, to calibrate it.",
-    reading: "Read both sides' writes: a side whose top tokens are the next word holds it back.",
-  },
-};
-
-/** Shown beside layers 13–20, where every weight-only lens is at its weakest (findings §7, §12). */
-export const MIDDLE_CAUTION = "Weight-only reads are least reliable at layers 13–20: 82% of neuron poles and three quarters of heads here pass none of the tests at their own top firings. Most respond to context built up over many words rather than to one word. Trust the examples first.";
-
-export const BAND_ORDER: Band[] = ["embed", "early", "crossover", "concept", "dark", "predict", "suppress"];
-
-export function bandOf(layer: number): Band {
-  if (layer === 0) return "embed";
-  if (layer <= 7) return "early";
-  if (layer === 8) return "crossover";
-  if (layer <= 12) return "concept";
-  if (layer <= 20) return "dark";
-  if (layer <= 31) return "predict";
-  return "suppress";
-}
-
-/** Heads by depth (findings §11, §12). */
-export function headBandNote(layer: number): string {
-  if (layer <= 8) return "Early heads often attend by token identity or position. Their writes read best through the S-lens (OV·S).";
-  if (layer <= 20) return "Three quarters of mid-network heads pass no test of a weight-only read. Where a head looks says little about what it writes.";
-  if (layer <= 27) return "Late heads start writing the token that follows what they attend to.";
-  return "27% of these heads write the next token as their OV read predicts, and many attend to the class they copy or suppress.";
 }
 
 // ---------- lenses
@@ -295,14 +305,6 @@ export const LENSES: Record<ReadColumn, LensInfo> = {
   qk_self_S_z: { short: "QK self z", name: "Distinctively seeks itself", side: "input", describe: "The same, scored against the layer's other heads." },
 };
 
-/** How to phrase a neuron's output side at this depth: steering before L21, prediction after. */
-export function writeVerb(layer: number): string {
-  if (layer < 4) return "Writes (weak this early)";
-  if (layer < 21) return "When pushed, it promotes";
-  if (layer < 32) return "It predicts the next word";
-  return "It predicts or holds back the next word";
-}
-
 // ---------- heads
 
 export const ROLE_INDUCTION = 1;
@@ -313,6 +315,8 @@ export const ROLE_SINK = 16;
 export const ROLE_NEXT = 32;
 export const ROLE_COPY = 64;
 export const ROLE_DARK = 128;
+export const ROLE_CARRIES = 256;
+export const ROLE_NAMES = 512;
 
 export interface RoleInfo { bit: number; name: string; short: string; color: string; describe: string }
 
@@ -325,9 +329,14 @@ export const ROLES: RoleInfo[] = [
   { bit: ROLE_NEXT, name: "Next-token writer", short: "Next token", color: "var(--accent-green)", describe: "At its own top firings, the attended token's OV column promotes the token that follows (q < 0.05)." },
   { bit: ROLE_COPY, name: "Copier", short: "Copies", color: "var(--neuron-late)", describe: "At its own top firings, it promotes the token it attends to (q < 0.05)." },
   { bit: ROLE_SINK, name: "Sink head", short: "Sink", color: "var(--fg-muted)", describe: "Puts over 90% of its attention on the first position, a resting place: it acts where it leaves the sink." },
+  { bit: ROLE_CARRIES, name: "Carries the image", short: "Carries image", color: "var(--neuron-deep)", describe: "Zeroing it makes the model worse at telling an image's label from another's (z past 3 over 64 images)." },
+  { bit: ROLE_NAMES, name: "Names the image", short: "Names image", color: "color-mix(in oklch, var(--accent-green) 55%, var(--neuron-late))", describe: "Its output, after an image, promotes that image's class over the others (q < 0.05)." },
 ];
 
 export const rolesOf = (bits: number) => ROLES.filter((role) => (bits & role.bit) !== 0);
+/** A role's description for this model: Gemma 4's OV tests are uncorrected p-values (16 heads a layer give a false-discovery test no power). */
+export const describeRole = (role: RoleInfo, model: ModelInfo) =>
+  model.headTest === "p" && (role.bit === ROLE_NEXT || role.bit === ROLE_COPY) ? role.describe.replace("q < 0.05", "p < 0.05, uncorrected") : role.describe;
 export const primaryRole = (bits: number) => ROLES.find((role) => (bits & role.bit) !== 0) ?? null;
 export const PATTERN_NAMES = ["Sink", "Previous", "Self", "Induction", "Duplicate"] as const;
 /** The thresholds the catalog names a pattern at. */
@@ -341,19 +350,19 @@ export const headId = (layer: number, head: number) => `L${layer}·h${head}`;
 export type UnitRef = { unit: "neurons"; layer: number; index: number } | { unit: "heads"; layer: number; index: number };
 
 /** "L8 344", "l8/n344", "8.344", "L8·n344" -> a neuron; "L20h17", "L20 h17", "20.h17" -> a head. */
-export function parseRef(query: string): UnitRef | null {
+export function parseRef(query: string, model: ModelInfo): UnitRef | null {
   const text = query.trim();
   const head = text.match(/^l?\s*(\d{1,2})\s*[\s./·:,_-]?\s*h\s*(\d{1,2})$/i);
   if (head) {
     const layer = Number(head[1]);
     const index = Number(head[2]);
-    return layer < LAYERS && index < HEADS ? { unit: "heads", layer, index } : null;
+    return layer < model.layers && index < model.heads ? { unit: "heads", layer, index } : null;
   }
   const neuron = text.match(/^l?\s*(\d{1,2})\s*[\s./·:,_-]\s*n?\s*(\d{1,5})$/i);
   if (!neuron) return null;
   const layer = Number(neuron[1]);
   const index = Number(neuron[2]);
-  return layer < LAYERS && index < MLP ? { unit: "neurons", layer, index } : null;
+  return layer < model.layers && index < model.mlp ? { unit: "neurons", layer, index } : null;
 }
 
 // ---------- tokens and text
@@ -404,11 +413,6 @@ export function segments(text: string): Segment[] {
   }
   if (last < text.length) out.push({ text: text.slice(last), mark: null });
   return out;
-}
-
-/** Layer colour on the violet → cyan depth ramp, as used in the neuron-lens animation. */
-export function depthColor(layer: number): string {
-  return `color-mix(in oklch, var(--neuron-deep) ${Math.round(100 - (layer / 35) * 100)}%, var(--neuron-late))`;
 }
 
 export function percent(value: number | undefined, digits = 0): string {

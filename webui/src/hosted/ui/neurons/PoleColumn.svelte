@@ -4,17 +4,24 @@
   import Expander from "./Expander.svelte";
   import Context from "./Context.svelte";
   import Facts from "./Facts.svelte";
-  import { LENSES, bandOf, writeVerb, type LensRead, type NeuronSide, type Pole } from "./data";
+  import MediaEvidence from "./MediaEvidence.svelte";
+  import { LENSES, type LensRead, type NeuronSide, type Pole, type PoleMedia } from "./data";
+  import { MODALITY_NAMES, bandOf, writeVerb, type Modality, type ModelInfo } from "./models";
 
-  // The evidence behind one pole's labels: its examples, the reads that hold at its depth, and the rest on request.
-  let { pole, layer, clearer }: { pole: Pole; layer: number; clearer: boolean } = $props();
+  // The evidence behind one pole's labels: its examples, the reads that hold at its depth, its images
+  // and sounds (Gemma 4), and the rest on request.
+  let { model, pole, layer, clearer, docBlock = 2048 }: { model: ModelInfo; pole: Pole; layer: number; clearer: boolean; docBlock?: number } = $props();
 
   const trusted = (side: "input" | "output") => pole.reads.filter((read) => LENSES[read.col].side === side && read.trust !== "weak");
   const inputs = $derived(trusted("input"));
   const outputs = $derived(trusted("output"));
   const others = $derived(pole.reads.filter((read) => read.trust === "weak"));
   // In the middle layers the examples and exact drivers describe a neuron better than any lens, so they come first.
-  const middle = $derived(bandOf(layer) === "dark");
+  const middle = $derived(!!bandOf(model, layer).dark);
+  // Reliable media labels lead; the others wait under More evidence.
+  const mediaEntries = $derived(Object.entries(pole.media ?? {}) as [Modality, PoleMedia][]);
+  const reliableMedia = $derived(mediaEntries.filter(([, m]) => m.reliable));
+  const weakMedia = $derived(mediaEntries.filter(([, m]) => !m.reliable));
   const contexts = $derived(pole.contexts);
   const sideNames: Record<NeuronSide, string> = { read_S: "in·S", read_R: "in·R", write_S: "out·S", write_R: "out·R" };
   const holds = $derived((Object.entries(pole.legible) as [NeuronSide, number][]).filter(([, q]) => q <= 0.05));
@@ -35,6 +42,7 @@
     {#if pole.silent}<span class="badge">Silent</span>{/if}
     {#if pole.detector === "token"}<span class="badge">Fires on one token</span>{/if}
     {#if pole.detector === "next"}<span class="badge">Fires before one token</span>{/if}
+    {#each reliableMedia as [modality] (modality)}<span class="badge tint">{modality === "image" ? "Images" : "Sound"}</span>{/each}
     {#if pole.shape?.kind === "predicts"}<span class="badge">Predicts the next word</span>{/if}
     {#if pole.shape?.kind === "suppresses"}<span class="badge">Holds back the next word</span>{/if}
   </header>
@@ -59,6 +67,9 @@
     {/if}
   {/snippet}
 
+  <!-- A reliable image or sound label is measured on held-out documents, not read from weights: it leads. -->
+  {#each reliableMedia as [modality, media] (modality)}<MediaEvidence {model} {modality} {media} {docBlock} />{/each}
+
   {#if middle}{@render examples()}{@render drivers()}{/if}
 
   {#if inputs[0]}
@@ -70,12 +81,13 @@
 
   {#if outputs[0]}
     <section class="part">
-      <h4>{writeVerb(layer)}</h4>
+      <h4>{writeVerb(model, layer)}</h4>
       <LensReadView read={outputs[0]} compact />
     </section>
   {/if}
 
   {#if !middle}{@render examples()}{/if}
+
 
   <Expander label="More evidence" openLabel="Less evidence">
     <div class="more">
@@ -107,6 +119,10 @@
       {#if contexts.length > 3}
         <div class="contexts">{#each contexts.slice(3) as context, i (i)}<Context {context} />{/each}</div>
       {/if}
+
+      {#each weakMedia as [modality, media] (modality)}
+        <p class="tests">{MODALITY_NAMES[modality].title}, it fires most on <b>{media.label}</b>, but the label isn't reliable (AUROC {media.auroc?.toFixed(2) ?? "–"}).</p>
+      {/each}
 
       {#if others.length}
         <Expander label={`${others.length} weaker reads at this depth`} openLabel="Hide weaker reads">
@@ -146,6 +162,7 @@
   .dot.shared { background: var(--neuron-tint); }
   .chips { display: flex; flex-wrap: wrap; gap: var(--space-1); min-width: 0; }
   .tests { margin: 0; color: var(--fg-dim); font-size: var(--text-sm); line-height: 1.55; }
+  .tests b { color: var(--fg); font-weight: var(--weight-structure); }
   .others { display: grid; }
   @media (prefers-reduced-motion: reduce) { .contexts > div { animation: none; } }
 </style>

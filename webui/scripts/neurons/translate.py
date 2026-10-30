@@ -3,7 +3,7 @@
     uv run --no-project --with anthropic --with pyarrow --with torch --with tokenizers python -I \
         scripts/neurons/translate.py <stage> --catalog <catalog dir> --tokenizer <tokenizer.json> --work <dir>
 
-Two kinds of item, collected from the neuron-lens catalog:
+Three kinds of item, collected from a neuron-lens catalog (Qwen3-8B or Gemma 4 12B):
 
 - ``term``: every kept vocabulary token that is (or may be) a word from another language, and every
   non-Latin-script run quoted in a Haiku label. Translated to a short English meaning, a
@@ -11,6 +11,12 @@ Two kinds of item, collected from the neuron-lens catalog:
 - ``context``: every top-firing snippet (neurons' and heads' ``acts.contexts``) with non-ASCII
   letters or several non-English function words. Translated whole, keeping the ``⟦ ⟧`` and
   ``⟪ ⟫`` markers on the matching English words.
+- ``caption``: Gemma 4's image and sound captions and transcripts in other languages (FLEURS, MLS).
+
+``--parts`` picks what ``collect`` gathers (``vocab,contexts,captions,labels``), so a model's labels
+can be translated in their own run once they exist; ``--known`` names other runs' ``items.jsonl``,
+whose items are skipped. Each run keeps its state in its own ``--work`` folder, by default
+``webui/.neuron-lens/<model>``.
 
 Stages (state under ``--work``; nothing is sent to the API without an explicit stage):
 
@@ -25,7 +31,7 @@ Stages (state under ``--work``; nothing is sent to the API without an explicit s
   with non-Latin letters and no translation, plus the failed requests' items), in smaller requests
   that ask for every item. Haiku at low effort sometimes answers a long list only in part.
 
-The builder (``build-neuron-catalog.py``) reads ``translations.jsonl``. The API key comes from
+The builder (``build-neuron-catalog.py``) reads every run's ``translations.jsonl``. The API key comes from
 ``ANTHROPIC_API_KEY`` or ``~/.config/anthropic/api_key``.
 """
 import argparse
@@ -41,14 +47,14 @@ from pathlib import Path
 
 MODEL = "claude-haiku-5-5"
 PRICE = {"input": 0.05, "output": 0.25, "cache_read": 0.005, "cache_write": 0.0625}  # $/MTok, Haiku 5.5 batch prices
-PER_REQUEST = {"term": 120, "context": 24}
-FILL_PER_REQUEST = {"term": 40, "context": 8}
-MAX_TOKENS = {"term": 6000, "context": 6000}
+PER_REQUEST = {"term": 120, "context": 24, "caption": 24}
+FILL_PER_REQUEST = {"term": 40, "context": 8, "caption": 8}
+MAX_TOKENS = {"term": 6000, "context": 6000, "caption": 6000}
 BATCH_REQUESTS = 50_000
 MIN_COUNT = 5  # the catalog's kept tokens: seen 5+ times in the activation corpora
 
 TERM_SYSTEM = """You translate pieces of text into English for an interpretability explorer. Each \
-item is a token from Qwen3's tokenizer or a short term quoted in a description of a neuron. A \
+item is a token from a language model's tokenizer or a short term quoted in a description of a neuron. A \
 leading space marks the start of a word, and tokens are often pieces of longer words.
 
 Return an entry only for items written in a language other than English. Skip English words and \
@@ -81,6 +87,17 @@ For each entry:
 one. Keep English words, code, numbers, names and ⏎ as they are. Keep each marker exactly once, \
 around the English word or words carrying the marked token's meaning; if the marked token is a \
 grammatical piece with no English counterpart, mark the word it attaches to. Add no explanations."""
+
+
+CAPTION_SYSTEM = """You translate captions and transcripts of images and sounds into English for an \
+interpretability explorer. Transcripts of speech may lack punctuation and capitals.
+Return an entry only for items in a language other than English. Skip items that are already English.
+For each entry:
+- i: the item's number.
+- lang: the ISO 639-1 code of its language.
+- en: a faithful English translation of the whole item. Keep names and numbers as they are. Add no \
+explanations."""
+SYSTEM = {"term": TERM_SYSTEM, "context": CONTEXT_SYSTEM, "caption": CAPTION_SYSTEM}
 
 
 def schema(kind: str) -> dict:
@@ -154,18 +171,23 @@ def collect(args) -> None:
     from tokenizers import Tokenizer
 
     cat = Path(args.catalog)
-    tok = Tokenizer.from_file(args.tokenizer)
-    counts = torch.load(args.token_counts, weights_only=False)["counts"]
-    terms, contexts = set(), set()
-    for i in range(min(tok.get_vocab_size(), len(counts))):
-        if counts[i] < MIN_COUNT:
-            continue
-        s = tok.decode([i])
-        if "�" in s or not s.strip():
-            continue
-        if foreign_term(s) or maybe_foreign_word(s):
-            terms.add(s.strip())
-    print("vocabulary terms", len(terms), flush=True)
+    parts = set(args.parts.split(","))
+    known = set()
+    for path in filter(None, args.known.split(",")):
+        known |= {(r["k"], r["s"]) for r in map(json.loads, open(path, encoding="utf-8"))}
+    terms, contexts, captions = set(), set(), set()
+    if "vocab" in parts:
+        tok = Tokenizer.from_file(args.tokenizer)
+        counts = torch.load(args.token_counts, weights_only=False)["counts"]
+        for i in range(min(tok.get_vocab_size(), len(counts))):
+            if counts[i] < MIN_COUNT:
+                continue
+            s = tok.decode([i])
+            if "�" in s or not s.strip():
+                continue
+            if foreign_term(s) or maybe_foreign_word(s):
+                terms.add(s.strip())
+        print("vocabulary terms", len(terms), flush=True)
 
     def add_contexts(col):
         for s in col:
@@ -173,26 +195,39 @@ def collect(args) -> None:
                 if c and foreign_context(c):
                     contexts.add(c)
 
-    for L in range(36):
-        add_contexts(pq.read_table(cat / "neurons" / "acts" / f"L{L:02d}.parquet", columns=["contexts"]).column(0).to_pylist())
-        lab = pq.read_table(cat / "neurons" / "labels" / f"L{L:02d}.parquet", columns=["fires", "writes", "note"])
-        for c in lab.column_names:
-            for text in lab.column(c).to_pylist():
-                terms |= label_runs(text)
-        print(f"L{L:02d}: terms {len(terms)} contexts {len(contexts)}", flush=True)
-    add_contexts(pq.read_table(cat / "heads" / "acts.parquet", columns=["contexts"]).column(0).to_pylist())
-    lab = pq.read_table(cat / "heads" / "labels.parquet", columns=["fires", "attends", "writes", "note"])
-    for c in lab.column_names:
-        for text in lab.column(c).to_pylist():
-            terms |= label_runs(text)
+    def add_label_runs(path, columns):
+        if path.exists():
+            lab = pq.read_table(path, columns=columns)
+            for c in lab.column_names:
+                for text in lab.column(c).to_pylist():
+                    terms.update(label_runs(text))
+
+    for path in sorted((cat / "neurons" / "acts").glob("L*.parquet")):
+        if "contexts" in parts:
+            add_contexts(pq.read_table(path, columns=["contexts"]).column(0).to_pylist())
+        if "labels" in parts:
+            add_label_runs(cat / "neurons" / "labels" / path.name, ["fires", "writes", "note"])
+        print(f"{path.stem}: terms {len(terms)} contexts {len(contexts)}", flush=True)
+    if "contexts" in parts:
+        add_contexts(pq.read_table(cat / "heads" / "acts.parquet", columns=["contexts"]).column(0).to_pylist())
+    if "labels" in parts:
+        add_label_runs(cat / "heads" / "labels.parquet", ["fires", "attends", "writes", "note"])
+    if "captions" in parts:
+        for path in sorted((cat / "media").glob("*_docs.parquet")):
+            for c in pq.read_table(path, columns=["caption"]).column(0).to_pylist():
+                if c and foreign_context(c):
+                    captions.add(c)
+        print("captions", len(captions), flush=True)
 
     work = Path(args.work)
     work.mkdir(parents=True, exist_ok=True)
+    kinds = [(k, sorted(x for x in items if (k, x) not in known)) for k, items in (("term", terms), ("context", contexts), ("caption", captions))]
     with open(work / "items.jsonl", "w", encoding="utf-8") as f:
-        for kind, items in (("term", terms), ("context", contexts)):
-            for s in sorted(items):
+        for kind, items in kinds:
+            for s in items:
                 f.write(json.dumps({"k": kind, "s": s}, ensure_ascii=False) + "\n")
-    print(f"items: {len(terms)} terms, {len(contexts)} contexts -> {sum(-(-len(x) // PER_REQUEST[k]) for k, x in (('term', terms), ('context', contexts)))} requests")
+    print("items: " + ", ".join(f"{len(x)} {k}s" for k, x in kinds)
+          + f" -> {sum(-(-len(x) // PER_REQUEST[k]) for k, x in kinds)} requests")
 
 
 # ---------- requests
@@ -222,7 +257,7 @@ def request(cid: str, items: list[str]) -> dict:
         "model": MODEL, "max_tokens": MAX_TOKENS[kind],
         "thinking": {"type": "disabled"},  # allowed at effort high or below
         "output_config": {"effort": "low", "format": {"type": "json_schema", "schema": schema(kind)}},
-        "system": [{"type": "text", "text": TERM_SYSTEM if kind == "term" else CONTEXT_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+        "system": [{"type": "text", "text": SYSTEM[kind], "cache_control": {"type": "ephemeral"}}],
         "messages": [{"role": "user", "content": f"{note}Items, one JSON object a line:\n{listing}"}],
     }}
 
@@ -391,7 +426,7 @@ def fill(args) -> None:
     work = Path(args.work)
     c, allc, s = client(), plan(work), load_state(work)
     have = {(r["k"], r["s"]) for r in map(json.loads, open(work / "translations.jsonl", encoding="utf-8"))}
-    todo = {"term": {}, "context": {}}  # dicts as ordered sets
+    todo = {"term": {}, "context": {}, "caption": {}}  # dicts as ordered sets
     for cid in s["failed"]:
         todo[cid.split("-")[0]].update(dict.fromkeys(allc[cid]))
     for cid, items in allc.items():
@@ -421,12 +456,18 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("stage", choices=("collect", "pilot", "submit", "status", "results", "retry", "fill"))
     ap.add_argument("--catalog", default=str(Path.home() / "Work/neuron-lens/data/catalog/qwen3-8b"))
-    ap.add_argument("--token-counts", default=str(Path.home() / "Work/neuron-lens/data/token_counts.pt"))
+    ap.add_argument("--token-counts", help="default: neuron-lens's token counts for the catalog's model")
     ap.add_argument("--tokenizer")
-    ap.add_argument("--work", default=str(Path(__file__).resolve().parents[2] / ".neuron-lens"))
+    ap.add_argument("--work", help="default: webui/.neuron-lens/<model>")
+    ap.add_argument("--parts", default="vocab,contexts,captions,labels")
+    ap.add_argument("--known", default="", help="comma-separated items.jsonl of earlier runs, whose items are skipped")
     ap.add_argument("--n", type=int, default=12, help="pilot requests per kind")
     ap.add_argument("--cap", type=float, default=25.0, help="refuse to submit if the pilot projects more dollars")
     args = ap.parse_args()
+    model = Path(args.catalog).name
+    args.work = args.work or str(Path(__file__).resolve().parents[2] / ".neuron-lens" / model)
+    data = Path(args.catalog).parents[1]
+    args.token_counts = args.token_counts or str(data / ("token_counts.pt" if model == "qwen3-8b" else f"token_counts-{model}.pt"))
     {"collect": collect, "pilot": pilot, "submit": submit, "status": status, "results": results, "retry": retry, "fill": fill}[args.stage](args)
 
 

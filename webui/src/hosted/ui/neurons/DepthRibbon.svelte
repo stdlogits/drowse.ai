@@ -1,12 +1,14 @@
 <script lang="ts">
   import LabelText from "./LabelText.svelte";
-  import { BANDS, BAND_ORDER, bandOf, depthColor, neuronId, type CatalogIndex, type IndexRow } from "./data";
+  import { neuronId, type CatalogIndex, type IndexRow } from "./data";
+  import { bandOf, bandRange, depthColor, type ModelInfo } from "./models";
 
-  let { index, layer, neuron, highlight, onlayer, onneuron, scores = null, peek }: {
+  let { model, index, layer, neuron, highlight, onlayer, onneuron, scores = null, peek }: {
+    model: ModelInfo;
     index: CatalogIndex | null;
     /** All mode: a neuron's row if its layer's index has loaded (asking loads it). */
     peek?: (layer: number, neuron: number) => IndexRow | null;
-    /** With the "All" toggle on: each layer's 12,288 readability bytes, drawn as a texture instead of dots. */
+    /** With the "All" toggle on: each layer's readability bytes, one per neuron, drawn as a texture instead of dots. */
     scores?: Uint8Array[] | null;
     layer: number;
     neuron: number | null;
@@ -19,10 +21,12 @@
   const COL = 32;
   const GAP = 8;
   const TOP = 20;
-  const W = COL * 36;
+  const W = $derived(COL * model.layers);
+  const LAYER_LIST = $derived(Array.from({ length: model.layers }, (_, L) => L));
+  const last = $derived(model.layers - 1);
 
   const columns = $derived.by(() => {
-    const byLayer: IndexRow[][] = Array.from({ length: 36 }, () => []);
+    const byLayer: IndexRow[][] = Array.from({ length: model.layers }, () => []);
     for (const row of index?.neurons ?? []) byLayer[row[0]]?.push(row);
     for (const rows of byLayer) rows.sort((a, b) => b[4] - a[4]);
     return byLayer;
@@ -39,15 +43,11 @@
       return scores.length ? lo / scores.length : 0;
     };
   });
-  const bands = $derived(BAND_ORDER.map((band) => {
-    const layers = Array.from({ length: 36 }, (_, L) => L).filter((L) => bandOf(L) === band);
-    return { band, from: layers[0], to: layers[layers.length - 1] };
-  }));
-
-  // ---------- all-neurons texture: each column is a 24 × 512 grid, one cell per neuron in index order,
-  // so a cell's position is its neuron number and the easiest neurons show as bright points.
+  // ---------- all-neurons texture: each column is a grid 24 cells wide (512 tall for Qwen3-8B's 12,288
+  // neurons, 640 for Gemma 4's 15,360), one cell per neuron in index order, so a cell's position is its
+  // neuron number and the easiest neurons show as bright points.
   const GRID_W = 24;
-  const GRID_H = 512;
+  const GRID_H = $derived(Math.ceil(model.mlp / GRID_W));
   const everyNeuron = $derived(!!scores);
   const order = $derived(scores ? scores.map((layerScores) => Array.from({ length: layerScores.length }, (_, n) => n)) : null);
   let texture = $state("");
@@ -71,8 +71,8 @@
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     const image = ctx.createImageData(W, GRID_H);
-    for (let L = 0; L < 36; L += 1) {
-      const t = L / 35;
+    for (let L = 0; L < model.layers; L += 1) {
+      const t = L / last;
       const color = deep.map((c, i) => Math.round(c + (late[i] - c) * t));
       const x0 = L * COL + (COL - GRID_W) / 2;
       const layerOrder = order[L];
@@ -111,7 +111,8 @@
 
   let svg: SVGSVGElement | undefined = $state();
   let scroller: HTMLDivElement | undefined = $state();
-  let drawn = $state(W);
+  // The drawn width, measured once mounted; until then, about the viewBox.
+  let drawn = $state(1200);
   // The viewBox scales with the drawn width; scale labels back so they keep a fixed on-screen size.
   const k = $derived(W / Math.max(drawn, 1));
   let hover = $state<{ layer: number; row: IndexRow | null; x: number; y: number; flip: boolean } | null>(null);
@@ -130,7 +131,7 @@
     const box = svg.getBoundingClientRect();
     const x = ((event.clientX - box.left) / box.width) * W;
     const y = ((event.clientY - box.top) / box.height) * H;
-    const L = Math.max(0, Math.min(35, Math.floor(x / COL)));
+    const L = Math.max(0, Math.min(last, Math.floor(x / COL)));
     const slot = Math.round((y - TOP - GAP / 2) / GAP);
     const rows = columns[L];
     let row: IndexRow | null = null;
@@ -185,29 +186,29 @@
     let next = layer;
     if (event.key in steps) next = layer + steps[event.key];
     else if (event.key === "Home") next = 0;
-    else if (event.key === "End") next = 35;
+    else if (event.key === "End") next = last;
     else if (event.key === "Enter" && columns[layer][0]) { event.preventDefault(); onneuron(layer, columns[layer][0][1]); return; }
     else return;
     event.preventDefault();
-    onlayer(Math.max(0, Math.min(35, next)), true);
+    onlayer(Math.max(0, Math.min(last, next)), true);
   }
 
   // On narrow screens the explorer scrolls sideways; keep the selected layer in view.
   $effect(() => {
     void layer;
     if (!scroller || scroller.scrollWidth <= scroller.clientWidth + 1) return;
-    const colWidth = scroller.scrollWidth / 36;
+    const colWidth = scroller.scrollWidth / model.layers;
     const target = layer * colWidth - scroller.clientWidth / 2 + colWidth / 2;
     scroller.scrollTo({ left: target, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   });
 
-  const valueText = $derived(`Layer ${layer}, ${BANDS[bandOf(layer)].name}, ${columns[layer]?.length ?? 0} neurons`);
+  const valueText = $derived(`Layer ${layer}, ${bandOf(model, layer).name}, ${columns[layer]?.length ?? 0} neurons`);
   const tipRow = $derived(hover?.row ?? null);
   const peeked = $derived(everyNeuron && hoverNeuron !== null && hover ? peek?.(hover.layer, hoverNeuron) ?? null : tipRow);
   const selectedSlot = $derived(neuron === null ? -1 : columns[layer]?.findIndex((row) => row[1] === neuron) ?? -1);
 </script>
 
-<div class="ribbon" class:ready={!!index} class:scrubbing={dragging} class:hovering={!!hover}>
+<div class="ribbon" class:ready={!!index} class:scrubbing={dragging} class:hovering={!!hover} style:--scan={`${W - 6}px`}>
   <div class="scroller" bind:this={scroller}>
     <svg
       bind:this={svg}
@@ -217,7 +218,7 @@
       tabindex="0"
       aria-label="Layer"
       aria-valuemin={0}
-      aria-valuemax={35}
+      aria-valuemax={last}
       aria-valuenow={layer}
       aria-valuetext={valueText}
       aria-describedby="ribbon-help"
@@ -228,8 +229,8 @@
       onpointerleave={() => { if (!dragging) hover = null; }}
       onkeydown={key}
     >
-      {#each Array.from({ length: 36 }, (_, L) => L) as L}
-        <rect class="col-bg" class:active={L === layer} class:hot={hover?.layer === L && L !== layer} x={L * COL + 3} y={TOP - 12} width={COL - 6} height={ROWS * GAP + 16} rx="10" style:--c={depthColor(L)} />
+      {#each LAYER_LIST as L}
+        <rect class="col-bg" class:active={L === layer} class:hot={hover?.layer === L && L !== layer} x={L * COL + 3} y={TOP - 12} width={COL - 6} height={ROWS * GAP + 16} rx="10" style:--c={depthColor(model, L)} />
       {/each}
 
       {#if index}<rect class="scan" x="0" y={TOP - 12} width="6" height={ROWS * GAP + 16} rx="3" />{/if}
@@ -237,13 +238,13 @@
       {#if everyNeuron && texture}
         <image class="texture" href={texture} x="0" y={TOP} width={W} height={ROWS * GAP} preserveAspectRatio="none" />
         {#if selectedCell}
-          {#key `${layer}:${neuron}`}<circle class="ripple" cx={selectedCell.x} cy={selectedCell.y} r="6" style:--c={depthColor(layer)} />{/key}
+          {#key `${layer}:${neuron}`}<circle class="ripple" cx={selectedCell.x} cy={selectedCell.y} r="6" style:--c={depthColor(model, layer)} />{/key}
           <circle class="cell-ring" cx={selectedCell.x} cy={selectedCell.y} r="4" />
         {/if}
       {/if}
 
       {#each everyNeuron ? [] : columns as rows, L}
-        <g class="col" class:active={L === layer} style:--c={depthColor(L)} style:--L={L} style:--s={lift(L)}>
+        <g class="col" class:active={L === layer} style:--c={depthColor(model, L)} style:--L={L} style:--s={lift(L)}>
           {#each rows as row, slot (row[1])}
             {@const key = `${L}:${row[1]}`}
             {@const rank = rankOf(row[4])}
@@ -265,17 +266,17 @@
 
       {#if selectedSlot >= 0 && !everyNeuron}
         {#key `${layer}:${neuron}`}
-          <circle class="ripple" cx={layer * COL + COL / 2} cy={TOP + selectedSlot * GAP + GAP / 2} r="6" style:--c={depthColor(layer)} />
+          <circle class="ripple" cx={layer * COL + COL / 2} cy={TOP + selectedSlot * GAP + GAP / 2} r="6" style:--c={depthColor(model, layer)} />
         {/key}
       {/if}
 
-      {#each Array.from({ length: 36 }, (_, L) => L) as L}
+      {#each LAYER_LIST as L}
         <text class="layer-num" class:active={L === layer} x={L * COL + COL / 2} y={PLOT + 18} font-size={11 * Math.min(k, 1.25)}>{L}</text>
       {/each}
-      {#each bands as b}
-        <g class="band" class:active={bandOf(layer) === b.band}>
-          <line x1={b.from * COL + 6} x2={(b.to + 1) * COL - 6} y1={PLOT + 32} y2={PLOT + 32} />
-          <text x={((b.from + b.to + 1) * COL) / 2} y={PLOT + 52} font-size={12 * Math.min(k, 1.25)}>{b.to - b.from >= 2 ? BANDS[b.band].name.replace(" layers", "") : BANDS[b.band].range}</text>
+      {#each model.bands as b (b.key)}
+        <g class="band" class:active={bandOf(model, layer) === b}>
+          <line x1={b.first * COL + 6} x2={(b.last + 1) * COL - 6} y1={PLOT + 32} y2={PLOT + 32} />
+          <text x={((b.first + b.last + 1) * COL) / 2} y={PLOT + 52} font-size={12 * Math.min(k, 1.25)}>{b.last - b.first >= 2 ? b.name.replace(" layers", "") : bandRange(b)}</text>
         </g>
       {/each}
     </svg>
@@ -288,7 +289,7 @@
             <span class="tip-over"><em>+</em><LabelText text={peeked[2]} /></span>
             <span class="tip-over"><em>−</em><LabelText text={peeked[3]} /></span>
           {:else}
-            <span class="tip-line">{BANDS[bandOf(hover.layer)].name}</span>
+            <span class="tip-line">{bandOf(model, hover.layer).name}</span>
           {/if}
           <span class="tip-hint">Click to open</span>
         {:else if tipRow}
@@ -298,7 +299,7 @@
           <span class="tip-hint">Click to open</span>
         {:else}
           <strong>Layer {hover.layer}</strong>
-          <span class="tip-line">{BANDS[bandOf(hover.layer)].name}</span>
+          <span class="tip-line">{bandOf(model, hover.layer).name}</span>
         {/if}
       </div>
     {/if}
@@ -321,7 +322,7 @@
   @keyframes scan {
     0% { opacity: 0.9; transform: translateX(0); }
     90% { opacity: 0.9; }
-    100% { opacity: 0; transform: translateX(1146px); }
+    100% { opacity: 0; transform: translateX(var(--scan)); }
   }
 
   .dot {

@@ -1,9 +1,11 @@
 <script lang="ts">
   import LabelText from "./LabelText.svelte";
-  import { BANDS, BAND_ORDER, HEADS, LAYERS, ROLES, bandOf, depthColor, headId, primaryRole, rolesOf, type HeadRow } from "./data";
+  import { ROLES, describeRole, headId, primaryRole, rolesOf, type HeadRow } from "./data";
+  import { bandOf, bandRange, depthColor, type ModelInfo } from "./models";
 
   // Every attention head as one cell, layers left to right and heads top to bottom, coloured by its role.
-  let { rows, layer, head, highlight, role = null, onlayer, onhead, onrole }: {
+  let { model, rows, layer, head, highlight, role = null, onlayer, onhead, onrole }: {
+    model: ModelInfo;
     rows: HeadRow[] | null;
     layer: number;
     head: number | null;
@@ -17,11 +19,16 @@
   } = $props();
 
   const COL = 32;
-  const PITCH = 10;
   const TOP = 20;
-  const W = COL * LAYERS;
-  const PLOT = TOP + HEADS * PITCH;
-  const H = PLOT + 64;
+  const LAYERS = $derived(model.layers);
+  const HEADS = $derived(model.heads);
+  // Fewer heads a layer get taller cells: Qwen3-8B's 32 at 10 units, Gemma 4's 16 at 16.
+  const PITCH = $derived(Math.max(10, Math.round(256 / model.heads)));
+  const W = $derived(COL * LAYERS);
+  const PLOT = $derived(TOP + HEADS * PITCH);
+  const H = $derived(PLOT + 64);
+  const LAYER_LIST = $derived(Array.from({ length: LAYERS }, (_, L) => L));
+  const global = $derived(new Set(model.globalLayers));
 
   const byKey = $derived(new Map((rows ?? []).map((row) => [`${row[0]}:${row[1]}`, row])));
   const rankOf = $derived.by(() => {
@@ -32,15 +39,13 @@
       return scores.length ? lo / scores.length : 0;
     };
   });
-  const counts = $derived(ROLES.map((r) => (rows ?? []).filter((row) => (row[9] & r.bit) !== 0).length));
-  const bands = $derived(BAND_ORDER.map((band) => {
-    const layers = Array.from({ length: LAYERS }, (_, L) => L).filter((L) => bandOf(L) === band);
-    return { band, from: layers[0], to: layers[layers.length - 1] };
-  }));
+  // The legend lists the roles this model's heads have.
+  const legend = $derived(ROLES.map((r) => ({ role: r, count: (rows ?? []).filter((row) => (row[9] & r.bit) !== 0).length })).filter((x) => x.count > 0));
 
   let svg: SVGSVGElement | undefined = $state();
   let scroller: HTMLDivElement | undefined = $state();
-  let drawn = $state(W);
+  // The drawn width, measured once mounted; until then, about the viewBox.
+  let drawn = $state(1200);
   const k = $derived(W / Math.max(drawn, 1));
   let hover = $state<{ layer: number; head: number | null; x: number; y: number; flip: boolean } | null>(null);
   const tipRow = $derived(hover && hover.head !== null ? byKey.get(`${hover.layer}:${hover.head}`) ?? null : null);
@@ -92,7 +97,7 @@
     scroller.scrollTo({ left: layer * colWidth - scroller.clientWidth / 2 + colWidth / 2, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   });
 
-  const valueText = $derived(`Layer ${layer}${head !== null ? `, head ${head}` : ""}, ${BANDS[bandOf(layer)].name}`);
+  const valueText = $derived(`Layer ${layer}${head !== null ? `, head ${head}` : ""}, ${bandOf(model, layer).name}${global.has(layer) ? ", a global layer" : ""}`);
 </script>
 
 <div class="grid-wrap" class:ready={!!rows}>
@@ -114,8 +119,8 @@
       onpointerleave={() => (hover = null)}
       onkeydown={key}
     >
-      {#each Array.from({ length: LAYERS }, (_, L) => L) as L}
-        <rect class="col-bg" class:active={L === layer} class:hot={hover?.layer === L && L !== layer} x={L * COL + 2} y={TOP - 8} width={COL - 4} height={HEADS * PITCH + 12} rx="8" style:--c={depthColor(L)} />
+      {#each LAYER_LIST as L}
+        <rect class="col-bg" class:active={L === layer} class:hot={hover?.layer === L && L !== layer} x={L * COL + 2} y={TOP - 8} width={COL - 4} height={HEADS * PITCH + 12} rx="8" style:--c={depthColor(model, L)} />
       {/each}
       {#each rows ?? [] as row (`${row[0]}:${row[1]}`)}
         {@const r = primaryRole(row[9] & ~128)}
@@ -132,18 +137,19 @@
           width={COL - 10}
           height={PITCH - 2}
           rx="2"
-          style:--c={r ? r.color : depthColor(row[0])}
+          style:--c={r ? r.color : depthColor(model, row[0])}
           style:--o={r ? 0.55 + 0.45 * rankOf(row[10]) : 0.16 + 0.5 * rankOf(row[10])}
           style:--L={row[0]}
         />
       {/each}
-      {#each Array.from({ length: LAYERS }, (_, L) => L) as L}
+      {#each LAYER_LIST as L}
         <text class="layer-num" class:active={L === layer} x={L * COL + COL / 2} y={PLOT + 18} font-size={11 * Math.min(k, 1.25)}>{L}</text>
+        {#if global.has(L)}<circle class="global-mark" class:active={L === layer} cx={L * COL + COL / 2} cy={TOP - 13} r="2.5" />{/if}
       {/each}
-      {#each bands as b}
-        <g class="band" class:active={bandOf(layer) === b.band}>
-          <line x1={b.from * COL + 6} x2={(b.to + 1) * COL - 6} y1={PLOT + 32} y2={PLOT + 32} />
-          <text x={((b.from + b.to + 1) * COL) / 2} y={PLOT + 52} font-size={12 * Math.min(k, 1.25)}>{b.to - b.from >= 2 ? BANDS[b.band].name.replace(" layers", "") : BANDS[b.band].range}</text>
+      {#each model.bands as b (b.key)}
+        <g class="band" class:active={bandOf(model, layer) === b}>
+          <line x1={b.first * COL + 6} x2={(b.last + 1) * COL - 6} y1={PLOT + 32} y2={PLOT + 32} />
+          <text x={((b.first + b.last + 1) * COL) / 2} y={PLOT + 52} font-size={12 * Math.min(k, 1.25)}>{b.last - b.first >= 2 ? b.name.replace(" layers", "") : bandRange(b)}</text>
         </g>
       {/each}
     </svg>
@@ -158,18 +164,21 @@
           <span class="tip-hint">Click to open</span>
         {:else}
           <strong>Layer {hover.layer}</strong>
-          <span class="tip-line">{BANDS[bandOf(hover.layer)].name}</span>
+          <span class="tip-line">{bandOf(model, hover.layer).name}{global.has(hover.layer) ? " · global attention" : model.globalLayers.length ? " · 1,024-token window" : ""}</span>
         {/if}
       </div>
     {/if}
   </div>
   <p id="head-grid-help" class="sr-only">Left and right arrows change layer, up and down change head, Enter opens it.</p>
   <div class="legend" role="group" aria-label="Light up heads by role">
-    {#each ROLES as r, i (r.bit)}
-      <button type="button" aria-pressed={role === r.bit} data-help={r.describe} style:--c={r.color} onclick={() => onrole(role === r.bit ? null : r.bit)}>
-        <span class="swatch" aria-hidden="true"></span>{r.short}<span class="count">{counts[i]}</span>
+    {#each legend as { role: r, count } (r.bit)}
+      <button type="button" aria-pressed={role === r.bit} data-help={describeRole(r, model)} style:--c={r.color} onclick={() => onrole(role === r.bit ? null : r.bit)}>
+        <span class="swatch" aria-hidden="true"></span>{r.short}<span class="count">{count}</span>
       </button>
     {/each}
+    {#if model.globalLayers.length}
+      <span class="global-key" data-help="Every sixth layer attends over the whole text; the others only within the last 1,024 tokens, with every two query heads sharing a key-value head."><span class="global-dot" aria-hidden="true"></span>Global layer</span>
+    {/if}
   </div>
 </div>
 
@@ -191,6 +200,8 @@
   .cell.selected { opacity: 1; stroke: var(--fg); stroke-width: 1.6; scale: 1.25; }
   .layer-num { fill: var(--fg-muted); font-family: var(--font-mono); text-anchor: middle; font-variant-numeric: tabular-nums; }
   .layer-num.active { fill: var(--fg); font-weight: var(--weight-data-bold); }
+  .global-mark { fill: var(--fg-muted); }
+  .global-mark.active { fill: var(--fg); }
   .band line { stroke: var(--grid-line); stroke-width: 3; stroke-linecap: round; }
   .band text { fill: var(--fg-muted); font-family: var(--font-reading); text-anchor: middle; }
   .band.active line { stroke: var(--neuron-tint); }
@@ -218,6 +229,8 @@
   @media (hover: hover) { .legend button:not([aria-pressed="true"]):hover { background: var(--bg-hover); color: var(--fg); } }
   .swatch { width: 10px; height: 8px; border-radius: var(--data-mark-radius); background: var(--c); }
   .count { color: var(--fg-muted); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .global-key { display: inline-flex; align-items: center; gap: var(--space-2); min-height: 32px; padding-inline: var(--space-2); color: var(--fg-muted); font-size: var(--text-xs); }
+  .global-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--fg-muted); }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   @media (prefers-reduced-motion: reduce) { .ready .cell, .tip { animation: none; } .cell, .col-bg { transition: none; } .cell { scale: 1; } }
   @media (forced-colors: active) { .cell { fill: CanvasText; } .col-bg.active { stroke: Highlight; } }

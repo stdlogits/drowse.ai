@@ -80,17 +80,30 @@ granted by its owner. The gated process behind it is in
 
 ## Neuron Lens data
 
-`/neuron-lens` reads static JSON from `webui/public-hosted/neurons-data/`, built from the private
-neuron-lens catalog (`~/Work/neuron-lens/data/catalog/qwen3-8b`) and gitignored like it. Two
-stages, run from `webui/` (each script's docstring has the full invocation):
+`/neuron-lens` covers Qwen3-8B and Gemma 4 12B (`?model=gemma-4-12b`; bare addresses are Qwen3-8B).
+It reads static JSON from `webui/public-hosted/neurons-data/<model>/`, built from the private
+neuron-lens catalogs (`~/Work/neuron-lens/data/catalog/<model>`, laid out as the Hub release
+`stdlogits/neuron-lens`) and gitignored like them. Stages, run from `webui/` (each script's
+docstring has the full invocation):
 
-1. `scripts/neurons/translate.py` machine-translates non-English tokens, label terms and example
-   contexts with Claude Haiku 5.5 on the Batch API (`collect`, `pilot`, `submit --cap`, `results`,
-   then `fill` for what Haiku skipped), caching them in `webui/.neuron-lens/translations.jsonl`.
-   Rerun it only when the catalog's vocabulary, labels or contexts change.
-2. `scripts/neurons/build-neuron-catalog.py <catalog> <tokenizer.json> public-hosted/neurons-data
-   .neuron-lens/translations.jsonl` writes every neuron and head. `NEURON_LAYERS=8,21` builds a
-   subset for development.
+1. `scripts/neurons/translate.py` machine-translates non-English tokens, label terms, example
+   contexts and media captions with Claude Haiku 5.5 on the Batch API (`collect`, `pilot`,
+   `submit --cap`, `results`, then `fill` for what Haiku skipped). Each run keeps its state in its
+   own folder, `webui/.neuron-lens/<model>` by default; `--parts` and `--known` let a later run
+   (a model's labels, once labelled) skip what earlier runs sent. Rerun it only when a catalog's
+   vocabulary, labels or contexts change.
+2. Gemma 4 only: `scripts/neurons/media.py <catalog> public-hosted/neurons-data/gemma-4-12b` packs
+   the images and sounds of the collections whose licences allow showing them (its `ALLOWED`
+   table), matched to the catalog by SHA-1, and their credits. Others are linked, never hosted.
+3. `scripts/neurons/build-neuron-catalog.py <catalog> <tokenizer.json> public-hosted/neurons-data
+   <translations.jsonl,...>` writes every neuron and head into `<model>/`, given every translation
+   run that applies (a term means the same whichever model's run translated it). The model's
+   profile (geometry, the labeller's reading plan, depth bands) sits at the top of the builder;
+   the page's words for the bands live in `webui/src/hosted/ui/neurons/models.ts`.
+   `NEURON_LAYERS=8,21` builds a subset for development.
+
+Labels come from neuron-lens's `scripts/10_labels.py`, per model. The builder also works without them:
+titles then fall back to a unit's media label or its peak tokens.
 
 The page's types (`webui/src/hosted/ui/neurons/data.ts`) mirror the builder's output; change both
 together, and the e2e spec's mocks with them.

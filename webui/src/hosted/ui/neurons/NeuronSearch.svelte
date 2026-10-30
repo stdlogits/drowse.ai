@@ -1,11 +1,14 @@
 <script lang="ts">
   import FluentIcon from "../../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
   import MorphText from "../../../../../drowse/webui/src/lib/ui/MorphText.svelte";
-  import { HEADS, headId, loadSearch, neuronId, parseRef, stem, type CatalogIndex, type HeadRow, type SearchFile, type Unit } from "./data";
+  import { headId, loadSearch, neuronId, parseRef, stem, type CatalogIndex, type HeadRow, type SearchFile, type Unit } from "./data";
+  import type { ModelInfo } from "./models";
 
   interface Result { unit: Unit; layer: number; index: number; side: 0 | 1 | 2; title: string; matched: string; score: number }
 
-  let { index, heads, onopen, onmatches, examples = [], anyNeuron = false }: {
+  // The page remounts the search for each model, so the loaded search file is that model's.
+  let { model, index, heads, onopen, onmatches, examples = [], anyNeuron = false }: {
+    model: ModelInfo;
     index: CatalogIndex | null;
     heads: HeadRow[] | null;
     /** With every neuron available, an ID opens any neuron, not just the easiest. */
@@ -31,7 +34,7 @@
     if (data) return data;
     loading = true;
     searchFailed = false;
-    try { data = await loadSearch(); } catch { data = null; searchFailed = true; } finally { loading = false; }
+    try { data = await loadSearch(model.id); } catch { data = null; searchFailed = true; } finally { loading = false; }
     return data;
   }
 
@@ -50,7 +53,7 @@
   function run(text: string) {
     const trimmed = text.trim();
     if (!trimmed || !index) { results = []; total = 0; onmatches({ neurons: new Set(), heads: new Set() }, ""); return; }
-    const ref = parseRef(trimmed);
+    const ref = parseRef(trimmed, model);
     if (ref) {
       let found: Result | null = null;
       if (ref.unit === "heads") {
@@ -75,7 +78,7 @@
     const key = stem(trimmed);
     const lower = trimmed.toLowerCase();
     const cjk = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(lower);
-    // Keyed by unit: curated neuron poles as ref * 2 + side, heads as 1e6 + layer * 32 + head.
+    // Keyed by unit: curated neuron poles as ref * 2 + side, heads as 1e6 + layer * heads + head.
     const scores = new Map<number, { score: number; matched: string }>();
     for (const [form, refs] of Object.entries(data.forms)) {
       let factor = 0;
@@ -99,8 +102,8 @@
       let r: Result | null = null;
       if (id >= 1e6) {
         const ref = id - 1e6;
-        const row = heads?.find((h) => h[0] === Math.floor(ref / HEADS) && h[1] === ref % HEADS);
-        r = { unit: "heads", layer: Math.floor(ref / HEADS), index: ref % HEADS, side: 2, title: row ? headTitle(row) : "", matched: hit.matched, score: hit.score };
+        const row = heads?.find((h) => h[0] === Math.floor(ref / model.heads) && h[1] === ref % model.heads);
+        r = { unit: "heads", layer: Math.floor(ref / model.heads), index: ref % model.heads, side: 2, title: row ? headTitle(row) : "", matched: hit.matched, score: hit.score };
       } else {
         const row = index.neurons[id >> 1];
         const side = (id & 1) as 0 | 1;

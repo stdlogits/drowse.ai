@@ -3,10 +3,15 @@
   import LabelCell from "./LabelCell.svelte";
   import LabelText from "./LabelText.svelte";
   import PoleColumn from "./PoleColumn.svelte";
-  import { BANDS, LENSES, MIDDLE_CAUTION, bandOf, headline, neuronId, type LensToken, type NeuronDetail, type Pole } from "./data";
+  import { LENSES, headline, neuronId, type LensToken, type NeuronDetail, type Pole } from "./data";
+  import { bandOf, type ModelInfo } from "./models";
 
-  let { neuron, layer, onstep, position, total, hrefFor }: {
+  let { model, neuron, layer, labelled = true, docBlock, onstep, position, total, hrefFor }: {
+    model: ModelInfo;
     neuron: NeuronDetail;
+    /** Whether the catalog has Haiku's labels yet. */
+    labelled?: boolean;
+    docBlock?: number;
     layer: number;
     /** Move to the previous (-1) or next (+1) shown neuron in the layer. */
     onstep: (delta: -1 | 1) => void;
@@ -27,7 +32,7 @@
   // Measured on the pane itself, since the rail beside it takes a varying share of the window.
   let width = $state(1000);
   const narrow = $derived(width < 720);
-  const band = $derived(bandOf(layer));
+  const band = $derived(bandOf(model, layer));
 
   // Arrow keys move between the two pole tabs (APG tabs pattern).
   function tabKey(event: KeyboardEvent) {
@@ -39,7 +44,7 @@
 
   /** The raw tokens under a label: the depth's primary read, or in the middle layers the exact drivers. */
   function evidence(pole: Pole, side: "input" | "output"): { tokens: LensToken[]; source: string; help: string } {
-    if (side === "input" && band === "dark" && pole.drivers.length) {
+    if (side === "input" && band.dark && pole.drivers.length) {
       return {
         tokens: headline(pole.drivers).map(([token]): LensToken => [token, 1, 2]),
         source: "in real text",
@@ -53,8 +58,8 @@
 </script>
 
 <section class="detail" class:narrow aria-labelledby="unit-title" data-link-scope bind:clientWidth={width}>
-  <DetailBar id={neuronId(layer, neuron.n)} unitName="neuron" caution={band === "dark" ? MIDDLE_CAUTION : undefined} {onstep} {position} {total} {hrefFor}>
-    {#snippet tags()}<span class="band-tag">{BANDS[band].name}</span>{/snippet}
+  <DetailBar id={neuronId(layer, neuron.n)} unitName="neuron" caution={band.dark ? model.caution : undefined} cautionLabel={model.cautionLabel} {onstep} {position} {total} {hrefFor}>
+    {#snippet tags()}<span class="band-tag">{band.name}</span>{/snippet}
   </DetailBar>
 
   {#key neuron.n}
@@ -75,7 +80,7 @@
         {#if pole.label.note}<p class="note"><LabelText text={pole.label.note} interactive /></p>{/if}
       {/each}
     </div>
-    <p class="credit">Labels by Claude Haiku 5.5, written from these reads and the first firings below. Confidence is Haiku's own.</p>
+    {#if labelled}<p class="credit">Labels by Claude Haiku 5.5, written from these reads and the first firings below. Confidence is Haiku's own. {model.labelChecks.neurons}</p>{/if}
   </section>
   {/key}
 
@@ -91,7 +96,7 @@
   <div class="poles">
     {#each neuron.poles as pole, index (pole.pole)}
       <div class="pole-panel" class:hidden-phone={shown !== index} id={`pole-panel-${index}`} role={narrow ? "tabpanel" : undefined} aria-labelledby={narrow ? `pole-tab-${index}` : undefined}>
-        <PoleColumn {pole} {layer} clearer={clearer === index} />
+        <PoleColumn {model} {pole} {layer} {docBlock} clearer={clearer === index} />
       </div>
     {/each}
   </div>

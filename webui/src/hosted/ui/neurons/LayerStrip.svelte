@@ -3,11 +3,15 @@
   import InfoTip from "../../../../../drowse/webui/src/lib/ui/InfoTip.svelte";
   import FluentIcon from "../../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
   import LabelText from "./LabelText.svelte";
-  import { BANDS, MIDDLE_CAUTION, bandOf, type StripCard, type StripFilter } from "./data";
+  import { type StripCard, type StripFilter } from "./data";
+  import { bandOf, type ModelInfo } from "./models";
 
   // The selected layer: its name, filters, and its neurons or heads as a row of cards.
-  let { layer, unitName, cards, filters, selected, onselect, hrefFor }: {
+  let { model, layer, global = false, unitName, cards, filters, selected, onselect, hrefFor }: {
+    model: ModelInfo;
     layer: number;
+    /** Gemma 4: a layer that attends over the whole text rather than a window. */
+    global?: boolean;
     /** "neurons" or "heads", for labels. */
     unitName: string;
     cards: StripCard[];
@@ -42,7 +46,7 @@
     if (at >= visible) visible = Math.ceil((at + 1) / PAGE) * PAGE;
   });
 
-  const band = $derived(BANDS[bandOf(layer)]);
+  const band = $derived(bandOf(model, layer));
   let track: HTMLOListElement | undefined = $state();
 
   // Keep the selected card in view as the selection moves (j/k, the ribbon, search).
@@ -70,7 +74,8 @@
     <div class="title">
       <h2 id="layer-title" tabindex="-1"><MorphText text={`Layer ${layer}`} duration={320} /></h2>
       <span class="band"><MorphText text={band.name} numbers={false} duration={260} /></span>
-      <span class="about"><InfoTip icon="info" label={`About ${band.name.toLowerCase()}`} text={`${band.summary} ${band.reading}${bandOf(layer) === "dark" ? ` ${MIDDLE_CAUTION}` : ""}`} /></span>
+      {#if global}<span class="global" data-help="This layer attends over the whole text; the others only within the last 1,024 tokens.">Global</span>{/if}
+      <span class="about"><InfoTip icon="info" label={`About ${band.name.toLowerCase()}`} text={`${band.summary} ${band.reading}${band.dark ? ` ${model.caution}` : ""}`} /></span>
     </div>
     <div class="controls">
       {#if available.length > 1}
@@ -118,6 +123,7 @@
 </section>
 
 <style>
+  .global { padding: 0 var(--space-2); border-radius: var(--radius-pill); box-shadow: inset 0 0 0 1px var(--glass-line); color: var(--fg-dim); font-size: var(--text-xs); line-height: 1.8; }
   .strip { display: grid; gap: var(--space-4); min-width: 0; }
   .strip-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3) var(--space-5); }
   .title { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); }
@@ -160,6 +166,7 @@
   .card-line.low { color: var(--fg-muted); }
   .mark { min-width: 1ch; color: var(--fg-muted); font-size: var(--text-xs); line-height: 1.9; }
   .t { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+  .first .t { -webkit-line-clamp: 3; line-clamp: 3; }
 
   .controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
   .pagers { display: flex; gap: var(--space-2); }
