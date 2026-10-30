@@ -66,6 +66,7 @@ import {
 } from "./structuredHookProfile";
 import {
   parseSteeringExpression,
+  RESERVED_STEERING_NAMESPACES,
   type SteeringAtom,
   type SteeringPhase,
   type SteeringExpressionTerm,
@@ -2472,6 +2473,12 @@ export class BrowserFeasibilityCorePackCompiler {
         directions: token.directions,
         saeFeature: null,
       };
+    }
+    if (atom.namespace !== null && RESERVED_STEERING_NAMESPACES.has(atom.namespace)) {
+      throw coreError(
+        "CORE_PACK_EXPRESSION_UNAVAILABLE",
+        `${atom.namespace}/ instrument atoms are not available in the browser runtime`,
+      );
     }
     if (
       atom.namespace === null && atom.variant === "raw" &&

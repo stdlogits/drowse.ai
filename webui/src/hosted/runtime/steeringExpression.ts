@@ -49,6 +49,15 @@ export interface SteeringExpression {
   terms: readonly SteeringExpressionTerm[];
 }
 
+/** Namespaces that name instrument units rather than fitted manifolds
+ *  (drowse/naming.py `RESERVED_NAMESPACES`): their names are kept verbatim
+ *  and they take no variant suffix. */
+export const RESERVED_STEERING_NAMESPACES: ReadonlySet<string> = new Set([
+  "jlens", "slens", "sae", "neuron", "head",
+]);
+/** Lens namespaces whose units may also be named by an exact vocab id, `#<id>`. */
+const TOKEN_ID_NAMESPACES: ReadonlySet<string> = new Set(["jlens", "slens"]);
+
 export class SteeringExpressionError extends Error {
   constructor(message: string, readonly column: number | null = null) {
     super(column === null ? message : `${message} (column ${column})`);
@@ -66,6 +75,7 @@ type TokenKind =
   | "EOF"
   | "GT"
   | "GTE"
+  | "HASH"
   | "IDENT"
   | "LBRACK"
   | "LT"
@@ -102,6 +112,7 @@ const SYMBOLS: Record<string, TokenKind> = {
   "[": "LBRACK",
   "]": "RBRACK",
   "&": "AMP",
+  "#": "HASH",
 };
 
 const PHASES: Record<string, SteeringPhase> = {
@@ -256,16 +267,7 @@ class Parser {
     let probe = String(head.value);
     if (this.peek().kind === "SLASH") {
       this.consume();
-      if (probe === "sae" && this.peek().kind === "NUM") {
-        const feature = this.expect("NUM");
-        const value = this.number(feature);
-        if (!Number.isSafeInteger(value) || value < 0) {
-          throw this.error("SAE feature id must be a non-negative integer", feature);
-        }
-        probe = `sae/${value}`;
-      } else {
-        probe = `${probe}/${String(this.expect("IDENT").value)}`;
-      }
+      probe = `${probe}/${this.namespacedName(probe)}`;
     }
     const discriminator = this.peek().kind;
     if (discriminator === "COLON") {
@@ -346,16 +348,7 @@ class Parser {
     if (this.peek().kind === "SLASH") {
       this.consume();
       namespace = concept;
-      if (namespace === "sae" && this.peek().kind === "NUM") {
-        const feature = this.consume();
-        const value = this.number(feature);
-        if (!Number.isSafeInteger(value) || value < 0) {
-          throw this.error("SAE feature id must be a non-negative integer", feature);
-        }
-        concept = String(value);
-      } else {
-        concept = String(this.expect("IDENT").value);
-      }
+      concept = this.namespacedName(namespace);
     }
     if (this.peek().kind === "DOT") {
       this.consume();
@@ -364,9 +357,39 @@ class Parser {
     let variant = "raw";
     if (this.peek().kind === "COLON") {
       this.consume();
-      variant = String(this.expect("IDENT").value);
+      const suffix = this.expect("IDENT");
+      variant = String(suffix.value);
+      if (namespace !== null && RESERVED_STEERING_NAMESPACES.has(namespace)) {
+        throw this.error(
+          `'${namespace}/' atoms name instrument units and take no ':${variant}' variant`,
+          suffix,
+        );
+      }
     }
     return { namespace, concept, variant, column: first.column };
+  }
+
+  /** The name after `<namespace>/`: `sae/<int>` takes a feature id, the lens
+   *  namespaces also take an exact vocab id `#<int>`, anything else is an
+   *  identifier. */
+  private namespacedName(namespace: string): string {
+    if (namespace === "sae" && this.peek().kind === "NUM") {
+      return String(this.nonNegativeInteger("SAE feature id"));
+    }
+    if (TOKEN_ID_NAMESPACES.has(namespace) && this.peek().kind === "HASH") {
+      this.consume();
+      return `#${this.nonNegativeInteger("token id")}`;
+    }
+    return String(this.expect("IDENT").value);
+  }
+
+  private nonNegativeInteger(what: string): number {
+    const token = this.expect("NUM");
+    const value = this.number(token);
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw this.error(`${what} must be a non-negative integer`, token);
+    }
+    return value;
   }
 
   private signedNumber(): number {

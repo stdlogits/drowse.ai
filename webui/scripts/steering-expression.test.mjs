@@ -95,6 +95,24 @@ try {
     "angry.calm[0]",
   ]);
 
+  assert.deepEqual(
+    parseSteeringExpression("x@when:jlens/#7>0.01").terms[0].trigger.gate,
+    { probe: "jlens/#7", operator: ">", threshold: 0.01 },
+  );
+  assert.equal(
+    parseSteeringExpression("0.3 jlens/#1e3").terms[0].selector.base.concept,
+    "#1000",
+    "a token id is stored as its integer, like the Python grammar",
+  );
+  assert.throws(
+    () => parseSteeringExpression("0.3 neuron/L8n344:raw"),
+    /'neuron\/' atoms name instrument units and take no ':raw' variant/,
+  );
+  assert.throws(
+    () => parseSteeringExpression("0.3 jlens/#-1"),
+    (error) => error instanceof SteeringExpressionError,
+  );
+
   console.log("Steering expression checks passed");
 } finally {
   await server.close();

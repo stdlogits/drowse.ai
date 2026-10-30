@@ -977,6 +977,15 @@ async function resolveJlensWordToken(
   resolver: BrowserJlensRuntimeResolver,
   word: string,
 ): Promise<number> {
+  // `jlens/#<id>` names the vocab id exactly, as in drowse's grammar.
+  const exact = /^#(\d+)$/u.exec(word);
+  if (exact !== null) {
+    const tokenId = Number(exact[1]);
+    if (!Number.isSafeInteger(tokenId) || tokenId > 0x7fff_ffff) {
+      throw instrumentError("JLENS_TOKENIZATION_INVALID", `J-lens token id ${exact[1]} is out of range`);
+    }
+    return tokenId;
+  }
   let pieces: number[] = [];
   for (const candidate of [` ${word}`, word]) {
     const ids = await resolver.tokenizeText(candidate);

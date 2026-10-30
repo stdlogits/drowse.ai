@@ -1775,6 +1775,15 @@ try {
     assert.equal(program.jLensTokenIds[0], 7);
     assert.deepEqual(batches, [[7]]);
 
+    const tokenize = resolver.tokenizeText;
+    resolver.tokenizeText = async () => assert.fail("a #<id> atom names its token without tokenizing");
+    await compiler.prepareJlensSelectors("0.5 jlens/#7@when:jlens/#7>0.01", resolver);
+    const exact = compiler.compile("0.5 jlens/#7@when:jlens/#7>0.01");
+    assert.equal(exact.jLensTokenIds[0], 7);
+    assertFloatArray(exact.affineBasis.slice(0, 2), [7 / Math.sqrt(113), 8 / Math.sqrt(113)]);
+    assert.deepEqual(batches, [[7]], "the exact id reuses the resolved directions");
+    resolver.tokenizeText = tokenize;
+
     await compiler.prepareJlensWords(
       Array.from({ length: 10 }, (_, index) => `word${index}`),
       resolver,
@@ -2690,6 +2699,14 @@ try {
       assert.throws(
         () => compiler.compile(expression),
         (error) => error.code?.startsWith("CORE_PACK_"),
+        expression,
+      );
+    }
+    for (const expression of ["0.3 slens/#12", "0.2 neuron/L8n344", "0.2 head/L3h2"]) {
+      assert.throws(
+        () => compiler.compile(expression),
+        (error) => error.code === "CORE_PACK_EXPRESSION_UNAVAILABLE" &&
+          /instrument atoms are not available in the browser runtime/.test(error.message),
         expression,
       );
     }
