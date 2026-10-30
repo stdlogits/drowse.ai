@@ -52,9 +52,9 @@ try {
           sha,
           tags: ["drowse-manifold"],
           siblings: [
+            { rfilename: "README.md", size: 300 },
             { rfilename: "manifold.json", size: 400 },
             { rfilename: "portable.drowse", size: 1234 },
-            { rfilename: "_zdGVzdC9tb2RlbA.safetensors", size: 50 },
           ],
         }, {
           id: "fixture/legacy",
@@ -76,7 +76,13 @@ try {
           fit_mode: "pca",
           hyperparams: { max_dim: 2 },
           nodes: [{ label: "cold" }, { label: "hot" }],
-          files: {},
+          files: {
+            "nodes/00_cold.json": "1".repeat(64),
+            "nodes/01_hot.json": "2".repeat(64),
+            "_zdGVzdC9tb2RlbA.json": "3".repeat(64),
+            "_zdGVzdC9tb2RlbA.safetensors": "4".repeat(64),
+            "_zdGVzdC9tb2RlbA_sae-release.safetensors": "5".repeat(64),
+          },
           source: `hf://fixture/portable@${sha}`,
           tags: ["fixture"],
           template_ref: null,
@@ -95,7 +101,7 @@ try {
       node_count: 2,
       domain_label: "discover-pca",
       fit_mode: "pca",
-      tensor_models: ["_zdGVzdC9tb2RlbA"],
+      tensor_models: ["_zdGVzdC9tb2RlbA", "_zdGVzdC9tb2RlbA_sae-release"],
       repository: "fixture/portable",
       revision: sha,
       archive_filename: "portable.drowse",
@@ -145,6 +151,7 @@ try {
           description: "redirected fixture",
           fit_mode: "pca",
           nodes: [{ label: "cold" }, { label: "hot" }],
+          files: {},
           tags: [],
         }, "https://artifact-cdn.example.test/manifold.json");
       }

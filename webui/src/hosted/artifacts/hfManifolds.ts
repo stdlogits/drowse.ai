@@ -221,6 +221,7 @@ export class BrowserHfManifoldClient implements BrowserHfManifoldClientPort {
       fitMode !== "spectral" && fitMode !== "auto"
     ) throw new Error(`${model.id}@${model.sha} has an invalid fit mode`);
     if (!Array.isArray(value.nodes)) throw new Error(`${model.id}@${model.sha} has invalid nodes`);
+    if (!isRecord(value.files)) throw new Error(`${model.id}@${model.sha} has an invalid file map`);
     const tags = Array.isArray(value.tags)
       ? value.tags.filter((tag): tag is string => typeof tag === "string")
       : [];
@@ -232,8 +233,10 @@ export class BrowserHfManifoldClient implements BrowserHfManifoldClientPort {
       node_count: value.nodes.length,
       domain_label: domainLabel(value.domain, fitMode),
       fit_mode: fitMode,
-      tensor_models: model.siblings
-        .map((item) => item.rfilename)
+      // The summary is the archived manifest, so its file map names exactly
+      // the fitted tensors the archive carries; a pushed repo has no root
+      // .safetensors of its own.
+      tensor_models: Object.keys(value.files)
         .filter((name) => !name.includes("/") && name.endsWith(".safetensors"))
         .map((name) => name.slice(0, -".safetensors".length))
         .sort(),
