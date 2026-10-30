@@ -1,19 +1,34 @@
-"""Build the /neurons explorer's static data from the neuron-lens catalog (Qwen3-8B).
+"""Build the Neuron Lens explorer's static data from the neuron-lens catalog (Qwen3-8B).
 
     uv run --no-project --with pyarrow --with numpy --with tokenizers python -I \
-        scripts/neurons/build-neuron-catalog.py <catalog dir> <tokenizer.json> <out dir> [labels.jsonl]
+        scripts/neurons/build-neuron-catalog.py <catalog dir> <tokenizer.json> <out dir> [translations.jsonl]
 
-The catalog dir holds reads/, acts/, drivers/, legible/ and heads/ (the stdlogits/neuron-lens dataset).
-Per layer it keeps only the neurons whose readings are most legible, and bakes in everything the page
-would otherwise compute: decoded tokens, the hub filter, merged variants, strength percentiles, which
-reads to trust at that depth, and the tokens that two lenses (or a lens and a measurement) agree on.
+The catalog dir is neuron-lens's ``data/catalog/qwen3-8b``: ``neurons/<table>/L<layer>.parquet`` (a
+row per pole, the + poles first) and ``heads/<table>.parquet`` (a row per head) for its five tables,
+``acts``, ``drivers``, ``reads``, ``legible`` and ``labels``. Every neuron and head is written, with
+everything the page would otherwise compute baked in: decoded tokens, the hub filter, merged
+variants, strength percentiles, which reads to trust at each depth (the labeller's plan, so the
+page shows the evidence Haiku saw), the tokens two lenses (or a lens and a measurement) agree on,
+and the translations from ``translate.py``.
 
-Output: index.json (layers, curated neurons, heads), search.json (word -> poles) and L00.json-L35.json.
+Output, all JSON:
+
+- ``index.json``: layer metadata and the curated "easiest" neurons, chosen by legibility and label
+  confidence;
+- ``neurons/L<layer>/index.json``: every neuron's titles, score and flags;
+  ``neurons/L<layer>/c<chunk>.json``: every neuron's detail, ``CHUNK`` to a file;
+- ``scores.json``: every neuron's readability as a byte, base64 per layer (the All view's texture);
+- ``heads/index.json``: every head's labels, roles and pattern; ``heads/L<layer>.json``: details;
+- ``search.json``: word -> curated neuron poles and heads; ``terms.json``: token -> English;
+  ``vocab.json``: every token decoded, which the details name by id.
+
+``NEURON_LAYERS=8,21`` builds only those layers (for development).
 """
-import bisect
+import ast
+import base64
 import collections
 import json
-import math
+import multiprocessing
 import os
 import re
 import sys
@@ -23,32 +38,29 @@ import numpy as np
 import pyarrow.parquet as pq
 from tokenizers import Tokenizer
 
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+LAYERS, MLP, HEADS = 36, 12288, 32
 KEEP_PER_LAYER = 40
-LAYERS = 36
-MLP = 12288
+CHUNK = 64
+HUB = 0.03  # a raw read's token in this share of the layer's top 64s is a hub (neuron-lens §6)
+Q = 0.05  # a legibility test passes at this q-value
+NEURON_READS = ["read_S", "read_S_z", "read_R", "read_R_z", "write_S", "write_S_z", "write_R", "write_R_z"]
+HEAD_READS = ["ov_R", "ov_R_z", "ov_R_neg", "ov_R_neg_z", "ov_S", "ov_S_z", "ov_S_neg", "ov_S_neg_z",
+              "qk_S", "qk_S_z", "qk_S_neg", "qk_S_neg_z", "qk_self_S", "qk_self_S_z"]
+NEURON_SIDES = ("read_S", "read_R", "write_S", "write_R")
+# Head roles, at the catalog's own thresholds (09_legible.py's pattern, checks/head_lens_sides.py).
+ROLE_INDUCTION, ROLE_DUPLICATE, ROLE_PREVIOUS, ROLE_SELF, ROLE_SINK, ROLE_NEXT, ROLE_COPY, ROLE_DARK = (1 << k for k in range(8))
+# Neuron flags.
+FLAG_DETECTOR, FLAG_PREDICTS, FLAG_SUPPRESSES, FLAG_PLUS_WRITES, FLAG_MINUS_WRITES, FLAG_DARK = (1 << k for k in range(6))
+STOP = set("""a an the and or of to in on for with by as at from into its it this that these those is are be
+words word tokens token terms term pieces piece fragments fragment related like such mixed e.g eg i.e
+weak clear unclear no not theme themes output input mostly mainly slight slightly some other various
+fires writes promotes pushes suppresses attends copies when after before about""".split())
 
 catalog, tokjson, out = sys.argv[1:4]
-labels_path = sys.argv[4] if len(sys.argv) > 4 else None
-cedict_path = sys.argv[5] if len(sys.argv) > 5 else None
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import cedict_gloss  # noqa: E402
-CEDICT = cedict_gloss.load(cedict_path) if cedict_path else {}
-glossary = {}
-
-
-def collect_cjk(obj):
-    """Every displayed string with Chinese characters gets a gloss in glossary.json."""
-    if isinstance(obj, str):
-        if CEDICT and obj not in glossary and cedict_gloss.CJK.search(obj):
-            g = cedict_gloss.gloss(obj, CEDICT)
-            glossary[obj] = list(g) if g else None
-    elif isinstance(obj, dict):
-        for v in obj.values():
-            collect_cjk(v)
-    elif isinstance(obj, (list, tuple)):
-        for v in obj:
-            collect_cjk(v)
-os.makedirs(out, exist_ok=True)
+translations_path = sys.argv[4] if len(sys.argv) > 4 else None
+ONLY = sorted({int(x) for x in os.environ.get("NEURON_LAYERS", "").split(",") if x}) or list(range(LAYERS))
 
 tok = Tokenizer.from_file(tokjson)
 VOCAB = tok.get_vocab_size()
@@ -62,18 +74,13 @@ def decode(i):
 
 
 TOKS = [decode(i) for i in range(VOCAB)]
-BYTE = np.array([t.startswith("\u0001") for t in TOKS])
-
-
-def norm(t):
-    return t.strip().lower().lstrip("_-.").lstrip("/([")
 
 
 def stem(t):
     """Variant key: case, leading punctuation and common English suffixes removed (release, Released, -releases)."""
     if t.startswith("\u0001"):
         return t
-    k = norm(t)
+    k = t.strip().lower().lstrip("_-.").lstrip("/([")
     for suf in ("ing", "ed", "es", "s", "ly"):
         if k.endswith(suf) and len(k) - len(suf) >= 4:
             k = k[: -len(suf)]
@@ -81,492 +88,430 @@ def stem(t):
     return k[:-1] if k.endswith("e") and len(k) > 4 else k
 
 
-STEM = [stem(t) for t in TOKS]
-
-
-def is_junk(i):
-    """Byte pieces, whitespace and bare punctuation: real tokens, but they don't name a concept."""
-    t = TOKS[i]
-    if BYTE[i]:
-        return True
-    s = t.strip()
+def junk_text(s):
+    s = s.strip()
     return not s or all(unicodedata.category(c)[0] in "PSZC" for c in s)
 
 
-JUNK = np.array([is_junk(i) for i in range(VOCAB)])
+STEM = [stem(t) for t in TOKS]
+JUNK = np.array([t.startswith("\u0001") or junk_text(t) for t in TOKS])
 
-READ_COLS = ["read_S", "read_S_z", "read_R_dclm", "read_R_dclm_z", "write_S", "write_S_z", "write_R_dclm", "write_R_dclm_z"]
-COMPARE_COLS = ["write_J", "write_logit"]
-SCORE = {"read_S": "val", "read_S_z": "val", "read_R_dclm": "p", "read_R_dclm_z": "val",
-         "write_S": "val", "write_S_z": "val", "write_R_dclm": "p", "write_R_dclm_z": "val",
-         "write_J": "p", "write_logit": "p"}
-FAMILY = {c: c.removesuffix("_z") for c in READ_COLS + COMPARE_COLS}
-
-
-def band(L):
-    if L == 0:
-        return "embed"
-    if L <= 7:
-        return "early"
-    if L == 8:
-        return "crossover"
-    if L <= 12:
-        return "concept"
-    if L <= 20:
-        return "dark"
-    if L <= 31:
-        return "predict"
-    return "suppress"
+# ---------- translations (translate.py): vocabulary terms and whole contexts
+TERMS, CONTEXT_EN = {}, {}
+if translations_path and os.path.exists(translations_path):
+    for line in open(translations_path, encoding="utf-8"):
+        r = json.loads(line)
+        if r["k"] == "term":
+            TERMS[r["s"].strip()] = [r["en"], r.get("ro", ""), r.get("lang", "")]
+        elif r.get("ok"):
+            CONTEXT_EN[r["s"]] = [r["en"], r.get("lang", "")]
 
 
-def plan(L):
-    """(input reads, output reads) to trust at this depth, primary first (the brief's §4 tables)."""
-    if L <= 4:
-        ins = ["read_S", "read_S_z"]
-    elif L <= 7:
-        ins = ["read_S_z", "read_S"]
-    elif L == 8:
-        ins = ["read_S", "read_S_z", "read_R_dclm", "read_R_dclm_z"]
-    elif L <= 12:
-        ins = ["read_R_dclm", "read_R_dclm_z"]
-    elif L <= 20:
-        ins = ["read_R_dclm_z", "read_R_dclm"]
-    else:
-        ins = ["read_R_dclm", "read_R_dclm_z", "read_S_z"]
-    if L <= 4:
-        outs = ["write_S_z", "write_R_dclm_z"]
-    elif L <= 8:
-        outs = ["write_R_dclm", "write_R_dclm_z", "write_S_z"]
-    elif L <= 20:
-        outs = ["write_R_dclm", "write_R_dclm_z"]
-    else:
-        outs = ["write_R_dclm", "write_R_dclm_z"]
+# ---------- shared helpers
+
+def neuron_plan(L):
+    """(input reads, output reads) shown at this depth, primary first: 10_labels.py's plan (§6, §7)."""
+    ins = (["read_S", "read_S_z"] if L <= 4 else ["read_S_z", "read_S"] if L <= 7
+           else ["read_S", "read_S_z", "read_R", "read_R_z"] if L == 8 else ["read_R", "read_R_z"] if L <= 12
+           else ["read_R_z", "read_R"] if L <= 20 else ["read_R", "read_R_z", "read_S_z"])
+    outs = (["write_R_z", "write_S_z"] if L <= 4 else ["write_R", "write_R_z", "write_S_z"] if L <= 20
+            else ["write_R", "write_R_z"])
     return ins, outs
 
 
-def merged(ids, skip=frozenset(), limit=64):
-    """Tokens in rank order with variants folded into their first occurrence: [token, count, rank]."""
-    order, count = [], collections.Counter()
-    first = {}
-    for r, i in enumerate(ids[:limit]):
+def head_plan(L):
+    """OV reads shown at this depth, primary first (10_labels.py, §11): OV·S through L8, OV·R from L9."""
+    return ["ov_S", "ov_R"] if L <= 8 else ["ov_R"]
+
+
+def head_header(L):
+    """A head file's reads: the plan's OV reads, then QK, then the other OV family (weak past L20)."""
+    ov = head_plan(L)
+    primary = {ov[0], "qk_S"}
+    trusted = set(ov) | {f"{c}_neg" for c in ov} | {"qk_S_neg", "qk_self_S"} | ({"ov_S", "ov_S_neg"} if L <= 20 else set())
+    fams = [f for f in ("ov_R", "ov_R_neg", "ov_S", "ov_S_neg") if f.split("_neg")[0] in ov]
+    fams += ["qk_S", "qk_S_neg", "qk_self_S"] + [f for f in ("ov_R", "ov_R_neg", "ov_S", "ov_S_neg") if f not in fams]
+    return read_header([c for f in fams for c in (f, f"{f}_z") if c in HEAD_READS], primary, trusted, by_family=True)
+
+
+def band(L):
+    return ("embed" if L == 0 else "early" if L <= 7 else "crossover" if L == 8 else "concept" if L <= 12
+            else "dark" if L <= 20 else "predict" if L <= 31 else "suppress")
+
+
+def mat(table, name, dtype=np.float32):
+    """A fixed-size list column as an [n, k] array."""
+    col = table.column(name).combine_chunks()
+    return col.flatten().to_numpy(zero_copy_only=False).astype(dtype).reshape(len(col), -1)
+
+
+def col(table, name):
+    return table.column(name).to_numpy(zero_copy_only=False)
+
+
+def merged(ids, skip=frozenset(), limit=24):
+    """Distinct tokens in rank order, variants folded into their first occurrence: [(token id, count, key)]."""
+    order, count, first = [], collections.Counter(), {}
+    for i in ids:
         k = STEM[i] or TOKS[i]
         if k in skip:
             continue
         if k not in count:
-            first[k] = [TOKS[i], 0, r]
+            if len(order) >= limit:
+                break
+            first[k] = i
             order.append(k)
         count[k] += 1
-    for k in order:
-        first[k][1] = count[k]
-    return [first[k] for k in order], order
+    return [(first[k], count[k], k) for k in order]
+
+
+def encoded(toks, shared=frozenset(), measured=frozenset()):
+    """A token list for the page, by vocab.json id: a bare id, or [id, variants, flags] (1: lenses agree, 2: measured)."""
+    out = []
+    for t, n, k in toks:
+        flags = (1 if k in shared else 0) | (2 if k in measured else 0)
+        out.append(int(t) if n == 1 and not flags else [int(t), n, flags])
+    return out
+
+
+def drivers_of(ids, vals, n=12):
+    return [[int(t), float(f"{float(v):.3g}")] for t, v in zip(ids[:n], vals[:n])]
+
+
+LIMIT = {"primary": 24, "trusted": 12, "weak": 8}
 
 
 def pct_of(sorted_vals, v):
-    return round(100 * bisect.bisect_left(sorted_vals, v) / len(sorted_vals))
+    return int(round(100 * np.searchsorted(sorted_vals, v) / max(1, len(sorted_vals))))
 
 
-def parse_peaks(s):
+PEAK = re.compile(r"^('(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\")×(\d+)$", re.S)
+
+
+def parse_counts(s, limit=8):
+    """"'tok'×3 | 'tok'×2" -> [[tok, 3], ...] (tokens are Python reprs)."""
     out = []
     for part in (s or "").split(" | "):
-        m = re.match(r"^(['\"])(.*)\1×(\d+)$", part.strip(" "), re.S)
+        m = PEAK.match(part.strip(" "))
         if m:
-            out.append([m.group(2).encode("utf-8").decode("unicode_escape", "ignore") if "\\" in m.group(2) else m.group(2), int(m.group(3))])
+            try:
+                out.append([ast.literal_eval(m.group(1)), int(m.group(2))])
+            except (ValueError, SyntaxError):
+                continue
+        if len(out) >= limit:
+            break
     return out
 
 
-def parse_contexts(s):
-    """'pre⟦hit⟧post ‖ …' -> [[pre, hit, post], …]."""
+def contexts_of(s):
+    """Top contexts as [text] or [text, english, lang]; the text keeps the ⟦ ⟧ and ⟪ ⟫ markers."""
     out = []
-    for part in (s or "").split(" ‖ "):
-        m = re.match(r"^(.*?)⟦(.*?)⟧(.*)$", part, re.S)
-        if m:
-            out.append([m.group(1), m.group(2), m.group(3)])
+    for c in (s or "").split(" ‖ "):
+        if not c:
+            continue
+        en = CONTEXT_EN.get(c)
+        out.append([c, *en] if en else [c])
     return out
 
 
-# ---------- labels (the repo's Sonnet descriptions, §9)
-labels = {}
-if labels_path and os.path.exists(labels_path):
-    for line in open(labels_path, encoding="utf-8"):
-        line = line.strip()
-        if not line:
+def shorten(text, n=84):
+    text = " ".join((text or "").split())
+    if len(text) <= n:
+        return text
+    return text[:n].rsplit(" ", 1)[0].rstrip(",;:—-(") + "…"
+
+
+def label_words(text):
+    return [w for w in re.findall(r"[^\W\d_][\w'-]*", (text or "").lower()) if len(w) > 2 and w not in STOP]
+
+
+def hubs_of(ids):
+    """Raw reads' hub tokens: in HUB or more of the rows' top lists."""
+    return np.bincount(ids.ravel(), minlength=VOCAB) / len(ids) >= HUB
+
+
+def read_header(order, primary, trusted, by_family=False):
+    """The reads every unit of a file lists, in order: [{col, trust, twin}]. A twin (the raw or z read
+    of a family shown above it) lists only the tokens its family hasn't. Neurons trust single
+    columns; heads trust a family (a read and its z twin) at once."""
+    seen, out = set(), []
+    for c in order:
+        fam = c.removesuffix("_z")
+        key = fam if by_family else c
+        trust = "primary" if key in primary else "trusted" if key in trusted else "weak"
+        out.append({"col": c, "trust": trust, "twin": fam in seen})
+        seen.add(fam)
+    return out
+
+
+def search_weights(header, reads, peaks, label_texts):
+    """Word -> weight for one pole or head: label words, trusted read tokens, peaks, and translations."""
+    weights, display = collections.Counter(), {}
+
+    def put(k, w, shown):
+        if k and weights[k] < w:
+            weights[k] = w
+            display.setdefault(k, shown)
+
+    for h, (_, tokens) in zip(header, reads):
+        if h["trust"] not in ("primary", "trusted"):
             continue
-        r = json.loads(line)
-        m = re.match(r"L(\d+) n(\d+) ([+−-])", r["id"])
-        if not m:
-            continue
-        key = (int(m.group(1)), int(m.group(2)), 1 if m.group(3) == "+" else -1)
-        best = max(r.get("labels") or [{"label": "", "weight": 0}], key=lambda x: x.get("weight", 0))
-        labels[key] = {"text": best["label"], "confidence": r.get("confidence", 0), "relation": r.get("relation"),
-                       "note": r.get("note", ""), "sides": r.get("sides", {}), "source": "Claude Sonnet, from full cards (neuron-lens §9)"}
+        for rank, t in enumerate(tokens[:24]):
+            text, flags = (TOKS[t], 0) if isinstance(t, int) else (TOKS[t[0]], t[2])
+            if text.startswith("\u0001") or junk_text(text):
+                continue
+            w = (3 if rank < 8 else 2 if rank < 24 else 1) + (2 if flags & 1 else 0) + (2 if flags & 2 else 0)
+            put(stem(text), w, text.strip())
+            en = TERMS.get(text.strip())
+            if en:
+                for word in label_words(en[0]):
+                    put(stem(word), max(1, w - 2), word)
+    for t, _ in peaks:
+        if not junk_text(t):
+            put(stem(t), 4, t.strip())
+    for text in label_texts:
+        for word in label_words(text):
+            put(stem(word), 5, word)
+    return weights, display
 
 
-def table(kind, L, columns=None):
-    p = f"{catalog}/{kind}/L{L:02d}.parquet"
-    if not os.path.exists(p):
-        return None
-    return pq.read_table(p, columns=columns)
+# ---------- neurons, one layer per process
 
-
-def arr(t, c):
-    return np.array(t.column(c).to_pylist())
-
-
-layers_meta, neurons_index, search = [], [], collections.defaultdict(list)
-search_display = {}
-
-ONLY = {int(x) for x in os.environ.get("NEURON_LAYERS", "").split(",") if x}
-# NEURON_ALL=1 writes every neuron (slimmer: trusted reads only) under <out>/all/ for the "All" toggle.
-ALL = os.environ.get("NEURON_ALL") == "1"
-CHUNK = 256
-for L in range(LAYERS):
-    if ONLY and L not in ONLY:
-        continue
-    ins, outs = plan(L)
+def neuron_layer(L):
+    ins, outs = neuron_plan(L)
     trusted = ins + outs
-    cols_needed = ["neuron", "pole", "w_norm", "cos_ab", "null_share", "vocab_skew", "vocab_kurt"]
-    for c in READ_COLS + COMPARE_COLS:
-        cols_needed += [c + "_ids", f"{c}_{SCORE[c]}"]
-    reads = table("reads", L, cols_needed)
-    acts = table("acts", L, ["neuron", "pole", "act_top", "act_max", "rate", "rate_dclm", "rate_zh", "rate_code", "rate_chat", "pos_share", "peak_tokens", "contexts"])
-    drivers = table("drivers", L, ["neuron", "pole", "drivers_ids", "drivers_val", "drivers_sum_ids", "drivers_sum_val", "s_hits", "embed_hits"])
-    legible = table("legible", L)
-    if reads is None:
+    path = lambda t: f"{catalog}/neurons/{t}/L{L:02d}.parquet"
+    if not os.path.exists(path("reads")):
         print(f"L{L:02d}: no reads, skipped", flush=True)
-        layers_meta.append({"layer": L, "band": band(L), "missing": True})
-        continue
+        return None
+    cols = []
+    for c in NEURON_READS:
+        cols += [f"{c}_ids", f"{c}_val"]
+    reads = pq.read_table(path("reads"), columns=["neuron", "pole", "vocab_skew", "vocab_kurt", *cols])
+    acts = pq.read_table(path("acts"), columns=["neuron", "pole", "act_top", "act_max", "rate", "rate_dclm", "rate_zh",
+                                                 "rate_code", "rate_chat", "pos_share", "peak_tokens", "contexts"])
+    drivers = pq.read_table(path("drivers"), columns=["neuron", "pole", "drivers_ids", "drivers_val"])
+    legible = pq.read_table(path("legible"))
+    labels = pq.read_table(path("labels"))
     n = reads.num_rows
-    neuron = arr(reads, "neuron")
-    pole = arr(reads, "pole")
-    row_of = {(int(a), int(b)): i for i, (a, b) in enumerate(zip(neuron, pole))}
+    neuron, pole = col(reads, "neuron").astype(int), col(reads, "pole").astype(int)
+    for t in (acts, drivers, legible, labels):  # the tables mirror one another, row for row
+        assert (col(t, "neuron") == neuron).all() and (col(t, "pole") == pole).all(), f"L{L}: tables out of order"
 
-    def align(t):
-        """Row index into t for every reads row (tables may be ordered differently)."""
-        if t is None:
-            return None
-        tn, tp = arr(t, "neuron"), arr(t, "pole")
-        m = {(int(a), int(b)): i for i, (a, b) in enumerate(zip(tn, tp))}
-        return np.array([m.get((int(a), int(b)), -1) for a, b in zip(neuron, pole)])
+    ids = {c: mat(reads, f"{c}_ids", np.int32) for c in NEURON_READS}
+    vals = {c: mat(reads, f"{c}_val") for c in NEURON_READS}
+    strength = {c: np.sort(vals[c][:, :8].mean(1)) for c in NEURON_READS}
+    pct = {c: np.searchsorted(strength[c], vals[c][:, :8].mean(1)) * 100 // n for c in NEURON_READS}
+    hubs = {c: (np.zeros(VOCAB, bool) if c.endswith("_z") else hubs_of(ids[c])) for c in NEURON_READS}
+    kurt = col(reads, "vocab_kurt")
+    kurt_pct = np.searchsorted(np.sort(kurt), kurt) * 100 // n
+    skew = col(reads, "vocab_skew")
 
-    ai, di, li = align(acts), align(drivers), align(legible)
-    ids = {c: np.array(reads.column(c + "_ids").to_pylist(), dtype=np.int32) for c in READ_COLS + COMPARE_COLS}
-    vals = {c: np.array(reads.column(f"{c}_{SCORE[c]}").to_pylist(), dtype=np.float32) for c in READ_COLS + COMPARE_COLS}
-    strength = {c: np.sort(vals[c][:, :8].mean(1)).tolist() for c in READ_COLS + COMPARE_COLS}
-    hubs = {}
-    for c in READ_COLS + COMPARE_COLS:
-        if c.endswith("_z"):
-            hubs[c] = np.zeros(VOCAB, bool)
-            continue
-        cnt = np.zeros(VOCAB, np.int64)
-        for row in ids[c]:
-            cnt[np.unique(row)] += 1
-        hubs[c] = cnt / n >= 0.03
-    kurt_sorted = np.sort(arr(reads, "vocab_kurt")).tolist()
+    silent, dark = col(legible, "silent").astype(bool), col(legible, "dark").astype(bool)
+    cur_mode = np.nan_to_num(col(legible, "cur_mode").astype(float))
+    next_mode = np.nan_to_num(col(legible, "next_mode").astype(float))
+    q = {s: np.nan_to_num(col(legible, f"{s}_q").astype(float), nan=1.0) for s in NEURON_SIDES}
+    passed = sum((q[s] <= Q).astype(int) for s in NEURON_SIDES)
+    detector = (cur_mode >= 1 / 3) | (next_mode >= 1 / 3)
+    fires, writes, note = (labels.column(c).to_pylist() for c in ("fires", "writes", "note"))
+    fc = np.nan_to_num(col(labels, "fires_conf").astype(float))
+    wc = np.nan_to_num(col(labels, "writes_conf").astype(float))
 
-    act_top = np.array(acts.column("act_top").to_pylist())[ai] if acts is not None else np.ones(n)
-    silent = act_top < 0.05
-    leg_cols = legible.column_names if legible is not None else []
-    q_cols = [c for c in leg_cols if c.endswith("_q")]
+    # Easiest to read: tests that hold at the pole's own top firings, then Haiku's confidence.
+    pole_score = np.where(silent, -1.0, 1.2 * np.minimum(passed, 3) + 3.0 * np.maximum(fc, wc) + 1.0 * np.minimum(fc, wc)
+                          + 0.8 * detector)
+    plus, minus = pole_score[:MLP], pole_score[MLP:]
+    neuron_score = np.maximum(plus, minus) + 0.25 * np.minimum(plus, minus)
 
-    def leg(c, default=np.nan):
-        if legible is None or c not in leg_cols:
-            return np.full(n, default)
-        return np.array(legible.column(c).to_pylist(), dtype=float)[li]
+    act_rows = acts.select(["act_top", "act_max", "rate", "rate_dclm", "rate_zh", "rate_code", "rate_chat", "pos_share",
+                            "peak_tokens", "contexts"]).to_pylist()
+    drv_ids, drv_val = mat(drivers, "drivers_ids", np.int32), mat(drivers, "drivers_val")
 
-    side_q = {c: leg(c) for c in q_cols}
-    cur_mode, next_mode = leg("cur_mode", 0.0), leg("next_mode", 0.0)
-    legible_sides = np.zeros(n)
-    for c, q in side_q.items():
-        legible_sides += np.nan_to_num(q, nan=1.0) <= 0.05
-    # findings §15: a token or next-token detector puts a third or more of its top firings on one token.
-    detector = (np.nan_to_num(cur_mode) >= 1 / 3) | (np.nan_to_num(next_mode) >= 1 / 3)
-    dark = (~silent) & (legible_sides == 0) & (~detector)
-
-    # Measured evidence per pole: stems of its exact drivers and its peak tokens.
-    drv_ids = np.array(drivers.column("drivers_ids").to_pylist(), dtype=np.int32)[di] if drivers is not None else None
-    peaks_col = acts.column("peak_tokens").to_pylist() if acts is not None else None
-
-    def measured_stems(i):
-        s = set()
-        if drv_ids is not None:
-            s |= {STEM[t] for t in drv_ids[i][:20] if not JUNK[t]}
-        if peaks_col is not None:
-            s |= {stem(t) for t, _ in parse_peaks(peaks_col[ai[i]])}
+    def measured_stems(i, peaks):
+        s = {STEM[t] for t in drv_ids[i][:20] if not JUNK[t]} | {stem(t) for t, _ in peaks}
         s.discard("")
         return s
 
-    # ---------- selection score for every pole of the layer
-    score = np.full(n, -1e9)
-    for i in range(n):
-        if silent[i]:
-            continue
-        fams = collections.defaultdict(set)
-        junk8, pcts = 0, []
-        for c in trusted:
-            row = [t for t in ids[c][i] if not hubs[c][t]][:16]
-            fams[FAMILY[c]] |= {STEM[t] for t in row if not JUNK[t]}
-            pcts.append(pct_of(strength[c], float(vals[c][i, :8].mean())))
-        prim = [t for t in ids[ins[0]][i] if not hubs[ins[0]][t]][:8] + [t for t in ids[outs[0]][i] if not hubs[outs[0]][t]][:8]
-        junk8 = sum(JUNK[t] for t in prim) / max(1, len(prim))
-        fam_list = list(fams.values())
-        cross = len(set().union(*[a & b for x, a in enumerate(fam_list) for b in fam_list[x + 1:]])) if len(fam_list) > 1 else 0
-        meas = measured_stems(i)
-        conf = len(meas & set().union(*fam_list)) if fam_list else 0
-        s = 2.0 * legible_sides[i] + 0.5 * min(conf, 6) + 0.4 * min(cross, 5) + max(pcts) / 50 + (1.0 if detector[i] else 0) - 3.0 * junk8
-        s += 0.3 * min(math.log1p(float(act_top[i])), 2.5)
-        key = (L, int(neuron[i]), int(pole[i]))
-        if key in labels and labels[key]["confidence"] >= 0.5:
-            s += 4.0
-        score[i] = s
-    by_neuron = collections.defaultdict(list)
-    for i in range(n):
-        by_neuron[int(neuron[i])].append(score[i])
-    neuron_score = {k: max(v) + 0.25 * min(v) for k, v in by_neuron.items() if max(v) > -1e8}
-    chosen = sorted(neuron_score, key=lambda k: -neuron_score[k])[:KEEP_PER_LAYER]
-    for (lL, ln, lp), lab in labels.items():
-        if lL == L and lab["confidence"] >= 0.6 and ln not in chosen:
-            chosen.append(ln)
-    if ALL:
-        chosen = list(range(MLP))
-    # Row lookups through pyarrow are slow one at a time; materialize the few columns used per pole.
-    acts_rows = acts.to_pylist() if acts is not None else None
-    drivers_rows = drivers.select(["drivers_ids", "drivers_val", "drivers_sum_ids", "drivers_sum_val", "s_hits"]).to_pylist() if drivers is not None else None
-    w_norm_col = arr(reads, "w_norm")
-    null_col = arr(reads, "null_share")
-    kurt_col = arr(reads, "vocab_kurt")
-    skew_col = arr(reads, "vocab_skew")
+    header = read_header(trusted + [c for c in NEURON_READS if c not in trusted], {ins[0], outs[0]}, set(trusted))
 
-    # ---------- layer statistics over all 24,576 poles
-    stats = {"silent": float(silent.mean()), "detector": float((detector & ~silent).mean()),
-             "legible": float(((legible_sides > 0) & ~silent).mean()), "dark": float(dark.mean())} if legible is not None else None
-    hub_list = []
-    for c in ins[:1] + outs[:1]:
-        if not c.endswith("_z"):
-            top = np.argsort(-hubs[c].astype(int))[: int(hubs[c].sum())]
-            hub_list += [TOKS[t] for t in top[:12]]
+    def pole_detail(i):
+        a = act_rows[i]
+        peaks = parse_counts(a["peak_tokens"], 6)
+        meas = measured_stems(i, peaks)
+        rd, fam_keys, twins = [], collections.defaultdict(set), {}
+        for h in header:
+            c, fam = h["col"], h["col"].removesuffix("_z")
+            toks = merged([int(t) for t in ids[c][i] if not hubs[c][t]], skip=frozenset(twins.get(fam, ())), limit=LIMIT[h["trust"]])
+            twins.setdefault(fam, set()).update(k for _, _, k in toks)
+            if h["trust"] != "weak":
+                fam_keys[fam] |= {k for _, _, k in toks[:24] if k and not k.startswith("\u0001")}
+            rd.append((int(pct[c][i]), toks))
+        fams = list(fam_keys.values())
+        shared = set().union(*[x & y for j, x in enumerate(fams) for y in fams[j + 1:]]) if len(fams) > 1 else set()
+        every = set().union(*fams) if fams else set()
+        p = {"pole": int(pole[i]), "reads": [[v, encoded(toks, shared, meas)] for v, toks in rd],
+             "shared": sorted(shared)[:12], "measured": sorted(meas & every)[:12],
+             "label": {"fires": fires[i], "fc": round(float(fc[i]), 2), "writes": writes[i], "wc": round(float(wc[i]), 2), "note": note[i]},
+             "act": {"top": round(a["act_top"], 3), "max": round(a["act_max"], 3), "rate": float(f"{a['rate']:.3g}"),
+                     "slices": [float(f"{a[k]:.3g}") for k in ("rate_dclm", "rate_zh", "rate_code", "rate_chat")],
+                     "pos": round(a["pos_share"], 3)},
+             "peaks": peaks, "contexts": contexts_of(a["contexts"]),
+             "drivers": drivers_of(drv_ids[i], drv_val[i]),
+             "legible": {s: round(float(q[s][i]), 3) for s in NEURON_SIDES},
+             "silent": bool(silent[i]), "dark": bool(dark[i]),
+             "detector": "token" if cur_mode[i] >= 1 / 3 else "next" if next_mode[i] >= 1 / 3 else None,
+             "score": round(float(max(pole_score[i], 0)), 2)}
+        if L >= 21:
+            p["shape"] = {"kurtPct": int(kurt_pct[i]), "skew": round(float(skew[i]), 3),
+                          "kind": ("predicts" if skew[i] > 0 else "suppresses") if kurt_pct[i] >= 90 else None}
+        return p
 
-    # ---------- per neuron detail
-    detail = []
+    def title(i):
+        """The pole's clearer label, shortened; True when it is the writes label."""
+        return (shorten(writes[i]), True, wc[i]) if wc[i] > fc[i] else (shorten(fires[i]), False, fc[i])
+
+    d_out = f"{out}/neurons/L{L:02d}"
+    os.makedirs(d_out, exist_ok=True)
+    rows, details = [], []
+    for nrn in range(MLP):
+        i_plus, i_minus = nrn, MLP + nrn
+        poles = [pole_detail(i_plus), pole_detail(i_minus)]
+        details.append({"n": nrn, "poles": poles})
+        (tp, wp, cp), (tm, wm, cm) = title(i_plus), title(i_minus)
+        flags = ((FLAG_DETECTOR if any(p["detector"] for p in poles) else 0)
+                 | (FLAG_PREDICTS if any((p.get("shape") or {}).get("kind") == "predicts" for p in poles) else 0)
+                 | (FLAG_SUPPRESSES if any((p.get("shape") or {}).get("kind") == "suppresses" for p in poles) else 0)
+                 | (FLAG_PLUS_WRITES if wp else 0) | (FLAG_MINUS_WRITES if wm else 0)
+                 | (FLAG_DARK if all(p["dark"] or p["silent"] for p in poles) else 0))
+        rows.append([nrn, tp, tm, round(float(max(neuron_score[nrn], 0)), 1), flags, int(round(cp * 100)), int(round(cm * 100))])
+        if len(details) == CHUNK:
+            json.dump({"layer": L, "reads": header, "neurons": details}, open(f"{d_out}/c{nrn // CHUNK:03d}.json", "w"), ensure_ascii=False, separators=(",", ":"))
+            details = []
+    json.dump({"layer": L, "neurons": rows}, open(f"{d_out}/index.json", "w"), ensure_ascii=False, separators=(",", ":"))
+
+    chosen = sorted(range(MLP), key=lambda k: -neuron_score[k])[:KEEP_PER_LAYER]
+    curated = []
     for nrn in chosen:
-        entry = {"n": nrn, "poles": []}
-        for pl in (1, -1):
-            i = row_of[(nrn, pl)]
-            fam_tokens = collections.defaultdict(set)
-            rd = []
-            meas = measured_stems(i)
-            twins_seen = {}
-            ordered = (ins[:2] + outs[:1]) if ALL else trusted + [c for c in READ_COLS if c not in trusted] + COMPARE_COLS
-            for c in ordered:
-                trust = "primary" if c in (ins[0], outs[0]) else "trusted" if c in trusted else "compare" if c in COMPARE_COLS else "weak"
-                row = [int(t) for t in ids[c][i] if not hubs[c][t]]
-                twin = twins_seen.get(FAMILY[c]) if c not in COMPARE_COLS else None
-                limit = (16 if ALL else 64) if trust in ("primary", "trusted") else 24
-                toks, keys = merged(row, skip=frozenset(twin or ()), limit=limit)
-                if c not in COMPARE_COLS:
-                    twins_seen.setdefault(FAMILY[c], set()).update(keys)
-                if trust in ("primary", "trusted"):
-                    fam_tokens[FAMILY[c]] |= {k for k in keys[:24] if k and not k.startswith("\u0001")}
-                rd.append({"col": c, "trust": trust, "twin": bool(twin), "pct": pct_of(strength[c], float(vals[c][i, :8].mean())),
-                           "tokens": toks, "hubs": int(sum(hubs[c][t] for t in ids[c][i]))})
-            # agreement: a token is "shared" when another lens family names it, "measured" when it drives or peaks the pole
-            fams = list(fam_tokens.items())
-            shared = set()
-            for x, (fa, a) in enumerate(fams):
-                for fb, b in fams[x + 1:]:
-                    shared |= a & b
-            for r_ in rd:
-                for t in r_["tokens"]:
-                    k = stem(t[0])
-                    t.append((1 if k in shared else 0) | (2 if k in meas else 0))
-            ins_s = set().union(*[fam_tokens[FAMILY[c]] for c in ins if FAMILY[c] in fam_tokens])
-            outs_s = set().union(*[fam_tokens[FAMILY[c]] for c in outs if FAMILY[c] in fam_tokens])
-            p = {"pole": pl, "reads": rd, "shared": sorted(shared)[:24], "inout": sorted((ins_s & outs_s) - {""})[:16],
-                 "measuredAgree": sorted(meas & (ins_s | outs_s))[:16],
-                 "w_norm": round(float(w_norm_col[i]), 3), "null_share": round(float(null_col[i]), 4)}
-            if acts is not None and ai[i] >= 0:
-                a = acts_rows[int(ai[i])]
-                p.update({"act_top": round(a["act_top"], 3), "act_max": round(a["act_max"], 3), "rate": a["rate"],
-                          "slices": [a["rate_dclm"], a["rate_zh"], a["rate_code"], a["rate_chat"]],
-                          "peaks": parse_peaks(a["peak_tokens"])[:6], "contexts": parse_contexts(a["contexts"])})
-            p["silent"] = bool(silent[i])
-            if drivers is not None and di[i] >= 0:
-                d = drivers_rows[int(di[i])]
-                p["drivers"] = [[TOKS[t], round(v, 2)] for t, v in zip(d["drivers_ids"][:24], d["drivers_val"][:24])]
-                p["driversSum"] = [[TOKS[t], round(v, 2)] for t, v in zip(d["drivers_sum_ids"][:16], d["drivers_sum_val"][:16])]
-                p["s_hits"] = d["s_hits"]
-            p["legible"] = {c.removesuffix("_q"): round(float(side_q[c][i]), 4) for c in q_cols if not math.isnan(side_q[c][i])}
-            p["detector"] = "token" if cur_mode[i] >= 1 / 3 else "next" if next_mode[i] >= 1 / 3 else None
-            p["modes"] = [round(float(np.nan_to_num(cur_mode[i])), 3), round(float(np.nan_to_num(next_mode[i])), 3)]
-            if L >= 21:
-                kp = pct_of(kurt_sorted, float(kurt_col[i]))
-                skew = float(skew_col[i])
-                p["shape"] = {"kurtPct": kp, "skew": round(skew, 3), "kind": ("predicts" if skew > 0 else "suppresses") if kp >= 90 else None}
-            lab = labels.get((L, nrn, pl))
-            if lab:
-                p["label"] = lab
-            p["score"] = round(float(score[i]), 2) if score[i] > -1e8 else 0
-            if ALL:
-                for k in ("driversSum", "legible", "modes", "w_norm", "null_share", "s_hits"):
-                    p.pop(k, None)
-                for r_ in p["reads"]:
-                    r_.pop("hubs", None)
-                if "drivers" in p:
-                    p["drivers"] = p["drivers"][:12]
-                p["shared"] = p["shared"][:10]
-                p["measuredAgree"] = p["measuredAgree"][:10]
-                if "label" in p:
-                    p["label"] = {k: p["label"][k] for k in ("text", "confidence", "note") if k in p["label"]}
-            entry["poles"].append(p)
-        detail.append(entry)
+        searches = []
+        for side, i in enumerate((nrn, MLP + nrn)):
+            p = pole_detail(i)
+            searches.append(search_weights(header, p["reads"], p["peaks"], [fires[i], writes[i]]))
+        curated.append({"row": [L, *rows[nrn]], "search": searches})
+    meta = {"layer": L, "band": band(L), "count": len(chosen),
+            "stats": {"silent": round(float(silent.mean()), 4), "detector": round(float((detector & ~silent).mean()), 4),
+                      "legible": round(float(((passed > 0) & ~silent).mean()), 4), "dark": round(float(dark.mean()), 4)}}
+    print(f"L{L:02d}: {MLP} neurons, curated {len(chosen)}, silent {meta['stats']['silent']:.2f} dark {meta['stats']['dark']:.2f}", flush=True)
+    return {"meta": meta, "curated": curated, "scores": neuron_score.astype(np.float32)}
 
-    # ---------- index row and search forms
-    for e in detail:
-        titles = []
-        for p in e["poles"]:
-            lab = p.get("label")
-            if lab and lab["confidence"] >= 0.5:
-                titles.append(lab["text"])
-                continue
-            pick = [t for t in (p["measuredAgree"] + p["shared"] + p["inout"])]
-            prim = next(r for r in p["reads"] if r["trust"] == "primary" and r["col"].startswith("read"))
-            words = []
-            for k in pick:
-                disp = next((t[0] for r in p["reads"] for t in r["tokens"] if stem(t[0]) == k), None)
-                if disp and disp.strip() and disp.strip() not in words:
-                    words.append(disp.strip())
-                if len(words) >= 3:
-                    break
-            if len(words) < 3 and L >= 13 and L <= 20 and p.get("peaks"):
-                for t, _ in p["peaks"]:
-                    if t.strip() and t.strip() not in words and not is_junk(tok.token_to_id(t) or 0):
-                        words.append(t.strip())
-                    if len(words) >= 3:
-                        break
-            for t in prim["tokens"]:
-                if len(words) >= 3:
-                    break
-                s = t[0].strip()
-                if s and not t[0].startswith("\u0001") and s not in words and not all(unicodedata.category(ch)[0] in "PSZC" for ch in s):
-                    words.append(s)
-            titles.append(" · ".join(words[:3]))
-        e["titles"] = titles
-        # A one-line overview for the clearer side: what triggers it and which outputs it steers.
-        best_pole = max(e["poles"], key=lambda p: p["score"])
-        def overview(side):
-            read = next((r for r in best_pole["reads"] if r["trust"] == "primary" and r["col"].startswith(side)), None)
-            words = []
-            for t in (read["tokens"] if read else []):
-                w = t[0].strip()
-                if w and not t[0].startswith("\u0001") and w not in words and not all(unicodedata.category(ch)[0] in "PSZC" for ch in w):
-                    words.append(w)
-                if len(words) >= 4:
-                    break
-            return " · ".join(words)
-        e["overview"] = [overview("read"), overview("write")]
-        if ALL:
-            continue
-        best = max(e["poles"], key=lambda p: p["score"])
-        ref = len(neurons_index)
-        neurons_index.append([L, e["n"], titles[0], titles[1], round(max(p["score"] for p in e["poles"]), 2),
-                              (1 if any(p.get("label") for p in e["poles"]) else 0) | (2 if any(p.get("detector") for p in e["poles"]) else 0)
-                              | (4 if any((p.get("shape") or {}).get("kind") == "predicts" for p in e["poles"]) else 0)
-                              | (8 if any((p.get("shape") or {}).get("kind") == "suppresses" for p in e["poles"]) else 0),
-                              e["overview"][0], e["overview"][1]])
-        for side, p in enumerate(e["poles"]):
-            weights = collections.Counter()
-            for r in p["reads"]:
-                if r["trust"] not in ("primary", "trusted"):
-                    continue
-                for t in r["tokens"][:24]:
-                    k = stem(t[0])
-                    if not k or t[0].startswith("\u0001") or is_junk(tok.token_to_id(t[0]) or 0) and not k.isalnum():
-                        continue
-                    w = (3 if t[2] < 8 else 2 if t[2] < 24 else 1) + (2 if t[3] & 1 else 0) + (2 if t[3] & 2 else 0)
-                    if weights[k] < w:
-                        weights[k] = w
-                        search_display.setdefault(k, t[0].strip())
-            for t, c in p.get("peaks", []):
-                k = stem(t)
-                if k and k.strip():
-                    weights[k] = max(weights[k], 4)
-                    search_display.setdefault(k, t.strip())
-            lab = p.get("label")
-            if lab:
-                for word in re.findall(r"[\w']+", lab["text"].lower()):
-                    if len(word) > 2:
-                        weights[stem(word)] = max(weights[stem(word)], 5)
-                        search_display.setdefault(stem(word), word)
-            for k, w in weights.most_common(40):
-                search[k].append([ref, side, w])
-
-    if ALL:
-        flags_of = lambda e: ((1 if any(p.get("label") for p in e["poles"]) else 0) | (2 if any(p.get("detector") for p in e["poles"]) else 0)
-                              | (4 if any((p.get("shape") or {}).get("kind") == "predicts" for p in e["poles"]) else 0)
-                              | (8 if any((p.get("shape") or {}).get("kind") == "suppresses" for p in e["poles"]) else 0))
-        d_out = f"{out}/all/L{L:02d}"
-        os.makedirs(d_out, exist_ok=True)
-        rows_all = [[e["n"], e["titles"][0], e["titles"][1], round(max(neuron_score.get(e["n"], 0), 0), 1), flags_of(e), e["overview"][0], e["overview"][1]] for e in detail]
-        json.dump({"layer": L, "neurons": rows_all}, open(f"{d_out}/index.json", "w"), ensure_ascii=False, separators=(",", ":"))
-        # The all-neurons view shows the lens reads only; titles above already used the measured fields.
-        keep = ("pole", "reads", "shared", "measuredAgree", "silent", "detector", "shape", "label", "score")
-        for e in detail:
-            e["poles"] = [{k: p[k] for k in keep if k in p} for p in e["poles"]]
-        for c0 in range(0, MLP, CHUNK):
-            json.dump({"layer": L, "neurons": detail[c0:c0 + CHUNK]}, open(f"{d_out}/c{c0 // CHUNK:02d}.json", "w"), ensure_ascii=False, separators=(",", ":"))
-        # One glossary for every Chinese token in the vocabulary serves all layers (written once).
-        if not os.path.exists(f"{out}/all/zh.json"):
-            vocab_zh = {}
-            for t in TOKS:
-                if not t.startswith("\u0001") and cedict_gloss.CJK.search(t) and CEDICT:
-                    g = cedict_gloss.gloss(t, CEDICT)
-                    if g:
-                        vocab_zh[t.strip()] = list(g)
-            json.dump(vocab_zh, open(f"{out}/all/zh.json", "w"), ensure_ascii=False, separators=(",", ":"))
-        print(f"L{L:02d}: all {len(detail)} neurons", flush=True)
-        continue
-
-    layers_meta.append({"layer": L, "band": band(L), "ins": ins, "outs": outs, "stats": stats, "hubs": hub_list[:16],
-                        "count": len(detail), "missing": False,
-                        "partial": [k for k, t in (("acts", acts), ("drivers", drivers), ("legible", legible)) if t is None]})
-    for e in detail:
-        for p in e["poles"]:
-            for k in ("reads", "peaks", "drivers", "driversSum", "shared", "inout", "measuredAgree"):
-                collect_cjk(p.get(k))
-            for c in p.get("contexts", []):
-                collect_cjk(c[1])
-    json.dump({k.strip(): v for k, v in glossary.items() if v}, open(f"{out}/L{L:02d}.zh.json", "w"), ensure_ascii=False, separators=(",", ":"))
-    glossary.clear()
-    json.dump({"layer": L, "neurons": detail}, open(f"{out}/L{L:02d}.json", "w"), ensure_ascii=False, separators=(",", ":"))
-    print(f"L{L:02d}: kept {len(detail)}  silent {stats and round(stats['silent'],2)} dark {stats and round(stats['dark'],2)}", flush=True)
-
-if ALL:
-    sys.exit(0)
 
 # ---------- heads
-heads = {}
-hp = f"{catalog}/heads"
-if os.path.isdir(hp):
-    pat = pq.read_table(f"{hp}/patterns.parquet").to_pylist()
-    cir = {(r["layer"], r["head"]): r for r in pq.read_table(f"{hp}/circuits.parquet").to_pylist()}
-    cen = {(r["layer"], r["head"]): r for r in pq.read_table(f"{hp}/census.parquet").to_pylist()}
-    for r in pat:
-        k = (r["layer"], r["head"])
-        c, s = cir.get(k, {}), cen.get(k, {})
-        heads.setdefault(int(r["layer"]), []).append({
-            "h": int(r["head"]), "kv": int(r["kv_head"]),
-            "sink": round(r["sink"], 3), "prev": round(r["prev"], 3), "self": round(r["self"], 3),
-            "induction": round(r["induction"], 3), "duplicate": round(r["duplicate"], 3),
-            "copy": round(c.get("copy_S_R", 0) or 0, 3),
-            "next": bool(s.get("next_mid")), "copies": bool(s.get("copy_mid")), "dark": bool(s.get("dark")),
-            "reads": s.get("read_mid_z_str", "")})
 
-for m in layers_meta:
-    m["heads"] = sorted(heads.get(m["layer"], []), key=lambda h: h["h"])
+def heads():
+    t = {name: pq.read_table(f"{catalog}/heads/{name}.parquet") for name in ("acts", "drivers", "reads", "legible", "labels")}
+    layer, head = col(t["reads"], "layer").astype(int), col(t["reads"], "head").astype(int)
+    for x in t.values():
+        assert (col(x, "layer") == layer).all() and (col(x, "head") == head).all(), "head tables out of order"
+    n = len(layer)
+    ids = {c: mat(t["reads"], f"{c}_ids", np.int32) for c in HEAD_READS}
+    vals = {c: mat(t["reads"], f"{c}_val") for c in HEAD_READS}
+    pct = {c: np.searchsorted(np.sort(vals[c][:, :8].mean(1)), vals[c][:, :8].mean(1)) * 100 // n for c in HEAD_READS}
+    hubs = {c: (np.zeros(VOCAB, bool) if c.endswith("_z") else hubs_of(ids[c])) for c in HEAD_READS}
+    a, d, r, g, lab = (t[k].to_pylist() for k in ("acts", "drivers", "reads", "legible", "labels"))
+    out_rz = mat(t["acts"], "out_R_z_ids", np.int32)
+    drv = {k: (mat(t["drivers"], f"{k}_ids", np.int32), mat(t["drivers"], f"{k}_val")) for k in ("drivers", "keys")}
 
-json.dump({"model": "Qwen3-8B", "layers": LAYERS, "neuronsPerLayer": MLP, "total": LAYERS * MLP,
-           "layerMeta": layers_meta, "neurons": neurons_index,
-           "columns": ["layer", "neuron", "titlePlus", "titleMinus", "score", "flags", "triggers", "steers"]},
-          open(f"{out}/index.json", "w"), ensure_ascii=False, separators=(",", ":"))
-json.dump({"forms": {k: v for k, v in search.items()}, "display": {k: search_display.get(k, k) for k in search}},
-          open(f"{out}/search.json", "w"), ensure_ascii=False, separators=(",", ":"))
-print("neurons", len(neurons_index), "search forms", len(search))
+    def q(row, k):
+        v = row[k]
+        return 1.0 if v is None or v != v else float(v)
+
+    rows, details, search = [], collections.defaultdict(list), []
+    for i in range(n):
+        L, h = int(layer[i]), int(head[i])
+        A, G, R, B = a[i], g[i], r[i], lab[i]
+        header = head_header(L)
+        rd, twins = [], {}
+        for hd in header:
+            c, fam = hd["col"], hd["col"].removesuffix("_z")
+            toks = merged([int(x) for x in ids[c][i] if not hubs[c][x]], skip=frozenset(twins.get(fam, ())), limit=LIMIT[hd["trust"]])
+            twins.setdefault(fam, set()).update(k for _, _, k in toks)
+            rd.append([int(pct[c][i]), encoded(toks)])
+        roles = ((ROLE_INDUCTION if A["induction"] > 0.3 else 0) | (ROLE_DUPLICATE if A["duplicate"] > 0.3 else 0)
+                 | (ROLE_PREVIOUS if A["prev"] > 0.5 else 0) | (ROLE_SELF if A["self"] > 0.5 else 0)
+                 | (ROLE_SINK if A["sink"] > 0.9 else 0) | (ROLE_NEXT if q(G, "ov_R_q") <= Q else 0)
+                 | (ROLE_COPY if q(G, "ov_copy_q") <= Q else 0) | (ROLE_DARK if G["dark"] else 0))
+        conf = [float(B["fires_conf"] or 0), float(B["attends_conf"] or 0), float(B["writes_conf"] or 0)]
+        modes = [float(G["cur_mode"] or 0), float(G["src_mode"] or 0)]
+        score = (2.0 * (q(G, "ov_R_q") <= Q) + 1.5 * (q(G, "ov_copy_q") <= Q) + 1.0 * bool(G["pattern"])
+                 + 0.8 * (max(modes) >= 1 / 3) + 3.0 * max(conf) + 1.0 * sum(conf) / 3)
+        pattern = [round(A[k], 3) for k in ("sink", "prev", "self", "induction", "duplicate")]
+        peaks = parse_counts(A["peak_tokens"], 6)
+        details[L].append({
+            "h": h, "kv": int(A["kv_head"]),
+            "label": {"fires": B["fires"], "fc": round(conf[0], 2), "attends": B["attends"], "ac": round(conf[1], 2),
+                      "writes": B["writes"], "wc": round(conf[2], 2), "note": B["note"]},
+            "pattern": pattern, "roles": roles,
+            "act": {"top": round(A["out_top"], 2), "max": round(A["out_max"], 2), "rate": float(f"{A['rate']:.3g}"),
+                    "slices": [float(f"{A[k]:.3g}") for k in ("rate_dclm", "rate_zh", "rate_code", "rate_chat")]},
+            "copy": {"ovR": round(R["ov_R_copy"], 3), "ovS": round(R["ov_S_copy"], 3), "self": round(R["qk_self"], 3),
+                     "qkOv": round(R["qk_ov_rho"], 3), "qkCtx": round(R["qk_ctx_rho"], 3)},
+            "reads": rd,
+            "outRz": encoded(merged([int(x) for x in out_rz[i]], limit=16)),
+            "drivers": drivers_of(drv["drivers"][0][i], drv["drivers"][1][i]),
+            "keys": drivers_of(drv["keys"][0][i], drv["keys"][1][i]),
+            "peaks": peaks, "sources": parse_counts(A["src_tokens"], 6), "contexts": contexts_of(A["contexts"]),
+            "legible": {k: round(q(G, f"{k}_q"), 3) for k in ("ov_R", "ov_copy", "ov_S", "qk_S")},
+            "modes": [round(m, 3) for m in modes], "dark": bool(G["dark"]), "score": round(score, 2)})
+        rows.append([L, h, int(A["kv_head"]), shorten(B["fires"], 72), shorten(B["attends"], 72), shorten(B["writes"], 72),
+                     *[int(round(c * 100)) for c in conf], roles, round(score, 1), pattern])
+        search.append(search_weights(header, rd, peaks, [B["fires"], B["attends"], B["writes"]]))
+    os.makedirs(f"{out}/heads", exist_ok=True)
+    for L, hs in details.items():
+        json.dump({"layer": L, "reads": head_header(L), "heads": hs}, open(f"{out}/heads/L{L:02d}.json", "w"), ensure_ascii=False, separators=(",", ":"))
+    json.dump({"heads": rows}, open(f"{out}/heads/index.json", "w"), ensure_ascii=False, separators=(",", ":"))
+    print(f"heads: {n}", flush=True)
+    return rows, search
+
+
+def main():
+    os.makedirs(out, exist_ok=True)
+    head_rows, head_search = heads()
+    with multiprocessing.get_context("fork").Pool(min(6, len(ONLY))) as pool:
+        layers = dict(zip(ONLY, pool.map(neuron_layer, ONLY)))
+
+    metas, curated, scores = [], [], []
+    for L in range(LAYERS):
+        res = layers.get(L)
+        metas.append(res["meta"] if res else {"layer": L, "band": band(L), "missing": True})
+        if res:
+            curated += res["curated"]
+    top = max(float(res["scores"].max()) for res in layers.values() if res)
+    for L in range(LAYERS):
+        res = layers.get(L)
+        values = np.zeros(MLP, np.uint8) if not res else np.clip(np.round(255 * (np.maximum(res["scores"], 0) / top) ** 0.8), 0, 255).astype(np.uint8)
+        scores.append(base64.b64encode(values.tobytes()).decode())
+    json.dump({"layers": scores}, open(f"{out}/scores.json", "w"), separators=(",", ":"))
+
+    # Search: word -> [ref, side, weight]; side 0/1 is a curated neuron's + or − pole (ref indexes
+    # index.json's neurons), side 2 a head (ref = layer * 32 + head).
+    forms, display = collections.defaultdict(list), {}
+    for ref, c in enumerate(curated):
+        for side, (weights, shown) in enumerate(c["search"]):
+            for k, w in weights.most_common(40):
+                forms[k].append([ref, side, w])
+                display.setdefault(k, shown[k])
+    for row, (weights, shown) in zip(head_rows, head_search):
+        for k, w in weights.most_common(40):
+            forms[k].append([row[0] * HEADS + row[1], 2, w])
+            display.setdefault(k, shown[k])
+    json.dump({"forms": forms, "display": {k: display[k] for k in forms}}, open(f"{out}/search.json", "w"), ensure_ascii=False, separators=(",", ":"))
+    json.dump(TERMS, open(f"{out}/terms.json", "w"), ensure_ascii=False, separators=(",", ":"))
+    json.dump(TOKS, open(f"{out}/vocab.json", "w"), ensure_ascii=False, separators=(",", ":"))
+    json.dump({"model": "Qwen3-8B", "layers": LAYERS, "neuronsPerLayer": MLP, "headsPerLayer": HEADS, "chunk": CHUNK,
+               "layerMeta": metas, "neurons": [c["row"] for c in curated],
+               "columns": ["layer", "neuron", "titlePlus", "titleMinus", "score", "flags", "confPlus", "confMinus"]},
+              open(f"{out}/index.json", "w"), ensure_ascii=False, separators=(",", ":"))
+    print(f"curated {len(curated)}, search forms {len(forms)}, terms {len(TERMS)}, contexts translated {len(CONTEXT_EN)}")
+
+
+if __name__ == "__main__":
+    main()

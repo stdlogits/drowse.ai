@@ -1,14 +1,15 @@
 // One listener for every token chip in the explorer: hovering a token lights up its variants in
-// every read of the same neuron, and Chinese tokens show pinyin and an English gloss.
-import { ensureGlossary, gloss, hasGlossary } from "./gloss.svelte";
+// every read of the same unit, and a term from another language shows its translation, its
+// romanization and its language. A translated context's badge shows the original text.
+import { ensureTerms, languageName, termFor, translation } from "./translate.svelte";
 
-const glossFor = (text: string) => gloss.dict?.[text.trim()];
+const TARGET = ".tok, .term, .lang[data-original]";
 
 export function tokenHover(root: HTMLElement) {
   const tip = document.createElement("div");
-  tip.className = "zh-gloss";
+  tip.className = "term-tip";
   tip.setAttribute("role", "tooltip");
-  tip.id = `zh-gloss-${Math.random().toString(36).slice(2, 8)}`;
+  tip.id = `term-tip-${Math.random().toString(36).slice(2, 8)}`;
   tip.hidden = true;
   document.body.append(tip);
 
@@ -26,36 +27,43 @@ export function tokenHover(root: HTMLElement) {
     current?.removeAttribute("aria-describedby");
   }
 
-  function showTip(token: HTMLElement) {
-    const zh = token.dataset.zh;
-    if (!zh) return hideTip();
-    const layer = Number(token.closest<HTMLElement>("[data-layer]")?.dataset.layer ?? NaN);
-    const ready = Number.isFinite(layer) && hasGlossary(layer);
-    if (Number.isFinite(layer) && !ready) void ensureGlossary(layer).then(() => { if (current === token) showTip(token); });
-    const entry = glossFor(zh);
-    tip.replaceChildren();
-    const word = document.createElement("span");
-    word.className = "zh-word";
-    word.lang = "zh";
-    word.textContent = zh;
-    tip.append(word);
-    if (entry) {
-      const pinyin = document.createElement("span");
-      pinyin.className = "zh-pinyin";
-      pinyin.textContent = entry[0];
-      const meaning = document.createElement("span");
-      meaning.className = "zh-meaning";
-      meaning.textContent = entry[1];
-      tip.append(pinyin, meaning);
-    } else {
-      const meaning = document.createElement("span");
-      meaning.className = "zh-meaning muted";
-      meaning.textContent = ready || !Number.isFinite(layer) ? "Not in the dictionary: likely part of a longer word." : "Loading translation…";
-      tip.append(meaning);
+  function line(className: string, text: string, lang?: string) {
+    const span = document.createElement("span");
+    span.className = className;
+    span.textContent = text;
+    if (lang) span.lang = lang;
+    return span;
+  }
+
+  function fill(token: HTMLElement): boolean {
+    const original = token.dataset.original;
+    if (original) {
+      tip.replaceChildren(
+        line("tip-original", original, token.dataset.lang),
+        line("tip-meta", `Translated from ${languageName(token.dataset.lang ?? "")} by Claude Haiku`),
+      );
+      return true;
     }
+    const term = token.dataset.term;
+    if (!term) return false;
+    if (!translation.terms) void ensureTerms().then(() => { if (current === token) showTip(token); });
+    const entry = termFor(term);
+    const children = [line("tip-word", term, entry?.[2])];
+    if (entry) {
+      if (entry[1]) children.push(line("tip-roman", entry[1]));
+      children.push(line("tip-meaning", entry[0]), line("tip-meta", `${languageName(entry[2])} · machine translated`));
+    } else {
+      children.push(line("tip-meta", translation.terms || translation.failed ? "No translation: likely a piece of a longer word." : "Loading translation…"));
+    }
+    tip.replaceChildren(...children);
+    return true;
+  }
+
+  function showTip(token: HTMLElement) {
+    if (!fill(token)) return hideTip();
     tip.hidden = false;
     const box = token.getBoundingClientRect();
-    const width = Math.min(320, window.innerWidth - 24);
+    const width = Math.min(340, window.innerWidth - 24);
     tip.style.maxWidth = `${width}px`;
     const tipBox = tip.getBoundingClientRect();
     const left = Math.max(12, Math.min(window.innerWidth - tipBox.width - 12, box.left + box.width / 2 - tipBox.width / 2));
@@ -87,7 +95,7 @@ export function tokenHover(root: HTMLElement) {
   }
 
   const over = (event: Event) => {
-    const token = (event.target as Element | null)?.closest?.<HTMLElement>(".tok, .zh-term");
+    const token = (event.target as Element | null)?.closest?.<HTMLElement>(TARGET);
     if (token && root.contains(token)) enter(token);
     else if (current && !current.contains(document.activeElement)) leave();
   };
@@ -99,14 +107,14 @@ export function tokenHover(root: HTMLElement) {
     // The pointer may move onto the gloss itself to read it (WCAG 1.4.13).
     if (next && tip.contains(next)) return;
     if (!next || !current?.contains(next)) {
-      const nextToken = next?.closest?.<HTMLElement>(".tok, .zh-term");
+      const nextToken = next?.closest?.<HTMLElement>(TARGET);
       if (!nextToken) leave();
     }
   };
   // Touch: a tap shows the gloss; tapping elsewhere hides it.
   const down = (event: PointerEvent) => {
     if (event.pointerType === "mouse" || tip.contains(event.target as Node)) return;
-    const token = (event.target as Element | null)?.closest?.<HTMLElement>(".tok, .zh-term");
+    const token = (event.target as Element | null)?.closest?.<HTMLElement>(TARGET);
     if (token && root.contains(token)) enter(token);
     else leave();
   };

@@ -20,7 +20,7 @@
       { label: "Open Drowse", href: `${site}/app` },
       { label: "Models", href: `${site}/app?choose=1` },
       { label: "Learn", href: `${site}/learn`, page: "learn" },
-      { label: "Neurons", href: `${site}/neurons`, page: "neurons" },
+      { label: "Neuron Lens", href: `${site}/neuron-lens`, page: "neurons" },
     ] },
     { title: "Project", links: [
       { label: "Credits", href: `${site}/credits`, page: "credits" },

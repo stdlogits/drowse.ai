@@ -264,7 +264,7 @@ export const sitePages = [
   { path: "/credits", title: "Credits · Drowse", description: "The people behind Drowse, a local workbench for exploring language models." },
   { path: "/contact", title: "Contact us · Drowse", description: "Get in touch with the Drowse team. Ask for help, share feedback, or discuss working together." },
   { path: "/contribute", title: "Contribute to Drowse", description: "Help build Drowse: report a bug, improve the code, add a model or pack, teach with it, or support the project." },
-  { path: "/neurons", title: "Neuronlens Explorer · Drowse", description: "See what the 442,368 MLP neurons inside Qwen3-8B respond to and what they make the model say." },
+  { path: "/neuron-lens", title: "Neuron Lens · Drowse", description: "See what the 442,368 MLP neurons and 1,152 attention heads inside Qwen3-8B respond to and what they make the model say, with Claude Haiku's reading of each." },
   { path: "/third-party-licenses", title: "Third-party licenses · Drowse", description: "Licenses and notices for the open-source software, fonts, and icons that ship with the Drowse website." },
 ];
 

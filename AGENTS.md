@@ -5,7 +5,7 @@
 The source of [drowse.ai](https://drowse.ai), the browser edition of drowse: the
 drowse dashboard running inference, steering, probes, SAE features, and the
 J-lens on the device through WebGPU, plus the landing and content pages, the
-`/neurons` explorer, and the `/api/contact` Worker.
+Neuron Lens explorer (`/neuron-lens`), and the `/api/contact` Worker.
 
 It is built on [stdlogits/drowse](https://github.com/stdlogits/drowse), pinned
 as the `drowse/` submodule. That repository owns the Python engine, the CLI and
@@ -31,6 +31,7 @@ anything that crosses the runtime seam.
   - `vite.config.ts` — what ad-hoc Vite servers in `scripts/` load when they pass
     no config: the dashboard's own config from the submodule.
   - `scripts/` — unit tests, release and catalog tooling, evidence recording.
+    `scripts/neurons/` builds Neuron Lens's data; see below.
   - `e2e/` — Playwright specs against the hosted dev and preview servers.
   - `contact-worker/` — separate Cloudflare Worker with its own package.
 - `browser-runtime/` — WebLLM/MLC forks and compiler, the Rust/WASM fitting
@@ -72,6 +73,23 @@ the submodule's own repository. A submodule bump is a change to executable
 source, so evidence recorded against the previous pin no longer qualifies.
 Deployment is a manual upload of `webui/dist-hosted`; see
 `browser-runtime/README.md#cloudflare-pages-deployment`.
+
+## Neuron Lens data
+
+`/neuron-lens` reads static JSON from `webui/public-hosted/neurons-data/`, built from the private
+neuron-lens catalog (`~/Work/neuron-lens/data/catalog/qwen3-8b`) and gitignored like it. Two
+stages, run from `webui/` (each script's docstring has the full invocation):
+
+1. `scripts/neurons/translate.py` machine-translates non-English tokens, label terms and example
+   contexts with Claude Haiku 5.5 on the Batch API (`collect`, `pilot`, `submit --cap`, `results`),
+   caching them in `webui/.neuron-lens/translations.jsonl`. Rerun it only when the catalog's
+   vocabulary, labels or contexts change.
+2. `scripts/neurons/build-neuron-catalog.py <catalog> <tokenizer.json> public-hosted/neurons-data
+   .neuron-lens/translations.jsonl` writes every neuron and head. `NEURON_LAYERS=8,21` builds a
+   subset for development.
+
+The page's types (`webui/src/hosted/ui/neurons/data.ts`) mirror the builder's output; change both
+together, and the e2e spec's mocks with them.
 
 ## Commands
 

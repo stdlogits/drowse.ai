@@ -791,7 +791,7 @@ test("shared page headers and footers align across public pages and workbench", 
       const footer = page.locator(".page-footer");
       await footer.scrollIntoViewIfNeeded();
       await expect(footer.getByRole("navigation", { name: "Footer" }).getByRole("link")).toHaveText([
-        "Home", "Open Drowse", "Models", "Learn", "Neurons", "Credits", "Contribute", "Changelog (opens GitHub)",
+        "Home", "Open Drowse", "Models", "Learn", "Neuron Lens", "Credits", "Contribute", "Changelog (opens GitHub)",
         "Privacy", "LicenseGNU AGPL v3 or later", "Third-party licenses", "Security (opens GitHub)", "Contact us", "Email us",
       ]);
       const actualFooter = await footer.evaluate(el => {

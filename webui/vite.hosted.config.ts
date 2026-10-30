@@ -81,7 +81,7 @@ const prerenderedRoutes = [
   { path: "/credits", key: "credits", component: "credits" },
   { path: "/contact", key: "contact", component: "contact" },
   { path: "/contribute", key: "contribute", component: "contribute" },
-  { path: "/neurons", key: "neurons", component: "neurons" },
+  { path: "/neuron-lens", key: "neuron-lens", component: "neuron-lens" },
   { path: "/third-party-licenses", key: "third-party-licenses", component: "third-party-licenses" },
   ...htmlGuidePaths.map((path) => path.startsWith("/learn/")
     ? { path, key: `learn-guide:${path}`, component: "learn-guide", props: { path } }
@@ -349,9 +349,9 @@ export default defineConfig({
         globIgnores: [
           "_worker.js", "_routes.json", "404.html", "skills/**", ".well-known/**",
           // Prerendered pages are network-first documents (see the page route below), not precache entries.
-          "credits.html", "contact.html", "contribute.html", "neurons.html", "third-party-licenses.html", "privacy.html", "about.html",
+          "credits.html", "contact.html", "contribute.html", "neuron-lens.html", "third-party-licenses.html", "privacy.html", "about.html",
           "learn.html", "learn/**", "assets/prerender-*.css",
-          "assets/{Privacy,About,Learn,LearnGuide,Contribute,Neurons,ThirdPartyLicenses,SitePage,GuideContent,site-content,NotFound}-*",
+          "assets/{Privacy,About,Learn,LearnGuide,Contribute,NeuronLens,ThirdPartyLicenses,SitePage,GuideContent,site-content,NotFound}-*",
           // Browser-agent workspace tools load only when the experimental model context is present.
           "assets/{workspaceTools,serviceTools,generation}-*.js",
           // Inlined into every document at build time.
@@ -368,7 +368,7 @@ export default defineConfig({
           // Runtime registries are shared with the app shell and must remain available offline.
           "assets/drowse-web-llm-*.js",
           "assets/typescript-*.js",
-          // The neuron explorer's catalog loads one layer at a time, on demand.
+          // Neuron Lens's catalog loads one chunk of a layer at a time, on demand.
           "neurons-data/**",
           "social/**",
           "video/**",
@@ -395,7 +395,7 @@ export default defineConfig({
             // Prerendered pages come from the network so visitors get current, crawlable HTML. Offline,
             // a page opened before is reused; credits and contact otherwise boot from the app shell.
             urlPattern: ({ request, url }) => request.mode === "navigate" &&
-              /^\/(?:credits|contact|contribute|neurons|third-party-licenses|privacy|about|learn(?:\/[a-z-]+)?)$/.test(url.pathname),
+              /^\/(?:credits|contact|contribute|neuron-lens|third-party-licenses|privacy|about|learn(?:\/[a-z-]+)?)$/.test(url.pathname),
             handler: "NetworkFirst",
             options: {
               cacheName: "drowse-hosted-pages-v1",

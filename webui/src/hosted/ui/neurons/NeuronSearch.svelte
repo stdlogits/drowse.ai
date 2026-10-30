@@ -1,17 +1,18 @@
 <script lang="ts">
   import FluentIcon from "../../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
   import MorphText from "../../../../../drowse/webui/src/lib/ui/MorphText.svelte";
-  import { loadSearch, neuronId, parseNeuronRef, stem, type CatalogIndex, type SearchFile } from "./data";
+  import { HEADS, headId, loadSearch, neuronId, parseRef, stem, type CatalogIndex, type HeadRow, type SearchFile, type Unit } from "./data";
 
-  interface Result { layer: number; neuron: number; side: 0 | 1; title: string; matched: string; score: number }
+  interface Result { unit: Unit; layer: number; index: number; side: 0 | 1 | 2; title: string; matched: string; score: number }
 
-  let { index, onopen, onmatches, examples = [], anyNeuron = false }: {
+  let { index, heads, onopen, onmatches, examples = [], anyNeuron = false }: {
     index: CatalogIndex | null;
+    heads: HeadRow[] | null;
     /** With every neuron available, an ID opens any neuron, not just the easiest. */
     anyNeuron?: boolean;
-    onopen: (layer: number, neuron: number, pole: 1 | -1) => void;
-    /** Every matching neuron, as "layer:neuron" keys, so the ribbon can light them up. */
-    onmatches: (keys: Set<string>, query: string) => void;
+    onopen: (unit: Unit, layer: number, index: number) => void;
+    /** Every matching unit, as "layer:index" keys per unit, so the ribbon can light them up. */
+    onmatches: (keys: { neurons: Set<string>; heads: Set<string> }, query: string) => void;
     examples?: string[];
   } = $props();
 
@@ -34,16 +35,35 @@
     return data;
   }
 
+  /** A head's clearest label. */
+  function headTitle(row: HeadRow): string {
+    const labels: [string, number][] = [[row[3], row[6]], [row[4], row[7]], [row[5], row[8]]];
+    return labels.reduce((best, next) => (next[1] > best[1] ? next : best))[0];
+  }
+
+  function report(list: Result[]) {
+    const keys = { neurons: new Set<string>(), heads: new Set<string>() };
+    for (const r of list) keys[r.unit].add(`${r.layer}:${r.index}`);
+    return keys;
+  }
+
   function run(text: string) {
     const trimmed = text.trim();
-    if (!trimmed || !index) { results = []; total = 0; onmatches(new Set(), ""); return; }
-    const ref = parseNeuronRef(trimmed);
+    if (!trimmed || !index) { results = []; total = 0; onmatches({ neurons: new Set(), heads: new Set() }, ""); return; }
+    const ref = parseRef(trimmed);
     if (ref) {
-      const row = index.neurons.find((r) => r[0] === ref[0] && r[1] === ref[1]);
-      results = row ? [{ layer: row[0], neuron: row[1], side: 0, title: row[2], matched: "", score: 1 }]
-        : anyNeuron ? [{ layer: ref[0], neuron: ref[1], side: 0, title: "Open this neuron", matched: "", score: 1 }] : [];
+      let found: Result | null = null;
+      if (ref.unit === "heads") {
+        const row = heads?.find((r) => r[0] === ref.layer && r[1] === ref.index);
+        found = { unit: "heads", layer: ref.layer, index: ref.index, side: 2, title: row ? headTitle(row) : "Open this head", matched: "", score: 1 };
+      } else {
+        const row = index.neurons.find((r) => r[0] === ref.layer && r[1] === ref.index);
+        found = row ? { unit: "neurons", layer: row[0], index: row[1], side: 0, title: row[2], matched: "", score: 1 }
+          : anyNeuron ? { unit: "neurons", layer: ref.layer, index: ref.index, side: 0, title: "Open this neuron", matched: "", score: 1 } : null;
+      }
+      results = found ? [found] : [];
       total = results.length;
-      onmatches(new Set(results.map((r) => `${r.layer}:${r.neuron}`)), trimmed);
+      onmatches(report(results), trimmed);
       active = results.length ? 0 : -1;
       return;
     }
@@ -54,39 +74,47 @@
     }
     const key = stem(trimmed);
     const lower = trimmed.toLowerCase();
-    const scores = new Map<number, { score: number; matched: string; side: 0 | 1 }>();
+    const cjk = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(lower);
+    // Keyed by unit: curated neuron poles as ref * 2 + side, heads as 1e6 + layer * 32 + head.
+    const scores = new Map<number, { score: number; matched: string }>();
     for (const [form, refs] of Object.entries(data.forms)) {
       let factor = 0;
       if (form === key || form === lower) factor = 3;
       else if (key.length >= 2 && form.startsWith(key)) factor = 1.4;
       else if (key.length >= 3 && form.includes(key)) factor = 0.7;
-      else if (/[㐀-鿿]/.test(lower) && form.includes(lower)) factor = 1.2;
+      else if (cjk && form.includes(lower)) factor = 1.2;
       if (!factor) continue;
-      for (const [row, side, weight] of refs) {
-        const id = row * 2 + side;
+      for (const [ref, side, weight] of refs) {
+        const id = side === 2 ? 1e6 + ref : ref * 2 + side;
         const value = weight * factor;
         const previous = scores.get(id);
-        if (!previous) scores.set(id, { score: value, matched: data.display[form] ?? form, side });
+        if (!previous) scores.set(id, { score: value, matched: data.display[form] ?? form });
         else { previous.score += value * 0.35; if (value > previous.score) previous.matched = data.display[form] ?? form; }
       }
     }
     const ranked = [...scores.entries()].sort((a, b) => b[1].score - a[1].score);
-    const keys = new Set<string>();
-    for (const [id] of ranked) { const row = index.neurons[id >> 1]; keys.add(`${row[0]}:${row[1]}`); }
-    total = keys.size;
+    const all: Result[] = [];
     const seen = new Set<string>();
-    const list: Result[] = [];
     for (const [id, hit] of ranked) {
-      const row = index.neurons[id >> 1];
-      const k = `${row[0]}:${row[1]}`;
+      let r: Result | null = null;
+      if (id >= 1e6) {
+        const ref = id - 1e6;
+        const row = heads?.find((h) => h[0] === Math.floor(ref / HEADS) && h[1] === ref % HEADS);
+        r = { unit: "heads", layer: Math.floor(ref / HEADS), index: ref % HEADS, side: 2, title: row ? headTitle(row) : "", matched: hit.matched, score: hit.score };
+      } else {
+        const row = index.neurons[id >> 1];
+        const side = (id & 1) as 0 | 1;
+        r = { unit: "neurons", layer: row[0], index: row[1], side, title: side === 0 ? row[2] : row[3], matched: hit.matched, score: hit.score };
+      }
+      const k = `${r.unit}:${r.layer}:${r.index}`;
       if (seen.has(k)) continue;
       seen.add(k);
-      list.push({ layer: row[0], neuron: row[1], side: hit.side, title: hit.side === 0 ? row[2] : row[3], matched: hit.matched, score: hit.score });
-      if (list.length >= 12) break;
+      all.push(r);
     }
-    results = list;
-    active = list.length ? 0 : -1;
-    onmatches(keys, trimmed);
+    total = all.length;
+    results = all.slice(0, 12);
+    active = results.length ? 0 : -1;
+    onmatches(report(all), trimmed);
   }
 
   function changed() {
@@ -97,7 +125,7 @@
 
   function choose(result: Result) {
     open = false;
-    onopen(result.layer, result.neuron, result.side === 0 ? 1 : -1);
+    onopen(result.unit, result.layer, result.index);
   }
 
   function key(event: KeyboardEvent) {
@@ -134,9 +162,9 @@
     !query.trim() ? ""
     : searchFailed ? "Unable to load search. Check your connection and try again."
     : loading ? "Loading search…"
-    : !results.length ? `No neurons match “${query.trim()}”. Try another word or an ID like L8 344.`
-    : total === 1 ? "1 neuron matches."
-    : `${total} neurons match. Showing the top ${results.length}.`,
+    : !results.length ? `Nothing matches “${query.trim()}”. Try another word, or an ID like L8 344 or L20h17.`
+    : total === 1 ? "1 match."
+    : `${total} matches. Showing the top ${results.length}.`,
   );
 </script>
 
@@ -148,12 +176,12 @@
       bind:value={query}
       type="search"
       role="combobox"
-      aria-label="Search neurons by concept or ID"
+      aria-label="Search neurons and heads by concept or ID"
       aria-autocomplete="list"
       aria-expanded={open && results.length > 0}
       aria-controls="neuron-results"
       aria-activedescendant={open && active >= 0 ? `neuron-result-${active}` : undefined}
-      placeholder="Search a word or an ID like L8 344"
+      placeholder="Search a word, or an ID like L8 344 or L20h17"
       autocomplete="off"
       spellcheck="false"
       oninput={changed}
@@ -165,8 +193,8 @@
   </div>
   <p class="status" aria-live="polite">{#if status}<MorphText text={status} duration={200} />{/if}</p>
   {#if open && results.length}
-    <ul class="results" id="neuron-results" role="listbox" aria-label="Matching neurons">
-      {#each results as result, i (`${result.layer}:${result.neuron}`)}
+    <ul class="results" id="neuron-results" role="listbox" aria-label="Matches">
+      {#each results as result, i (`${result.unit}:${result.layer}:${result.index}`)}
         <li
           id={`neuron-result-${i}`}
           role="option"
@@ -176,8 +204,8 @@
           onpointerenter={() => (active = i)}
           style:--L={result.layer}
         >
-          <span class="r-id">{neuronId(result.layer, result.neuron)}</span>
-          <span class="r-sign">{result.side === 0 ? "+" : "−"}</span>
+          <span class="r-id">{result.unit === "heads" ? headId(result.layer, result.index) : neuronId(result.layer, result.index)}</span>
+          <span class="r-sign" aria-label={result.side === 2 ? "head" : result.side === 0 ? "plus pole" : "minus pole"}>{result.side === 2 ? "h" : result.side === 0 ? "+" : "−"}</span>
           <span class="r-title">{result.title || "unclear"}</span>
           {#if result.matched}<span class="r-match">{result.matched}</span>{/if}
         </li>

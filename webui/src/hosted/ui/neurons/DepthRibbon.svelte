@@ -1,5 +1,5 @@
 <script lang="ts">
-  import TitleText from "./TitleText.svelte";
+  import LabelText from "./LabelText.svelte";
   import { BANDS, BAND_ORDER, bandOf, depthColor, neuronId, type CatalogIndex, type IndexRow } from "./data";
 
   let { index, layer, neuron, highlight, onlayer, onneuron, scores = null, peek }: {
@@ -17,7 +17,7 @@
   } = $props();
 
   const COL = 32;
-  const GAP = 10;
+  const GAP = 8;
   const TOP = 20;
   const W = COL * 36;
 
@@ -252,7 +252,6 @@
               class:lit={highlight.has(key)}
               class:dim={highlight.size > 0 && !highlight.has(key)}
               class:selected={neuron === row[1] && L === layer}
-              class:labelled={(row[5] & 1) !== 0}
               class:pointed={tipRow === row}
               cx={L * COL + COL / 2}
               cy={TOP + slot * GAP + GAP / 2}
@@ -285,17 +284,17 @@
       <div class="tip" class:flip={hover.flip} style:--x={`${hover.x}px`} style:--y={`${hover.y}px`} aria-hidden="true">
         {#if everyNeuron && hoverNeuron !== null}
           <strong>{neuronId(hover.layer, hoverNeuron)}</strong>
-          {#if peeked?.[6] || peeked?.[7]}
-            <span class="tip-over"><em>Triggered by:</em><TitleText text={peeked[6] ?? ""} fallback="unclear" /></span>
-            <span class="tip-over"><em>Steers outputs:</em><TitleText text={peeked[7] ?? ""} fallback="unclear" /></span>
+          {#if peeked}
+            <span class="tip-over"><em>+</em><LabelText text={peeked[2]} /></span>
+            <span class="tip-over"><em>−</em><LabelText text={peeked[3]} /></span>
           {:else}
             <span class="tip-line">{BANDS[bandOf(hover.layer)].name}</span>
           {/if}
           <span class="tip-hint">Click to open</span>
         {:else if tipRow}
           <strong>{neuronId(tipRow[0], tipRow[1])}</strong>
-          <span class="tip-over"><em>Triggered by:</em><TitleText text={tipRow[6] ?? ""} fallback="unclear" /></span>
-          <span class="tip-over"><em>Steers outputs:</em><TitleText text={tipRow[7] ?? ""} fallback="unclear" /></span>
+          <span class="tip-over"><em>+</em><LabelText text={tipRow[2]} /></span>
+          <span class="tip-over"><em>−</em><LabelText text={tipRow[3]} /></span>
           <span class="tip-hint">Click to open</span>
         {:else}
           <strong>Layer {hover.layer}</strong>
@@ -304,7 +303,7 @@
       </div>
     {/if}
   </div>
-  <p id="ribbon-help" class="sr-only">Use the arrow keys to change layer and Enter to open its clearest neuron.</p>
+  <p id="ribbon-help" class="sr-only">Use the arrow keys to change layer and Enter to open its easiest neuron.</p>
 </div>
 
 <style>
@@ -336,7 +335,6 @@
   .ready .dot { animation: dot-in 600ms var(--ease-enter) backwards; animation-delay: calc(var(--L) * 32ms + var(--slot) * 3ms); }
   @keyframes dot-in { from { opacity: 0; scale: 0; } }
   .col.active .dot { opacity: 1; }
-  .dot.labelled { stroke: var(--fg); stroke-width: 1; stroke-opacity: 0.55; }
   .dot.dim { opacity: 0.14; }
   .dot.lit { opacity: 1; scale: 1.6; }
   .dot.pointed { scale: 2.1; opacity: 1; }
@@ -355,7 +353,7 @@
   .band.active text { fill: var(--fg); }
 
   .tip {
-    position: absolute; left: 0; top: 0; z-index: 3; display: grid; gap: var(--space-1); width: max-content; max-width: 18rem;
+    position: absolute; left: 0; top: 0; z-index: 3; display: grid; gap: var(--space-1); width: max-content; max-width: 21rem;
     padding: var(--space-3) var(--space-4); border-radius: var(--radius); background: var(--bg-elev); box-shadow: var(--shadow-card);
     color: var(--fg-dim); font-size: var(--text-sm); line-height: 1.4; pointer-events: none;
     transform: translate(calc(var(--x) + 16px), calc(var(--y) - 50%));
@@ -365,8 +363,8 @@
   @keyframes tip-in { from { opacity: 0; } }
   .tip strong { color: var(--fg); font-family: var(--font-mono); font-size: var(--text-md); }
   .tip-line { display: flex; gap: var(--space-2); }
-  .tip-over { display: grid; gap: 0; color: var(--fg); }
-  .tip-over em { color: var(--fg-muted); font-size: var(--text-xs); font-style: normal; }
+  .tip-over { display: grid; grid-template-columns: 1.2ch minmax(0, 1fr); gap: var(--space-2); color: var(--fg); }
+  .tip-over em { color: var(--fg-muted); font-style: normal; font-weight: var(--weight-structure-bold); }
   .tip-hint { color: var(--fg-muted); font-size: var(--text-xs); }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 

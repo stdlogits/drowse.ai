@@ -1,10 +1,9 @@
 <script lang="ts">
-  import FluentIcon from "../../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
-  import MorphText from "../../../../../drowse/webui/src/lib/ui/MorphText.svelte";
-  import InfoTip from "../../../../../drowse/webui/src/lib/ui/InfoTip.svelte";
+  import DetailBar from "./DetailBar.svelte";
+  import LabelCell from "./LabelCell.svelte";
+  import LabelText from "./LabelText.svelte";
   import PoleColumn from "./PoleColumn.svelte";
-  import TitleText from "./TitleText.svelte";
-  import { MIDDLE_CAUTION, bandOf, neuronId, type NeuronDetail } from "./data";
+  import { BANDS, LENSES, MIDDLE_CAUTION, bandOf, headline, neuronId, type LensToken, type NeuronDetail, type Pole } from "./data";
 
   let { neuron, layer, onstep, position, total, hrefFor }: {
     neuron: NeuronDetail;
@@ -28,6 +27,7 @@
   // Measured on the pane itself, since the rail beside it takes a varying share of the window.
   let width = $state(1000);
   const narrow = $derived(width < 720);
+  const band = $derived(bandOf(layer));
 
   // Arrow keys move between the two pole tabs (APG tabs pattern).
   function tabKey(event: KeyboardEvent) {
@@ -37,61 +37,47 @@
     document.getElementById(`pole-tab-${shown}`)?.focus();
   }
 
-  // The one-line overview: the clearer side's top input and output words.
-  const overview = $derived.by((): [string, string] => {
-    if (neuron.overview) return neuron.overview;
-    const pole = neuron.poles[clearer];
-    const words = (prefix: string) => {
-      const read = pole.reads.find((r) => r.trust === "primary" && r.col.startsWith(prefix));
-      return (read?.tokens ?? []).map(([token]) => token.trim()).filter((word) => word && !word.startsWith("\u0001") && /[\p{L}\p{N}]/u.test(word)).slice(0, 4).join(" · ");
-    };
-    return [words("read"), words("write")];
-  });
-
-  let copied = $state(false);
-  async function copyLink() {
-    try {
-      await navigator.clipboard.writeText(window.location.href);
-      copied = true;
-      setTimeout(() => (copied = false), 1600);
-    } catch { /* clipboard blocked: the address bar still has the link */ }
-  }
-
-  function step(event: MouseEvent, delta: -1 | 1) {
-    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    event.preventDefault();
-    onstep(delta);
+  /** The raw tokens under a label: the depth's primary read, or in the middle layers the exact drivers. */
+  function evidence(pole: Pole, side: "input" | "output"): { tokens: LensToken[]; source: string; help: string } {
+    if (side === "input" && band === "dark" && pole.drivers.length) {
+      return {
+        tokens: headline(pole.drivers).map(([token]): LensToken => [token, 1, 2]),
+        source: "in real text",
+        help: "Exact drivers: tokens that most make it fire when put into real documents",
+      };
+    }
+    const read = pole.reads.find((r) => r.trust === "primary" && LENSES[r.col].side === side);
+    if (!read) return { tokens: [], source: "", help: "" };
+    return { tokens: headline(read.tokens), source: LENSES[read.col].short, help: LENSES[read.col].describe };
   }
 </script>
 
-<section class="detail" class:narrow aria-labelledby="neuron-title" data-link-scope bind:clientWidth={width}>
-  <div class="detail-bar">
-    <div class="id-row">
-      <h2 id="neuron-title" tabindex="-1"><MorphText text={neuronId(layer, neuron.n)} duration={340} /></h2>
-      {#if bandOf(layer) === "dark"}<span class="caution"><InfoTip icon="error" label="Why layers 13–20 are less reliable" text={MIDDLE_CAUTION} /></span>{/if}
-    </div>
-    <div class="stepper">
-      <span class="position" aria-live="polite"><MorphText text={`${(position + 1).toLocaleString("en-US")} / ${total.toLocaleString("en-US")}`} duration={240} /></span>
-      <a class="icon-button" href={hrefFor(-1)} aria-label="Previous neuron" onclick={(event) => step(event, -1)}><FluentIcon name="up" size={18} /></a>
-      <a class="icon-button" href={hrefFor(1)} aria-label="Next neuron" onclick={(event) => step(event, 1)}><FluentIcon name="down" size={18} /></a>
-      <button type="button" class="icon-button" aria-label={copied ? "Link copied" : "Copy link to this neuron"} onclick={copyLink}>
-        <span class="swap-icon" class:copied><span class="i-copy"><FluentIcon name="copy" size={18} /></span><span class="i-check"><FluentIcon name="check" size={18} /></span></span>
-      </button>
-    </div>
-  </div>
+<section class="detail" class:narrow aria-labelledby="unit-title" data-link-scope bind:clientWidth={width}>
+  <DetailBar id={neuronId(layer, neuron.n)} unitName="neuron" caution={band === "dark" ? MIDDLE_CAUTION : undefined} {onstep} {position} {total} {hrefFor}>
+    {#snippet tags()}<span class="band-tag">{BANDS[band].name}</span>{/snippet}
+  </DetailBar>
 
-  <header class="detail-head">
-    {#if overview[0] || overview[1]}
-      <dl class="overview">
-        <div><dt>Triggered by:</dt><dd><TitleText text={overview[0]} fallback="unclear" interactive /></dd></div>
-        <div><dt>Steers outputs:</dt><dd><TitleText text={overview[1]} fallback="unclear" interactive /></dd></div>
-      </dl>
-    {/if}
-    <p class="titles">
-      <span><span class="sign">+</span><TitleText text={neuron.titles[0]} /></span>
-      <span><span class="sign">−</span><TitleText text={neuron.titles[1]} /></span>
-    </p>
-  </header>
+  {#key neuron.n}
+  <section class="summary" aria-label="What each side responds to and what it does">
+    <div class="sum-grid">
+      <span class="col-head first">Triggered by</span>
+      <span class="col-head">Steers outputs</span>
+      {#each neuron.poles as pole, index (pole.pole)}
+        {@const input = evidence(pole, "input")}
+        {@const output = evidence(pole, "output")}
+        <div class="row-head" class:clear={clearer === index}>
+          <span class="sign" aria-hidden="true">{index === 0 ? "+" : "−"}</span>
+          <span>{index === 0 ? "Positive side" : "Negative side"}</span>
+          {#if clearer === index}<span class="clear-tag">clearer</span>{/if}
+        </div>
+        <div class="cell"><span class="cell-head">Triggered by</span><LabelCell label={pole.label.fires} confidence={pole.label.fc} tokens={input.tokens} source={input.source} sourceHelp={input.help} /></div>
+        <div class="cell"><span class="cell-head">Steers outputs</span><LabelCell label={pole.label.writes} confidence={pole.label.wc} tokens={output.tokens} source={output.source} sourceHelp={output.help} /></div>
+        {#if pole.label.note}<p class="note"><LabelText text={pole.label.note} interactive /></p>{/if}
+      {/each}
+    </div>
+    <p class="credit">Labels by Claude Haiku 5.5, written from these reads and the first firings below. Confidence is Haiku's own.</p>
+  </section>
+  {/key}
 
   <div class="pole-switch" role="tablist" aria-label="Side" hidden={!narrow}>
     {#each [0, 1] as index}
@@ -115,52 +101,42 @@
 <style>
   .detail { display: grid; gap: var(--space-6); min-width: 0; }
   /* Stepping to another neuron slides the new one in; it plays once per change, never on hover. */
-  .poles { animation: poles-in 380ms var(--ease-enter) backwards; }
-  @keyframes poles-in { from { opacity: 0; translate: 0 10px; } }
-  .detail-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2) var(--space-3); }
-  .icon-button {
-    display: inline-grid; place-items: center; width: 36px; height: 36px; border: 0; border-radius: var(--radius);
-    background: var(--glass); color: var(--fg-dim); font: inherit; text-decoration: none; cursor: pointer;
-    transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), scale var(--dur-fast) var(--ease-out);
-  }
-  .icon-button::after { content: ""; position: absolute; inset: -4px; }
-  .icon-button { position: relative; }
-  .icon-button:hover { background: var(--glass-strong); color: var(--fg); }
-  .icon-button:active { scale: var(--press-scale); }
-  .swap-icon { display: grid; }
-  .swap-icon > span { grid-area: 1 / 1; display: grid; transition: opacity var(--dur-slow) cubic-bezier(0.2, 0, 0, 1), scale var(--dur-slow) cubic-bezier(0.2, 0, 0, 1), filter var(--dur-slow) cubic-bezier(0.2, 0, 0, 1); }
-  .i-check, .copied .i-copy { opacity: 0; scale: 0.25; filter: blur(4px); }
-  .copied .i-check { opacity: 1; scale: 1; filter: blur(0); }
-  .icon-button:focus-visible, .pole-switch button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-  .stepper { display: flex; align-items: center; gap: var(--space-2); }
-  .position { margin-inline-end: var(--space-2); color: var(--fg-muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+  .summary, .poles { animation: rise 380ms var(--ease-enter) backwards; }
+  .poles { animation-delay: 60ms; }
+  @keyframes rise { from { opacity: 0; translate: 0 8px; } }
+  .band-tag { color: var(--neuron-tint-ink); font-size: var(--text-sm); font-weight: var(--weight-structure); }
 
-  .overview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); margin: 0; }
-  .overview > div { display: grid; gap: var(--space-1); padding: var(--space-4) var(--space-5); border-radius: var(--radius-lg); background: color-mix(in oklch, var(--neuron-tint) 10%, var(--neuron-chip-bg)); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--neuron-tint) 35%, transparent); }
-  .overview dt { color: var(--neuron-tint-ink); font-size: var(--text-sm); font-weight: var(--weight-structure-bold); }
-  .overview dd { margin: 0; color: var(--fg); font-family: var(--font-mono); font-size: var(--text-md); overflow-wrap: anywhere; }
-  .narrow .overview { grid-template-columns: minmax(0, 1fr); }
-  .detail-head { display: grid; gap: var(--space-3); }
-  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  .id-row { display: flex; align-items: center; gap: var(--space-1); }
-  .caution { display: inline-flex; }
-  .caution :global(.info-trigger) { color: var(--accent-yellow); }
-  h2 { margin: 0; color: var(--fg); font-family: var(--font-mono); font-weight: var(--weight-data-medium); font-size: var(--text-feature-title); line-height: 1.15; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
-  h2:focus { outline: none; }
-  .titles { display: grid; gap: var(--space-1); margin: 0; color: var(--fg); font-size: var(--text-lg); line-height: 1.4; }
-  .titles > span { display: flex; gap: var(--space-2); min-width: 0; }
-  .titles > span + span { color: var(--fg-dim); }
-  .sign { flex: none; width: 1ch; color: var(--fg-muted); font-weight: var(--weight-structure-bold); }
+  .summary { display: grid; gap: var(--space-3); padding: var(--space-5) var(--space-6); border-radius: var(--radius-lg); background: color-mix(in oklch, var(--neuron-tint) 6%, var(--neuron-chip-bg)); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--neuron-tint) 26%, transparent); }
+  .sum-grid { display: grid; grid-template-columns: minmax(8.5rem, auto) minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-4) var(--space-6); align-items: start; }
+  .col-head { color: var(--neuron-tint-ink); font-size: var(--text-sm); font-weight: var(--weight-structure-bold); }
+  .col-head.first { grid-column: 2; }
+  .row-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding-top: 2px; color: var(--fg-dim); font-size: var(--text-sm); font-weight: var(--weight-structure); }
+  .row-head.clear { color: var(--fg); }
+  .sign { display: grid; place-items: center; flex: none; width: 24px; height: 24px; border-radius: var(--radius-sm); background: color-mix(in oklch, var(--neuron-tint) 20%, var(--neuron-chip-bg)); color: var(--fg); font-family: var(--font-structure); font-weight: var(--weight-display); line-height: 1; }
+  .clear-tag { padding: 0 var(--space-2); border-radius: var(--radius-pill); background: color-mix(in oklch, var(--neuron-tint) 20%, transparent); color: var(--fg); font-size: var(--text-2xs); line-height: 1.7; }
+  .cell { min-width: 0; }
+  .cell-head { display: none; }
+  .note { grid-column: 2 / -1; margin: calc(var(--space-2) * -1) 0 var(--space-2); color: var(--fg-muted); font-size: var(--text-sm); line-height: 1.55; text-wrap: pretty; }
+  .credit { margin: 0; padding-top: var(--space-3); border-top: 1px solid var(--glass-line); color: var(--fg-muted); font-size: var(--text-xs); }
 
   .poles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-8); align-items: start; }
   .pole-switch { display: none; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .narrow {
+    .summary { padding: var(--space-4); }
+    .sum-grid { grid-template-columns: minmax(0, 1fr); gap: var(--space-3); }
+    .col-head { display: none; }
+    .row-head { padding-top: var(--space-2); }
+    .row-head:not(:first-of-type) { margin-top: var(--space-2); border-top: 1px solid var(--glass-line); padding-top: var(--space-4); }
+    .cell-head { display: block; margin-bottom: var(--space-1); color: var(--neuron-tint-ink); font-size: var(--text-xs); font-weight: var(--weight-structure-bold); }
+    .note { grid-column: 1; margin: 0; }
     .poles { grid-template-columns: minmax(0, 1fr); }
     .pole-switch:not([hidden]) { position: sticky; top: var(--neuron-sticky-top); z-index: 2; display: grid; grid-template-columns: 1fr 1fr; gap: 0; padding: 0; border-radius: var(--radius); background: var(--bg-elev); }
     .pole-switch button { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); min-height: var(--control-target); border: 0; border-radius: var(--radius); background: transparent; color: var(--fg-dim); font: inherit; font-size: var(--text-sm); cursor: pointer; transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out); }
     .pole-switch button[aria-selected="true"] { background: var(--glass-bright); color: var(--fg); }
+    .pole-switch button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
     .clear-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--neuron-tint); }
     .hidden-phone { display: none; }
   }
-  @media (prefers-reduced-motion: reduce) { .poles { animation: none; } .icon-button, .pole-switch button { transition: none; } .icon-button:active { scale: none; } .swap-icon > span { transition: opacity var(--dur-fast) linear; } .i-check, .copied .i-copy, .copied .i-check { scale: 1; filter: none; } }
+  @media (prefers-reduced-motion: reduce) { .summary, .poles { animation: none; } .pole-switch button { transition: none; } }
 </style>
