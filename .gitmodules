@@ -1,3 +1,4 @@
 [submodule "drowse"]
 	path = drowse
 	url = https://github.com/stdlogits/drowse.git
+	branch = main
