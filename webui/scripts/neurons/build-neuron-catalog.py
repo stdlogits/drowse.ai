@@ -101,11 +101,13 @@ TERMS, CONTEXT_EN = {}, {}
 if translations_path and os.path.exists(translations_path):
     for line in open(translations_path, encoding="utf-8"):
         r = json.loads(line)
-        # Drop answers that add nothing: English after all, the source echoed back, or a note in place of a meaning.
-        if r.get("lang") == "en" or r["en"].casefold() == r["s"].strip().casefold() or r["en"].startswith("("):
+        # Drop answers that add nothing: English after all, the source echoed back, or (for a term) a
+        # note such as "(fragment)" in place of a meaning.
+        if r.get("lang") == "en" or r["en"].casefold() == r["s"].strip().casefold():
             continue
         if r["k"] == "term":
-            TERMS[r["s"].strip()] = [r["en"], r.get("ro", ""), r.get("lang", "")]
+            if not r["en"].startswith("("):
+                TERMS[r["s"].strip()] = [r["en"], r.get("ro", ""), r.get("lang", "")]
         elif r.get("ok"):
             CONTEXT_EN[r["s"]] = [r["en"], r.get("lang", "")]
 
