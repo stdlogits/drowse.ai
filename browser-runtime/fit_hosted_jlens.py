@@ -14,10 +14,10 @@ from transformers import AutoTokenizer
 
 from mlc_q4_torch import BrowserResidualCorrector, build_transformers_model
 
-from drowse.core.jlens import SKIP_FIRST_POSITIONS, resolve_word_token
-from drowse.core.jlens_fit import fit_jacobian_lens
-from drowse.io.integrity import hash_file
-from drowse.io.lens import _save_lens_at
+from drowse.base.integrity import hash_file
+from drowse.lens.fit import fit_jacobian_lens
+from drowse.lens.jlens import SKIP_FIRST_POSITIONS, resolve_word_token
+from drowse.lens.store import LensProvenance, save_lens_at
 
 
 def fit_pack(
@@ -130,7 +130,6 @@ def fit_pack(
                 checkpoint_every=1,
                 input_id_rows=[row["input_ids"]],
                 vjp_mode="batched",
-                suppress_terminal_checkpoint=True,
                 initial_lens=lens,
                 on_progress=lambda message: print(message, flush=True),
                 progress_base=index,
@@ -154,23 +153,23 @@ def fit_pack(
     try:
         root = output_directory / "packs" / "jlens"
         root.mkdir(parents=True)
-        _save_lens_at(
+        save_lens_at(
             lens,
-            root / "jlens.safetensors",
-            root / "manifest.json",
-            corpus_spec=metadata["corpus_spec"],
-            corpus_sha256=_token_corpus_sha256(rows),
-            seq_len=seq_len,
-            dim_batch=dim_batch,
-            skip_first=skip_first,
-            corpus_hash_kind="token_ids_v1",
-            durable=True,
-            raw_corpus_sha256=metadata["raw_corpus_sha256"],
-            raw_prompt_count=len(rows),
-            usable_prompt_count=len(rows),
-            model_layer_count=len(model_layers),
-            model_fingerprint=metadata["runtime_identity_sha256"],
-            model_source_fingerprint=metadata["model_source_fingerprint"],
+            root,
+            LensProvenance(
+                corpus_spec=metadata["corpus_spec"],
+                corpus_sha256=_token_corpus_sha256(rows),
+                seq_len=seq_len,
+                dim_batch=dim_batch,
+                corpus_hash_kind="token_ids_v1",
+                skip_first=skip_first,
+                raw_corpus_sha256=metadata["raw_corpus_sha256"],
+                raw_prompt_count=len(rows),
+                usable_prompt_count=len(rows),
+                model_layer_count=len(model_layers),
+                model_fingerprint=metadata["runtime_identity_sha256"],
+                model_source_fingerprint=metadata["model_source_fingerprint"],
+            ),
         )
         shutil.rmtree(root / ".locks", ignore_errors=True)
         _stabilize_tensor_names(root)
@@ -264,21 +263,30 @@ def _load_words(path: Path) -> list[str]:
 
 
 def _stabilize_tensor_names(root: Path) -> None:
+    """Rename each site's generation shards to ``<site>.layer-<L>.safetensors``.
+
+    The v7 writer names shards ``<site>.layer-<L>.gen-<uuid>``; a pack ships
+    fixed names so a rebuild of the same lens is byte-identical.
+    """
     manifest_path = root / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    tensor_files = manifest.get("tensor_files")
-    source_layers = manifest.get("source_layers")
-    if not isinstance(tensor_files, dict) or not isinstance(source_layers, list):
+    sites = manifest.get("sites")
+    if not isinstance(sites, dict) or not sites:
         raise ValueError("J-lens writer produced invalid tensor pointers")
-    stable = {}
-    for layer in source_layers:
-        source_name = tensor_files.get(str(layer))
-        if not isinstance(source_name, str):
-            raise ValueError(f"J-lens writer omitted tensor layer {layer}")
-        target_name = f"jlens.layer-{layer}.safetensors"
-        os.replace(root / source_name, root / target_name)
-        stable[str(layer)] = target_name
-    manifest["tensor_files"] = stable
+    for site, entry in sites.items():
+        tensor_files = entry.get("tensor_files") if isinstance(entry, dict) else None
+        layers = entry.get("layers") if isinstance(entry, dict) else None
+        if not isinstance(tensor_files, dict) or not isinstance(layers, list):
+            raise ValueError(f"J-lens writer produced invalid {site} tensor pointers")
+        stable = {}
+        for layer in layers:
+            source_name = tensor_files.get(str(layer))
+            if not isinstance(source_name, str):
+                raise ValueError(f"J-lens writer omitted {site} tensor layer {layer}")
+            target_name = f"{site}.layer-{layer}.safetensors"
+            os.replace(root / source_name, root / target_name)
+            stable[str(layer)] = target_name
+        entry["tensor_files"] = stable
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
 
 

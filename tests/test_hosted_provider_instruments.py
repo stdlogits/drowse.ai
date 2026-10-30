@@ -101,3 +101,8 @@ def test_jlens_import_preserves_explicit_prompt_count(tmp_path: Path, monkeypatc
     manifest = json.loads((args.output / "jlens-pack/packs/jlens/manifest.json").read_text())
     assert manifest["n_prompts"] == next(iter(counts.values()))
     assert manifest["usable_prompt_count"] == manifest["n_prompts"]
+    assert manifest["format_version"] == 7
+    assert manifest["kind"] == "J"
+    assert manifest["sites"]["out"]["layers"] == [0]
+    assert manifest["sites"]["out"]["tensor_files"] == {"0": "layers.safetensors"}
+    assert "source_layers" not in manifest and "method" not in manifest

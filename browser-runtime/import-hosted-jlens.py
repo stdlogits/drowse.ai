@@ -12,8 +12,8 @@ from safetensors.torch import save_file
 from transformers import AutoTokenizer
 
 from mlc_q4_torch import build_transformers_model
-from drowse.core.jlens import resolve_word_token
-from drowse.io.integrity import hash_file
+from drowse.base.integrity import hash_file
+from drowse.lens.jlens import resolve_word_token
 
 
 def import_jlens(args: argparse.Namespace) -> dict[str, object]:
@@ -60,7 +60,7 @@ def import_jlens(args: argparse.Namespace) -> dict[str, object]:
         tensor = tensor.detach().to(dtype=torch.float32, device="cpu").contiguous()
         if tuple(tensor.shape) != (hidden_size, hidden_size) or not torch.isfinite(tensor).all():
             raise ValueError(f"provider J-lens layer {layer} is invalid")
-        name = f"jlens.layer-{layer}.safetensors"
+        name = f"out.layer-{layer}.safetensors"
         save_file({f"layer_{layer}": tensor}, root / name)
         tensor_files[str(layer)] = name
         tensor_sha256[str(layer)] = hash_file(root / name)
@@ -76,26 +76,30 @@ def import_jlens(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("provider prompt count does not match its config")
     corpus = ":".join(str(dataset.get(key, "")) for key in ("name", "config", "split"))
     manifest = {
-        "format_version": 6,
-        "method": "provider_jacobian_lens",
+        "format_version": 7,
+        "kind": "J",
+        "sites": {
+            "out": {
+                "layers": selected_layers,
+                "tensor_files": tensor_files,
+                "tensor_sha256": tensor_sha256,
+            },
+        },
+        "estimator_policy": {
+            "method": "provider_jacobian_lens",
+            "provider": args.provider_repository,
+            "revision": args.provider_revision,
+            "config_sha256": hashlib.sha256(config_raw).hexdigest(),
+            "skip_first_positions": 16,
+        },
         "n_prompts": prompts,
         "d_model": hidden_size,
-        "source_layers": selected_layers,
         "dtype": "float32",
         "corpus_spec": f"provider:{args.provider_repository}:{args.provider_revision}:{corpus}",
         "corpus_sha256": checkpoint_sha256,
         "corpus_hash_kind": "provider_checkpoint_v1",
         "seq_len": int(fit["max_seq_len"]),
         "dim_batch": int(fit["dim_batch"]),
-        "skip_first_positions": 16,
-        "estimator_policy": {
-            "method": "provider_jacobian_lens",
-            "provider": args.provider_repository,
-            "revision": args.provider_revision,
-            "config_sha256": hashlib.sha256(config_raw).hexdigest(),
-        },
-        "tensor_sha256": tensor_sha256,
-        "tensor_files": tensor_files,
         "raw_corpus_sha256": checkpoint_sha256,
         "raw_prompt_count": prompts,
         "usable_prompt_count": prompts,
@@ -103,8 +107,6 @@ def import_jlens(args: argparse.Namespace) -> dict[str, object]:
         "model_fingerprint": args.runtime_fingerprint,
         "model_source_fingerprint": model["sourceRevision"],
         "checkpoint": False,
-        "base_n_prompts": None,
-        "partial_n_prompts": None,
         "consumed_prefix_sha256": None,
     }
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

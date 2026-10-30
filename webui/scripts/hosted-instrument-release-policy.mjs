@@ -68,7 +68,15 @@ export async function validateReleaseInstrumentPack({
 function providerInstrument(kind, manifest) {
   return kind === "sae"
     ? typeof manifest?.corpus_spec === "string" && manifest.corpus_spec.startsWith("provider:")
-    : kind === "jlens" && manifest?.method === "provider_jacobian_lens";
+    : kind === "jlens" && manifest?.estimator_policy?.method === "provider_jacobian_lens";
+}
+
+// A drowse lens v7 manifest keeps its layers per residual site; hosted packs
+// carry only the output site.
+function lensLayers(manifest) {
+  return manifest?.format_version === 7 && manifest?.sites?.out
+    ? manifest.sites.out.layers
+    : undefined;
 }
 
 function validateProviderInstrument(kind, manifest, vocabulary, modelLock) {
@@ -93,7 +101,7 @@ function validateProviderInstrument(kind, manifest, vocabulary, modelLock) {
   if (
     manifest.d_model !== modelLock.hiddenSize ||
     manifest.model_layer_count !== modelLock.layerMap.length ||
-    canonical(manifest.source_layers) !== canonical(expectedLayers) ||
+    canonical(lensLayers(manifest)) !== canonical(expectedLayers) ||
     !positiveInteger(manifest.n_prompts) ||
     !positiveInteger(manifest.seq_len) ||
     !vocabulary || !Array.isArray(vocabulary.words) || vocabulary.words.length === 0
@@ -329,7 +337,7 @@ function validateJlens(manifest, vocabulary, release, modelLock) {
     manifest?.raw_corpus_sha256 !== release.outputs.jlens.sha256 ||
     manifest?.d_model !== modelLock.hiddenSize ||
     manifest?.model_layer_count !== modelLock.layerMap.length ||
-    canonical(manifest?.source_layers) !== canonical(expectedLayers)
+    canonical(lensLayers(manifest)) !== canonical(expectedLayers)
   ) throw new Error("release J-lens does not bind the approved corpus and complete layer map");
   if (
     !positiveInteger(manifest.n_prompts) || manifest.n_prompts < MINIMUM_JLENS_PROMPTS ||

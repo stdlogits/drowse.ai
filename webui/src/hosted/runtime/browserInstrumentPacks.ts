@@ -23,14 +23,18 @@ const LOCAL_SAE_V1_KEYS = [
   "learning_rate", "model_fingerprint", "model_id", "model_source_fingerprint", "name",
   "release", "seq_len", "tensor_file", "tensor_sha256", "tokens_trained",
 ].sort();
-const LOCAL_JLENS_V6_KEYS = [
-  "base_n_prompts", "checkpoint", "consumed_prefix_sha256", "corpus_hash_kind",
-  "corpus_sha256", "corpus_spec", "d_model", "dim_batch", "dtype", "estimator_policy",
-  "format_version", "method", "model_fingerprint", "model_layer_count",
-  "model_source_fingerprint", "n_prompts", "partial_n_prompts", "raw_corpus_sha256",
-  "raw_prompt_count", "seq_len", "skip_first_positions", "source_layers", "tensor_files",
-  "tensor_sha256", "usable_prompt_count",
+// drowse's lens format v7 (drowse/lens/store.py `_MANIFEST_FIELDS`): one lens
+// kind per manifest, its matrices grouped by residual site.
+const LOCAL_LENS_V7_KEYS = [
+  "checkpoint", "consumed_prefix_sha256", "corpus_hash_kind", "corpus_sha256",
+  "corpus_spec", "d_model", "dim_batch", "dtype", "estimator_policy", "format_version",
+  "kind", "model_fingerprint", "model_layer_count", "model_source_fingerprint",
+  "n_prompts", "raw_corpus_sha256", "raw_prompt_count", "seq_len", "sites",
+  "usable_prompt_count",
 ].sort();
+const LOCAL_LENS_V7_SITE_KEYS = ["layers", "tensor_files", "tensor_sha256"];
+// The browser reads output-site Jacobian lenses: the standard J and the RelP R.
+const BROWSER_LENS_KINDS = new Set(["J", "R"]);
 const JLENS_DIRECTION_CACHE_MAX_ENTRIES = 64;
 const JLENS_DIRECTION_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 
@@ -784,26 +788,39 @@ async function loadJlens(
     jsonArtifact(vocabularyArtifact, request.signal),
   ]);
   const hiddenSize = request.variant.runtimeIdentity.hiddenSize;
+  const sites = manifest.sites;
+  const site = isRecord(sites) && sameStrings(Object.keys(sites), ["out"]) ? sites.out : null;
   if (
-    !sameStrings(Object.keys(manifest).sort(), LOCAL_JLENS_V6_KEYS) ||
-    manifest.format_version !== 6 || manifest.checkpoint !== false || manifest.dtype !== "float32" ||
-    manifest.d_model !== hiddenSize || !integerList(manifest.source_layers) ||
+    !sameStrings(Object.keys(manifest).sort(), LOCAL_LENS_V7_KEYS) ||
+    manifest.format_version !== 7 || !BROWSER_LENS_KINDS.has(manifest.kind as string) ||
+    manifest.checkpoint !== false || manifest.consumed_prefix_sha256 !== null ||
+    manifest.dtype !== "float32" || manifest.d_model !== hiddenSize ||
+    !isRecord(site) || !sameStrings(Object.keys(site).sort(), LOCAL_LENS_V7_SITE_KEYS) ||
+    !integerList(site.layers) || !isRecord(site.tensor_files) || !isRecord(site.tensor_sha256) ||
     !matchesRuntimeFingerprint(manifest.model_fingerprint, request) ||
     manifest.model_source_fingerprint !== request.variant.runtimeIdentity.sourceRevision ||
-    manifest.model_layer_count !== request.variant.runtimeIdentity.layerMap.length ||
-    !isRecord(manifest.tensor_files) || !isRecord(manifest.tensor_sha256)
+    manifest.model_layer_count !== request.variant.runtimeIdentity.layerMap.length
   ) {
-    throw instrumentError("JLENS_PACK_INVALID", "The J-lens pack does not match the local v6 fp32 schema");
+    throw instrumentError("JLENS_PACK_INVALID", "The J-lens pack does not match the local v7 fp32 schema");
   }
-  const layerMap = manifest.source_layers as number[];
+  const layerMap = site.layers;
+  const tensorFiles = site.tensor_files;
+  const tensorDigests = site.tensor_sha256;
+  const layerKeys = layerMap.map(String).sort();
+  if (
+    !sameStrings(Object.keys(tensorFiles).sort(), layerKeys) ||
+    !sameStrings(Object.keys(tensorDigests).sort(), layerKeys)
+  ) {
+    throw instrumentError("JLENS_PACK_INVALID", "The J-lens shard maps do not match its layers");
+  }
   if (layerMap.some((layer) => !request.variant.runtimeIdentity.layerMap.includes(layer))) {
     throw instrumentError("JLENS_PACK_LAYER_MISMATCH", "The J-lens contains layers outside this model's layer map");
   }
   const jacobians = new Map<number, Float32Array>();
   const grouped = new Map<BrowserModelArtifact, number[]>();
   for (const layer of layerMap) {
-    const file = manifest.tensor_files[String(layer)];
-    const digest = manifest.tensor_sha256[String(layer)];
+    const file = tensorFiles[String(layer)];
+    const digest = tensorDigests[String(layer)];
     if (typeof file !== "string" || !safeBasename(file) || typeof digest !== "string") {
       throw instrumentError("JLENS_PACK_INVALID", `J-lens layer ${layer} has invalid shard metadata`);
     }

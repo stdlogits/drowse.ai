@@ -76,30 +76,31 @@ def create_jlens_pack(args, model: dict) -> None:
     tensor_digest = sha256(tensor_path)
     checkpoint_digest = sha256(args.jlens_checkpoint)
     manifest = {
-        "format_version": 6,
-        "method": "provider_jacobian_lens",
+        "format_version": 7,
+        "kind": "J",
+        "sites": {
+            "out": {
+                "layers": layer_ids,
+                "tensor_files": {str(layer): tensor_path.name for layer in layer_ids},
+                "tensor_sha256": {str(layer): tensor_digest for layer in layer_ids},
+            },
+        },
+        "estimator_policy": {"method": "provider_jacobian_lens", "skip_first_positions": 0},
         "n_prompts": prompt_count,
         "checkpoint": False,
         "dtype": "float32",
         "d_model": hidden_size,
-        "source_layers": layer_ids,
-        "tensor_files": {str(layer): tensor_path.name for layer in layer_ids},
-        "tensor_sha256": {str(layer): tensor_digest for layer in layer_ids},
         "corpus_spec": "Salesforce/wikitext:wikitext-103-raw-v1:train",
         "corpus_sha256": checkpoint_digest,
         "corpus_hash_kind": "provider_checkpoint_v1",
         "seq_len": 128,
         "dim_batch": 128,
-        "skip_first_positions": 0,
-        "estimator_policy": {"method": "provider_jacobian_lens"},
         "raw_corpus_sha256": None,
         "raw_prompt_count": None,
         "usable_prompt_count": prompt_count,
         "model_layer_count": len(model["layerMap"]),
         "model_fingerprint": args.runtime_fingerprint,
         "model_source_fingerprint": model["sourceRevision"],
-        "base_n_prompts": None,
-        "partial_n_prompts": None,
         "consumed_prefix_sha256": None,
     }
     write_json(pack / "manifest.json", manifest)

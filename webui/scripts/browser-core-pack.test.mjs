@@ -571,36 +571,39 @@ try {
         ]),
       ));
       const lensFile = instrumentFile("packs/jlens/layers.safetensors", lensTensors);
+      const lensSite = (sha256) => ({
+        out: {
+          layers: jlensLayers,
+          tensor_files: Object.fromEntries(
+            jlensLayers.map((layer) => [String(layer), "layers.safetensors"]),
+          ),
+          tensor_sha256: Object.fromEntries(
+            jlensLayers.map((layer) => [String(layer), sha256]),
+          ),
+        },
+      });
       const lensManifestBody = {
-        format_version: 6,
-        method: "jlens_cotangent_sum",
+        format_version: 7,
+        kind: "J",
+        sites: lensSite(lensFile.sha256),
+        estimator_policy: { direction: "output", rules: null, skip_first_positions: 0 },
         n_prompts: 1,
         checkpoint: false,
         dtype: "float32",
         d_model: 2,
-        source_layers: jlensLayers,
-        tensor_files: Object.fromEntries(
-          jlensLayers.map((layer) => [String(layer), "layers.safetensors"]),
-        ),
-        tensor_sha256: Object.fromEntries(
-          jlensLayers.map((layer) => [String(layer), lensFile.sha256]),
-        ),
         corpus_spec: "fixture",
         corpus_sha256: "9".repeat(64),
         corpus_hash_kind: "text_v1",
         seq_len: 2,
         dim_batch: 1,
-        skip_first_positions: 0,
-        estimator_policy: { method: "jlens_cotangent_sum" },
         raw_corpus_sha256: null,
         raw_prompt_count: null,
         usable_prompt_count: null,
         model_layer_count: 2,
         model_fingerprint: options.instrumentModelFingerprint ?? fingerprint,
         model_source_fingerprint: "2".repeat(40),
-        base_n_prompts: null,
-        partial_n_prompts: null,
         consumed_prefix_sha256: null,
+        ...options.jlensManifestOverrides,
       };
       const lensManifest = jsonBytes(lensManifestBody);
       const manifestFile = instrumentFile("packs/jlens/manifest.json", lensManifest);
@@ -635,14 +638,9 @@ try {
         const rLensFile = instrumentFile("packs/rlens/layers.safetensors", lensTensors);
         const rLensManifest = jsonBytes({
           ...lensManifestBody,
-          method: "relp_cotangent_sum",
-          estimator_policy: { method: "relp_cotangent_sum" },
-          tensor_files: Object.fromEntries(
-            jlensLayers.map((layer) => [String(layer), "layers.safetensors"]),
-          ),
-          tensor_sha256: Object.fromEntries(
-            jlensLayers.map((layer) => [String(layer), rLensFile.sha256]),
-          ),
+          kind: "R",
+          estimator_policy: { direction: "output", rules: { half_rule: true }, skip_first_positions: 0 },
+          sites: lensSite(rLensFile.sha256),
         });
         const rLensManifestFile = instrumentFile("packs/rlens/manifest.json", rLensManifest);
         const rVocabularyTensorFile = instrumentFile(
@@ -1656,7 +1654,29 @@ try {
     assert.equal(compiler.exactSaeFitting("another-sae"), null);
   });
 
-  test("loads local v6 J-lens matrices and lowers curated token directions", async () => {
+  test("rejects J-lens manifests outside drowse's v7 output-site schema", async () => {
+    for (const [label, overrides] of [
+      ["v6 manifest", { format_version: 6 }],
+      ["unknown kind", { kind: "S" }],
+      ["checkpoint pointer", { checkpoint: true }],
+      ["mid site", { sites: { mid: { layers: [0], tensor_files: { 0: "layers.safetensors" }, tensor_sha256: { 0: "0".repeat(64) } } } }],
+      ["shard keys off the layers", { sites: { out: { layers: [0, 1], tensor_files: { 0: "layers.safetensors" }, tensor_sha256: { 0: "0".repeat(64), 1: "0".repeat(64) } } } }],
+      ["v6 top-level layers", { source_layers: [0, 1] }],
+    ]) {
+      const { request } = await fixture({
+        withWhitener: true,
+        withJlens: true,
+        jlensManifestOverrides: overrides,
+      });
+      await assert.rejects(
+        BrowserFeasibilityCorePackCompiler.load(request),
+        (error) => error.code === "JLENS_PACK_INVALID",
+        label,
+      );
+    }
+  });
+
+  test("loads local v7 J-lens matrices and lowers curated token directions", async () => {
     const { request } = await fixture({ withWhitener: true, withJlens: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const program = compiler.compile("0.5 jlens/hello");
