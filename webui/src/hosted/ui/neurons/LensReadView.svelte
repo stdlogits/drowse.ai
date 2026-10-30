@@ -28,9 +28,9 @@
 
 <div class={`read ${read.trust}`}>
   <div class="read-head">
-    <span class="lens" title={info.describe}>{info.short}</span>
+    <span class="lens" data-help={info.describe}>{info.short}</span>
     {#if !compact}<span class="name">{read.twin && twinOf ? `${info.short} adds` : info.name}</span>{/if}
-    <span class="meter" role="img" aria-label={`${strengthWord}: ${read.pct}${suffix} percentile of the layer`} title={`${read.pct}${suffix} percentile of the layer`}>
+    <span class="meter" role="img" aria-label={`${strengthWord}: ${read.pct}${suffix} percentile of the layer`} data-help={`${read.pct}${suffix} percentile of the layer`}>
       <span class="bar"><span class="fill" style:--v={Math.max(read.pct, 3) / 100}></span></span>
       <span class={`strength ${strength}`}><MorphText text={strengthWord} numbers={false} duration={260} /></span>
     </span>

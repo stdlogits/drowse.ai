@@ -166,7 +166,7 @@
   <p id="head-grid-help" class="sr-only">Left and right arrows change layer, up and down change head, Enter opens it.</p>
   <div class="legend" role="group" aria-label="Light up heads by role">
     {#each ROLES as r, i (r.bit)}
-      <button type="button" aria-pressed={role === r.bit} title={r.describe} style:--c={r.color} onclick={() => onrole(role === r.bit ? null : r.bit)}>
+      <button type="button" aria-pressed={role === r.bit} data-help={r.describe} style:--c={r.color} onclick={() => onrole(role === r.bit ? null : r.bit)}>
         <span class="swatch" aria-hidden="true"></span>{r.short}<span class="count">{counts[i]}</span>
       </button>
     {/each}
@@ -216,7 +216,7 @@
   .legend button[aria-pressed="true"] { background: color-mix(in oklch, var(--c) 18%, transparent); box-shadow: inset 0 0 0 1px var(--c); color: var(--fg); }
   .legend button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
   @media (hover: hover) { .legend button:not([aria-pressed="true"]):hover { background: var(--bg-hover); color: var(--fg); } }
-  .swatch { width: 10px; height: 8px; border-radius: 2px; background: var(--c); }
+  .swatch { width: 10px; height: 8px; border-radius: var(--data-mark-radius); background: var(--c); }
   .count { color: var(--fg-muted); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   @media (prefers-reduced-motion: reduce) { .ready .cell, .tip { animation: none; } .cell, .col-bg { transition: none; } .cell { scale: 1; } }

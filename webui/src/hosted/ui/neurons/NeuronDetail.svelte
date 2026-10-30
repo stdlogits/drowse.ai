@@ -110,7 +110,7 @@
   .sum-grid { display: grid; grid-template-columns: minmax(8.5rem, auto) minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-4) var(--space-6); align-items: start; }
   .col-head { color: var(--neuron-tint-ink); font-size: var(--text-sm); font-weight: var(--weight-structure-bold); }
   .col-head.first { grid-column: 2; }
-  .row-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding-top: 2px; color: var(--fg-dim); font-size: var(--text-sm); font-weight: var(--weight-structure); }
+  .row-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); color: var(--fg-dim); font-size: var(--text-sm); font-weight: var(--weight-structure); }
   .row-head.clear { color: var(--fg); }
   .sign { display: grid; place-items: center; flex: none; width: 24px; height: 24px; border-radius: var(--radius-sm); background: color-mix(in oklch, var(--neuron-tint) 20%, var(--neuron-chip-bg)); color: var(--fg); font-family: var(--font-structure); font-weight: var(--weight-display); line-height: 1; }
   .clear-tag { padding: 0 var(--space-2); border-radius: var(--radius-pill); background: color-mix(in oklch, var(--neuron-tint) 20%, transparent); color: var(--fg); font-size: var(--text-2xs); line-height: 1.7; }

@@ -18,7 +18,7 @@
   <p class="label"><LabelText text={label} interactive /></p>
   <p class="conf"><span class="meter" aria-hidden="true"><span style:--c={Math.max(confidence, 0.04)}></span></span>{confidenceWord(confidence)}<span class="pct">{Math.round(confidence * 100)}%</span></p>
   {#if tokens.length}
-    <p class="raw"><span class="source" title={sourceHelp}>{source}</span>{#each tokens as [token, count, flags]}<Token {token} {count} {flags} size="sm" />{/each}</p>
+    <p class="raw"><span class="source" data-help={sourceHelp || undefined}>{source}</span>{#each tokens as [token, count, flags]}<Token {token} {count} {flags} size="sm" />{/each}</p>
   {/if}
 </div>
 

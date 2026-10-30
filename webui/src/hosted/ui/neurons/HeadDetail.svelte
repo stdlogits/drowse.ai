@@ -46,8 +46,8 @@
 <section class="detail" aria-labelledby="unit-title" data-link-scope>
   <DetailBar id={headId(layer, head.h)} unitName="head" caution={bandOf(layer) === "dark" ? MIDDLE_CAUTION : undefined} {onstep} {position} {total} {hrefFor}>
     {#snippet tags()}
-      <span class="kv" title="The key-value head it shares with three other query heads">kv {head.kv}</span>
-      {#each roles as role (role.bit)}<span class="role" style:--role={role.color} title={role.describe}>{role.name}</span>{/each}
+      <span class="kv" data-help="The key-value head it shares with three other query heads">kv {head.kv}</span>
+      {#each roles as role (role.bit)}<span class="role" style:--role={role.color} data-help={role.describe}>{role.name}</span>{/each}
     {/snippet}
   </DetailBar>
 
@@ -164,13 +164,13 @@
   .track { position: relative; flex: 1; height: 6px; border-radius: var(--radius-pill); background: var(--glass-strong); }
   .fill { position: absolute; inset: 0; border-radius: inherit; background: color-mix(in oklch, var(--neuron-tint) 55%, var(--glass-strong)); transform-origin: left; scale: var(--v) 1; }
   .on .fill { background: var(--neuron-tint); }
-  .tick { position: absolute; top: -3px; bottom: -3px; left: calc(var(--t) * 100%); width: 2px; border-radius: 1px; background: var(--fg-dim); }
+  .tick { position: absolute; top: -3px; bottom: -3px; left: calc(var(--t) * 100%); width: 2px; border-radius: var(--data-mark-radius); background: var(--fg-dim); }
   .num { min-width: 3.2ch; color: var(--fg-dim); font-family: var(--font-mono); font-size: var(--text-xs); font-variant-numeric: tabular-nums; text-align: end; }
   .hint { margin: 0; color: var(--fg-muted); font-size: var(--text-sm); line-height: 1.5; }
 
   .legend { display: flex; gap: var(--space-4); margin: 0; color: var(--fg-muted); font-size: var(--text-xs); }
   .key { display: inline-flex; align-items: center; gap: var(--space-2); }
-  .key::before { content: ""; width: 14px; height: 10px; border-radius: 3px; }
+  .key::before { content: ""; width: 14px; height: 10px; border-radius: var(--data-mark-radius); }
   .key.hit::before { background: color-mix(in oklch, var(--neuron-tint) 34%, transparent); }
   .key.src::before { box-shadow: inset 0 0 0 1.5px color-mix(in oklch, var(--neuron-tint) 80%, transparent); }
   .contexts { display: grid; gap: var(--space-2); }

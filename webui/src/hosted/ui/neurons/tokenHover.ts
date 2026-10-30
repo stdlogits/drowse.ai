@@ -1,9 +1,10 @@
 // One listener for every token chip in the explorer: hovering a token lights up its variants in
 // every read of the same unit, and a term from another language shows its translation, its
-// romanization and its language. A translated context's badge shows the original text.
+// romanization and its language. A translated context's badge shows the original text, and any
+// element with `data-help` shows that help (the explorer's stand-in for native titles).
 import { ensureTerms, languageName, termFor, translation } from "./translate.svelte";
 
-const TARGET = ".tok, .term, .lang[data-original]";
+const TARGET = ".tok, .term, .lang[data-original], [data-help]";
 
 export function tokenHover(root: HTMLElement) {
   const tip = document.createElement("div");
@@ -42,6 +43,11 @@ export function tokenHover(root: HTMLElement) {
         line("tip-original", original, token.dataset.lang),
         line("tip-meta", `Translated from ${languageName(token.dataset.lang ?? "")} by Claude Haiku`),
       );
+      return true;
+    }
+    const help = token.dataset.help;
+    if (help) {
+      tip.replaceChildren(line("tip-help", help));
       return true;
     }
     const term = token.dataset.term;

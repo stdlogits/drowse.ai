@@ -1,12 +1,17 @@
 <script lang="ts">
   import { setTranslate, translation } from "./translate.svelte";
+
+  const HELP = "Machine translations by Claude Haiku 5.5, made when the data was built";
+  const helpId = $props.id();
 </script>
 
-<label class="translate" title="Machine translations by Claude Haiku 5.5, made when the data was built">
-  <input type="checkbox" checked={translation.on} onchange={(event) => setTranslate(event.currentTarget.checked)} />
+<label class="translate" data-help={HELP}>
+  <input type="checkbox" checked={translation.on} aria-describedby={helpId} onchange={(event) => setTranslate(event.currentTarget.checked)} />
   <span class="switch" aria-hidden="true"></span>
   <span>Translate to English</span>
 </label>
+<!-- Outside the label, so the switch's sibling selectors still match; hidden text still describes. -->
+<span id={helpId} hidden>{HELP}</span>
 
 <style>
   .translate { position: relative; display: inline-flex; align-items: center; gap: var(--space-3); min-height: var(--control-target); color: var(--fg-dim); font-size: var(--text-sm); white-space: nowrap; cursor: pointer; }
