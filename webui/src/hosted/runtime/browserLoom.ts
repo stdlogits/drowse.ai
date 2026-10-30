@@ -2429,6 +2429,13 @@ interface PartialRecipe {
   seed: number | null;
 }
 
+/** drowse/loom/recipe.py `compose_call`: the one composition rule. Tiers,
+ *  weakest first: the cast member's standing recipe, the call, the regen
+ *  anchor, and the regen modifier. At each tier a set field wins (steering
+ *  and thinking when not null, the system prompt when not inherited), and
+ *  sampling merges field by field, so a tier cannot reset a field to its
+ *  default. Observation knobs always come from the call, and the seed
+ *  resolves modifier > call > anchor > cast. */
 function resolveGenerationSettings(
   request: WSSubmitRequest | WSGenerateRequest,
   session: SessionInfo,
@@ -2436,61 +2443,56 @@ function resolveGenerationSettings(
   parentId: string,
   maxOutputTokens: number,
 ): ResolvedGenerationSettings {
-  let systemPrompt = request.system_prompt === undefined ? session.config.system_prompt : request.system_prompt;
-  const castRecipe = request.raw ? null : generationCastRecipe(request, tree);
-  const castSampling = castRecipe?.sampling === null || castRecipe?.sampling === undefined
-    ? null
-    : recipeSampling(castRecipe.sampling);
-  const requestedSteering = request.steering === null || request.steering === undefined
-    ? castRecipe?.steering
-    : request.steering;
-  let steering = resolveSteering(requestedSteering, session.default_steering);
-  let positionSpans = normalizeSteeringPositions(
-    request.position_spans !== undefined || request.position_indices !== undefined
-      ? request : castRecipe ?? {},
-  );
-  let sampling = effectiveSampling(
-    session,
-    mergeCastSampling(castSampling, request.sampling),
-    maxOutputTokens,
-  );
-  if (
-    castRecipe?.seed !== null && castRecipe?.seed !== undefined &&
-    (request.sampling?.seed === null || request.sampling?.seed === undefined)
-  ) {
-    sampling = { ...sampling, seed: castRecipe.seed };
-  }
-  let thinking = request.thinking ?? castRecipe?.thinking ??
-    session.config.thinking ?? session.supports_thinking;
-  const requestedOverride = request.recipe_override;
-  if (requestedOverride === null || requestedOverride === undefined) {
-    return { steering, sampling, thinking, systemPrompt, positionSpans };
-  }
+  const cast = request.raw ? null : generationCastRecipe(request, tree);
+  const call = request.sampling ?? null;
+  const override = request.recipe_override;
+  const anchor = override === null || override === undefined ? null : anchorRecipe(tree, parentId);
+  const modifier = anchor === null ? null : recipeModifier(override!, anchor);
 
-  const anchor = anchorRecipe(tree, parentId);
-  const modifier = recipeModifier(requestedOverride, anchor);
-  positionSpans = normalizeSteeringPositions(
-    modifier.position_spans !== undefined ? modifier : anchor,
-  );
-  const overlaid: PartialRecipe = {
-    steering: modifier.steering !== null ? modifier.steering : anchor.steering,
-    sampling: modifier.sampling !== null ? modifier.sampling : anchor.sampling,
-    thinking: modifier.thinking !== null ? modifier.thinking : anchor.thinking,
-    seed: modifier.seed !== null ? modifier.seed : anchor.seed,
-  };
-  if (anchor.system_prompt !== undefined) systemPrompt = anchor.system_prompt;
-  if (modifier.system_prompt !== undefined) systemPrompt = modifier.system_prompt;
-  if (overlaid.steering !== null) steering = overlaid.steering.trim() || null;
-  if (overlaid.sampling !== null) {
-    sampling = effectiveSampling(
-      session,
-      recipeSampling(overlaid.sampling),
-      maxOutputTokens,
-    );
+  let steering: string | null = request.steering ?? null;
+  let thinking: boolean | null = request.thinking ?? null;
+  let systemPrompt: string | null | undefined = request.system_prompt;
+  let sampling: WSSampling | null = call;
+  if (cast !== null) {
+    steering ??= cast.steering;
+    thinking ??= cast.thinking;
+    if (systemPrompt === undefined) systemPrompt = cast.system_prompt;
+    sampling = mergeSampling(cast.sampling === null ? null : recipeSampling(cast.sampling), sampling);
   }
-  if (overlaid.thinking !== null) thinking = overlaid.thinking;
-  if (overlaid.seed !== null) sampling = { ...sampling, seed: overlaid.seed };
-  return { steering, sampling, thinking, systemPrompt, positionSpans };
+  for (const layer of [anchor, modifier]) {
+    if (layer === null) continue;
+    if (layer.steering !== null) steering = layer.steering;
+    if (layer.thinking !== null) thinking = layer.thinking;
+    if (layer.system_prompt !== undefined) systemPrompt = layer.system_prompt;
+    sampling = mergeSampling(sampling, layer.sampling === null ? null : recipeSampling(layer.sampling));
+  }
+  const seed = [seedOf(modifier), call?.seed ?? null, seedOf(anchor), seedOf(cast)]
+    .find((value) => value !== null) ?? null;
+  const observation: WSSampling = {
+    return_top_k: call?.return_top_k ?? 0,
+    return_probe_readings: call?.return_probe_readings ?? true,
+    persist_per_layer_scores: call?.persist_per_layer_scores ?? false,
+    persist_subspace_coords: call?.persist_subspace_coords ?? false,
+  };
+
+  const positionSpans = modifier !== null
+    ? normalizeSteeringPositions(modifier.position_spans !== undefined ? modifier : anchor!)
+    : normalizeSteeringPositions(
+      request.position_spans !== undefined || request.position_indices !== undefined
+        ? request : cast ?? {},
+    );
+  return {
+    steering: resolveSteering(steering, session.default_steering),
+    sampling: effectiveSampling(session, { ...sampling, ...observation, seed }, maxOutputTokens),
+    thinking: thinking ?? session.config.thinking ?? session.supports_thinking,
+    systemPrompt: systemPrompt === undefined ? session.config.system_prompt : systemPrompt,
+    positionSpans,
+  };
+}
+
+function seedOf(recipe: Pick<PartialRecipe, "seed" | "sampling"> | null): number | null {
+  if (recipe === null) return null;
+  return recipe.seed ?? recipe.sampling?.seed ?? null;
 }
 
 function generationCastRecipe(
@@ -2506,13 +2508,15 @@ function generationCastRecipe(
   return tree.cast[explicitLabel || role]?.recipe ?? null;
 }
 
-function mergeCastSampling(
-  base: WSSampling | null,
-  request: WSSampling | null | undefined,
-): WSSampling | null | undefined {
-  if (base === null) return request;
-  if (request === null || request === undefined) return base;
-  const merged: WSSampling = { ...base };
+/** drowse's `SamplingConfig.merged_with`: `strong`'s fields that are not at
+ *  their default win over `weak`. */
+function mergeSampling(
+  weak: WSSampling | null,
+  strong: WSSampling | null,
+): WSSampling | null {
+  if (weak === null) return strong;
+  if (strong === null) return weak;
+  const merged: WSSampling = { ...weak };
   for (const key of [
     "temperature",
     "top_p",
@@ -2524,19 +2528,19 @@ function mergeCastSampling(
     "user_role",
     "assistant_role",
   ] as const) {
-    if (request[key] !== null && request[key] !== undefined) {
-      Object.assign(merged, { [key]: request[key] });
+    if (strong[key] !== null && strong[key] !== undefined) {
+      Object.assign(merged, { [key]: strong[key] });
     }
   }
   for (const key of ["presence_penalty", "frequency_penalty"] as const) {
-    if (request[key] !== null && request[key] !== undefined && request[key] !== 0) {
-      merged[key] = request[key];
+    if (strong[key] !== null && strong[key] !== undefined && strong[key] !== 0) {
+      merged[key] = strong[key];
     }
   }
-  if ((request.return_top_k ?? 0) > 0) merged.return_top_k = request.return_top_k;
-  if (request.persist_per_layer_scores === true) merged.persist_per_layer_scores = true;
-  if (request.persist_subspace_coords === true) merged.persist_subspace_coords = true;
-  if (request.return_probe_readings === false) merged.return_probe_readings = false;
+  if ((strong.return_top_k ?? 0) > 0) merged.return_top_k = strong.return_top_k;
+  if (strong.persist_per_layer_scores === true) merged.persist_per_layer_scores = true;
+  if (strong.persist_subspace_coords === true) merged.persist_subspace_coords = true;
+  if (strong.return_probe_readings === false) merged.return_probe_readings = false;
   return merged;
 }
 

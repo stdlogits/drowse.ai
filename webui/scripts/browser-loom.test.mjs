@@ -1697,15 +1697,32 @@ try {
     type: "generate",
     input: [{ role: "user", content: "Exact trails" }],
     stateless: true,
+    sampling: { persist_subspace_coords: true },
     recipe_override: {
-      sampling: { persist_subspace_coords: true },
+      sampling: { temperature: 0.2 },
     },
   }, () => {});
   assert.equal(recipeEngine.plans.length, plansBeforeExactCoords + 1);
   assert.equal(recipeEngine.plans.at(-1).sampling.persist_subspace_coords, true);
+  assert.equal(recipeEngine.plans.at(-1).sampling.temperature, 0.2);
+  await recipeRuntime.generate({
+    type: "generate",
+    input: [{ role: "user", content: "Observation stays with the call" }],
+    stateless: true,
+    recipe_override: {
+      sampling: { persist_subspace_coords: true, return_top_k: 5 },
+    },
+  }, () => {});
+  assert.equal(
+    recipeEngine.plans.at(-1).sampling.persist_subspace_coords,
+    false,
+    "a stamped or override recipe never decides what the caller captures",
+  );
+  assert.equal(recipeEngine.plans.at(-1).sampling.return_top_k, 0);
   await recipeRuntime.generate({
     type: "generate",
     stateless: false,
+    sampling: { persist_per_layer_scores: true },
     recipe_override: {
       sampling: {
         user_role: "critic",
@@ -1730,6 +1747,60 @@ try {
     recipeRuntime.snapshot().tree.nodes.at(-1).recipe.sampling.persist_subspace_coords,
     false,
   );
+
+  // compose_call: sampling merges field by field across the tiers, and the
+  // seed resolves modifier > call > anchor > cast.
+  const composeEngine = generation();
+  const composeRuntime = new BrowserLoomRuntime({
+    session: session(),
+    generation: composeEngine,
+    createId: ids("compose"),
+    compileSteering: () => hookProgram,
+  });
+  await composeRuntime.request({
+    service: "tree",
+    method: "castPut",
+    args: ["assistant", { seed: 5 }],
+  });
+  await composeRuntime.generate({
+    type: "submit",
+    text: "Anchor",
+    authored_role: "user",
+    generated_role: "assistant",
+    sampling: { temperature: 0.8, top_k: 12, seed: 7 },
+  }, () => {});
+  const composeAnchor = composeRuntime.snapshot().tree.active_node_id;
+  assert.equal(composeEngine.plans.at(-1).sampling.seed, 7, "the call's seed beats the cast's");
+  await composeRuntime.generate({
+    type: "generate",
+    parent_node_id: composeAnchor,
+    stateless: false,
+    recipe_override: { sampling: { top_p: 0.5 } },
+  }, () => {});
+  let composed = composeEngine.plans.at(-1).sampling;
+  assert.equal(composed.temperature, 0.8, "the anchor's fields survive a partial modifier");
+  assert.equal(composed.top_k, 12);
+  assert.equal(composed.top_p, 0.5);
+  assert.equal(composed.seed, 7, "an unseeded regen reproduces the anchor's seed");
+  await composeRuntime.generate({
+    type: "generate",
+    parent_node_id: composeAnchor,
+    stateless: false,
+    sampling: { seed: 11 },
+    recipe_override: "cool",
+  }, () => {});
+  composed = composeEngine.plans.at(-1).sampling;
+  assert.equal(composed.seed, 11, "the call's seed beats the anchor's");
+  assert.equal(composed.temperature, 0.3);
+  assert.equal(composed.top_k, 12);
+  await composeRuntime.generate({
+    type: "generate",
+    parent_node_id: composeAnchor,
+    stateless: false,
+    sampling: { seed: 11 },
+    recipe_override: "seed=42",
+  }, () => {});
+  assert.equal(composeEngine.plans.at(-1).sampling.seed, 42, "the modifier's seed beats the call's");
 
   const unsupportedRoles = session();
   unsupportedRoles.role_substitution_supported = false;
@@ -2217,8 +2288,11 @@ try {
   restored.model_id = initial.model_id;
   restored.session_id = "portable-session";
   restored.nodes[2].aggregate_readings = { confidence: 0.8 };
-  restored.nodes[2].tokens[0].probes = { confidence: 0.2 };
-  restored.nodes[2].tokens[1].probes = { confidence: 0.9 };
+  const scoredRow = (scores) => ({
+    version: 1, scope: "token", provenance: "captured", instruments: {}, scores,
+  });
+  restored.nodes[2].tokens[0].measurements = scoredRow({ confidence: 0.2 });
+  restored.nodes[2].tokens[1].measurements = scoredRow({ confidence: 0.9 });
   const restoreResult = await serviceRuntime.request({
     service: "tree", method: "restore", args: [restored],
   }, captureServiceMutation);
