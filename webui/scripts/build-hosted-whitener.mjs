@@ -51,7 +51,7 @@ if (!/^[0-9a-f]{40}$/.test(sourceRevision)) {
   throw new Error("core-pack authoring requires an exact Drowse source revision");
 }
 const drowseVersion = /__version__\s*=\s*"([^"]+)"/.exec(
-  await readFile(resolve(repositoryRoot, "drowse/__init__.py"), "utf8"),
+  await readFile(resolve(repositoryRoot, "drowse/drowse/__init__.py"), "utf8"),
 )?.[1];
 if (!drowseVersion) throw new Error("core-pack authoring could not resolve the Drowse version");
 const artifactProvenance = {
@@ -98,8 +98,8 @@ for (const artifact of artifacts) {
 }
 
 const [baselinePrompts, neutralStatements] = await Promise.all([
-  readJson(resolve(repositoryRoot, "drowse/data/baseline_prompts.json")),
-  readJson(resolve(repositoryRoot, "drowse/data/neutral_statements.json")),
+  readJson(resolve(repositoryRoot, "drowse/drowse/data/baseline_prompts.json")),
+  readJson(resolve(repositoryRoot, "drowse/drowse/data/neutral_statements.json")),
 ]);
 if (
   !Array.isArray(baselinePrompts) || baselinePrompts.length === 0 ||

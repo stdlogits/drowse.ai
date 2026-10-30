@@ -60,30 +60,30 @@ for (const file of files) {
     violations.push(`${file}: raw runtime error can reach the interface`);
   }
   if (
-    file !== "src/lib/style/tokens.css" &&
+    file !== "../drowse/webui/src/lib/style/tokens.css" &&
     (extname(file) === ".css" || extname(file) === ".svelte") &&
     /(?:#[0-9a-f]{3,8}\b|rgba?\()/i.test(source)
   ) {
     violations.push(`${file}: raw color outside the theme token contract`);
   }
   if (
-    file !== "src/lib/style/tokens.css" &&
-    file !== "src/lib/style/fonts.css" &&
+    file !== "../drowse/webui/src/lib/style/tokens.css" &&
+    file !== "../drowse/webui/src/lib/style/fonts.css" &&
     (extname(file) === ".css" || extname(file) === ".svelte") &&
     /font-size\s*:\s*(?:(?:[1-9]\d*(?:\.\d+)?|0?\.\d+)(?:px|rem|em)\b|clamp\s*\()/i.test(source)
   ) {
     violations.push(`${file}: raw font size outside the type-token contract`);
   }
   if (
-    file !== "src/lib/style/tokens.css" &&
-    file !== "src/lib/style/fonts.css" &&
+    file !== "../drowse/webui/src/lib/style/tokens.css" &&
+    file !== "../drowse/webui/src/lib/style/fonts.css" &&
     (extname(file) === ".css" || extname(file) === ".svelte") &&
     /font-weight\s*:\s*\d/i.test(source)
   ) {
     violations.push(`${file}: raw font weight outside the type-token contract`);
   }
   if (
-    file !== "src/lib/style/tokens.css" &&
+    file !== "../drowse/webui/src/lib/style/tokens.css" &&
     (extname(file) === ".css" || extname(file) === ".svelte")
   ) {
     const css = extname(file) === ".svelte" ? source.match(/<style[^>]*>([\s\S]*?)<\/style>/)?.[1] ?? "" : source;
@@ -121,9 +121,9 @@ assert.deepEqual(violations, []);
 
 for (const file of [
   "src/hosted/ui/HostedApp.svelte",
-  "src/drawers/LoadConversationDrawer.svelte",
-  "src/drawers/ManifoldPacksDrawer.svelte",
-  "src/panels/rack/SteerCard.svelte",
+  "../drowse/webui/src/drawers/LoadConversationDrawer.svelte",
+  "../drowse/webui/src/drawers/ManifoldPacksDrawer.svelte",
+  "../drowse/webui/src/panels/rack/SteerCard.svelte",
 ]) {
   const source = await readFile(file, "utf8");
 
@@ -133,13 +133,13 @@ for (const file of [
 const chatHome = await readFile("src/hosted/ui/HostedHome.svelte", "utf8");
 assert.match(chatHome, /\.storage-notice\s*\{[^}]*background:\s*var\(--surface-card\)/, "storage guidance uses the shared card material");
 assert.match(chatHome, /background:\s*var\(--warning-action\)/, "storage protection keeps its yellow action button");
-for (const file of ["src/hosted/ui/HostedHome.svelte", "src/lib/builder/ValidationBlock.svelte", "src/panels/SteeringRack.svelte"]) {
+for (const file of ["src/hosted/ui/HostedHome.svelte", "../drowse/webui/src/lib/builder/ValidationBlock.svelte", "../drowse/webui/src/panels/SteeringRack.svelte"]) {
   const source = await readFile(file, "utf8");
 
   assert.doesNotMatch(source, /border-(?:left|right|inline-start|inline-end)\s*:/, `${file}: no decorative side borders`);
   assert.doesNotMatch(source, /inset\s+[1-9]\d*px\s+0\s+0\s+var\(--(?:warning|accent)/, `${file}: no decorative side shadows`);
 }
-for (const file of ["src/hosted/ui/HostedHome.svelte", "src/hosted/ui/HostedApp.svelte", "src/drawers/RackDrawer.svelte", "src/drawers/ProbeInspectorDrawer.svelte", "src/panels/loom/LoomWeave.svelte"]) {
+for (const file of ["src/hosted/ui/HostedHome.svelte", "src/hosted/ui/HostedApp.svelte", "../drowse/webui/src/drawers/RackDrawer.svelte", "../drowse/webui/src/drawers/ProbeInspectorDrawer.svelte", "../drowse/webui/src/panels/loom/LoomWeave.svelte"]) {
   const source = await readFile(file, "utf8");
 
   for (const opening of source.matchAll(/<details\b[^>]*>/g)) {
@@ -147,10 +147,10 @@ for (const file of ["src/hosted/ui/HostedHome.svelte", "src/hosted/ui/HostedApp.
   }
 }
 for (const file of [
-  "src/lib/ui/Button.svelte",
-  "src/panels/Chat.svelte",
-  "src/panels/loom/LoomSidebar.svelte",
-  "src/drawers/LoadConversationDrawer.svelte",
+  "../drowse/webui/src/lib/ui/Button.svelte",
+  "../drowse/webui/src/panels/Chat.svelte",
+  "../drowse/webui/src/panels/loom/LoomSidebar.svelte",
+  "../drowse/webui/src/drawers/LoadConversationDrawer.svelte",
 ]) {
   const source = await readFile(file, "utf8");
 
@@ -158,7 +158,7 @@ for (const file of [
   assert.match(source, /background:\s*(?:var\(--control-sheen\),\s*)?var\(--danger-hover\)/, `${file}: use matching destructive hover`);
 }
 
-const globalCss = await readFile("src/lib/style/global.css", "utf8");
+const globalCss = await readFile("../drowse/webui/src/lib/style/global.css", "utf8");
 assert.match(globalCss, /:focus-visible\s*\{/);
 assert.match(globalCss, /prefers-reduced-motion:\s*reduce/);
 assert.match(
@@ -167,7 +167,7 @@ assert.match(
 );
 assert.match(globalCss, /scroll-behavior:\s*auto\s*!important/);
 
-const motionTokens = await readFile("src/lib/style/tokens.css", "utf8");
+const motionTokens = await readFile("../drowse/webui/src/lib/style/tokens.css", "utf8");
 assert.match(motionTokens, /--ease-enter:/);
 assert.match(motionTokens, /--ease-exit:/);
 assert.match(motionTokens, /--press-scale:\s*0\.96/);
@@ -204,22 +204,22 @@ for (const [file, selector, compact = false] of [
   ["src/hosted/ui/HostedHome.svelte", ".chat-card"],
   ["src/hosted/ui/Credits.svelte", ".team-member"],
   ["src/hosted/ui/HostedRoot.svelte", ".runtime-dialog"],
-  ["src/drawers/DownloadChatDrawer.svelte", ".download-chat"],
-  ["src/lib/Select.svelte", ".sk-select-popover", true],
-  ["src/lib/Combobox.svelte", ".popover", true],
-  ["src/lib/Toaster.svelte", ".toast"],
-  ["src/panels/Chat.svelte", ".msg"],
-  ["src/panels/Chat.svelte", ".input-row"],
-  ["src/panels/SteeringRack.svelte", ".rack"],
-  ["src/panels/ProbeRack.svelte", ".rack"],
-  ["src/panels/rack/RackCard.svelte", ".card"],
+  ["../drowse/webui/src/drawers/DownloadChatDrawer.svelte", ".download-chat"],
+  ["../drowse/webui/src/lib/Select.svelte", ".sk-select-popover", true],
+  ["../drowse/webui/src/lib/Combobox.svelte", ".popover", true],
+  ["../drowse/webui/src/lib/Toaster.svelte", ".toast"],
+  ["../drowse/webui/src/panels/Chat.svelte", ".msg"],
+  ["../drowse/webui/src/panels/Chat.svelte", ".input-row"],
+  ["../drowse/webui/src/panels/SteeringRack.svelte", ".rack"],
+  ["../drowse/webui/src/panels/ProbeRack.svelte", ".rack"],
+  ["../drowse/webui/src/panels/rack/RackCard.svelte", ".card"],
 ]) {
   const css = ((await readFile(file, "utf8")).match(/<style[^>]*>([\s\S]*?)<\/style>/)?.[1] ?? "").replace(/\/\*[\s\S]*?\*\//g, "");
   const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter((match) => match[1].trim() === selector);
   const paddedRules = rules.filter((match) => /(?:^|;)\s*padding\s*:/.test(match[2]));
   assert.ok(paddedRules.length > 0, `${file}: ${selector} defines its content inset`);
   for (const rule of paddedRules) {
-    if (file === "src/panels/Chat.svelte" && selector === ".input-row" && /padding:\s*var\(--space-[12]\)\s*;/.test(rule[2])) continue;
+    if (file === "../drowse/webui/src/panels/Chat.svelte" && selector === ".input-row" && /padding:\s*var\(--space-[12]\)\s*;/.test(rule[2])) continue;
     assert.match(rule[2], compact ? /padding:\s*var\(--space-2\)\s*;/ : /padding:\s*var\(--surface-padding\)(?:\s+var\(--surface-padding\))*\s*;/, `${file}: ${selector} uses ${compact ? "compact menu" : "24px panel"} padding`);
   }
 }
@@ -241,7 +241,7 @@ assert.match(globalCss, /-webkit-font-smoothing:\s*antialiased/);
 assert.match(globalCss, /h1,[\s\S]*text-wrap:\s*balance/);
 assert.match(globalCss, /p\s*\{[\s\S]*text-wrap:\s*pretty/);
 
-const motionHelpers = await readFile("src/lib/motion.ts", "utf8");
+const motionHelpers = await readFile("../drowse/webui/src/lib/motion.ts", "utf8");
 assert.match(motionHelpers, /prefers-reduced-motion:\s*reduce/);
 assert.match(motionHelpers, /cubicIn/);
 assert.match(motionHelpers, /cubicOut/);
@@ -250,7 +250,7 @@ const interactionDurations = [...motionHelpers.matchAll(/motionDuration\((\d+)\)
 assert.ok(interactionDurations.length > 0);
 assert.ok(interactionDurations.every((duration) => duration <= 300));
 
-const loom = await readFile("src/panels/loom/LoomSidebar.svelte", "utf8");
+const loom = await readFile("../drowse/webui/src/panels/loom/LoomSidebar.svelte", "utf8");
 const menuStart = loom.indexOf('class="loom-menu"');
 const menuEnd = loom.indexOf("{/if}", menuStart);
 const menuOpening = loom.slice(menuStart, menuEnd);
@@ -264,20 +264,20 @@ assert.match(loom, /touchPointers/);
 assert.match(loom, /scaleFromPinch/);
 assert.match(loom, /onpointercancel=\{endViewportGesture\}/);
 
-const probeInspector = await readFile("src/drawers/ProbeInspectorDrawer.svelte", "utf8");
+const probeInspector = await readFile("../drowse/webui/src/drawers/ProbeInspectorDrawer.svelte", "utf8");
 assert.match(probeInspector, /touchPointers/);
 assert.match(probeInspector, /scaleFromPinch/);
 assert.match(probeInspector, /onpointercancel=\{onPointerUp\}/);
 assert.match(probeInspector, /drag · scroll or pinch/);
 
-const toaster = await readFile("src/lib/Toaster.svelte", "utf8");
+const toaster = await readFile("../drowse/webui/src/lib/Toaster.svelte", "utf8");
 assert.doesNotMatch(toaster, /border-(?:left|right)(?:-[a-z]+)?\s*:/i);
 assert.doesNotMatch(toaster, /border-inline-start(?:-color)?\s*:/);
 assert.match(toaster, /background:\s*var\(--surface-sheen\),\s*var\(--popup-bg\)/);
 assert.match(toaster, /in:fly/);
 assert.match(toaster, /out:fly/);
 
-const tokenDrilldown = await readFile("src/drawers/TokenDrilldownDrawer.svelte", "utf8");
+const tokenDrilldown = await readFile("../drowse/webui/src/drawers/TokenDrilldownDrawer.svelte", "utf8");
 assert.match(tokenDrilldown, /instrumentFamily\("lens"\)\?\.capabilities\.token_readout/);
 assert.match(tokenDrilldown, /instrumentFamily\("sae"\)\?\.capabilities\.token_readout/);
 assert.match(tokenDrilldown, /instrumentFamily\("geometry"\)\?\.capabilities\.token_readout/);
@@ -285,7 +285,7 @@ assert.match(tokenDrilldown, /if \(!lensTokenReplayAvailable\) return/);
 assert.match(tokenDrilldown, /if \(!saeTokenReplayAvailable\) return/);
 assert.match(tokenDrilldown, /if \(!geometryTokenReplayAvailable\) return/);
 
-const instrumentStore = await readFile("src/lib/stores/instruments.svelte.ts", "utf8");
+const instrumentStore = await readFile("../drowse/webui/src/lib/stores/instruments.svelte.ts", "utf8");
 assert.match(
   instrumentStore,
   /sessionState\.info\?\.jlens_fitted === true &&\s*instrumentFamily\("lens"\)\?\.capabilities\.token_readout === true/,
@@ -295,24 +295,24 @@ assert.match(
   /saeLoaded\(\) &&\s*instrumentFamily\("sae"\)\?\.capabilities\.token_readout === true/,
 );
 
-const geometryTab = await readFile("src/drawers/token/GeometryTab.svelte", "utf8");
+const geometryTab = await readFile("../drowse/webui/src/drawers/token/GeometryTab.svelte", "utf8");
 assert.match(
   geometryTab,
   /replayAvailable && \(\(readout\.data\?\.steering \?\? null\) !== null \|\| !steered\)/,
 );
 
-const nodeCompare = await readFile("src/drawers/NodeCompareDrawer.svelte", "utf8");
+const nodeCompare = await readFile("../drowse/webui/src/drawers/NodeCompareDrawer.svelte", "utf8");
 assert.match(nodeCompare, /apiTree\.replayCapabilities\(\)/);
 assert.match(nodeCompare, /if \(!availability\.available\)/);
 
 for (const [file, redundantLabel] of [
   ["src/hosted/ui/HostedHome.svelte", /class="eyebrow"/],
-  ["src/drawers/HelpDrawer.svelte", /class="eyebrow"/],
-  ["src/drawers/CastDrawer.svelte", /class="eyebrow"/],
+  ["../drowse/webui/src/drawers/HelpDrawer.svelte", /class="eyebrow"/],
+  ["../drowse/webui/src/drawers/CastDrawer.svelte", /class="eyebrow"/],
   ["src/drawers/LocalRuntimeDrawer.svelte", /class="eyebrow"/],
   ["src/hosted/ui/HostedRoot.svelte", /runtime-dialog-label/],
-  ["src/panels/loom/LoomSidebar.svelte", /projection-kicker/],
-  ["src/panels/InspectorPanel.svelte", /<p>(Sampling|Guidance and readings)<\/p>/],
+  ["../drowse/webui/src/panels/loom/LoomSidebar.svelte", /projection-kicker/],
+  ["../drowse/webui/src/panels/InspectorPanel.svelte", /<p>(Sampling|Guidance and readings)<\/p>/],
 ]) {
   assert.doesNotMatch(await readFile(file, "utf8"), redundantLabel, `${file}: redundant heading label`);
 }
@@ -324,7 +324,7 @@ for (const [page, current] of [["Landing", "home"], ["Credits", "credits"], ["Ho
   assert.ok(source.includes("<PageFooter"), `${page} uses the shared page footer`);
   assert.doesNotMatch(source, /<header class="page-header"|\.header-actions\s*\{/, `${page} must not recreate header styling`);
 }
-const pageHeader = await readFile("src/hosted/ui/PageHeader.svelte", "utf8");
+const pageHeader = await readFile("../drowse/webui/src/lib/ui/PageHeader.svelte", "utf8");
 const modelCardGeometry = await readFile("src/hosted/ui/HostedApp.svelte", "utf8");
 assert.match(modelCardGeometry, /\.model-grid > button \{[^}]*border-radius: var\(--radius\);/, "Model cards use restrained 8px corners");
 assert.match(pageHeader, /grid-template-columns: auto minmax\(0, 1fr\) auto;/, "Site header keeps brand, navigation, and appearance in one row");
@@ -340,16 +340,16 @@ assert.match(pageFooter, /href=\{sourceUrl\}/, "Footer keeps the AGPL source off
 assert.match(pageFooter, /"Source for this build"/);
 assert.doesNotMatch(pageFooter, />\{CONTACT_ADDRESS\}</, "Footer says Email us instead of printing the address");
 assert.match(pageFooter, /\(opens GitHub\)/, "External GitHub links say where they go");
-const compactThemeToggle = await readFile("src/lib/ui/ThemeToggle.svelte", "utf8");
+const compactThemeToggle = await readFile("../drowse/webui/src/lib/ui/ThemeToggle.svelte", "utf8");
 assert.doesNotMatch(compactThemeToggle, /slidingSelection|selection-indicator/, "Theme switching uses one icon without a sliding track");
 assert.match(compactThemeToggle, /width: var\(--control-target\);\s*height: var\(--control-target\);\s*min-width: 44px;\s*min-height: 44px;/, "The theme button has a 44px minimum touch target");
 assert.match(compactThemeToggle, /prefers-reduced-motion: reduce/, "Icon switching respects reduced motion");
 assert.match(compactThemeToggle, /border-radius: var\(--radius-pill\)/, "Theme container follows the circular options");
 assert.match(compactThemeToggle, /background: transparent/, "Theme control is icon-only");
-for (const path of ["src/App.svelte", "src/hosted/ui/NotFound.svelte", "src/hosted/ui/HostedRoot.svelte"]) {
+for (const path of ["../drowse/webui/src/App.svelte", "src/hosted/ui/NotFound.svelte", "src/hosted/ui/HostedRoot.svelte"]) {
   const source = await readFile(path, "utf8");
   assert.ok(source.includes("<PageHeader"), `${path} shares the page header`);
-  if (path !== "src/App.svelte") assert.ok(source.includes("<PageFooter"), `${path} shares the page footer`);
+  if (path !== "../drowse/webui/src/App.svelte") assert.ok(source.includes("<PageFooter"), `${path} shares the page footer`);
   assert.doesNotMatch(source, /<a class="page-brand"/, `${path} must not duplicate the wordmark`);
 }
 const creditsLayout = await readFile("src/hosted/ui/Credits.svelte", "utf8");
@@ -371,11 +371,11 @@ assert.match(savedChatLayout, /\.chat-card \{[^}]*background: var\(--surface-car
 assert.match(savedChatLayout, /button\.primary \{ color: var\(--action-ink\); background: var\(--control-sheen\), var\(--action-bg\);/);
 
 for (const [file, selector] of [
-  ["src/lib/ui/Chip.svelte", ".sk-chip"],
-  ["src/lib/builder/ModeTabs.svelte", ".sk-mode-tabs"],
-  ["src/panels/rack/SteerCard.svelte", ".operation"],
-  ["src/panels/rack/AtomSteerCard.svelte", ".operation"],
-  ["src/panels/loom/LoomSidebar.svelte", ".loom-view-controls"],
+  ["../drowse/webui/src/lib/ui/Chip.svelte", ".sk-chip"],
+  ["../drowse/webui/src/lib/builder/ModeTabs.svelte", ".sk-mode-tabs"],
+  ["../drowse/webui/src/panels/rack/SteerCard.svelte", ".operation"],
+  ["../drowse/webui/src/panels/rack/AtomSteerCard.svelte", ".operation"],
+  ["../drowse/webui/src/panels/loom/LoomSidebar.svelte", ".loom-view-controls"],
 ]) {
   const source = await readFile(file, "utf8");
 
@@ -390,26 +390,26 @@ for (const [file, selector] of [
   assert.match(rule, /border-radius:\s*var\(--radius-group\)/, `${file}: group radius includes the child radius and inset`);
   assert.match(rule, /background:\s*var\(--surface-sheen\)/, `${file}: group keeps the shared finish`);
 }
-const samplingGeometry = await readFile("src/panels/SamplingStrip.svelte", "utf8");
+const samplingGeometry = await readFile("../drowse/webui/src/panels/SamplingStrip.svelte", "utf8");
 assert.match(samplingGeometry, /\.control\s*\{[^}]*padding:\s*0;[^}]*background:\s*transparent;/, "Sampling fields are grouped by spacing without individual cards");
 assert.match(samplingGeometry, /\.sampling-strip\s*\{[^}]*padding:\s*0 var\(--panel-padding\) var\(--panel-padding\)/, "Sampling controls align with the heading and footer");
 assert.match(samplingGeometry, /\.row\.actions > :only-child\s*\{\s*grid-column:\s*1 \/ -1/, "A base-model action fills the row instead of leaving an empty column");
 assert.doesNotMatch(globalCss.match(/:focus-visible\s*\{([^}]+)\}/)?.[1] ?? "", /border-radius/, "Keyboard focus must not change control geometry");
 assert.match(globalCss, /:is\(\.drawer, \.drawer-shell\) > \.body\s*\{\s*scrollbar-gutter:\s*stable both-edges/, "Drawer scrollbars preserve balanced insets");
-const inspectorGeometry = await readFile("src/panels/InspectorPanel.svelte", "utf8");
+const inspectorGeometry = await readFile("../drowse/webui/src/panels/InspectorPanel.svelte", "utf8");
 assert.match(inspectorGeometry, /\.control-grid\s*\{[^}]*grid-template-rows:\s*minmax\(36rem, 1fr\)/, "Short windows scroll the instrument layout rather than collapsing its cards");
 assert.match(inspectorGeometry, /@media \(max-width: 920px\)[\s\S]*?\.control-grid\s*\{[^}]*scrollbar-gutter:\s*stable both-edges;\s*padding:\s*0;/, "Single-column controls avoid a redundant inset");
 assert.match(inspectorGeometry, /\.rack-grid :global\(\.rack\)\s*\{\s*padding:\s*0;/, "Rack grids own the shared gutter without doubled child padding");
-const numberGeometry = await readFile("src/lib/NumberInput.svelte", "utf8");
+const numberGeometry = await readFile("../drowse/webui/src/lib/NumberInput.svelte", "utf8");
 assert.match(numberGeometry, /\.sk-number\s*\{[^}]*border-radius:\s*var\(--radius\)/);
 assert.match(numberGeometry, /\.sk-number-input\s*\{[^}]*border-radius:\s*inherit/, "The input follows its wrapper instead of introducing another corner radius");
-const selectionMaterial = await readFile("src/lib/style/sliding-selection.css", "utf8");
+const selectionMaterial = await readFile("../drowse/webui/src/lib/style/sliding-selection.css", "utf8");
 assert.match(selectionMaterial, /\.selection-indicator\s*\{[^}]*background:\s*var\(--control-sheen\)/, "The moving selection carries the gradient");
 assert.match(selectionMaterial, /background-image:\s*none !important/, "Child buttons do not double the selection gradient");
-const recipeGeometry = await readFile("src/panels/RecipeBar.svelte", "utf8");
+const recipeGeometry = await readFile("../drowse/webui/src/panels/RecipeBar.svelte", "utf8");
 assert.ok(recipeGeometry.includes("max-height: calc((var(--control-target) + var(--space-xs) * 2) * 2 + var(--space-xs));"), "Recipe scrolling fits two complete chip rows at each target size");
 
-const workspaceGeometry = await readFile("src/App.svelte", "utf8");
+const workspaceGeometry = await readFile("../drowse/webui/src/App.svelte", "utf8");
 for (const selector of ["shell", "workspace-frame", "workspace-page", "workspace-surface"]) {
   assert.match(workspaceGeometry, new RegExp(`\\.${selector}\\s*\\{[^}]*overflow:\\s*clip;`), `${selector} cannot scroll when a nested control receives focus`);
 }
@@ -431,7 +431,7 @@ assert.match(workspaceGeometry, /<PageHeader current="workbench" compact/);
 assert.match(workspaceGeometry, /<WorkbenchMenu/);
 assert.doesNotMatch(workspaceGeometry, /<PageFooter|home-button|help-action/, "Secondary actions do not form permanent extra rows");
 assert.match(workspaceGeometry, /grid-template-rows:\s*max-content minmax\(0, calc\(var\(--control-target\) \+ var\(--space-2\) \* 2 \+ var\(--space-1\)\)\) minmax\(0, 1fr\) minmax\(0, 0fr\)/, "Compact chrome reserves room for the inset tab group and leaves remaining height for content");
-const workspaceMenu = await readFile("src/lib/ui/WorkbenchMenu.svelte", "utf8");
+const workspaceMenu = await readFile("../drowse/webui/src/lib/ui/WorkbenchMenu.svelte", "utf8");
 assert.match(workspaceMenu, /\{#if toolsLabel\}/, "Only relevant view tools are offered");
 assert.match(workspaceMenu, /\{#if hasChat\}/, "An empty chat has no download action");
 assert.match(workspaceMenu, /disabled=\{generating\}/, "Chat downloads wait for generation to finish");
@@ -439,10 +439,10 @@ assert.match(workspaceMenu, /dropdownMotion\(\)/, "Menu uses the shared interrup
 assert.match(workspaceMenu, /popover="manual"/, "Menu escapes clipped shell containers");
 assert.match(pageHeader, /\{#if current === "workbench"\}/, "Workbench does not repeat the site's navigation row");
 assert.doesNotMatch(workspaceGeometry, /togglePalette|key\.toLowerCase\(\) === "k"/, "Command-K is not intercepted");
-const contextualChat = await readFile("src/panels/Chat.svelte", "utf8");
+const contextualChat = await readFile("../drowse/webui/src/panels/Chat.svelte", "utf8");
 assert.ok(contextualChat.indexOf('id="chat-tools-header"') < contextualChat.indexOf('<div class="chat"'), "Revealed tools sit outside the conversation scroller");
 assert.match(workspaceGeometry, /\.app-header\s*\{[^}]*background:\s*var\(--workspace-panel-bg\);/, "The site header shares the quiet workspace material");
-for (const file of ["src/panels/Chat.svelte", "src/panels/loom/LoomSidebar.svelte"]) {
+for (const file of ["../drowse/webui/src/panels/Chat.svelte", "../drowse/webui/src/panels/loom/LoomSidebar.svelte"]) {
   const source = await readFile(file, "utf8");
 
   assert.match(source, /headersVisible = true/, `${file}: standalone panels retain their headers`);
@@ -450,30 +450,29 @@ for (const file of ["src/panels/Chat.svelte", "src/panels/loom/LoomSidebar.svelt
   assert.match(source, /in:slide=\{collapseIn\(\)\} out:slide=\{collapseOut\(\)\}/, `${file}: reveal and dismissal use shared motion`);
   assert.doesNotMatch(source, /Cmd\+K|Ctrl\+K|Meta\+K|Control\+K|commandShortcut|kbd-hint|tool-key/, `${file}: no shortcut behavior or hint remains`);
 }
-const buttonType = await readFile("src/lib/ui/Button.svelte", "utf8");
+const buttonType = await readFile("../drowse/webui/src/lib/ui/Button.svelte", "utf8");
 for (const size of ["sm", "md"]) assert.match(buttonType, new RegExp(`\\.${size}\\s*\\{[^}]*font-size:\\s*var\\(--text-sm\\)`), "Compact and regular buttons use the body-text size");
 assert.match(loom, /\.tree-scroll\s*\{[^}]*overflow:\s*clip;/, "Focus cannot scroll the canvas behind the camera transform");
 assert.match(loom, /observer\.observe\(viewport\);\s*return \(\) => observer\.disconnect\(\)/, "Resizing is observed for a viewport mounted after the initial empty loom");
 assert.match(loom, /resizeLoomCamera\(camera, lastViewportSize, size\)/, "Loom preserves the viewed point across resizes");
 assert.match(loom, /function focusInitialView\(\): void\s*\{\s*if \(!active \|\| loomUiState.view !== "map" \|\| !viewportEl\) return;/, "The camera is not initialized against the hidden workspace's smaller dimensions");
-const controlsGeometry = await readFile("src/panels/ControlsPanel.svelte", "utf8");
+const controlsGeometry = await readFile("../drowse/webui/src/panels/ControlsPanel.svelte", "utf8");
 assert.match(controlsGeometry, /\.controls-nav :global\(\.sk-tabs\)\s*\{[^}]*padding:\s*0;[^}]*background:\s*transparent;/, "Controls tabs do not sit inside another container");
 assert.match(controlsGeometry, /\.controls\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/, "Controls do not grow their grid to the tab row's intrinsic width");
 assert.match(controlsGeometry, /\.controls-nav :global\(\.sk-tabs\)\s*\{[^}]*min-width:\s*0;/, "The nested tab group can shrink on narrow screens");
 assert.match(controlsGeometry, /@media \(max-width: 680px\)[\s\S]*\.controls-nav :global\(\.tab\)\s*\{[^}]*flex:\s*1 1 auto;[^}]*padding-inline:\s*var\(--space-xs\)/, "Compact tabs retain the complete label and equal insets");
-const completionGeometry = await readFile("src/panels/RawBuffer.svelte", "utf8");
+const completionGeometry = await readFile("../drowse/webui/src/panels/RawBuffer.svelte", "utf8");
 assert.match(completionGeometry, /\.raw-buffer\s*\{[^}]*flex:\s*1 0 auto;[^}]*min-height:\s*0;/, "Completion grows naturally rather than overflowing its parent's full height");
 assert.doesNotMatch(completionGeometry, /min-height:\s*24rem/, "The completion buffer has no oversized fixed minimum");
 assert.match(completionGeometry, /\.surface\s*\{[^}]*flex:\s*1 0 calc\(2lh \+ var\(--surface-padding\) \* 2\);/, "The editor keeps two text lines and its padding while yielding space to actions and model identity");
-const chatGeometry = await readFile("src/panels/Chat.svelte", "utf8");
+const chatGeometry = await readFile("../drowse/webui/src/panels/Chat.svelte", "utf8");
 assert.match(chatGeometry, /\.input-actions\s*\{[^}]*flex-wrap:\s*nowrap;/, "Chat actions share one row");
 assert.doesNotMatch(chatGeometry, /\.input-actions\.has-clear :global\(button:first-child\)\s*\{\s*grid-column:\s*1 \/ -1;/, "The primary action must not create another mobile row");
 assert.match(chatGeometry, /\.chat\s*\{[^}]*overflow-y:\s*auto;[^}]*scrollbar-gutter:\s*auto;/, "Chat surfaces do not add scrollbar gutters to the horizontal inset");
 assert.match(chatGeometry, /--chat-radius:\s*calc\(var\(--radius-lg\) \+ var\(--chat-inset\)\)/, "The chat frame radius follows the composer radius and inset");
-const statusGeometry = await readFile("src/panels/StatusFooter.svelte", "utf8");
+const statusGeometry = await readFile("../drowse/webui/src/panels/StatusFooter.svelte", "utf8");
 assert.match(statusGeometry, /\.status-footer\s*\{[^}]*flex:\s*0 0 auto;/, "Status controls do not shrink into adjacent actions");
 assert.ok(statusGeometry.includes("min-height: var(--workspace-status-height, calc(var(--control-target) + var(--space-2) * 2));"), "The status row supports compact workspace spacing with equal standalone insets");
 
 await import("./workspace-density.test.mjs");
-await import("./appearance-lifecycle.test.mjs");
 console.log(`interface policy passed across ${files.length} source files`);

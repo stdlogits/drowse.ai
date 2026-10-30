@@ -3,7 +3,7 @@ import type {
   DiffTextSpanJSON,
   DiffTokenSpanJSON,
   LoomTokenRowJSON,
-} from "../../lib/types";
+} from "../../../../drowse/webui/src/lib/types";
 
 interface Match {
   a: number;

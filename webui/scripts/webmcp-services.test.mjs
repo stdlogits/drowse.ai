@@ -8,18 +8,18 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const server = await createServer({ root, appType: "custom", logLevel: "silent", optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true, watch: null } });
 
 try {
-  const { createServiceTools } = await server.ssrLoadModule("/src/lib/webmcp/serviceTools.ts");
-  const { INTERFACE_CATALOGUE, INTERFACE_FAMILIES, RUNTIME_SERVICE_CATALOGUE, catalogueServices } = await server.ssrLoadModule("/src/lib/webmcp/catalogue.ts");
-  const { RUNTIME_SERVICE_METHODS } = await server.ssrLoadModule("/src/lib/runtime/contracts.ts");
-  const { CONTROL_REFERENCE, explainControl, listControlTopics, explainCurrentControl } = await server.ssrLoadModule("/src/lib/webmcp/controls.ts");
-  const { validateInput } = await server.ssrLoadModule("/src/lib/webmcp/validation.ts");
-  const { JobRegistry } = await server.ssrLoadModule("/src/lib/webmcp/jobs.ts");
-  const { onArtifactUpdate, notifyArtifactUpdate } = await server.ssrLoadModule("/src/lib/artifactUpdates.ts");
+  const { createServiceTools } = await server.ssrLoadModule("/../drowse/webui/src/lib/webmcp/serviceTools.ts");
+  const { INTERFACE_CATALOGUE, INTERFACE_FAMILIES, RUNTIME_SERVICE_CATALOGUE, catalogueServices } = await server.ssrLoadModule("/../drowse/webui/src/lib/webmcp/catalogue.ts");
+  const { RUNTIME_SERVICE_METHODS } = await server.ssrLoadModule("/../drowse/webui/src/lib/runtime/contracts.ts");
+  const { CONTROL_REFERENCE, explainControl, listControlTopics, explainCurrentControl } = await server.ssrLoadModule("/../drowse/webui/src/lib/webmcp/controls.ts");
+  const { validateInput } = await server.ssrLoadModule("/../drowse/webui/src/lib/webmcp/validation.ts");
+  const { JobRegistry } = await server.ssrLoadModule("/../drowse/webui/src/lib/webmcp/jobs.ts");
+  const { onArtifactUpdate, notifyArtifactUpdate } = await server.ssrLoadModule("/../drowse/webui/src/lib/artifactUpdates.ts");
   const tools = createServiceTools();
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
   assert.equal(byName.size, tools.length, "service names must be unique");
 
-  const registrySource = await readFile(new URL("../src/drawers/index.ts", import.meta.url), "utf8");
+  const registrySource = await readFile(new URL("../../drowse/webui/src/drawers/index.ts", import.meta.url), "utf8");
   const drawerNames = [...registrySource.slice(registrySource.indexOf("export const DRAWERS:")).matchAll(/^  ([a-z_]+): \{/gm)].map((match) => match[1]);
   assert.equal(drawerNames.length, 25);
   assert.deepEqual(Object.keys(INTERFACE_CATALOGUE).sort(), drawerNames.sort(), "every drawer needs a conscious coverage decision");
@@ -28,9 +28,9 @@ try {
     assert.deepEqual(Object.keys(RUNTIME_SERVICE_CATALOGUE[service]).sort(), Object.keys(methods).sort(), `${service} must be exhaustively classified`);
   }
   const actualToolNames = new Set();
-  for (const file of await readdir(new URL("../src/lib/webmcp/", import.meta.url))) {
+  for (const file of await readdir(new URL("../../drowse/webui/src/lib/webmcp/", import.meta.url))) {
     if (!file.endsWith(".ts") || file === "catalogue.ts") continue;
-    const content = await readFile(new URL(`../src/lib/webmcp/${file}`, import.meta.url), "utf8");
+    const content = await readFile(new URL(`../../drowse/webui/src/lib/webmcp/${file}`, import.meta.url), "utf8");
     const ast = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true);
     function visit(node) {
       if (ts.isPropertyAssignment(node) && node.name.getText(ast) === "name" && ts.isStringLiteral(node.initializer) && node.initializer.text.startsWith("drowse_")) actualToolNames.add(node.initializer.text);
@@ -51,12 +51,12 @@ try {
   }
 
   const context = { signal: new AbortController().signal, jobs: new JobRegistry(), runtime: { mode: "http", sessions: {}, profiles: {}, probes: {}, manifolds: {}, templates: {}, tree: {}, instruments: {} }, hosted: null, shell: null, capabilities: null };
-  const { installRuntimeClient } = await server.ssrLoadModule("/src/lib/runtime/registry.ts");
+  const { installRuntimeClient } = await server.ssrLoadModule("/../drowse/webui/src/lib/runtime/registry.ts");
   installRuntimeClient(context.runtime);
-  const { sessionState } = await server.ssrLoadModule("/src/lib/stores/session.svelte.ts");
-  const { loomTree } = await server.ssrLoadModule("/src/lib/stores/loom.svelte.ts");
-  const { genStatus } = await server.ssrLoadModule("/src/lib/stores/chat.svelte.ts");
-  const { reservePendingGeneration } = await server.ssrLoadModule("/src/lib/stores/pending.svelte.ts");
+  const { sessionState } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/session.svelte.ts");
+  const { loomTree } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/loom.svelte.ts");
+  const { genStatus } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/chat.svelte.ts");
+  const { reservePendingGeneration } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/pending.svelte.ts");
   const instrument = (family, source, capabilities = {}) => ({ family, source, live: { enabled: false }, state: source ? "ready" : "unavailable", capabilities: { sources: true, token_readout: !!source, source_switch: !!source, preparations: family === "lens" ? ["fit", "fetch"] : family === "sae" ? ["fetch", "train"] : [], ...capabilities } });
   sessionState.info = { model_id: "test-model", config: {}, instruments: [instrument("geometry", "geometry"), instrument("lens", "local:relp"), instrument("sae", null)], default_user_role: "user", default_assistant_role: "assistant", role_substitution_supported: true, user_role_supported: true };
   loomTree.loaded = true;
@@ -161,7 +161,7 @@ try {
   assert.match(explainControl("probes").effect, /does not itself steer/);
   for (const reference of Object.values(CONTROL_REFERENCE)) for (const key of ["id", "title", "effect", "when", "scope", "unit", "defaults", "support"]) assert.ok(reference[key], `missing ${key}: ${reference.id}`);
 
-  const { registerInterfaceController } = await server.ssrLoadModule("/src/lib/workspaceController.ts");
+  const { registerInterfaceController } = await server.ssrLoadModule("/../drowse/webui/src/lib/workspaceController.ts");
   const closeDraft = registerInterfaceController("manifold_discover", { schema: { type: "object" }, read: () => ({ dirty: true, values: { samples_per_prompt: 4, tuning: { fitMode: "pca", maxDim: 2 } } }), update: () => {} });
   const currentBudget = await explainCurrentControl("example_budget", context);
   assert.equal(currentBudget.current.forms.manifold_discover.values.samples_per_prompt, 4);

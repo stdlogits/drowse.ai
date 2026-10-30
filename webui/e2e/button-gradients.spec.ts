@@ -69,7 +69,7 @@ test("all button variants retain the shared gradient through interaction states"
       mount(Button, { target, props: { variant, children: createRawSnippet(() => ({ render: () => `<span>${variant}</span>` })) } });
     }
     mount(Button, { target, props: { disabled: true, children: createRawSnippet(() => ({ render: () => "<span>Disabled</span>" })) } });
-  }, `/@fs${resolve("src/lib/ui/Button.svelte")}`);
+  }, `/@fs${resolve("../drowse/webui/src/lib/ui/Button.svelte")}`);
   for (const theme of ["light", "dark"]) {
     await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
     await expectGradients(page);
@@ -101,13 +101,13 @@ test("workbench and dialog buttons retain the flat workspace material in both ap
         await expect(button).toHaveCSS("background-image", "none");
       }
       for (const name of ["download_chat", "system_prompt", "save_conversation"]) {
-        await page.evaluate(async ({ url, name }) => { (await import(url)).openDrawer(name); }, { url: `/@fs${resolve("src/lib/stores.svelte.ts")}`, name });
+        await page.evaluate(async ({ url, name }) => { (await import(url)).openDrawer(name); }, { url: `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`, name });
         await expect(page.getByRole("dialog")).toBeVisible();
         for (const button of await page.locator("button:visible").all()) {
           await expect(button).toHaveCSS("background-image", "none");
         }
         await page.getByRole("dialog").screenshot({ path: testInfo.outputPath(`${name}-${theme}-${width}.png`) });
-        await page.evaluate(async url => { (await import(url)).closeDrawer(); }, `/@fs${resolve("src/lib/stores.svelte.ts")}`);
+        await page.evaluate(async url => { (await import(url)).closeDrawer(); }, `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`);
         await expect(page.getByRole("dialog")).toHaveCount(0);
       }
     }

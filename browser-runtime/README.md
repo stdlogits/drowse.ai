@@ -562,7 +562,7 @@ contains no credentials.
 
 ### Access-controlled preview
 
-1. From `webui`, run `npm ci` and `npm run build:hosted`. This always emits the
+1. From the repository root, run `npm ci`, then `npm run build:hosted` from `webui`. This always emits the
    feasibility-preview copy, `X-Robots-Tag: noindex, nofollow`, and a blocking
    `robots.txt`.
 2. Upload `webui/dist-hosted` to a Cloudflare Pages preview deployment and put
@@ -591,7 +591,8 @@ contains no credentials.
 1. Complete the runtime artifact, signed distribution, and hosted security
    checks above. Authoring evidence, source ancestry attestations, and a complete
    physical benchmark matrix are not required.
-2. From `webui`, run `npm ci` and `npm run build:hosted:release`. The release
+2. From the repository root, run `npm ci`, then `npm run build:hosted:release` from
+   `webui`. The release
    build fails closed unless the locks and distribution preflight pass, emits
    public indexing policy, and records the exact 40-character source revision.
 3. Upload the resulting `webui/dist-hosted` without rebuilding it to an

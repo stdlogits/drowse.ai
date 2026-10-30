@@ -6,7 +6,7 @@ import type {
 } from "../fitting/coordinator";
 import type { AffineFisherResult, TopologyResult } from "../fitting/workerContracts";
 import type { BrowserMergedDiscoverManifold } from "./authoring";
-import type { ManifoldDomain } from "../../lib/types";
+import type { ManifoldDomain } from "../../../../drowse/webui/src/lib/types";
 import type { DrowseArchiveManifest } from "./types";
 import { buildDrowseArchive, jsonBytes } from "./builder";
 import { encodeFp32Safetensors, type Fp32TensorInput } from "./safetensors";
@@ -1224,4 +1224,4 @@ function fp32(values: Float64Array, label: string): Float32Array {
   }
   return output;
 }
-import { requireBrowserDomain } from "../../lib/manifolds/surfaceGeometry";
+import { requireBrowserDomain } from "../../../../drowse/webui/src/lib/manifolds/surfaceGeometry";

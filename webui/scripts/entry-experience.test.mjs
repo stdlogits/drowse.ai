@@ -65,7 +65,7 @@ try {
     forgetEntryModel,
     readEntryMemory,
     rememberCompletedOnboarding,
-  } = await server.ssrLoadModule("/src/hosted/runtime/entryExperience.ts");
+  } = await server.ssrLoadModule("/../drowse/webui/src/lib/entryExperience.ts");
 
   const local = memoryStorage();
   assert.equal(readEntryMemory(local), null);

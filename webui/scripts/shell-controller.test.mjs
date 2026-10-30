@@ -740,7 +740,7 @@ try {
   });
 
   test("graphics checks show the selected adapter and conditional Windows guidance", async () => {
-    const { windowsIntelGpuHint, windowsIntelGen9Blocked } = await server.ssrLoadModule("/src/lib/runtime/gpuRecovery.ts");
+    const { windowsIntelGpuHint, windowsIntelGen9Blocked } = await server.ssrLoadModule("/../drowse/webui/src/lib/runtime/gpuRecovery.ts");
     const hint = windowsIntelGpuHint("intel", "Windows NT 10.0");
     assert.match(hint, /If this laptop has a dedicated GPU/u);
     assert.match(hint, /chrome:\/\/flags\/#force-high-performance-gpu/u);
@@ -772,7 +772,7 @@ try {
   });
 
   test("the Windows Intel Gen9 block keeps its GPU-switch instructions in the shell", async () => {
-    const { WINDOWS_INTEL_GEN9_BLOCK } = await server.ssrLoadModule("/src/lib/runtime/gpuRecovery.ts");
+    const { WINDOWS_INTEL_GEN9_BLOCK } = await server.ssrLoadModule("/../drowse/webui/src/lib/runtime/gpuRecovery.ts");
     const failure = { code: "WEBGPU_WINDOWS_INTEL_GEN9_BLOCKED", message: WINDOWS_INTEL_GEN9_BLOCK, severity: "hard" };
     const { bundle } = createBundle({
       async check() {

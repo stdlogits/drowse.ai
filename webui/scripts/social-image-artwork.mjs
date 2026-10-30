@@ -43,8 +43,8 @@ export async function socialImageArtwork(page) {
         video.load();
       }
     });
-    const font = await readFile(new URL("../src/assets/fonts/WixMadeforDisplay-latin.woff2", import.meta.url));
-    const bodyFont = await readFile(new URL("../src/assets/fonts/WixMadeforText-normal-latin.woff2", import.meta.url));
+    const font = await readFile(new URL("../../drowse/webui/src/assets/fonts/WixMadeforDisplay-latin.woff2", import.meta.url));
+    const bodyFont = await readFile(new URL("../../drowse/webui/src/assets/fonts/WixMadeforText-normal-latin.woff2", import.meta.url));
     return `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
   <style>@font-face{font-family:Drowse;src:url(data:font/woff2;base64,${font.toString("base64")}) format('woff2');font-weight:400 800}@font-face{font-family:DrowseText;src:url(data:font/woff2;base64,${bodyFont.toString("base64")}) format('woff2');font-weight:400 800}</style>
   <image href="${background}" x="-375" y="-160" width="1860" height="976.5"/>

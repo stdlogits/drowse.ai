@@ -27,7 +27,7 @@ const sourceDate = execFileSync("git", ["log", "-1", "--format=%cs", artifactSou
   cwd: fromRoot("../"),
   encoding: "utf8",
 }).trim();
-const drowseSource = await readFile(fromRoot("../drowse/__init__.py"), "utf8");
+const drowseSource = await readFile(fromRoot("../drowse/drowse/__init__.py"), "utf8");
 const drowseVersion = /__version__\s*=\s*"([^"]+)"/.exec(drowseSource)?.[1];
 if (!drowseVersion) throw new Error("Hosted build could not resolve the Drowse version");
 const runtimeLock = JSON.parse(
@@ -39,7 +39,7 @@ if (
 ) {
   throw new Error("Hosted build could not resolve the browser runtime and hook ABIs");
 }
-const sourceRepositoryUrl = "https://github.com/a9lim/drowse";
+const sourceRepositoryUrl = "https://github.com/stdlogits/drowse.ai";
 const sourceUrl = releaseBuild
   ? `${sourceRepositoryUrl}/tree/${artifactSourceRevision}`
   : sourceRepositoryUrl;
@@ -284,7 +284,7 @@ const offlineRuntimeAssets: Plugin = {
 export default defineConfig({
   root: fromRoot("./hosted"),
   publicDir: fromRoot("./public-hosted"),
-  cacheDir: process.env.DROWSE_VITE_CACHE_DIR ?? fromRoot("./node_modules/.vite-hosted"),
+  cacheDir: process.env.DROWSE_VITE_CACHE_DIR ?? fromRoot("../node_modules/.vite-hosted"),
   define: appDefine,
   plugins: [
     releaseMetadata,
@@ -470,13 +470,11 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      "@hosted": fromRoot("./src/hosted"),
-      "@runtime": fromRoot("./src/lib/runtime"),
       "@runtime-jlens-source": fromRoot("./src/hosted/ui/JLensSourceSection.svelte"),
       "@runtime-jlens-missing": fromRoot("./src/hosted/ui/JLensMissingState.svelte"),
       "@runtime-local-drawer": fromRoot("./src/drawers/LocalRuntimeDrawer.svelte"),
       "@runtime-sae-source": fromRoot("./src/hosted/ui/SaeSourceSection.svelte"),
-      "@runtime-session-drawer": fromRoot("./src/drawers/UnavailableRuntimeDrawer.svelte"),
+      "@runtime-session-drawer": fromRoot("../drowse/webui/src/drawers/UnavailableRuntimeDrawer.svelte"),
     },
   },
   optimizeDeps: {
@@ -503,7 +501,8 @@ export default defineConfig({
       },
     },
   },
-  server: { headers: isolationHeaders, https },
+  // The shared dashboard source is served from the drowse submodule, outside this root.
+  server: { headers: isolationHeaders, https, fs: { allow: [fromRoot("..")] } },
   preview: { headers: isolationHeaders, https },
   build: {
     outDir: fromRoot("./dist-hosted"),

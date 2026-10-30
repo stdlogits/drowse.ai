@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
 import { selectWorkspaceView, showWorkspaceTools } from "./workbench-navigation";
 
-const storesUrl = `/@fs${resolve("src/lib/stores.svelte.ts")}`;
+const storesUrl = `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
 test.use({ hasTouch: true });
 
 async function seed(page: Page, count = 3) {

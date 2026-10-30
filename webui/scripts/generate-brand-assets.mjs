@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { chromium } from "@playwright/test";
-import { icon as tabIcon, states, animatedStates, frameCount } from "./tab-icon-artwork.mjs";
+import { icon as tabIcon, states, animatedStates, frameCount } from "../../drowse/webui/scripts/tab-icon-artwork.mjs";
 import { socialImageArtwork } from "./social-image-artwork.mjs";
 
 const browser = await chromium.launch({ headless: true });

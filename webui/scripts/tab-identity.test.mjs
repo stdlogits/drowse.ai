@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createServer } from "vite";
-import { states, animatedStates, frameCount, icon } from "./tab-icon-artwork.mjs";
+import { states, animatedStates, frameCount, icon } from "../../drowse/webui/scripts/tab-icon-artwork.mjs";
 
 const server = await createServer({ configFile: false, appType: "custom", logLevel: "silent", server: { middlewareMode: true, watch: null } });
 try {
-  const { tabLabels, faviconPath, TAB_FRAME_COUNT, workbenchTabState, setupTabState } = await server.ssrLoadModule("/src/lib/tabIdentity.ts");
+  const { tabLabels, faviconPath, TAB_FRAME_COUNT, workbenchTabState, setupTabState } = await server.ssrLoadModule("/../drowse/webui/src/lib/tabIdentity.ts");
   assert.deepEqual([...states].sort(), Object.keys(tabLabels).sort());
   assert.equal(TAB_FRAME_COUNT, frameCount);
-  const { CHAT_ACCENTS } = await server.ssrLoadModule("/src/lib/chatAccent.ts");
+  const { CHAT_ACCENTS } = await server.ssrLoadModule("/../drowse/webui/src/lib/chatAccent.ts");
   const luminance = hex => {
     const channels = hex.match(/[a-f\d]{2}/gi).map(value => parseInt(value, 16) / 255)
       .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
@@ -51,12 +51,12 @@ try {
       const rendered = new Set();
       for (let frame = 0; frame < frames; frame++) {
         const path = faviconPath(state, frame, theme);
-        for (const root of ["public", "public-hosted"]) {
+        for (const root of ["../drowse/webui/public", "public-hosted"]) {
           const bytes = await readFile(`${root}${path}`);
           assert.equal(bytes.subarray(1, 4).toString(), "PNG");
           assert.equal(bytes.readUInt32BE(16), 96);
           assert.equal(bytes.readUInt32BE(20), 96);
-          if (root === "public") rendered.add(bytes.toString("base64"));
+          if (root !== "public-hosted") rendered.add(bytes.toString("base64"));
         }
       }
       assert.ok(frames === 1 ? rendered.size === 1 : rendered.size > 1, `${state}/${theme} must move, not reuse identical frames`);

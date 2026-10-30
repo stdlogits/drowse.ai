@@ -13,7 +13,7 @@ for (const path of ["/", "/credits", "/app?layoutFixture=setup", "compact"]) {
       const [{ default: Header }, { mount }] = await Promise.all([import(url), import("/e2e/svelte-runtime.ts")]);
       document.body.replaceChildren();
       mount(Header, { target: document.body, props: { current: "chats", compact: true } });
-    }, `/@fs${resolve("src/hosted/ui/PageHeader.svelte")}`);
+    }, `/@fs${resolve("../drowse/webui/src/lib/ui/PageHeader.svelte")}`);
     await page.evaluate(() => document.fonts.ready);
     const header = page.locator(".page-header");
     const brand = header.locator(".page-brand");
@@ -59,7 +59,7 @@ test("public header balances its visible edges without shrinking the theme targe
       await page.evaluate(async ({ direction, theme, themeUrl }) => {
         document.documentElement.dir = direction;
         (await import(themeUrl)).setTheme(theme);
-      }, { direction, theme, themeUrl: `/@fs${resolve("src/lib/theme.ts")}` });
+      }, { direction, theme, themeUrl: `/@fs${resolve("../drowse/webui/src/lib/theme.ts")}` });
       for (const width of [320, 390, 431, 480, 760, 1440]) {
         await page.setViewportSize({ width, height: 900 });
         await expect.poll(() => header.evaluate(element => {

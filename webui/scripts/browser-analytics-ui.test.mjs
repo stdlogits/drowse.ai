@@ -27,7 +27,7 @@ const geometry = (name, { affine = true, dim = 1 } = {}) => ({
 });
 
 try {
-  const { savedProbeSummary } = await server.ssrLoadModule("/src/lib/probeHistory.ts");
+  const { savedProbeSummary } = await server.ssrLoadModule("/../drowse/webui/src/lib/probeHistory.ts");
   const curve = geometry("curve", { affine: false, dim: 2 });
   assert.deepEqual(savedProbeSummary(curve, { curve: 2.5 }), {
     value: null, coordinates: [2.5], fraction: null,
@@ -45,15 +45,15 @@ try {
     value: null, coordinates: [], fraction: null,
   });
   const compareSource = readFileSync(
-    new URL("../src/drawers/CompareDrawer.svelte", import.meta.url),
+    new URL("../../drowse/webui/src/drawers/CompareDrawer.svelte", import.meta.url),
     "utf8",
   );
   const correlationSource = readFileSync(
-    new URL("../src/drawers/CorrelationDrawer.svelte", import.meta.url),
+    new URL("../../drowse/webui/src/drawers/CorrelationDrawer.svelte", import.meta.url),
     "utf8",
   );
   const probeInspectorSource = readFileSync(
-    new URL("../src/drawers/ProbeInspectorDrawer.svelte", import.meta.url),
+    new URL("../../drowse/webui/src/drawers/ProbeInspectorDrawer.svelte", import.meta.url),
     "utf8",
   );
   assert.match(compareSource, /comparisonProfileNames/);
@@ -69,13 +69,13 @@ try {
   const {
     comparisonProfileNames,
     omittedAnalyticsProbes,
-  } = await server.ssrLoadModule("/src/lib/profileAnalytics.ts");
+  } = await server.ssrLoadModule("/../drowse/webui/src/lib/profileAnalytics.ts");
   const {
     manifoldSelectorOptions,
     manifoldUsage,
     manifoldUsageMessage,
     selectorReferencesManifold,
-  } = await server.ssrLoadModule("/src/lib/manifolds/selectors.ts");
+  } = await server.ssrLoadModule("/../drowse/webui/src/lib/manifolds/selectors.ts");
   const { instrumentPackDependencies } = await server.ssrLoadModule(
     "/src/lib/runtime/instrumentPackSafety.ts",
   );
@@ -289,20 +289,20 @@ try {
     },
   };
   const { installRuntimeClient } = await server.ssrLoadModule(
-    "/src/lib/runtime/registry.ts",
+    "/../drowse/webui/src/lib/runtime/registry.ts",
   );
   installRuntimeClient(runtime);
   const steering = await server.ssrLoadModule(
-    "/src/lib/stores/steering.svelte.ts",
+    "/../drowse/webui/src/lib/stores/steering.svelte.ts",
   );
   const probes = await server.ssrLoadModule(
-    "/src/lib/stores/probes.svelte.ts",
+    "/../drowse/webui/src/lib/stores/probes.svelte.ts",
   );
   const instruments = await server.ssrLoadModule(
-    "/src/lib/stores/instruments.svelte.ts",
+    "/../drowse/webui/src/lib/stores/instruments.svelte.ts",
   );
   const session = await server.ssrLoadModule(
-    "/src/lib/stores/session.svelte.ts",
+    "/../drowse/webui/src/lib/stores/session.svelte.ts",
   );
 
   for (let id = 0; id < instruments.MAX_SAE_HISTORY_FEATURES + 8; id += 1) {
@@ -437,7 +437,7 @@ try {
     cachedTokenReadout,
     invalidateTokenReadoutCache,
   } = await server.ssrLoadModule(
-    "/src/lib/runtime/tokenReadoutCache.ts",
+    "/../drowse/webui/src/lib/runtime/tokenReadoutCache.ts",
   );
   const first = cachedTokenReadout("lens", "node-b", 4, {
     topK: 8,

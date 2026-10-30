@@ -29,7 +29,7 @@ try {
     migrateLegacyStorageItem,
     removeLegacyStorageItem,
     drowseStorageRoot,
-  } = await server.ssrLoadModule("/src/hosted/runtime/brandMigration.ts");
+  } = await server.ssrLoadModule("/../drowse/webui/src/lib/brandMigration.ts");
 
   const values = new Map([["saklas.hosted.theme", "dark"]]);
   const storage = {

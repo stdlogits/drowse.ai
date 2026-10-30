@@ -14,7 +14,7 @@ const server = await createServer({
 try {
   const hooks = await server.ssrLoadModule("/src/hosted/runtime/rankOneHookProgram.ts");
   const fixture = JSON.parse(await readFile(
-    new URL("../../browser-runtime/fixtures/post-block-rank-one-v2.json", import.meta.url),
+    new URL("../../drowse/tests/fixtures/browser/post-block-rank-one-v2.json", import.meta.url),
     "utf8",
   ));
   const layers = fixture.cases.map((entry) => ({

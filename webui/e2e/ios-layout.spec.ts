@@ -392,7 +392,7 @@ test("probability and lens meters keep labels, values and bars separated", async
       { id: 2, text: "alternative", logprob: -4.2 },
       { id: 3, text: "unlikely", logprob: -20 },
     ];
-  }, `/@fs/${resolve("src/lib/stores.svelte.ts")}`);
+  }, `/@fs/${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`);
   await page.locator(".msg .response-body .tok").first().click();
   const drawer = await openTokenDetails(page);
   for (const name of [/^logits\b/i, /^j-lens\b/i]) {
@@ -436,7 +436,7 @@ test("SAE readout labels preserve metadata and activation bars never overlap val
         { id: 485, activation: 0, label: null, max_act: null },
       ] },
     };
-  }, { url: `/@fs/${resolve("src/lib/stores.svelte.ts")}`, description });
+  }, { url: `/@fs/${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`, description });
   await page.locator(".msg .response-body .tok").first().click();
   const drawer = await openTokenDetails(page);
   await drawer.getByRole("button", { name: /^sae\b/i }).click();

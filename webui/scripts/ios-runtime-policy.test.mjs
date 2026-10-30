@@ -279,7 +279,7 @@ try {
   );
   const shellModule = await server.ssrLoadModule("/hosted/shell-controller.ts");
   const outputTokenPolicy = await server.ssrLoadModule(
-    "/src/lib/runtime/outputTokenPolicy.ts",
+    "/../drowse/webui/src/lib/runtime/outputTokenPolicy.ts",
   );
 
   assert.equal(

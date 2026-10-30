@@ -4,7 +4,7 @@ export async function runServiceActionCases({ server, tools, validateInput, JobR
   const address = { namespace: "local", name: "example" };
   const node = { label: "pirate", statements: ["Ahoy"] };
   const template = { ...address, slot: "SLOT", values: ["Mon", "Tue"], contexts: [{ turns: [{ role: "user", content: "Day?" }], assistant: "It is SLOT" }], description: "Days", tags: ["calendar"] };
-  const { addTransferredFile, getTransferredFile } = await server.ssrLoadModule("/src/lib/webmcp/files.ts");
+  const { addTransferredFile, getTransferredFile } = await server.ssrLoadModule("/../drowse/webui/src/lib/webmcp/files.ts");
   const transfer = await addTransferredFile(new Blob(["archive bytes"]), "example.drowse");
   const cases = {
     drowse_list_sessions: [{}, "sessions.list", []],
@@ -132,7 +132,7 @@ export async function runServiceActionCases({ server, tools, validateInput, JobR
         } catch (error) { assert.equal(error, failure, `${tool.name} preserves the original backend error and details`); }
       } finally { runtime[service][member] = original; }
       if (tool.name === "drowse_cancel_preparation") {
-        const { lensFit } = await server.ssrLoadModule("/src/lib/stores/instrumentAuthoring.svelte.ts");
+        const { lensFit } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/instrumentAuthoring.svelte.ts");
         await lensFit.watchTracked(done);
       }
     }
@@ -150,7 +150,7 @@ export async function runServiceActionCases({ server, tools, validateInput, JobR
     const fit = await tools.find(tool => tool.name === "drowse_fit_manifold").execute(address, { ...context, runtime, hosted, session: info, jobs });
     await new Promise(resolve => setTimeout(resolve, 0));
     fitProgress({ event: "progress", data: { stage: "fit", current: 1, total: 3 } });
-    const { manifoldJobs, cancelManifoldJob } = await server.ssrLoadModule("/src/lib/stores/manifoldJobs.svelte.ts");
+    const { manifoldJobs, cancelManifoldJob } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/manifoldJobs.svelte.ts");
     assert.equal(manifoldJobs.current.status, "running");
     assert.equal(manifoldJobs.current.cancellable, true);
     assert.equal(jobs.get(fit.id).cancellable, true);
@@ -161,7 +161,7 @@ export async function runServiceActionCases({ server, tools, validateInput, JobR
     assert.equal(manifoldJobs.current.status, "cancelled");
 
     runtime.mode = "http";
-    const { createPreparationSlice } = await server.ssrLoadModule("/src/lib/stores/preparations.svelte.ts");
+    const { createPreparationSlice } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/preparations.svelte.ts");
     let backend = { ...done, state: "running", finished_at: null, progress: { current: 0, total: 2 } };
     let settles = 0;
     let reads = 0;
@@ -184,7 +184,7 @@ export async function runServiceActionCases({ server, tools, validateInput, JobR
     await assert.rejects(() => failedSlice.startTracked({}), { code: "PREPARATION_REJECTED" });
     assert.equal(failedSlice.state.running, false);
 
-    const { reconcileServiceJob } = await server.ssrLoadModule("/src/lib/webmcp/serviceTools.ts");
+    const { reconcileServiceJob } = await server.ssrLoadModule("/../drowse/webui/src/lib/webmcp/serviceTools.ts");
     const recoveryJobs = new JobRegistry();
     const abandoned = recoveryJobs.start("fit-manifold", async () => new Promise(() => {}), { cancellable: false });
     recoveryJobs.setRecovery(abandoned.id, { type: "http_operation", operation_id: abandoned.id, kind: "fit-manifold", model_id: "test-model" });
@@ -204,7 +204,7 @@ export async function runServiceActionCases({ server, tools, validateInput, JobR
     await assert.rejects(() => reconcileServiceJob(missing.id, { ...context, runtime, jobs: recoveryJobs }), { status: 404 });
     assert.equal(recoveryJobs.get(missing.id).state, "interrupted", "missing receipts never imply successful completion or permit automatic replay");
 
-    const { HttpRuntimeClient } = await server.ssrLoadModule("/src/lib/runtime/http-client.ts");
+    const { HttpRuntimeClient } = await server.ssrLoadModule("/../drowse/webui/src/lib/runtime/http-client.ts");
     const http = new HttpRuntimeClient();
     const previousFetch = globalThis.fetch;
     const requests = [];

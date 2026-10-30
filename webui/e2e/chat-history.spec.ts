@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 
-const storesUrl = `/@fs${resolve("src/lib/stores.svelte.ts")}`;
+const storesUrl = `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
 
 test("historical chat text remains selectable and its tokens keyboard accessible", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });

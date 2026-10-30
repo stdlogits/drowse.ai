@@ -1,0 +1,28 @@
+# Tooling config for the site's Python: browser-runtime build/validation tools,
+# webui release scripts, and their tests.  The Python engine itself is the
+# drowse submodule, installed with `pip install -e ./drowse`.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    # Python 3.14 flags SWIG-generated builtin types in transitive C deps
+    # (scipy/PIL). Not drowse code and nothing we can fix upstream.
+    "ignore:builtin type Swig(Py(Packed|Object)|varlink) has no __module__ attribute:DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+# The submodule carries its own ruff configuration and CI.
+extend-exclude = ["drowse"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "T20"]
+ignore = ["E501", "E741", "E402", "E731"]
+
+[tool.ruff.lint.per-file-ignores]
+# Build, validation, and catalog tools report progress on stdout.
+"browser-runtime/*.py" = ["T20"]
+"browser-runtime/forks/*.py" = ["T20"]
+"webui/scripts/neurons/build-neuron-catalog.py" = ["T20"]
+"webui/scripts/neurons/pack-scores.py" = ["T20"]

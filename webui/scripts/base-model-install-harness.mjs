@@ -46,7 +46,7 @@ const payload = {
   coreFiles: core.files.map(file => ({...file, role: "core_pack"})),
 };
 const webuiRoot = resolve(import.meta.dirname, "..");
-const webLlmPath = resolve(webuiRoot, "node_modules/@drowse/web-llm/lib/index.js");
+const webLlmPath = resolve(webuiRoot, "../node_modules/@drowse/web-llm/lib/index.js");
 const vite = await createViteServer({
   root: webuiRoot, configFile: false, appType: "custom", logLevel: "silent",
   server: {middlewareMode: true, hmr: false, watch: null},

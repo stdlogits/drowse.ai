@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 
-const storesModule = `/@fs${resolve("src/lib/stores.svelte.ts")}`;
+const storesModule = `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
 
 test("composer and dialog actions follow their container spacing", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });

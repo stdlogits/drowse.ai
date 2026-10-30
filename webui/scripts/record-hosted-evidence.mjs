@@ -487,9 +487,14 @@ async function assertTrackedRegularFile(path, label) {
   ) {
     throw new Error(`${label} must be inside the Drowse repository`);
   }
+  // Engine files and parity goldens are tracked by the drowse submodule itself.
+  const posixPath = relativePath.split(sep).join("/");
+  const tracked = posixPath.startsWith("drowse/")
+    ? { cwd: resolve(repositoryRoot, "drowse"), path: posixPath.slice("drowse/".length) }
+    : { cwd: repositoryRoot, path: relativePath };
   try {
-    execFileSync("git", ["ls-files", "--error-unmatch", relativePath], {
-      cwd: repositoryRoot,
+    execFileSync("git", ["ls-files", "--error-unmatch", tracked.path], {
+      cwd: tracked.cwd,
       stdio: "ignore",
     });
   } catch (error) {

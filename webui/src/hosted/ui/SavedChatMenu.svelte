@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import FluentIcon from "../../lib/ui/FluentIcon.svelte";
-  import { dropdownMotion } from "../../lib/dropdownMotion.svelte";
+  import FluentIcon from "../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
+  import { dropdownMotion } from "../../../../drowse/webui/src/lib/dropdownMotion.svelte";
 
   let { name, disabled = false, duplicateDisabled = false, busy = false, onduplicate, ondelete }: {
     name: string;

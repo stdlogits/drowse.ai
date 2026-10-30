@@ -5,7 +5,7 @@ import {
 import type {
   ModelVariant,
   RuntimeIdentity,
-} from "../src/lib/runtime/contracts";
+} from "../../drowse/webui/src/lib/runtime/contracts";
 import { BrowserFeasibilityCorePackCompiler } from "../src/hosted/runtime/browserCorePack";
 import { BrowserInstrumentRuntime } from "../src/hosted/runtime/browserInstrumentRuntime";
 import {

@@ -4,6 +4,8 @@ import { chromium } from "playwright";
 import { createServer } from "vite";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
+// Shared dashboard modules sit in the drowse submodule, outside this root; the page imports them by file path.
+const dashboard = `/@fs${fileURLToPath(new URL("../../drowse/webui/src", import.meta.url))}`;
 const server = await createServer({
   root, configFile: false, appType: "custom", logLevel: "error",
   optimizeDeps: { noDiscovery: true },
@@ -23,10 +25,10 @@ try {
   const context = await browser.newContext();
   const page = await context.newPage();
   await page.goto(server.resolvedUrls.local[0]);
-  const initial = await page.evaluate(async () => {
-    const { BrowserSessionStateStore } = await import("/src/hosted/runtime/sessionPersistence.ts");
+  const initial = await page.evaluate(async (dashboard) => {
+    const { BrowserSessionStateStore } = await import(`${dashboard}/lib/sessionPersistence.ts`);
     const { clearOwnedRuntimeStorage } = await import("/src/hosted/runtime/legacyRuntimeStorage.ts");
-    const { drowseStorageRoot } = await import("/src/hosted/runtime/brandMigration.ts");
+    const { drowseStorageRoot } = await import(`${dashboard}/lib/brandMigration.ts`);
     async function seed(name, value) {
       const database = await new Promise((resolve, reject) => {
         const request = indexedDB.open(name, 2);
@@ -67,11 +69,11 @@ try {
     await active.removeEntry("after-clear.txt");
     store.close();
     return restored;
-  });
+  }, dashboard);
   assert.equal(initial.text, "private legacy conversation");
   await page.reload();
-  const final = await page.evaluate(async () => {
-    const { BrowserSessionStateStore } = await import("/src/hosted/runtime/sessionPersistence.ts");
+  const final = await page.evaluate(async (dashboard) => {
+    const { BrowserSessionStateStore } = await import(`${dashboard}/lib/sessionPersistence.ts`);
     const store = new BrowserSessionStateStore();
     await store.initialize();
     const restored = await store.read("private-fixture");
@@ -90,7 +92,7 @@ try {
       }
     }
     return { restored, databases, files };
-  });
+  }, dashboard);
   assert.equal(final.restored, undefined);
   assert.ok(!final.databases.includes("polythetic-hosted-sessions"));
   assert.ok(!final.databases.includes("saklas-hosted-sessions"));

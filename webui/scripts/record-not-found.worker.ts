@@ -1,5 +1,5 @@
 import { contextBindingSha256, runtimeIdentitySha256 } from "../src/lib/runtime/catalog";
-import type { CatalogFile, ModelVariant, RuntimeIdentity } from "../src/lib/runtime/contracts";
+import type { CatalogFile, ModelVariant, RuntimeIdentity } from "../../drowse/webui/src/lib/runtime/contracts";
 import { BrowserActivationSpool } from "../src/hosted/fitting/activationSpool";
 import { BrowserCapabilityChecker } from "../src/hosted/runtime/capabilities";
 import type { BrowserModelArtifact, BrowserModelLoadRequest } from "../src/hosted/runtime/modelBackend";

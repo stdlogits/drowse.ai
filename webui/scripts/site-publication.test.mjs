@@ -258,7 +258,7 @@ test("release preparation removes the global preview block while preserving docu
   const index = `<html><head>
 <meta name="drowse-source-revision" content="${revision}" />
 <meta name="drowse-release-channel" content="release" />
-<meta name="drowse-source-url" content="https://github.com/a9lim/drowse/tree/${revision}" />
+<meta name="drowse-source-url" content="https://github.com/stdlogits/drowse.ai/tree/${revision}" />
 <link rel="canonical" href="${origin}/" />
 </head><body>Release fixture</body></html>`;
   try {

@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import Button from "../../lib/ui/Button.svelte";
-  import { sessionState } from "../../lib/stores/session.svelte";
+  import Button from "../../../../drowse/webui/src/lib/ui/Button.svelte";
+  import { sessionState } from "../../../../drowse/webui/src/lib/stores/session.svelte";
   import {
     currentCatalogInstrumentAvailability,
     type CatalogInstrumentAvailability,
-  } from "../../lib/runtime/instrumentAvailability";
+  } from "../../../../drowse/webui/src/lib/runtime/instrumentAvailability";
 
   let { kind }: { kind: "jlens" | "sae" } = $props();
   let availability = $state<CatalogInstrumentAvailability>("unknown");

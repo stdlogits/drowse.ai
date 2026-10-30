@@ -8,7 +8,7 @@ import {
 
 
 const fixture = JSON.parse(await readFile(
-  new URL("../../browser-runtime/fixtures/sampling-parity-v1.json", import.meta.url),
+  new URL("../../drowse/tests/fixtures/browser/sampling-parity-v1.json", import.meta.url),
   "utf8",
 ));
 

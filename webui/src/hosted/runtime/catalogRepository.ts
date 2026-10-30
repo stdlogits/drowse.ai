@@ -2,7 +2,7 @@ import type {
   CatalogWorkerRequest,
   DetachedCatalogSignature,
   VerifiedCatalog,
-} from "../../lib/runtime/contracts";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
 import {
   CatalogValidationError,
   WebCryptoEd25519Verifier,
@@ -14,7 +14,7 @@ import {
   HOSTED_DISTRIBUTION_CONFIG,
   type HostedDistributionConfig,
 } from "./distributionConfig";
-import { migrateLegacyDatabase } from "./brandMigration";
+import { migrateLegacyDatabase } from "../../../../drowse/webui/src/lib/brandMigration";
 
 const DATABASE_NAME = "drowse-hosted-catalog";
 const DATABASE_VERSION = 1;

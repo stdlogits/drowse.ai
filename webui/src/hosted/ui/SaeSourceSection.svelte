@@ -6,8 +6,8 @@
     refreshSaeSources,
     saeLoaded,
     saeSourceState,
-  } from "../../lib/stores.svelte";
-  import InstrumentSourceSection from "../../panels/rack/InstrumentSourceSection.svelte";
+  } from "../../../../drowse/webui/src/lib/stores.svelte";
+  import InstrumentSourceSection from "../../../../drowse/webui/src/panels/rack/InstrumentSourceSection.svelte";
   import InstrumentPackRecovery from "./InstrumentPackRecovery.svelte";
 
   const loaded = $derived(saeLoaded());

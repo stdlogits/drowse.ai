@@ -3,7 +3,7 @@ import type {
   CapabilityIssue,
   RuntimeCapabilities,
   RuntimeCapabilityOperation,
-} from "../../lib/runtime/contracts";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
 import {
   BROWSER_RUNTIME_LOCK,
   BROWSER_RUNTIME_RELEASE_VERIFIED,
@@ -14,13 +14,13 @@ import { BROWSER_MODEL_BACKEND_INTEGRATED } from "./browserModelBackend";
 import {
   requestPersistentStorage as requestBrowserPersistentStorage,
   type PersistentStorageManager,
-} from "../../lib/runtime/storagePersistence";
+} from "../../../../drowse/webui/src/lib/runtime/storagePersistence";
 import {
   BROWSER_ARTIFACT_AUTHORING_INTEGRATED,
   BROWSER_AUTHORING_RUNTIME_INTEGRATED,
 } from "./browserAuthoring";
 import { CATALOG_WEBGPU_LIMIT_NAMES } from "../../lib/runtime/catalog";
-import { windowsIntelGpuHint, windowsIntelGen9Blocked, WINDOWS_INTEL_GEN9_BLOCK } from "../../lib/runtime/gpuRecovery";
+import { windowsIntelGpuHint, windowsIntelGen9Blocked, WINDOWS_INTEL_GEN9_BLOCK } from "../../../../drowse/webui/src/lib/runtime/gpuRecovery";
 
 interface GpuAdapterInfoLike {
   vendor?: string;

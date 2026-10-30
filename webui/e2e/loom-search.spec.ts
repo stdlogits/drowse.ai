@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
 
-const storesUrl = `/@fs${resolve("src/lib/stores.svelte.ts")}`;
+const storesUrl = `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
 
 async function seed(page: Page) {
   await page.goto("http://127.0.0.1:4176/app?layoutFixture=1");
@@ -62,7 +62,7 @@ test("long cards widen without crossing columns; search navigates all branches w
   }).toBeLessThan(5);
   await page.emulateMedia({ reducedMotion: "reduce" });
   for (const theme of ["dark", "light"]) {
-    await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme), { url: `/@fs${resolve("src/lib/theme.ts")}`, theme });
+    await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme), { url: `/@fs${resolve("../drowse/webui/src/lib/theme.ts")}`, theme });
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
     await page.screenshot({ path: testInfo.outputPath(`loom-search-${theme}.png`) });
   }

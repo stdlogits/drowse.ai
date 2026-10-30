@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 
 const modules = {
   home: `/@fs${resolve("src/hosted/ui/HostedHome.svelte")}`,
-  saved: `/@fs${resolve("src/lib/stores/savedConversations.svelte.ts")}`,
+  saved: `/@fs${resolve("../drowse/webui/src/lib/stores/savedConversations.svelte.ts")}`,
 };
 
 async function mountHome(page: Page) {

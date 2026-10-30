@@ -20,7 +20,7 @@ test(`theme changes update inherited recorded-demo text colors (${motion})`, asy
       await page.evaluate(async ({ url, theme }) => {
         (await import(url)).setTheme(theme);
         await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-      }, { url: `/@fs${resolve("src/lib/theme.ts")}`, theme });
+      }, { url: `/@fs${resolve("../drowse/webui/src/lib/theme.ts")}`, theme });
       await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
       await expect(page.locator("html")).not.toHaveAttribute("data-theme-transition", /.+/);
       const mismatches = await page.locator(".demo-panel").evaluate(panel => {

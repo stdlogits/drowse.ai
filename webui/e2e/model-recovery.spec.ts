@@ -3,7 +3,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { resolve } from "node:path";
 
 const homeModule = `/@fs${resolve("src/hosted/ui/HostedHome.svelte")}`;
-const libraryModule = `/@fs${resolve("src/lib/stores/savedConversations.svelte.ts")}`;
+const libraryModule = `/@fs${resolve("../drowse/webui/src/lib/stores/savedConversations.svelte.ts")}`;
 
 async function mountRecovery(page: Page, fits = ["recommended"]) {
   await page.goto("http://127.0.0.1:4176/outside-the-workbench");

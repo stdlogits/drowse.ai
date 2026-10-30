@@ -7,7 +7,7 @@ import ts from "typescript";
 
 // Runs the real consumer methods with fake device objects; this is not GPU inference.
 const sourcePath = process.argv[2] ?? fileURLToPath(
-  new URL("../node_modules/@drowse/web-llm/lib/index.js", import.meta.url));
+  new URL("../../node_modules/@drowse/web-llm/lib/index.js", import.meta.url));
 const source = await readFile(sourcePath, "utf8");
 const parsed = ts.createSourceFile(sourcePath, source, ts.ScriptTarget.Latest, true);
 const pipeline = parsed.statements.find((node) =>

@@ -14,7 +14,7 @@ page.on("pageerror", error => errors.push(error.message));
 const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
 async function invoke(name, input = {}) {
   return page.evaluate(async ({ root, name, input }) => {
-    const base = `/@fs${root}/src/lib/`;
+    const base = `/@fs${root}/../drowse/webui/src/lib/`;
     const { createWorkspaceTools, assertWorkspaceIdle } = await import(`${base}webmcp/workspaceTools.ts`);
     const { validateInput } = await import(`${base}webmcp/validation.ts`);
     const { getRuntimeClient } = await import(`${base}runtime/registry.ts`);
@@ -25,13 +25,13 @@ async function invoke(name, input = {}) {
   }, { root, name, input });
 }
 async function mounted(form) {
-  await page.waitForFunction(async ({ root, form }) => !!(await import(`/@fs${root}/src/lib/workspaceController.ts`)).getInterfaceController(form), {}, { root, form });
+  await page.waitForFunction(async ({ root, form }) => !!(await import(`/@fs${root}/../drowse/webui/src/lib/workspaceController.ts`)).getInterfaceController(form), {}, { root, form });
 }
 try {
   await page.goto(`${origin}/app?layoutFixture=instruments`);
   await page.waitForSelector(".shell");
   await page.evaluate(async root => {
-    const registry = await import(`/@fs${root}/src/lib/runtime/registry.ts`);
+    const registry = await import(`/@fs${root}/../drowse/webui/src/lib/runtime/registry.ts`);
     const capabilities = registry.getRuntimeCapabilities();
     for (const operation of ["fitting", "manifold_artifacts"]) capabilities.operations[operation] = { available: true, reasons: [] };
     const runtime = registry.getRuntimeClient();
@@ -59,17 +59,17 @@ try {
   assert.equal((await invoke("drowse_read_form", { form: "manifold_discover" })).forms.manifold_discover.values.concepts_text, "pirate, assistant", "hidden visited drafts survive tab switches");
   await invoke("drowse_edit_form", { form: "manifold_builder", fields: { mode: "templated" } });
   await mounted("manifold_templated");
-  await page.waitForFunction(async root => (await import(`/@fs${root}/src/lib/workspaceController.ts`)).getInterfaceController("manifold_templated")?.read().available_templates.length > 0, {}, root);
+  await page.waitForFunction(async root => (await import(`/@fs${root}/../drowse/webui/src/lib/workspaceController.ts`)).getInterfaceController("manifold_templated")?.read().available_templates.length > 0, {}, root);
   await invoke("drowse_edit_form", { form: "manifold_templated", fields: { selected_key: "local/directions", max_dim: 2, also_fit: false } });
   assert.equal((await invoke("drowse_read_form", { form: "manifold_templated" })).forms.manifold_templated.values.selected_key, "local/directions");
   await invoke("drowse_navigate", { drawer: "manifold_merge" });
   await mounted("manifold_merge");
-  await page.waitForFunction(async root => (await import(`/@fs${root}/src/lib/workspaceController.ts`)).getInterfaceController("manifold_merge")?.read().available_sources.length === 2, {}, root);
+  await page.waitForFunction(async root => (await import(`/@fs${root}/../drowse/webui/src/lib/workspaceController.ts`)).getInterfaceController("manifold_merge")?.read().available_sources.length === 2, {}, root);
   const merge = await invoke("drowse_edit_form", { form: "manifold_merge", fields: { sources: ["fixture/a", "fixture/b"], target_name: "merged", fit_mode: "pca" } });
   assert.equal(merge.can_submit, true);
   await invoke("drowse_navigate", { drawer: "compare" });
   await mounted("profile_compare");
-  await page.waitForFunction(async root => (await import(`/@fs${root}/src/lib/workspaceController.ts`)).getInterfaceController("profile_compare")?.read().available_profiles.length >= 2, {}, root);
+  await page.waitForFunction(async root => (await import(`/@fs${root}/../drowse/webui/src/lib/workspaceController.ts`)).getInterfaceController("profile_compare")?.read().available_profiles.length >= 2, {}, root);
   const compare = await invoke("drowse_set_analysis_view", { target: "profile_compare", fields: { profile_a: "fixture/b", profile_b: "fixture/a" } });
   assert.equal(compare.values.profile_a, "fixture/b");
   await invoke("drowse_navigate", { drawer: "template_lab", params: { tab: "build" } });
@@ -87,7 +87,7 @@ try {
   await page.$eval("textarea", input => { input.value += " human edit"; input.dispatchEvent(new Event("input", { bubbles: true })); });
   assert.notEqual((await invoke("drowse_read_workspace")).revision, before, "human composer typing changes revision");
   await page.evaluate(async root => {
-    const { applyTreeSnapshot, loomTree } = await import(`/@fs${root}/src/lib/stores.svelte.ts`);
+    const { applyTreeSnapshot, loomTree } = await import(`/@fs${root}/../drowse/webui/src/lib/stores.svelte.ts`);
     const make = (id, parent_id, text, role = "assistant") => ({ id, parent_id, text, role, role_label: null, recipe: null, finish_reason: "stop", aggregate_readings: {}, thinking_tokens: [], tokens: (text.match(/\S+\s*/g) ?? []).map((text, raw_index) => ({ text, raw_index, token_id: raw_index + 1, logprob: -0.2 })) });
     applyTreeSnapshot({ tree_format: 2, drowse_version: "test", session_id: loomTree.session_id, model_id: loomTree.modelId, root_id: "root", active_node_id: "a", rev: loomTree.rev + 100, nodes: [make("root", null, "", "system"), make("prompt", "root", "Reply", "user"), make("a", "prompt", "Ahoy pirate friend"), make("b", "prompt", "Hello friend")], children_of: { root: ["prompt"], prompt: ["a", "b"], a: [], b: [] }, cast: {} });
   }, root);
@@ -124,7 +124,7 @@ try {
   }
   await assert.rejects(invoke("drowse_set_token_inspector", { branch: "shadow" }), /no shadow/);
   await page.evaluate(async root => {
-    const { chatLog } = await import(`/@fs${root}/src/lib/stores/chat.svelte.ts`);
+    const { chatLog } = await import(`/@fs${root}/../drowse/webui/src/lib/stores/chat.svelte.ts`);
     const primary = chatLog.turns[1];
     primary.abPair = { ...primary, nodeId: "b", tokens: primary.tokens.map(token => ({ ...token, text: "shadow" })) };
   }, root);
@@ -141,7 +141,7 @@ try {
   await invoke("drowse_set_token_inspector", { presentation: "hide" });
   await invoke("drowse_navigate", { drawer: "probe_inspector", params: { name: "fixture/mobile-3d" } });
   await mounted("probe_geometry");
-  await page.waitForFunction(async root => (await import(`/@fs${root}/src/lib/workspaceController.ts`)).getInterfaceController("probe_geometry")?.read().available_layers.length > 0, {}, root);
+  await page.waitForFunction(async root => (await import(`/@fs${root}/../drowse/webui/src/lib/workspaceController.ts`)).getInterfaceController("probe_geometry")?.read().available_layers.length > 0, {}, root);
   const geometry = await invoke("drowse_set_analysis_view", { target: "probe_geometry", fields: { layer: 1, zoom: 2.1, rotate: { dx: 20, dy: -15 } } });
   assert.equal(geometry.values.layer, 1);
   assert.equal(geometry.values.zoom, 2.1);
@@ -150,7 +150,7 @@ try {
   assert.equal(reset.values.zoom, 1.6);
   await invoke("drowse_navigate", { drawer: "save_conversation", presentation: "sidebar", expanded: true });
   await mounted("chat_identity");
-  await page.waitForFunction(async root => !(await import(`/@fs${root}/src/lib/workspaceController.ts`)).getInterfaceController("chat_identity")?.read().busy, {}, root);
+  await page.waitForFunction(async root => !(await import(`/@fs${root}/../drowse/webui/src/lib/workspaceController.ts`)).getInterfaceController("chat_identity")?.read().busy, {}, root);
   const saved = await invoke("drowse_save_chat", { name: "Saved fixture" });
   await invoke("drowse_edit_form", { form: "chat_identity", fields: { name: "Human unsaved metadata", accent: "mint" } });
   await assert.rejects(invoke("drowse_update_chat", { id: saved.chat.id, name: "overwrite" }), /open chat identity draft/);
@@ -158,7 +158,7 @@ try {
   await page.$eval('.save-conversation input, [aria-label="Save conversation"] input, .drawer-shell input', input => { input.value += " human change"; input.dispatchEvent(new Event("input", { bubbles: true })); });
   assert.notEqual((await invoke("drowse_read_workspace")).revision, metadataBefore);
   await page.evaluate(async root => {
-    const { pendingActions } = await import(`/@fs${root}/src/lib/stores/pending.svelte.ts`);
+    const { pendingActions } = await import(`/@fs${root}/../drowse/webui/src/lib/stores/pending.svelte.ts`);
     pendingActions.queue.push({ id: "human-pending", label: "human queued reply", text: "human pending text", createdAt: Date.now(), awaitsGen: false, rebuild: null, apply() {}, onCancel() { window.cancelObserved = true; } });
   }, root);
   await invoke("drowse_cancel_pending_action", { id: "human-pending" });

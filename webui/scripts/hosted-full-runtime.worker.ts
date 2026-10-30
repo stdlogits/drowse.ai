@@ -10,7 +10,7 @@ import type {
   ModelVariant,
   RuntimeIdentity,
   RuntimeProgressEvent,
-} from "../src/lib/runtime/contracts";
+} from "../../drowse/webui/src/lib/runtime/contracts";
 import { BrowserDrowseArchiveService } from "../src/hosted/artifacts/service";
 import { BrowserActivationSpool } from "../src/hosted/fitting/activationSpool";
 import { BrowserCapabilityChecker } from "../src/hosted/runtime/capabilities";

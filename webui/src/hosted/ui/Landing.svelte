@@ -1,11 +1,11 @@
 <script lang="ts">
-  import TabIdentity from "../../lib/ui/TabIdentity.svelte";
+  import TabIdentity from "../../../../drowse/webui/src/lib/ui/TabIdentity.svelte";
   import { onMount, tick } from "svelte";
   import CapabilityDemo from "./CapabilityDemo.svelte";
   import HeroShader from "./HeroShader.svelte";
-  import PageHeader from "./PageHeader.svelte";
+  import PageHeader from "../../../../drowse/webui/src/lib/ui/PageHeader.svelte";
   import PageFooter from "./PageFooter.svelte";
-  import ModelProviderLogo from "./ModelProviderLogo.svelte";
+  import ModelProviderLogo from "../../../../drowse/webui/src/lib/ui/ModelProviderLogo.svelte";
   import { siteTitle, sourceRepository } from "../../../scripts/site-metadata.mjs";
 
   let plainBackground = $state(false);

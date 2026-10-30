@@ -19,7 +19,7 @@ test("changing the model role updates requests, messages, and saved recipes", as
   await expect(page.locator(".shell")).toBeVisible();
   await page.getByRole("button", { name: /^Roles / }).click();
   const role = page.getByRole("combobox", { name: "Model writes as", exact: true });
-  const storesUrl = `/@fs${resolve("src/lib/stores.svelte.ts")}`;
+  const storesUrl = `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
   const labels: string[] = [];
   for (const name of ["pirate", "forest_guide", "assistant"]) {
     await role.fill(name);

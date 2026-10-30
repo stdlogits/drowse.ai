@@ -10,7 +10,7 @@ import { releaseToolBrowserOptions, releaseToolGpuArgs } from "./release-tool-st
 
 const { values } = parseArgs({ options: {
   model: { type: "string" },
-  webllm: { type: "string", default: "webui/node_modules/@drowse/web-llm/lib/index.js" },
+  webllm: { type: "string", default: "node_modules/@drowse/web-llm/lib/index.js" },
 } });
 if (!values.model) throw new Error("Use --model DIRECTORY containing model.wasm and mlc-chat-config.json");
 const model = resolve(values.model);

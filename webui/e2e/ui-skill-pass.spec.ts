@@ -6,12 +6,12 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
 import { buffer as readStreamBuffer, text as readStreamText } from "node:stream/consumers";
-import { CHAT_ACCENTS } from "../src/lib/chatAccent";
+import { CHAT_ACCENTS } from "../../drowse/webui/src/lib/chatAccent";
 import { siteTitle } from "../scripts/site-metadata.mjs";
 
 const devUrl = "http://127.0.0.1:4176";
-const storesUrl = `/@fs/${resolve("src/lib/stores.svelte.ts")}`;
-const servicesUrl = `/@fs/${resolve("src/lib/runtime/services.ts")}`;
+const storesUrl = `/@fs/${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
+const servicesUrl = `/@fs/${resolve("../drowse/webui/src/lib/runtime/services.ts")}`;
 test.use({ hasTouch: true });
 
 async function showMapDetails(page: Page, selector?: string) {
@@ -39,7 +39,7 @@ test("model settings end with the versioned Drowse footer", async ({ page }, tes
   await expect(footer.getByRole("link", { name: "Contribute" })).toHaveAttribute("href", /github.com\/a9lim\/drowse/);
   await expect(footer.getByRole("link", { name: "Credits" })).toHaveAttribute("href", "/credits");
   for (const theme of ["light", "dark"]) {
-    await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme), { url: `/@fs${resolve("src/lib/theme.ts")}`, theme });
+    await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme), { url: `/@fs${resolve("../drowse/webui/src/lib/theme.ts")}`, theme });
     for (const width of [320, 1440]) {
       await page.setViewportSize({ width, height: 900 });
       await footer.scrollIntoViewIfNeeded();
@@ -140,7 +140,7 @@ test("chat backups download, import separately, and reopen the entire Loom", asy
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(page.locator('.chat[aria-label="Chat"]')).toContainText("This is a deterministic local Drowse runtime fixture.");
   await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
-  const libraryUrl = `/@fs${resolve("src/lib/stores/savedConversations.svelte.ts")}`;
+  const libraryUrl = `/@fs${resolve("../drowse/webui/src/lib/stores/savedConversations.svelte.ts")}`;
   const original = await page.evaluate(async ({ libraryUrl, workspaceUrl }) => {
     const { conversationLibrary, flushConversationAutosave } = await import(libraryUrl);
     await flushConversationAutosave();
@@ -153,7 +153,7 @@ test("chat backups download, import separately, and reopen the entire Loom", asy
     snapshot.tree.children_of[branch.parent_id].push(branch.id);
     snapshot.tree.children_of[branch.id] = [];
     return conversationLibrary.create({ name: "Backup experiment", avatarSeed: "backup-avatar", snapshot });
-  }, { libraryUrl, workspaceUrl: `/@fs${resolve("src/lib/conversationWorkspace.ts")}` });
+  }, { libraryUrl, workspaceUrl: `/@fs${resolve("../drowse/webui/src/lib/conversationWorkspace.ts")}` });
   await page.goto(`${devUrl}/app?fixture=1`);
   const source = page.locator(`[data-saved-conversation="${original.id}"]`);
   await expect(source).toBeVisible();
@@ -181,7 +181,7 @@ test("chat backups download, import separately, and reopen the entire Loom", asy
   await page.reload();
   const card = page.locator(`[data-saved-conversation="${imported.id}"]`);
   for (const theme of ["light", "dark"]) {
-    await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme), { url: `/@fs${resolve("src/lib/theme.ts")}`, theme });
+    await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme), { url: `/@fs${resolve("../drowse/webui/src/lib/theme.ts")}`, theme });
     for (const width of [320, 1440]) {
       await page.setViewportSize({ width, height: 900 });
       await card.scrollIntoViewIfNeeded();
@@ -193,12 +193,12 @@ test("chat backups download, import separately, and reopen the entire Loom", asy
   }
   await card.getByRole("button", { name: "Open chat", exact: true }).click();
   await expect(page.locator(".shell")).toBeVisible();
-  const restored = await page.evaluate(async url => (await import(url)).apiTree.get(), `/@fs${resolve("src/lib/runtime/services.ts")}`);
+  const restored = await page.evaluate(async url => (await import(url)).apiTree.get(), `/@fs${resolve("../drowse/webui/src/lib/runtime/services.ts")}`);
   expect({ ...restored, session_id: original.snapshot.tree.session_id, rev: original.snapshot.tree.rev }).toEqual(original.snapshot.tree);
   await expect(page.locator('.chat[aria-label="Chat"]')).toContainText("A complete local backup");
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Continue only the imported copy");
   await page.getByRole("button", { name: "Send", exact: true }).click();
-  await expect.poll(() => page.evaluate(async url => (await (await import(url)).apiTree.get()).nodes.length, `/@fs${resolve("src/lib/runtime/services.ts")}`)).toBe(original.snapshot.tree.nodes.length + 2);
+  await expect.poll(() => page.evaluate(async url => (await (await import(url)).apiTree.get()).nodes.length, `/@fs${resolve("../drowse/webui/src/lib/runtime/services.ts")}`)).toBe(original.snapshot.tree.nodes.length + 2);
   await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   await page.evaluate(async url => (await import(url)).flushConversationAutosave(), libraryUrl);
   const continued = await records();
@@ -233,9 +233,9 @@ test("dropdown and disclosure motion is reversible and respects reduced motion",
       target.remove();
     };
   }, {
-    selectUrl: `/@fs${resolve("src/lib/Select.svelte")}`,
-    comboUrl: `/@fs${resolve("src/lib/Combobox.svelte")}`,
-    detailsUrl: `/@fs${resolve("src/lib/animatedDetails.ts")}`,
+    selectUrl: `/@fs${resolve("../drowse/webui/src/lib/Select.svelte")}`,
+    comboUrl: `/@fs${resolve("../drowse/webui/src/lib/Combobox.svelte")}`,
+    detailsUrl: `/@fs${resolve("../drowse/webui/src/lib/animatedDetails.ts")}`,
   });
   for (const width of [320, 1440]) {
     await page.setViewportSize({ width, height: 700 });
@@ -302,7 +302,7 @@ for (const theme of ["dark", "light"] as const) {
     await page.emulateMedia({ reducedMotion: "reduce", colorScheme: theme });
     await workbench(page);
     await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme), {
-      url: `/@fs${resolve("src/lib/theme.ts")}`, theme,
+      url: `/@fs${resolve("../drowse/webui/src/lib/theme.ts")}`, theme,
     });
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
     const palette = await page.evaluate(() => {
@@ -431,7 +431,7 @@ async function emptyGeometry(page: Page, authoring = false) {
     };
     caps.operations.fitting.available = authoring;
     registry.installRuntimeCapabilities(caps);
-  }, { storesUrl, registryUrl: `/@fs${resolve("src/lib/runtime/registry.ts")}`, authoring });
+  }, { storesUrl, registryUrl: `/@fs${resolve("../drowse/webui/src/lib/runtime/registry.ts")}`, authoring });
   await openDrawer(page, "token_drilldown", { turnIdx: 1, tokenIdx: 0 });
   const sheet = page.locator('aside[aria-label="Token drilldown"]');
   await sheet.getByRole("button", { name: /^geometry\b/i }).click();
@@ -446,7 +446,7 @@ test("geometry setup offers clear actions and preserves the current token", asyn
   await sheet.getByRole("button", { name: "Next token", exact: true }).click();
   for (const theme of ["dark", "light"] as const) {
     await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme), {
-      url: `/@fs${resolve("src/lib/theme.ts")}`, theme,
+      url: `/@fs${resolve("../drowse/webui/src/lib/theme.ts")}`, theme,
     });
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
     for (const width of [320, 1440]) {
@@ -488,7 +488,7 @@ test("geometry setup offers clear actions and preserves the current token", asyn
     (window as any).__conceptCalls = [];
     manifolds.generate = async (request: unknown) => { (window as any).__conceptCalls.push(request); };
     manifolds.fit = async (namespace: string, name: string) => { (window as any).__conceptCalls.push({ namespace, name }); };
-  }, `/@fs${resolve("src/lib/runtime/registry.ts")}`);
+  }, `/@fs${resolve("../drowse/webui/src/lib/runtime/registry.ts")}`);
   await sheet.getByRole("button", { name: "Create a concept", exact: true }).click();
   await builder.getByRole("textbox", { name: "Name (required)", exact: true }).fill("Test Concept");
   await builder.getByRole("textbox", { name: "Concepts (at least 2)", exact: false }).fill("formal\ncasual");
@@ -678,7 +678,7 @@ test("Chat controls update the saved name and avatar without leaving the tab", a
   const records = () => page.evaluate(async (url) => {
     const { conversationLibrary } = await import(url);
     return (await conversationLibrary.list()).conversations;
-  }, `/@fs/${resolve("src/lib/stores/savedConversations.svelte.ts")}`);
+  }, `/@fs/${resolve("../drowse/webui/src/lib/stores/savedConversations.svelte.ts")}`);
   const original = (await records())[0];
   expect(original).toBeTruthy();
   await name.fill("A named chat");
@@ -900,7 +900,7 @@ test.describe("saved chat card interactions", () => {
         snapshot: { phase: "supported", models: [{ id: modelId, modelId, name: "Qwen3 1.7B", setupComplete: true, fit: "recommended" }], download: { available: true, phase: "idle", reason: "Ready" }, runtime: { available: true }, storage: { persisted: true } },
         onChooseModels() {},
       } });
-    }, { home: `/@fs${resolve("src/hosted/ui/HostedHome.svelte")}`, saved: `/@fs${resolve("src/lib/stores/savedConversations.svelte.ts")}`, stores: `/@fs${resolve("src/lib/stores.svelte.ts")}`, workspace: `/@fs${resolve("src/lib/conversationWorkspace.ts")}` });
+    }, { home: `/@fs${resolve("src/hosted/ui/HostedHome.svelte")}`, saved: `/@fs${resolve("../drowse/webui/src/lib/stores/savedConversations.svelte.ts")}`, stores: `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`, workspace: `/@fs${resolve("../drowse/webui/src/lib/conversationWorkspace.ts")}` });
     await workbench(page);
     await page.getByRole("textbox", { name: /^Compose as / }).fill("Hello, I love marmots!");
     await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
@@ -955,7 +955,7 @@ test.describe("saved chat card interactions", () => {
         await new Promise<void>(resolve => { (window as any).releaseAvatarUpdate = resolve; });
         return update(...args);
       };
-    }, `/@fs${resolve("src/lib/stores/savedConversations.svelte.ts")}`);
+    }, `/@fs${resolve("../drowse/webui/src/lib/stores/savedConversations.svelte.ts")}`);
     await avatar.click();
     await expect(avatar).toHaveAttribute("aria-busy", "true");
     await expect(card.locator(".chat-name")).toBeEnabled();
@@ -1025,7 +1025,7 @@ test.describe("saved chat card interactions", () => {
     const imported = await page.evaluate(async ({ url, id }) => {
       const { conversations } = await (await import(url)).conversationLibrary.list();
       return conversations.find((record: any) => record.name === "Marmot research" && record.id !== id);
-    }, { url: `/@fs${resolve("src/lib/stores/savedConversations.svelte.ts")}`, id: backup.conversation.id });
+    }, { url: `/@fs${resolve("../drowse/webui/src/lib/stores/savedConversations.svelte.ts")}`, id: backup.conversation.id });
     expect({ ...imported, id: backup.conversation.id }).toEqual(backup.conversation);
   });
 });
@@ -1181,7 +1181,7 @@ test("fields use one soft focus shadow without stacked outlines", async ({ page 
     await page.evaluate(async ({ module, theme }) => {
       const { setTheme } = await import(module);
       setTheme(theme);
-    }, { module: `/@fs/${resolve("src/lib/theme.ts")}`, theme });
+    }, { module: `/@fs/${resolve("../drowse/webui/src/lib/theme.ts")}`, theme });
     for (const width of [1280, 390]) {
       await page.setViewportSize({ width, height: 900 });
       await role.click();
@@ -1266,7 +1266,7 @@ test("Geometry browses only recorded linear probe layers without changing the ag
   await page.keyboard.press("Enter");
   await expect(region.getByRole("group", { name: "local/linear layer 21 axis 0", exact: true })).toContainText("0.950");
   for (const theme of ["light", "dark"]) {
-    await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme), { url: `/@fs/${resolve("src/lib/theme.ts")}`, theme });
+    await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme), { url: `/@fs/${resolve("../drowse/webui/src/lib/theme.ts")}`, theme });
     for (const width of [1280, 320]) {
       await page.setViewportSize({ width, height: 1000 });
       await region.scrollIntoViewIfNeeded();
@@ -1353,7 +1353,7 @@ test("SAE stays on its recorded layer and automatically loads source-matched des
   await expect(sheet.getByRole("listitem", { name: /^SAE feature/ }).first()).toHaveAttribute("aria-label", "SAE feature 396, layer 13");
   await expect(sheet.getByRole("listitem", { name: /^SAE feature/ })).toHaveCount(4);
   for (const theme of ["light", "dark"]) {
-    await page.evaluate(async ({ url, theme }) => { (await import(url)).setTheme(theme); }, { url: `/@fs/${resolve("src/lib/theme.ts")}`, theme });
+    await page.evaluate(async ({ url, theme }) => { (await import(url)).setTheme(theme); }, { url: `/@fs/${resolve("../drowse/webui/src/lib/theme.ts")}`, theme });
     for (const width of [1280, 390, 320]) {
       await page.setViewportSize({ width, height: 1000 });
       await expect.poll(() => sheet.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
@@ -1618,7 +1618,7 @@ test("theme crossfade gently blends the whole page and survives rapid switches",
   await page.evaluate(async module => {
     const { setTheme } = await import(module);
     setTheme("light"); setTheme("dark"); setTheme("light");
-  }, `/@fs/${resolve("src/lib/theme.ts")}`);
+  }, `/@fs/${resolve("../drowse/webui/src/lib/theme.ts")}`);
   await expect(root).toHaveAttribute("data-theme", "light");
   await expect(root).not.toHaveAttribute("data-theme-transition");
   expect(await page.evaluate(() => localStorage.getItem("drowse.theme"))).toBe("light");
@@ -1677,7 +1677,7 @@ test("tab icons use squircle tiles and follow every chat accent", async ({ page 
   await page.evaluate(async url => {
     (window as any).__testTab = (await import(url)).createTabIcon();
     (window as any).__testTab.update("home");
-  }, `/@fs${resolve("src/lib/tabIdentity.ts")}`);
+  }, `/@fs${resolve("../drowse/webui/src/lib/tabIdentity.ts")}`);
   for (const theme of ["light", "dark"] as const) {
     for (const accent of CHAT_ACCENTS) {
       const result = await page.evaluate(async ({ theme, accent }) => {
@@ -1742,7 +1742,7 @@ test("tab identity updates each state and releases its animation lifecycle", asy
       gallery.append(item);
     }
     document.body.append(gallery);
-  }, `/@fs/${resolve("src/lib/tabIdentity.ts")}`);
+  }, `/@fs/${resolve("../drowse/webui/src/lib/tabIdentity.ts")}`);
   const icon = page.locator('link[rel="icon"]');
   await expect(icon).toHaveAttribute("data-state", "loading");
   const first = await icon.getAttribute("href");
@@ -1760,7 +1760,7 @@ test("tab identity updates each state and releases its animation lifecycle", asy
     const gallery = document.querySelector<HTMLElement>("#icon-gallery")!;
     gallery.style.background = "#151a23"; gallery.style.color = "#edf1f5";
     gallery.querySelectorAll("img").forEach(img => { img.src = faviconPath(img.alt, 0, "dark"); });
-  }, `/@fs${resolve("src/lib/tabIdentity.ts")}`);
+  }, `/@fs${resolve("../drowse/webui/src/lib/tabIdentity.ts")}`);
   await expect(icon).toHaveAttribute("href", "/icons/tab-loading-dark-0.png?v=fluent");
   await expect.poll(() => page.locator("#icon-gallery img").evaluateAll(images => images.every(image => (image as HTMLImageElement).complete))).toBe(true);
   await page.locator("#icon-gallery").screenshot({ path: testInfo.outputPath("favicon-family-dark.png") });
@@ -1785,7 +1785,7 @@ test("tab identity updates each state and releases its animation lifecycle", asy
     const { createTabIcon } = await import(module);
     const next = createTabIcon(); next.update("loom"); old.dispose();
     (window as any).__tabIcon = next;
-  }, `/@fs/${resolve("src/lib/tabIdentity.ts")}`);
+  }, `/@fs/${resolve("../drowse/webui/src/lib/tabIdentity.ts")}`);
   await expect(icon).toHaveAttribute("data-state", "loom");
   await expect(page.locator('link[rel="icon"]')).toHaveCount(1);
   await page.evaluate(() => (window as any).__tabIcon.dispose());
@@ -1852,7 +1852,7 @@ test("lens highlights follow rounded table corners at every scroll position", as
       } },
       steered: true, jlensFitted: true, hasReplayContext: true, pinned: null, modelId: null, replayAvailable: false,
     } });
-  }, `/@fs/${resolve("src/drawers/token/LensTab.svelte")}`);
+  }, `/@fs/${resolve("../drowse/webui/src/drawers/token/LensTab.svelte")}`);
   const grid = page.locator(".grid-scroll");
   const corner = grid.locator("tbody tr:last-child td:last-child");
   for (const theme of ["light", "dark"]) {
@@ -1901,7 +1901,7 @@ test("loading pulse keeps readout progress legible and honors motion preferences
         hasReplayContext: true, pinned: null, modelId: null, replayAvailable: true,
       } });
     }
-  }, `/@fs/${resolve("src/drawers/token")}`);
+  }, `/@fs/${resolve("../drowse/webui/src/drawers/token")}`);
   const pulses = page.locator(".readout-progress.loading-pulse");
   await expect(pulses).toHaveCount(3);
   await page.emulateMedia({ reducedMotion: "no-preference" });
@@ -2405,7 +2405,7 @@ test("header download confirms filename and exact backup size without changing t
   await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
   const menu = page.getByRole("button", { name: "Workspace menu", exact: true });
   const button = page.getByRole("button", { name: "Download chat", exact: true });
-  const before = await page.evaluate(async url => (await import(url)).captureConversationSnapshot(), `/@fs/${resolve("src/lib/conversationWorkspace.ts")}`);
+  const before = await page.evaluate(async url => (await import(url)).captureConversationSnapshot(), `/@fs/${resolve("../drowse/webui/src/lib/conversationWorkspace.ts")}`);
   await openWorkspaceMenu(page);
   await button.click();
   const dialog = page.getByRole("dialog", { name: "Download chat", exact: true });
@@ -2422,7 +2422,7 @@ test("header download confirms filename and exact backup size without changing t
   const size = Number(await dialog.getByLabel("Backup size").getAttribute("data-bytes"));
   expect(size).toBeGreaterThan(0);
   for (const theme of ["light", "dark"]) {
-    await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme), { url: `/@fs/${resolve("src/lib/theme.ts")}`, theme });
+    await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme), { url: `/@fs/${resolve("../drowse/webui/src/lib/theme.ts")}`, theme });
     for (const width of [320, 1280]) {
       await page.setViewportSize({ width, height: 900 });
       expect(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
@@ -2464,7 +2464,7 @@ test("shared controls have comfortable targets and interruptible contextual feed
       shape: "triangle", get pinned() { return genStatus.active; },
       onclick: () => { genStatus.active = !genStatus.active; }, ariaLabel: "Toggle test pin", title: "Pin",
     } });
-  }, { storesUrl, buttonUrl: `/@fs/${resolve("src/lib/ui/Button.svelte")}`, pinUrl: `/@fs/${resolve("src/panels/rack/ProbePinButton.svelte")}` });
+  }, { storesUrl, buttonUrl: `/@fs/${resolve("../drowse/webui/src/lib/ui/Button.svelte")}`, pinUrl: `/@fs/${resolve("../drowse/webui/src/panels/rack/ProbePinButton.svelte")}` });
   const target = page.locator("#controls-polish-test");
   const pin = target.getByRole("button", { name: "Toggle test pin" });
   for (const width of [320, 1440]) {
@@ -2520,7 +2520,7 @@ test("Rolling numbers interrupt cleanly, preserve precision, and honor reduced m
       if (this.closest(".rolling-number")) (window as any).rollingAnimations++;
       return animate.apply(this, args);
     };
-  }, { storesUrl, componentUrl: `/@fs/${resolve("src/lib/ui/RollingNumber.svelte")}` });
+  }, { storesUrl, componentUrl: `/@fs/${resolve("../drowse/webui/src/lib/ui/RollingNumber.svelte")}` });
   const number = page.locator("#rolling-test .rolling-number");
   await expect(number.locator(".morph-source")).toHaveText("9.99");
   await expect(number.locator(".morph-text")).toHaveAttribute("data-morph-active", "");
@@ -2598,7 +2598,7 @@ test("popups share material tokens while side drawers remain translucent in both
   });
   for (const theme of ["Light", "Dark"]) {
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme.toLowerCase()), { url: `/@fs/${resolve("src/lib/theme.ts")}`, theme });
+    await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme.toLowerCase()), { url: `/@fs/${resolve("../drowse/webui/src/lib/theme.ts")}`, theme });
     await expect(page.locator(".toast").first()).toHaveCSS("background-color", theme === "Light" ? "rgb(255, 255, 255)" : "rgb(39, 44, 53)");
     const expected = await surface(page.locator(".toast").first());
     expect(expected[0]).toBe(theme === "Light" ? "rgb(255, 255, 255)" : "rgb(39, 44, 53)");
@@ -2791,7 +2791,7 @@ test("word details use a darker gray without changing light mode or other drawer
   await workbench(page);
   for (const theme of ["dark", "light"]) {
     await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme), {
-      url: `/@fs${resolve("src/lib/theme.ts")}`, theme,
+      url: `/@fs${resolve("../drowse/webui/src/lib/theme.ts")}`, theme,
     });
     await openDrawer(page, "token_drilldown", { turnIdx: 1, tokenIdx: 0 });
     const dialog = page.getByRole("dialog", { name: "Generated word details" });
@@ -3415,7 +3415,7 @@ test("native API access form retains labels and reflows on phones", async ({ pag
   await page.setViewportSize({ width: 320, height: 720 });
   // Substitute the native component for the hosted alias only in this test.
   await page.route("**/src/drawers/UnavailableRuntimeDrawer.svelte*", async (route) => {
-    const response = await route.fetch({ url: `${devUrl}/@fs/${resolve("src/drawers/SessionAdminDrawer.svelte")}` });
+    const response = await route.fetch({ url: `${devUrl}/@fs/${resolve("../drowse/webui/src/drawers/SessionAdminDrawer.svelte")}` });
     await route.fulfill({ response });
   });
   await workbench(page);

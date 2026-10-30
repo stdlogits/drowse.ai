@@ -135,9 +135,9 @@ try {
     defaultTuning,
     maxDimensionValidationMessage,
     tuningMessages,
-  } = await server.ssrLoadModule("/src/drawers/manifold/shared.ts");
+  } = await server.ssrLoadModule("/../drowse/webui/src/drawers/manifold/shared.ts");
   const { installRuntimeCapabilities } = await server.ssrLoadModule(
-    "/src/lib/runtime/registry.ts",
+    "/../drowse/webui/src/lib/runtime/registry.ts",
   );
   assert.equal(defaultTuning().maxDim, 8);
   assert.equal(defaultTuning(null).maxDim, 8);

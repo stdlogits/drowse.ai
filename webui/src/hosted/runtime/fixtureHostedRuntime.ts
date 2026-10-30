@@ -11,7 +11,7 @@ import type {
   RuntimeCapabilities,
   RuntimeSnapshot,
   VerifiedCatalog,
-} from "../../lib/runtime/contracts";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
 import { rankCatalogModels } from "../../lib/runtime/recommendation";
 import { initialRuntimeSnapshot } from "../../lib/runtime/state";
 import { DeterministicFakeRuntime } from "./fakeRuntime";

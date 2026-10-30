@@ -13,7 +13,7 @@ import type {
   ModelVariant,
   RuntimeFailure,
   VerifiedCatalog,
-} from "../../lib/runtime/contracts";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
 import { CatalogValidationError } from "../../lib/runtime/catalog";
 import type {
   ContentAddressedStore,

@@ -1,6 +1,6 @@
 <script lang="ts">
-  import FluentIcon from "../../../lib/ui/FluentIcon.svelte";
-  import MorphText from "../../../lib/ui/MorphText.svelte";
+  import FluentIcon from "../../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
+  import MorphText from "../../../../../drowse/webui/src/lib/ui/MorphText.svelte";
   import { loadSearch, neuronId, parseNeuronRef, stem, type CatalogIndex, type SearchFile } from "./data";
 
   interface Result { layer: number; neuron: number; side: 0 | 1; title: string; matched: string; score: number }

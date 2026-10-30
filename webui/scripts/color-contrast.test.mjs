@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { runInNewContext } from "node:vm";
-import { highlightHue, SURPRISE_TARGET, PROBABILITY_TARGET, ENTROPY_TARGET } from "../src/lib/tokens.ts";
-import { icon } from "./tab-icon-artwork.mjs";
-import { CHAT_ACCENTS } from "../src/lib/chatAccent.ts";
+import { highlightHue, SURPRISE_TARGET, PROBABILITY_TARGET, ENTROPY_TARGET } from "../../drowse/webui/src/lib/tokens.ts";
+import { icon } from "../../drowse/webui/scripts/tab-icon-artwork.mjs";
+import { CHAT_ACCENTS } from "../../drowse/webui/src/lib/chatAccent.ts";
 
 const [css, themeRuntime, localBootstrap, hostedBootstrap] = await Promise.all([
-  readFile("src/lib/style/tokens.css", "utf8"),
-  readFile("src/lib/theme.ts", "utf8"),
-  readFile("public/theme-init.js", "utf8"),
+  readFile("../drowse/webui/src/lib/style/tokens.css", "utf8"),
+  readFile("../drowse/webui/src/lib/theme.ts", "utf8"),
+  readFile("../drowse/webui/public/theme-init.js", "utf8"),
   readFile("public-hosted/theme-init.js", "utf8"),
 ]);
 

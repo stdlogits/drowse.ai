@@ -1,0 +1,105 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+uv.lock
+dist/
+build/
+*.whl
+
+# Node modules (installed at the repository root) and hosted build output.
+node_modules/
+webui/dist-hosted/
+webui/dist-local/
+# /neurons explorer data, built by webui/scripts/neurons/build-neuron-catalog.py from the
+# private neuron-lens catalog. Publish it only with the catalog owner's permission.
+/webui/public-hosted/neurons-data/
+.playwright-mcp/
+
+# Browser-runtime compiler scratch directories are local feasibility outputs.
+browser-runtime/.v3-compile.*/
+browser-runtime/.local-build/
+browser-runtime/vendor/*.tgz
+!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.34.tgz
+!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.36.tgz
+!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.37.tgz
+!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.38.tgz
+!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.39.tgz
+!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.40.tgz
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# pytest / ruff
+.pytest_cache/
+.ruff_cache/
+.coverage
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude Code
+.claude/
+.remember/
+.superpowers/
+docs/superpowers/
+
+# Scratch / throwaway dev artifacts (eyeball-once output, stress scripts)
+/scratch_*/
+**/scratch_*.py
+
+# Local audit reports, repair checklists, and historical validation notes.
+*_AUDIT*.md
+*-audit*.md
+*_QA.md
+*_REVIEW.md
+*-review*.md
+*_VALIDATION_*.md
+*-validation-20??-??-??.md
+*CHECKLIST*.md
+*checklist*.md
+*_FIXES*.md
+*-fixes*.md
+/browser-runtime/BASE_MODELS.md
+/webui/GEO-SCHEMA-REPORT.md
+/webui/.wrangler/
+/webui/docs/*-REVIEW.md
+/webui/docs/*-REPORT.md
+/webui/docs/*-20??-??-??.*
+/docs/cloudflare-configuration-20??-??-??.md
+/docs/*-20??-??-??.md
+/legacy/
+
+# Ongoing local evidence and provenance records; schemas are source code.
+*-evidence*.json
+!*.schema.json
+/browser-runtime/evidence/*
+!/browser-runtime/evidence/README.md
+PROVENANCE.md
+provenance.json
+# Required authored-source manifest, not a run or audit record.
+!/browser-runtime/release-inputs/core-manifolds/welcoming.detached/provenance.json
+
+# Local research, benchmark reports, and generated verification output.
+/DOMAIN_NAME_*.md
+/domain-name-*.csv
+/domain-name-*.json
+/domain-registrar-*.json
+/docs/research/
+/benchmarks/*_20??-??-??.md
+playwright-report/
+test-results/
+blob-report/
+coverage/
+audit-reports/
+verification-results/

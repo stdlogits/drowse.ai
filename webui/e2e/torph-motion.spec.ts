@@ -199,6 +199,6 @@ test("stream reveals only new tokens once and leaves old prefixes selectable", a
     const selected = getSelection()!.toString();
     node.remove(); getSelection()!.removeAllRanges();
     return {historical, appended, remounted, selected};
-  }, `/@fs${resolve("src/lib/tokenArrival.ts")}`);
+  }, `/@fs${resolve("../drowse/webui/src/lib/tokenArrival.ts")}`);
   expect(result).toEqual({historical:0, appended:24, remounted:24, selected:"old prefix"});
 });

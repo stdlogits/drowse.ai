@@ -8,9 +8,9 @@ import type {
   ModelTier,
   ModelVariant,
   RuntimeCapabilities,
-} from "./contracts";
-import { MEBIBYTE } from "./contracts";
-import { userFacingError } from "./userFacingError";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
+import { MEBIBYTE } from "../../../../drowse/webui/src/lib/runtime/contracts";
+import { userFacingError } from "../../../../drowse/webui/src/lib/runtime/userFacingError";
 
 export function requiredStorageBytes(
   downloadBytes: number,

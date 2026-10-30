@@ -35,7 +35,7 @@ const identity = {
   modelLibrarySha256: model.librarySha256, runtimeAbi: lock.runtimeAbi, hookAbi: lock.hookAbi,
   hiddenSize: model.hiddenSize, layerMap: model.layerMap,
 };
-const webllmPath = resolve(root, "node_modules/@drowse/web-llm/lib/index.js");
+const webllmPath = resolve(root, "../node_modules/@drowse/web-llm/lib/index.js");
 const webllmSha256 = createHash("sha256").update(await readFile(webllmPath)).digest("hex");
 const vite = await createViteServer({ root, configFile: false, appType: "custom", logLevel: "error", server: { middlewareMode: true, hmr: false, watch: null } });
 const server = createServer(async (request, response) => {

@@ -1,9 +1,9 @@
-import type { RuntimeServiceRequest } from "../../lib/runtime/contracts";
-import type { LoomTreeJSON, SessionInfo } from "../../lib/types";
+import type { RuntimeServiceRequest } from "../../../../drowse/webui/src/lib/runtime/contracts";
+import type { LoomTreeJSON, SessionInfo } from "../../../../drowse/webui/src/lib/types";
 import {
   clampOutputTokenCount,
   MAX_OUTPUT_TOKEN_COUNT,
-} from "../../lib/runtime/outputTokenPolicy";
+} from "../../../../drowse/webui/src/lib/runtime/outputTokenPolicy";
 import {
   type HostedSessionSettings,
   type HostedSessionBinding,
@@ -12,7 +12,7 @@ import {
   type PersistedHostedSession,
   SESSION_SCHEMA_VERSION,
   validatePersistedHostedSession,
-} from "./sessionPersistence";
+} from "../../../../drowse/webui/src/lib/sessionPersistence";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const SESSION_KEYS = [

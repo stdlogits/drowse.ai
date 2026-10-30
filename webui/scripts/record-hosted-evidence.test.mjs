@@ -131,7 +131,7 @@ test("an executed receipt is invalidated when its producer config changes", asyn
     `binding-recheck-${process.pid}-${Date.now()}.json`,
   );
   const fixture = await trackedFixture(
-    "browser-runtime/fixtures/post-block-rank-one-v2.json",
+    "drowse/tests/fixtures/browser/post-block-rank-one-v2.json",
   );
   try {
     await writeFile(temporaryConfig, '{"fixture":1}\n', { flag: "wx" });
@@ -164,7 +164,7 @@ test("an executed receipt is invalidated when its producer config changes", asyn
 
 test("recorder executes the registered producer with a fresh nonce", async () => {
   const fixture = await trackedFixture(
-    "browser-runtime/fixtures/post-block-rank-one-v2.json",
+    "drowse/tests/fixtures/browser/post-block-rank-one-v2.json",
   );
   let invocation;
   try {
@@ -203,7 +203,7 @@ test("recorder executes the registered producer with a fresh nonce", async () =>
     assert.match(record.toolVersion, /^gemma-tiny-fp32-parity-v1\+sha256\./);
     assert.equal(
       record.results.fixturePath,
-      "browser-runtime/fixtures/post-block-rank-one-v2.json",
+      "drowse/tests/fixtures/browser/post-block-rank-one-v2.json",
     );
     assert.match(record.results.fixtureSha256, /^[0-9a-f]{64}$/);
   } finally {
@@ -618,23 +618,23 @@ test("attestation verifier accepts only this repository's CI signer", () => {
   assert.deepEqual(
     parseAttestationArguments([
       "--repository",
-      "a9lim/drowse",
+      "stdlogits/drowse.ai",
       "--signer-workflow",
-      "a9lim/drowse/.github/workflows/ci.yml",
+      "stdlogits/drowse.ai/.github/workflows/ci.yml",
     ]),
     {
-      repository: "a9lim/drowse",
-      signerWorkflow: "a9lim/drowse/.github/workflows/ci.yml",
+      repository: "stdlogits/drowse.ai",
+      signerWorkflow: "stdlogits/drowse.ai/.github/workflows/ci.yml",
     },
   );
   assert.throws(
     () => parseAttestationArguments([
       "--repository",
-      "a9lim/drowse",
+      "stdlogits/drowse.ai",
       "--signer-workflow",
       "attacker/fork/.github/workflows/ci.yml",
     ]),
-    /must be a9lim\/drowse\/\.github\/workflows\/ci\.yml/,
+    /must be stdlogits\/drowse\.ai\/\.github\/workflows\/ci\.yml/,
   );
 });
 
@@ -675,8 +675,8 @@ test("durable evidence verification covers referenced gates and canonical benchm
       ],
     );
     const verified = await verifyEvidenceAttestations({
-      repository: "a9lim/drowse",
-      signerWorkflow: "a9lim/drowse/.github/workflows/ci.yml",
+      repository: "stdlogits/drowse.ai",
+      signerWorkflow: "stdlogits/drowse.ai/.github/workflows/ci.yml",
       repositoryRoot: root.path,
       async execute(command, args) {
         calls.push({ command, args });
@@ -688,7 +688,7 @@ test("durable evidence verification covers referenced gates and canonical benchm
     for (const call of calls) {
       assert.equal(call.command, "gh");
       assert.deepEqual(call.args.slice(0, 2), ["attestation", "verify"]);
-      assert.ok(call.args.includes("a9lim/drowse/.github/workflows/ci.yml"));
+      assert.ok(call.args.includes("stdlogits/drowse.ai/.github/workflows/ci.yml"));
       assert.ok(call.args.includes(revision));
       assert.ok(call.args.some((argument) => argument === "https://slsa.dev/provenance/v1"));
     }
@@ -713,8 +713,8 @@ test("durable evidence verification fails closed on digest drift or a missing at
   try {
     await assert.rejects(
       verifyEvidenceAttestations({
-        repository: "a9lim/drowse",
-        signerWorkflow: "a9lim/drowse/.github/workflows/ci.yml",
+        repository: "stdlogits/drowse.ai",
+        signerWorkflow: "stdlogits/drowse.ai/.github/workflows/ci.yml",
         repositoryRoot: missing.path,
         async execute() {
           throw new Error("not found");
@@ -793,7 +793,7 @@ function gemmaReceipt() {
     nonce,
     producedAt,
     passed: true,
-    fixturePath: "browser-runtime/fixtures/post-block-rank-one-v2.json",
+    fixturePath: "drowse/tests/fixtures/browser/post-block-rank-one-v2.json",
     results: {
       architecture: "gemma3_text",
       maxAbsoluteLogitError: 0.00001,

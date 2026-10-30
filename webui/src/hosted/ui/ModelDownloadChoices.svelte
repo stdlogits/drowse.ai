@@ -1,12 +1,12 @@
 <script lang="ts">
-  import MorphText from "../../lib/ui/MorphText.svelte";
-  import InfoTip from "../../lib/ui/InfoTip.svelte";
-  import ModelProviderLogo from "./ModelProviderLogo.svelte";
+  import MorphText from "../../../../drowse/webui/src/lib/ui/MorphText.svelte";
+  import InfoTip from "../../../../drowse/webui/src/lib/ui/InfoTip.svelte";
+  import ModelProviderLogo from "../../../../drowse/webui/src/lib/ui/ModelProviderLogo.svelte";
   import { formatEtaRange } from "../../lib/runtime/eta";
-  import { userFacingError } from "../../lib/runtime/userFacingError";
+  import { userFacingError } from "../../../../drowse/webui/src/lib/runtime/userFacingError";
   import { formatBytes } from "../../lib/format/bytes";
   import { modelsForChooser } from "./modelSelection";
-  import type { HostedModelOption, HostedShellController, HostedShellSnapshot } from "./types";
+  import type { HostedModelOption, HostedShellController, HostedShellSnapshot } from "../../../../drowse/webui/src/lib/shell";
 
   let { controller, snapshot, disabled = false, onSelect }: {
     controller: HostedShellController;

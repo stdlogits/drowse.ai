@@ -1,9 +1,9 @@
 import { decodeFp32Safetensors, type Fp32SafetensorsReader } from "../artifacts";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import type { ProbeInfo } from "../../lib/types";
+import type { ProbeInfo } from "../../../../drowse/webui/src/lib/types";
 import { runtimeIdentitySha256 } from "../../lib/runtime/catalog";
-import { LEGACY_PRODUCT_SLUGS } from "./brandMigration";
+import { LEGACY_PRODUCT_SLUGS } from "../../../../drowse/webui/src/lib/brandMigration";
 import type {
   BrowserInstrumentPackArtifacts,
   BrowserModelArtifact,
@@ -15,7 +15,7 @@ import type {
   BrowserFittingLayerCentroids,
 } from "../fitting/coordinator";
 import { jLensTokenDirection } from "./structuredHookProgram";
-import { verifiedSaeDescriptionSource, type SaeDescriptionSource } from "../../lib/saeDescriptions";
+import { verifiedSaeDescriptionSource, type SaeDescriptionSource } from "../../../../drowse/webui/src/lib/saeDescriptions";
 
 const LOCAL_SAE_V1_KEYS = [
   "activation", "batch_size", "corpus_sha256", "corpus_spec", "d_model", "d_sae",

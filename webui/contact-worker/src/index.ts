@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { CONTACT_ADDRESS, CONTACT_REASONS, CONTACT_TOPICS, parseContact, validateContact, type ContactFields } from "../../src/lib/contact";
+import { CONTACT_ADDRESS, CONTACT_REASONS, CONTACT_TOPICS, parseContact, validateContact, type ContactFields } from "../../../drowse/webui/src/lib/contact";
 
 const MAX_BYTES = 40_000;
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;

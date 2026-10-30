@@ -2,7 +2,7 @@ import { Zip, ZipPassThrough } from "fflate";
 import { parseExactJson } from "./json";
 import { validateDrowseArchive } from "./drowseArchive";
 import { randomUuid } from "../runtime/randomId";
-import { migrateLegacyDatabase, drowseStorageRoot } from "../runtime/brandMigration";
+import { migrateLegacyDatabase, drowseStorageRoot } from "../../../../drowse/webui/src/lib/brandMigration";
 import {
   DROWSE_ARCHIVE_FORMAT_VERSION,
   DROWSE_ARCHIVE_MANIFEST_MAX_BYTES,

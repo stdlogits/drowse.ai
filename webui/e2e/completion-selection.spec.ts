@@ -2,10 +2,10 @@ import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
 
 const modules = {
-  stores: `/@fs${resolve("src/lib/stores.svelte.ts")}`,
-  api: `/@fs${resolve("src/lib/runtime/services.ts")}`,
-  saved: `/@fs${resolve("src/lib/stores/savedConversations.svelte.ts")}`,
-  workspace: `/@fs${resolve("src/lib/conversationWorkspace.ts")}`,
+  stores: `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`,
+  api: `/@fs${resolve("../drowse/webui/src/lib/runtime/services.ts")}`,
+  saved: `/@fs${resolve("../drowse/webui/src/lib/stores/savedConversations.svelte.ts")}`,
+  workspace: `/@fs${resolve("../drowse/webui/src/lib/conversationWorkspace.ts")}`,
   home: `/@fs${resolve("src/hosted/ui/HostedHome.svelte")}`,
 };
 const editor = (page: Page) => page.getByRole("textbox", { name: "Editable completion buffer" });

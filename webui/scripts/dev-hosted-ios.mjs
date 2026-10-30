@@ -26,7 +26,7 @@ const caCertificatePath = join(httpsDirectory, "drowse-local-ca.cert.pem");
 const caInstallPath = join(httpsDirectory, "drowse-local-ca.cer");
 const serverKeyPath = join(httpsDirectory, "drowse-ios.key.pem");
 const serverCertificatePath = join(httpsDirectory, "drowse-ios.cert.pem");
-const vitePath = resolve(webuiRoot, "node_modules", "vite", "bin", "vite.js");
+const vitePath = resolve(webuiRoot, "..", "node_modules", "vite", "bin", "vite.js");
 
 function usage() {
   return `Usage: npm run dev:hosted:ios -- [--port <port>] [--ip <LAN IPv4>]

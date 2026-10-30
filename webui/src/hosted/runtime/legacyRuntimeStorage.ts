@@ -1,4 +1,4 @@
-import { LEGACY_PRODUCT_SLUGS, legacyDatabaseNames } from "./brandMigration";
+import { LEGACY_PRODUCT_SLUGS, legacyDatabaseNames } from "../../../../drowse/webui/src/lib/brandMigration";
 
 const PRODUCT_CACHE_SCOPES = ["drowse", ...LEGACY_PRODUCT_SLUGS].map((slug) => `${slug}-hosted`);
 

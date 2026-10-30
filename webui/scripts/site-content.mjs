@@ -1,4 +1,4 @@
-const repository = "https://github.com/a9lim/drowse";
+const repository = "https://github.com/stdlogits/drowse";
 const source = (path) => `${repository}/blob/main/${path}`;
 
 export const homeSummary = {
@@ -85,12 +85,12 @@ export const htmlGuides = [
       {
         heading: "Concept probes and representation geometry",
         paragraphs: ["Geometry probes locate activations relative to fitted concepts, subspaces, and manifolds. The workbench exposes coordinates, nearby labels, and supported measures such as subspace fraction and manifold membership, with layer traces where available. Probe highlighting follows these measurements through generated text.", "Coordinates, distances, fractions, and assignment probabilities have different meanings. A label describes the fitted reference examples. It should not be treated as a direct measurement of a person's beliefs, a model's private intentions, or factual correctness."],
-        links: [{ label: "Geometry and measurement contract", href: source("drowse/web/AGENTS.md#wire-protocol") }, { label: "Control units and applicability", href: source("webui/src/lib/webmcp/controls.ts") }],
+        links: [{ label: "Geometry and measurement contract", href: source("drowse/web/AGENTS.md#wire-protocol") }, { label: "Control units and applicability", href: source("drowse/webui/src/lib/webmcp/controls.ts") }],
       },
       {
         heading: "Sparse autoencoders and Jacobian-lens readouts",
         paragraphs: ["A compatible sparse autoencoder (SAE) pack exposes learned feature activations. Drowse can show feature strengths, attach probes, and apply feature steering. Available descriptions come from the matching dictionary; they remain interpretive labels.", "A compatible Jacobian-lens (J-lens) pack maps intermediate representations toward vocabulary predictions. Inspect per-layer token probabilities and an aggregate across fitted layers. The active source determines the lens used for readout and steering. Layer readouts are measurements derived from that instrument, not a transcript of hidden reasoning."],
-        links: [{ label: "SAE and lens source documentation", href: source("README.md#instruments") }, { label: "Feature description provenance", href: source("webui/src/lib/saeDescriptions.ts") }],
+        links: [{ label: "SAE and lens source documentation", href: source("README.md#instruments") }, { label: "Feature description provenance", href: source("drowse/webui/src/lib/saeDescriptions.ts") }],
       },
       {
         heading: "Live measurements and historical replay",
@@ -148,12 +148,12 @@ export const htmlGuides = [
       {
         heading: "Score completion choices",
         paragraphs: ["The template lab defines a slot, candidate values, and one or more contexts. Restricted-choice scoring compares the model's likelihoods for those candidates, optionally under steering. Multi-token choices expose both summed log probability and a length-normalized view, with separate probabilities across the candidate set.", "Use this when you want to compare a distribution rather than only the sampled completion. The result is conditional on the chosen candidates and contexts. A template can also supply the examples for a fitted manifold, connecting authoring and evaluation."],
-        links: [{ label: "Browser template scoring source", href: source("webui/src/hosted/runtime/browserManifoldFitting.ts") }, { label: "Template format and validation", href: source("drowse/io/templates.py") }],
+        links: [{ label: "Browser template scoring source", href: source("webui/src/hosted/runtime/browserManifoldFitting.ts") }, { label: "Template format and validation", href: source("drowse/drowse/io/templates.py") }],
       },
       {
         heading: "Record and share the evidence",
         paragraphs: ["Export conversations, transcripts, or compatible manifold archives for reuse. Correlation and pairwise geometry tools help compare supported fitted directions across layers. Record the model, artifact source, prompt, settings, and comparison method with your result. Exported files may contain your experiment text, so review their contents before sharing."],
-        links: [{ label: "Available analysis and export actions", href: source("webui/src/lib/webmcp/catalogue.ts") }, { label: "Python and agent workflows", href: "/developers" }],
+        links: [{ label: "Available analysis and export actions", href: source("drowse/webui/src/lib/webmcp/catalogue.ts") }, { label: "Python and agent workflows", href: "/developers" }],
       },
     ],
   },
@@ -172,7 +172,7 @@ export const htmlGuides = [
       {
         heading: "Downloads and external services",
         paragraphs: ["The model catalog, model weights, and compatible instrument packs are downloaded from Hugging Face and its delivery infrastructure, then checked against the signed catalog and artifact hashes. Hugging Face receives each file request; it does not receive your prompts, chats, or activations. Searching for remote manifold packs sends your search query to Hugging Face.", "SAE feature descriptions use bundled data when available. Opening a feature that has no bundled description can send an optional lookup to Neuronpedia. The request contains only the model name, SAE source, and feature number, without cookies, a referrer, your prompt, or your transcript. External links use the destination site's policies."],
-        links: [{ label: "Configured model distribution", href: source("browser-runtime/distribution-lock.json") }, { label: "Remote manifold search", href: source("webui/src/hosted/artifacts/hfManifolds.ts") }, { label: "SAE description lookups", href: source("webui/src/lib/saeDescriptions.ts") }],
+        links: [{ label: "Configured model distribution", href: source("browser-runtime/distribution-lock.json") }, { label: "Remote manifold search", href: source("webui/src/hosted/artifacts/hfManifolds.ts") }, { label: "SAE description lookups", href: source("drowse/webui/src/lib/saeDescriptions.ts") }],
       },
       {
         heading: "Hosting and network error reports",
@@ -205,7 +205,7 @@ export const htmlGuides = [
       },
       {
         heading: "People and source code",
-        paragraphs: ["Drowse's public credits identify a9lim and treetown as the team building and maintaining the project, alongside contributors and acknowledgments. The canonical source repository is a9lim/drowse on GitHub. The credits page links the team's public profiles."],
+        paragraphs: ["Drowse's public credits identify a9lim and treetown as the team building and maintaining the project, alongside contributors and acknowledgments. The canonical source repository is stdlogits/drowse on GitHub; this website's source is stdlogits/drowse.ai. The credits page links the team's public profiles."],
         links: [{ label: "Team and credits", href: "/credits" }, { label: "Drowse source repository", href: repository }],
       },
       {
@@ -236,12 +236,12 @@ const developersGuide = {
       paragraphs: ["Open the app and load a compatible model before using the workspace example below. Start with state and action discovery, inspect a tool's schema and availability, then select its task group and discover the registered tools again. Public-page and model-onboarding tools are available before a workspace opens; steering tools require the loaded workspace. Selecting a group does not navigate or change model settings."],
       code: "drowse_get_state({})\ndrowse_list_actions({})\ndrowse_list_actions({action: \"drowse_set_steering\"})\ndrowse_select_tool_group({group: \"steering\"})\ndrowse_list_actions({group: \"steering\"})",
       bullets: ["Use drowse_explain_control to inspect units, applicability, defaults, and interactions before changing a setting.", "Groups cover chat, raw completion, steering, saved chats, appearance, models, artifacts, templates, profiles, conversation trees, analysis, instruments, files, interface controls, and authoring. Read the current group list from drowse_list_actions.", "Use drowse_list_actions with catalogue: true to inspect coverage, unavailable operations, and actions requiring a browser interaction."],
-      links: [{ label: "WebMCP integration guide", href: source("webui/docs/webmcp.md") }, { label: "Tool discovery implementation", href: source("webui/src/lib/webmcp/index.ts") }],
+      links: [{ label: "WebMCP integration guide", href: source("webui/docs/webmcp.md") }, { label: "Tool discovery implementation", href: source("drowse/webui/src/lib/webmcp/index.ts") }],
     },
     {
       heading: "Track operations to completion",
       paragraphs: ["Tools return structured success or error results. Mutation tools accept expected_revision to reject stale edits and request_id to reconcile an uncertain invocation. Reuse a request ID only with identical input. Long operations return a job ID. Read status with drowse_get_job, or request cancellation with drowse_cancel_job.", "Job history may survive a reload in the same tab when browser storage permits. For an interrupted generation, open its original model and call drowse_reconcile_job with the job_id. This checks runtime receipts without repeating generation. It may restore the original system prompt after a comparison, while preserving newer prompt edits. Inspect the returned state and any partial results; reading status alone does not reconcile a job.", "Large-result handles can expire and do not survive reloads. Read their chunks with drowse_read_result before leaving. Preserve existing drafts and act within the user's authorization when sending a contact message or deleting their work."],
-      links: [{ label: "Job and recovery implementation", href: source("webui/src/lib/webmcp/jobs.ts") }, { label: "Revision and result contracts", href: source("webui/docs/webmcp.md#discovery-and-execution") }],
+      links: [{ label: "Job and recovery implementation", href: source("drowse/webui/src/lib/webmcp/jobs.ts") }, { label: "Revision and result contracts", href: source("webui/docs/webmcp.md#discovery-and-execution") }],
     },
     {
       heading: "Understand WebMCP availability",
@@ -251,7 +251,7 @@ const developersGuide = {
     {
       heading: "Use the Python library and local inference APIs",
       paragraphs: ["The Python import and CLI are drowse; the distribution name is drowse.ai. DrowseSession supports programmatic steering and measurement. Running drowse serve starts the dashboard and OpenAI-compatible /v1/*, Ollama-compatible /api/*, and native /drowse/v1/* routes on the configured server.", "Inspect that server's /openapi.json and /docs for its HTTP schema. These are Python-server routes, not hosted-site inference services. Configure authentication and network access for your own installation, and follow the repository's current installation instructions."],
-      links: [{ label: "Python API", href: source("README.md#python-api") }, { label: "Server implementation and OpenAPI configuration", href: source("drowse/server/app.py") }, { label: "Install from source", href: source("README.md#quick-start") }],
+      links: [{ label: "Python API", href: source("README.md#python-api") }, { label: "Server implementation and OpenAPI configuration", href: source("drowse/drowse/server/app.py") }, { label: "Install from source", href: source("README.md#quick-start") }],
     },
   ],
 };

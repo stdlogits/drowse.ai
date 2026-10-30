@@ -1,40 +1,40 @@
 <script lang="ts">
-  import { onConversationLibraryChanged } from "../../lib/stores/savedConversations.svelte";
-  import { registerHomeController } from "../../lib/homeController";
-  import MorphText from "../../lib/ui/MorphText.svelte";
-  import FluentIcon from "../../lib/ui/FluentIcon.svelte";
-  import BaseModelTag from "../../lib/ui/BaseModelTag.svelte";
-  import TabIdentity from "../../lib/ui/TabIdentity.svelte";
-  import "../../lib/style/workspace.css";
+  import { onConversationLibraryChanged } from "../../../../drowse/webui/src/lib/stores/savedConversations.svelte";
+  import { registerHomeController } from "../../../../drowse/webui/src/lib/homeController";
+  import MorphText from "../../../../drowse/webui/src/lib/ui/MorphText.svelte";
+  import FluentIcon from "../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
+  import BaseModelTag from "../../../../drowse/webui/src/lib/ui/BaseModelTag.svelte";
+  import TabIdentity from "../../../../drowse/webui/src/lib/ui/TabIdentity.svelte";
+  import "../../../../drowse/webui/src/lib/style/workspace.css";
   import { Blobatar } from "@blobatar/svelte";
   import { onDestroy, onMount, tick } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
-  import ChatAccentPicker from "../../lib/ui/ChatAccentPicker.svelte";
-  import { chatAccentStyle, type ChatAccent } from "../../lib/chatAccent";
-  import { animatedDetails } from "../../lib/animatedDetails";
+  import ChatAccentPicker from "../../../../drowse/webui/src/lib/ui/ChatAccentPicker.svelte";
+  import { chatAccentStyle, type ChatAccent } from "../../../../drowse/webui/src/lib/chatAccent";
+  import { animatedDetails } from "../../../../drowse/webui/src/lib/animatedDetails";
   import { slide } from "svelte/transition";
   import { flip } from "svelte/animate";
   import { cubicOut } from "svelte/easing";
-  import { collapseIn, collapseOut, motionDuration } from "../../lib/motion";
+  import { collapseIn, collapseOut, motionDuration } from "../../../../drowse/webui/src/lib/motion";
 
-  import { ConversationLibraryError, displayModelName, randomAvatarSeed, summarizeConversation, type SavedConversationIssue, type SavedConversationRecord, type SavedConversationSummary } from "../../lib/conversationLibrary";
-  import { conversationLibrary, flushConversationAutosave, requestPersistentConversationStorage } from "../../lib/stores/savedConversations.svelte";
-  import { downloadAllChatBackups, downloadChatBackup, findImportedChat, readChatBackupFiles, saveChatImport } from "../../lib/chatBackup";
-  import Select from "../../lib/Select.svelte";
-  import PageHeader from "./PageHeader.svelte";
+  import { ConversationLibraryError, displayModelName, randomAvatarSeed, summarizeConversation, type SavedConversationIssue, type SavedConversationRecord, type SavedConversationSummary } from "../../../../drowse/webui/src/lib/conversationLibrary";
+  import { conversationLibrary, flushConversationAutosave, requestPersistentConversationStorage } from "../../../../drowse/webui/src/lib/stores/savedConversations.svelte";
+  import { downloadAllChatBackups, downloadChatBackup, findImportedChat, readChatBackupFiles, saveChatImport } from "../../../../drowse/webui/src/lib/chatBackup";
+  import Select from "../../../../drowse/webui/src/lib/Select.svelte";
+  import PageHeader from "../../../../drowse/webui/src/lib/ui/PageHeader.svelte";
   import PageFooter from "./PageFooter.svelte";
   import SavedChatMenu from "./SavedChatMenu.svelte";
-  import ModelProviderLogo from "./ModelProviderLogo.svelte";
+  import ModelProviderLogo from "../../../../drowse/webui/src/lib/ui/ModelProviderLogo.svelte";
   import ModelDownloadChoices from "./ModelDownloadChoices.svelte";
-  import { userFacingError } from "../../lib/runtime/userFacingError";
+  import { userFacingError } from "../../../../drowse/webui/src/lib/runtime/userFacingError";
   import { reloadInstructions, appRefreshSafetyMessage } from "../runtime/chunkRecovery";
   import { formatEtaRange } from "../../lib/runtime/eta";
   import {
     clearConversationOpen,
     queueConversationOpen,
     readEntryMemory,
-  } from "../runtime/entryExperience";
-  import type { HostedModelOption, HostedShellController, HostedShellSnapshot } from "./types";
+  } from "../../../../drowse/webui/src/lib/entryExperience";
+  import type { HostedModelOption, HostedShellController, HostedShellSnapshot } from "../../../../drowse/webui/src/lib/shell";
 
   let {
     controller,

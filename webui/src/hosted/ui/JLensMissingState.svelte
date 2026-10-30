@@ -1,5 +1,5 @@
 <script lang="ts">
-  import EmptyState from "../../drawers/token/EmptyState.svelte";
+  import EmptyState from "../../../../drowse/webui/src/drawers/token/EmptyState.svelte";
   import InstrumentPackRecovery from "./InstrumentPackRecovery.svelte";
 
   let { modelId: _modelId }: { modelId: string | null } = $props();

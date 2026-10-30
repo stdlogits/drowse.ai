@@ -45,7 +45,7 @@ def main():
     device = args.device or ("mps" if torch.backends.mps.is_available() else "cpu")
     torch.set_num_threads(4)
     repo = Path(__file__).resolve().parents[2]
-    corpus_path = repo / "drowse/data/manifolds/personas/nodes/50_pirate.json"
+    corpus_path = repo / "drowse/drowse/data/manifolds/personas/nodes/50_pirate.json"
     output = args.output or root / "evidence.json"
     evidence = {
         "metadata": {

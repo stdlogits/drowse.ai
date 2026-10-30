@@ -1,4 +1,4 @@
-import { migrateLegacyStorageItem, removeLegacyStorageItem } from "./brandMigration";
+import { migrateLegacyStorageItem, removeLegacyStorageItem } from "../../../../drowse/webui/src/lib/brandMigration";
 
 const OFFLINE_SESSION_KEY = "drowse.hosted.offline";
 let offlineSeen = false;

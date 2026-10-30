@@ -1,5 +1,5 @@
 <script lang="ts">
-  import FluentIcon from "../../../lib/ui/FluentIcon.svelte";
+  import FluentIcon from "../../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
   import SitePage from "./SitePage.svelte";
   import { contributeLinks } from "../../../../scripts/site-content.mjs";
 

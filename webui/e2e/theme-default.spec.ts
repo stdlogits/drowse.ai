@@ -35,7 +35,7 @@ test("the runtime also defaults to dark without the bootstrap or available stora
     Object.defineProperty(window, "localStorage", { configurable: true, get() { throw new Error("Storage unavailable"); } });
     const { initializeTheme } = await import(url);
     return initializeTheme();
-  }, `/@fs${resolve("src/lib/theme.ts")}?bootstrap-test`);
+  }, `/@fs${resolve("../drowse/webui/src/lib/theme.ts")}?bootstrap-test`);
   expect(theme).toBe("dark");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 });

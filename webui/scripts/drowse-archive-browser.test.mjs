@@ -1118,7 +1118,7 @@ function manifoldFixture(options = {}) {
 function runPythonPackBridge(action, fixturePath, homePath, archivePath) {
   const repository = fileURLToPath(new URL("../..", import.meta.url));
   const bridge = fileURLToPath(
-    new URL("../../tests/browser_drowse_archive_bridge.py", import.meta.url),
+    new URL("../../drowse/tests/browser_drowse_archive_bridge.py", import.meta.url),
   );
   const result = spawnSync(
     process.env.PYTHON ?? "python3",

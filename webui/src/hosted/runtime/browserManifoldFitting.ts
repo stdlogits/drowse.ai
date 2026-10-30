@@ -1,8 +1,8 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import baselinePrompts from "../../../../drowse/data/baseline_prompts.json";
-import type { RuntimeProgressEvent, RuntimeServiceRequest } from "../../lib/runtime/contracts";
-import type { ExtractRequest, FitManifoldRequest, GenerateManifoldRequest } from "../../lib/types";
+import baselinePrompts from "../../../../drowse/drowse/data/baseline_prompts.json";
+import type { RuntimeProgressEvent, RuntimeServiceRequest } from "../../../../drowse/webui/src/lib/runtime/contracts";
+import type { ExtractRequest, FitManifoldRequest, GenerateManifoldRequest } from "../../../../drowse/webui/src/lib/types";
 import type {
   ChoiceScore,
   ChoiceScores,
@@ -10,7 +10,7 @@ import type {
   ScoreTemplateResponse,
   TemplateDetail,
   VectorInfo,
-} from "../../lib/types.gen";
+} from "../../../../drowse/webui/src/lib/types.gen";
 import {
   browserFittedCurvedDiscoverPack,
   browserFittedFlatDiscoverPack,

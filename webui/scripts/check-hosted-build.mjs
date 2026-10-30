@@ -56,7 +56,7 @@ const runtimeLock = JSON.parse(await readFile(
   resolve("..", "browser-runtime", "runtime-lock.json"),
   "utf8",
 ));
-const drowseSource = await readFile(resolve("..", "drowse", "__init__.py"), "utf8");
+const drowseSource = await readFile(resolve("..", "drowse", "drowse", "__init__.py"), "utf8");
 const drowseVersion = /__version__\s*=\s*"([^"]+)"/.exec(drowseSource)?.[1];
 assert.ok(drowseVersion, "could not resolve the Drowse source version");
 const fittingManifest = JSON.parse(await readFile(
@@ -132,10 +132,10 @@ assert.ok(
 );
 if (release) {
   assert.match(sourceRevision, /^[0-9a-f]{40}$/);
-  assert.equal(sourceUrl, `https://github.com/a9lim/drowse/tree/${sourceRevision}`);
+  assert.equal(sourceUrl, `https://github.com/stdlogits/drowse.ai/tree/${sourceRevision}`);
 } else {
   assert.equal(sourceRevision, "preview");
-  assert.equal(sourceUrl, "https://github.com/a9lim/drowse");
+  assert.equal(sourceUrl, "https://github.com/stdlogits/drowse.ai");
 }
 assert.equal(builtLicense, sourceLicense, "hosted build has the wrong AGPL license");
 assert.match(serviceWorker, /index\.html/);

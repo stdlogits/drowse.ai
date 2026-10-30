@@ -1,6 +1,7 @@
+import { existsSync } from "node:fs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { backgroundDimensions, backgroundSettings, DEFAULT_BACKGROUND, validateBackgroundFile, BACKGROUND_MAX_BYTES } from "../src/lib/appearance.ts";
+import { backgroundDimensions, backgroundSettings, DEFAULT_BACKGROUND, validateBackgroundFile, BACKGROUND_MAX_BYTES } from "../../drowse/webui/src/lib/appearance.ts";
 
 assert.deepEqual(backgroundSettings({}), DEFAULT_BACKGROUND);
 assert.deepEqual(backgroundSettings({ effect: "invalid", pixelSize: -2, visibility: 9 }), { effect: "dither", pixelSize: 1, visibility: 0.14 });
@@ -12,7 +13,11 @@ assert.deepEqual(backgroundDimensions(100, 4000), { width: 51, height: 2048 });
 for (const type of ["image/jpeg", "image/png", "image/webp"]) validateBackgroundFile({ type, size: BACKGROUND_MAX_BYTES });
 for (const file of [{ type: "image/svg+xml", size: 2 }, { type: "image/png", size: 0 }, { type: "image/jpeg", size: BACKGROUND_MAX_BYTES + 1 }]) assert.throws(() => validateBackgroundFile(file), /Choose /);
 
-const source = async path => readFile(new URL(`../src/${path}`, import.meta.url), "utf8");
+// Hosted sources live here; shared dashboard sources come from the drowse submodule.
+const source = async path => {
+  const local = new URL(`../src/${path}`, import.meta.url);
+  return readFile(existsSync(local) ? local : new URL(`../../drowse/webui/src/${path}`, import.meta.url), "utf8");
+};
 const [density, app, background, store, shader] = await Promise.all([source("lib/style/workspace.css"), source("App.svelte"), source("lib/ui/WorkspaceBackground.svelte"), source("lib/stores/appearance.svelte.ts"), source("lib/backgroundShader.ts")]);
 assert.match(density, /min-width: 761px\) and \(pointer: fine\)/);
 assert.match(density, /--control-target: 40px/);

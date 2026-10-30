@@ -63,7 +63,7 @@ test("stale J-lens is repaired without downloading the model or losing chats", a
   const fitted = await page.evaluate(async url => {
     const { getRuntimeClient } = await import(url);
     return (await getRuntimeClient().sessions.get()).jlens_fitted;
-  }, `/@fs${resolve("src/lib/runtime/registry.ts")}`);
+  }, `/@fs${resolve("../drowse/webui/src/lib/runtime/registry.ts")}`);
   expect(fitted).toBe(true);
 });
 
@@ -86,7 +86,7 @@ test("missing instrument actions use the guarded Models route", async ({ page })
   await page.evaluate(async url => {
     const { genStatus } = await import(url);
     genStatus.active = true;
-  }, `/@fs${resolve("src/lib/stores.svelte.ts")}`);
+  }, `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`);
   page.once("dialog", async dialog => {
     expect(dialog.message()).toContain("Stop the current reply and open Models");
     await dialog.dismiss();
@@ -96,7 +96,7 @@ test("missing instrument actions use the guarded Models route", async ({ page })
   await page.evaluate(async url => {
     const { genStatus } = await import(url);
     genStatus.active = false;
-  }, `/@fs${resolve("src/lib/stores.svelte.ts")}`);
+  }, `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`);
   await recovery.getByRole("button", { name: "Open Models", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Models", exact: true })).toBeVisible();
   expect(new URL(page.url()).searchParams.get("model")).toBe("qwen3-1.7b-fixture");

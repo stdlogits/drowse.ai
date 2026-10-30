@@ -6,13 +6,13 @@ const server = await createServer({ root: fileURLToPath(new URL("..", import.met
   appType: "custom", logLevel: "silent", server: { middlewareMode: true, watch: null } });
 const flush = () => new Promise(resolve => setTimeout(resolve, 1));
 try {
-  const { installRuntimeClient } = await server.ssrLoadModule("/src/lib/runtime/registry.ts");
+  const { installRuntimeClient } = await server.ssrLoadModule("/../drowse/webui/src/lib/runtime/registry.ts");
   const { DeterministicFakeRuntime } = await server.ssrLoadModule("/src/hosted/runtime/fakeRuntime.ts");
   const runtime = new DeterministicFakeRuntime({ response: "fixture answer", tokenDelayMs: 1 });
   installRuntimeClient(runtime);
-  const { enqueueGeneration, createGenerationTools, reconcileGenerationJob } = await server.ssrLoadModule("/src/lib/webmcp/generation.ts");
-  const pending = await server.ssrLoadModule("/src/lib/stores/pending.svelte.ts");
-  const { genStatus } = await server.ssrLoadModule("/src/lib/stores/chat.svelte.ts");
+  const { enqueueGeneration, createGenerationTools, reconcileGenerationJob } = await server.ssrLoadModule("/../drowse/webui/src/lib/webmcp/generation.ts");
+  const pending = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/pending.svelte.ts");
+  const { genStatus } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/chat.svelte.ts");
   const calls = [];
   const first = new AbortController();
   const second = new AbortController();
@@ -52,11 +52,11 @@ try {
   pending.cancelPendingAction("cancel-in-ui");
   await rejected;
   genStatus.active = false;
-  const { JobRegistry } = await server.ssrLoadModule("/src/lib/webmcp/jobs.ts");
-  const { validateInput } = await server.ssrLoadModule("/src/lib/webmcp/validation.ts");
-  const { sessionState } = await server.ssrLoadModule("/src/lib/stores/session.svelte.ts");
-  const { applyTreeSnapshot, loomTree } = await server.ssrLoadModule("/src/lib/stores/loom.svelte.ts");
-  const { disconnectRuntimeChannel } = await server.ssrLoadModule("/src/lib/stores/ws.svelte.ts");
+  const { JobRegistry } = await server.ssrLoadModule("/../drowse/webui/src/lib/webmcp/jobs.ts");
+  const { validateInput } = await server.ssrLoadModule("/../drowse/webui/src/lib/webmcp/validation.ts");
+  const { sessionState } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/session.svelte.ts");
+  const { applyTreeSnapshot, loomTree } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/loom.svelte.ts");
+  const { disconnectRuntimeChannel } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/ws.svelte.ts");
   sessionState.info = await runtime.sessions.get();
   applyTreeSnapshot(await runtime.tree.get());
   const jobs = new JobRegistry();

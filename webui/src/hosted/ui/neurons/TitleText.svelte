@@ -1,5 +1,5 @@
 <script lang="ts">
-  import MorphText from "../../../lib/ui/MorphText.svelte";
+  import MorphText from "../../../../../drowse/webui/src/lib/ui/MorphText.svelte";
   import { hasChinese } from "./data";
   import { gloss, shortGloss } from "./gloss.svelte";
 

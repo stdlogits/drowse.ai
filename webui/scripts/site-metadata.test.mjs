@@ -51,15 +51,15 @@ test("SEO and social metadata use the requested description and Drowse lavender"
   assert.ok(siteDescription.length <= 160, "search snippets truncate longer descriptions");
   assert.doesNotMatch(siteDescription, /an LLMs|fully[^.]*fully/);
   assert.equal(siteAccent, "#c5b3ff");
-  assert.ok((await readFile("index.html", "utf8")).includes(`name="description" content="${siteDescription}"`), "the Python dashboard's index.html must use the shared description");
+  assert.ok((await readFile("../drowse/webui/index.html", "utf8")).includes(`name="description" content="${siteDescription}"`), "the Python dashboard's index.html must use the shared description");
   assert.ok((await readFile("hosted/index.html", "utf8")).includes('content="__DROWSE_HOSTED_DESCRIPTION__"'));
-  assert.ok((await readFile("src/lib/style/tokens.css", "utf8")).includes(`--accent: ${siteAccent};`));
+  assert.ok((await readFile("../drowse/webui/src/lib/style/tokens.css", "utf8")).includes(`--accent: ${siteAccent};`));
   assert.ok(socialImagePath.startsWith("/social/drowse.jpg?v=shader-orb"));
   assert.equal(socialImageType, "image/jpeg");
   assert.match(socialImageAlt, /shader orb/);
   // The SVG source of the artwork ships only with the dashboard; the hosted site publishes rasters.
   await assert.rejects(readFile("public-hosted/social/drowse.svg"), { code: "ENOENT" });
-  for (const root of ["public"]) {
+  for (const root of ["../drowse/webui/public"]) {
     const artwork = await readFile(`${root}/social/drowse.svg`, "utf8");
     assert.deepEqual([...artwork.matchAll(/<text\b[^>]*>([^<]*)<\/text>/g)].map(match => match[1]), ["Drowse", "Interpretability Workbench"]);
     assert.match(artwork, /fill="#ffffff">Drowse<\/text>/);
@@ -67,7 +67,7 @@ test("SEO and social metadata use the requested description and Drowse lavender"
     assert.ok(artwork.includes('<image href="data:image/png;base64,'));
     assert.ok(artwork.includes("data:font/woff2;base64,"));
   }
-  assert.deepEqual(await readFile("public/social/drowse.png"), await readFile("public-hosted/social/drowse.png"));
+  assert.deepEqual(await readFile("../drowse/webui/public/social/drowse.png"), await readFile("public-hosted/social/drowse.png"));
 });
 
 test("social preview and icon assets have the declared PNG dimensions", async () => {
@@ -76,7 +76,7 @@ test("social preview and icon assets have the declared PNG dimensions", async ()
     assert.equal(bytes.subarray(1, 4).toString(), "PNG");
     return [bytes.readUInt32BE(16), bytes.readUInt32BE(20)];
   };
-  for (const root of ["public", "public-hosted"]) {
+  for (const root of ["../drowse/webui/public", "public-hosted"]) {
     assert.deepEqual(await dimensions(`${root}/social/drowse.png`), [1200, 630]);
     assert.deepEqual(await dimensions(`${root}/icons/tab-home.png`), [96, 96]);
     assert.deepEqual(await dimensions(`${root}/icons/apple-touch-icon.png`), [180, 180]);

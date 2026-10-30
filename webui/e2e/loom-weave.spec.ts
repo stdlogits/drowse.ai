@@ -2,7 +2,7 @@ import { setAppearance } from "./workbench-navigation";
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 
-const storesUrl = `/@fs/${resolve("src/lib/stores.svelte.ts")}`;
+const storesUrl = `/@fs/${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
 
 test("Loom header glow follows the mouse without moving content and respects reduced motion", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "no-preference" });

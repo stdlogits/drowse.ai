@@ -1,7 +1,9 @@
+import { existsSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
 
-const moduleUrl = (path: string) => `/@fs${resolve(`src/${path}`)}`;
+// Hosted modules live here; shared dashboard modules come from the drowse submodule.
+const moduleUrl = (path: string) => `/@fs${existsSync(resolve(`src/${path}`)) ? resolve(`src/${path}`) : resolve(`../drowse/webui/src/${path}`)}`;
 async function theme(page: Page, value: string) {
   await page.evaluate(async ({ url, value }) => (await import(url)).setTheme(value), { url: moduleUrl("lib/theme.ts"), value });
   await expect(page.locator("html")).toHaveAttribute("data-theme", value);

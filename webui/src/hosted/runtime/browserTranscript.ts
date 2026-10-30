@@ -4,7 +4,7 @@ import type {
   LoomTreeJSON,
   RecipeJSON,
   SessionInfo,
-} from "../../lib/types";
+} from "../../../../drowse/webui/src/lib/types";
 
 const TRANSCRIPT_VERSION = 2;
 const MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024;

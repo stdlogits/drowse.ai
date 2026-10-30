@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { flip } from "svelte/animate";
-  import { motionDuration } from "../../lib/motion";
-  import MorphText from "../../lib/ui/MorphText.svelte";
-  import { tokenProbabilityRows, visibleTokenText } from "../../lib/tokenProbabilities";
-  import { probabilityScore, scoreToRgb as highlightColor, surpriseScore } from "../../lib/tokens";
-  import type { TokenScore } from "../../lib/types";
+  import { motionDuration } from "../../../../drowse/webui/src/lib/motion";
+  import MorphText from "../../../../drowse/webui/src/lib/ui/MorphText.svelte";
+  import { tokenProbabilityRows, visibleTokenText } from "../../../../drowse/webui/src/lib/tokenProbabilities";
+  import { probabilityScore, scoreToRgb as highlightColor, surpriseScore } from "../../../../drowse/webui/src/lib/tokens";
+  import type { TokenScore } from "../../../../drowse/webui/src/lib/types";
 
   let { tokens, highlights = true, layout = "message", coloring = "surprisal" }: {
     tokens: TokenScore[];

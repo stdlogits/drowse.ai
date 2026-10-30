@@ -365,7 +365,7 @@ const localWebLlmManifest = {
 const localWebLlmLock = {
   packages: {
     "node_modules/@drowse/web-llm": {
-      resolved: "file:../browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.3.tgz",
+      resolved: "file:browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.3.tgz",
     },
   },
 };
@@ -432,7 +432,7 @@ assert.throws(
     localWebLlmManifest,
     {
       packages: {
-        "node_modules/@drowse/web-llm": { resolved: "file:../browser-runtime/vendor/other.tgz" },
+        "node_modules/@drowse/web-llm": { resolved: "file:browser-runtime/vendor/other.tgz" },
       },
     },
     { commit: null },

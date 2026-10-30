@@ -9,7 +9,7 @@ const server = await createServer({
   server: { middlewareMode: true, watch: null },
 });
 try {
-  const { completionAnchor } = await server.ssrLoadModule("/src/lib/completionSelection.ts");
+  const { completionAnchor } = await server.ssrLoadModule("/../drowse/webui/src/lib/completionSelection.ts");
   const turns = [{ nodeId: "prompt", text: "Once " }, { nodeId: "reply", text: "upon a moon." }];
   assert.deepEqual(completionAnchor([], "root", 0), { parentNodeId: "root" });
   assert.deepEqual(completionAnchor(turns, "root", 0), { parentNodeId: "root" });
@@ -20,7 +20,7 @@ try {
   assert.deepEqual(completionAnchor([{ nodeId: "unicode", text: "A 🌙 moon" }], "root", 4), { parentNodeId: "root", branch: { nodeId: "unicode", text: "A 🌙" } });
   assert.throws(() => completionAnchor([{ text: "draft" }], "root", 1), /not saved/);
   const { render } = await server.ssrLoadModule("svelte/server");
-  const { completionTokenViews, projectEditedTokens } = await server.ssrLoadModule("/src/lib/rawTokenInspection.ts");
+  const { completionTokenViews, projectEditedTokens } = await server.ssrLoadModule("/../drowse/webui/src/lib/rawTokenInspection.ts");
   const capturedTokens = ["I ", "love ", "marmots", "."].map((text, tokenId) => ({ text, tokenId, logprob: -tokenId - 0.1 }));
   const originalViews = completionTokenViews([
     { role: "user", generated: false, text: "Prompt: ", nodeId: "prompt" },
@@ -55,7 +55,7 @@ try {
   }
   const emojiViews = projectEditedTokens([], "😀");
   assert.equal(projectEditedTokens(emojiViews, "😁")[0].text, "😁");
-  const { tokenProbabilityRows } = await server.ssrLoadModule("/src/lib/tokenProbabilities.ts");
+  const { tokenProbabilityRows } = await server.ssrLoadModule("/../drowse/webui/src/lib/tokenProbabilities.ts");
   const candidateRows = tokenProbabilityRows({ text: " mean", tokenId: 6, logprob: Math.log(0.001), topAlts: [
     { id: 1, text: " love", logprob: Math.log(0.451) },
     { id: 2, text: " wear", logprob: Math.log(0.047) },
@@ -65,10 +65,10 @@ try {
   assert.equal(tokenProbabilityRows({ text: " mean", tokenId: 6, logprob: -1, topAlts: [{ id: 6, text: " mean", logprob: -1 }] }).length, 1);
   assert.deepEqual(tokenProbabilityRows({ text: "unknown" }), []);
   console.log("Token inspection: draft provenance, unchanged scores, changed-context labels, Unicode, and chosen-token probabilities passed");
-  const { default: BaseModelTag } = await server.ssrLoadModule("/src/lib/ui/BaseModelTag.svelte");
+  const { default: BaseModelTag } = await server.ssrLoadModule("/../drowse/webui/src/lib/ui/BaseModelTag.svelte");
   assert.match(render(BaseModelTag, { props: { plain: true } }).body, /class="[^"]*plain/);
   assert.doesNotMatch(render(BaseModelTag).body, /class="[^"]*plain/);
-  const tagSource = await readFile(new URL("../src/lib/ui/BaseModelTag.svelte", import.meta.url), "utf8");
+  const tagSource = await readFile(new URL("../../drowse/webui/src/lib/ui/BaseModelTag.svelte", import.meta.url), "utf8");
   assert.match(tagSource, /\.base-tag\.plain\s*\{[^}]*padding: 0;[^}]*background: none;/);
   const pickerSource = await readFile(new URL("../src/hosted/ui/HostedApp.svelte", import.meta.url), "utf8");
   assert.match(pickerSource, /<strong><span id=\{`model-name-\$\{model.id\}`\}>\{model.name\}<\/span>\{#if model.modelType === "base"\}<BaseModelTag plain \/>/);
@@ -78,9 +78,9 @@ try {
   assert.match(pickerSource, /modelsBySize\(snapshot.models.filter\(\(model\) => model.modelType === "base"\)\)/);
   assert.match(pickerSource, /\.check-mark\s*\{[^}]*margin-top: var\(--space-xs\);/,
     "checkmarks share the heading's top inset instead of sitting above it");
-  const { installRuntimeClient } = await server.ssrLoadModule("/src/lib/runtime/registry.ts");
+  const { installRuntimeClient } = await server.ssrLoadModule("/../drowse/webui/src/lib/runtime/registry.ts");
   installRuntimeClient({ mode: "browser" });
-  const { default: TokenLogitsPopover } = await server.ssrLoadModule("/src/lib/ui/TokenLogitsPopover.svelte");
+  const { default: TokenLogitsPopover } = await server.ssrLoadModule("/../drowse/webui/src/lib/ui/TokenLogitsPopover.svelte");
   const probabilityTable = render(TokenLogitsPopover, { props: {
     token: { text: " mean", tokenId: 6, logprob: Math.log(0.001), topAlts: [
       { id: 1, text: " love", logprob: Math.log(0.451) },
@@ -97,9 +97,9 @@ try {
   assert.match(probabilityTable, /Recorded before your edit/);
   assert.match(probabilityTable, /not raw logits/);
   assert.match(probabilityTable, /this token/);
-  const { sessionState } = await server.ssrLoadModule("/src/lib/stores/session.svelte.ts");
+  const { sessionState } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/session.svelte.ts");
   const { genUiMode, effectiveRawMode, loadGenUiMode, setGenUiMode } =
-    await server.ssrLoadModule("/src/lib/stores/chat.svelte.ts");
+    await server.ssrLoadModule("/../drowse/webui/src/lib/stores/chat.svelte.ts");
   sessionState.info = { model_id: "fixture/base", is_base_model: true };
   genUiMode.mode = "chat";
   assert.equal(effectiveRawMode(), true, "stale chat state cannot override a base model");
@@ -114,9 +114,9 @@ try {
   assert.equal(effectiveRawMode(), true, "instruct models retain optional raw mode");
   console.log("Base mode enforcement and instruct-mode compatibility passed");
 
-  const { chatLog, genStatus } = await server.ssrLoadModule("/src/lib/stores/chat.svelte.ts");
-  const { default: RawBuffer } = await server.ssrLoadModule("/src/panels/RawBuffer.svelte");
-  const { default: StatusFooter } = await server.ssrLoadModule("/src/panels/StatusFooter.svelte");
+  const { chatLog, genStatus } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/chat.svelte.ts");
+  const { default: RawBuffer } = await server.ssrLoadModule("/../drowse/webui/src/panels/RawBuffer.svelte");
+  const { default: StatusFooter } = await server.ssrLoadModule("/../drowse/webui/src/panels/StatusFooter.svelte");
   sessionState.info = { model_id: "fixture/base", is_base_model: true };
   chatLog.turns = [{ role: "assistant", text: "I love marmots because", generated: true,
     tokens: [{ text: "I", logprob: -0.2 }] }];
@@ -135,7 +135,7 @@ try {
   const plain = html => textContent(parse(html, { modern: true }).fragment).replace(/\s+/g, " ").trim();
   const stopped = plain(render(StatusFooter).body);
   assert.match(render(StatusFooter).body, /morph-source/, "current text exists independently of animation");
-  const statusSource = await readFile(new URL("../src/panels/StatusFooter.svelte", import.meta.url), "utf8");
+  const statusSource = await readFile(new URL("../../drowse/webui/src/panels/StatusFooter.svelte", import.meta.url), "utf8");
   assert.match(statusSource, /MorphText/, "status slots share the accessible motion renderer");
   genStatus.tokensSoFar = 24;
   genStatus.tokPerSec = 7.34;
@@ -160,10 +160,10 @@ try {
   assert.doesNotMatch(render(RawBuffer).body, /Edit saved/, "zero-token model output is not an authored save");
   console.log("Base completion rendering: streaming lock, inspection guard, visible label, finish reasons, and save status passed");
 
-  const { highlightState } = await server.ssrLoadModule("/src/lib/stores/probes.svelte.ts");
-  const { tokenRowToScore } = await server.ssrLoadModule("/src/lib/stores/loom.svelte.ts");
-  const { highlightStyleString } = await server.ssrLoadModule("/src/lib/highlight.ts");
-  const { SURPRISE_TARGET, ENTROPY_TARGET } = await server.ssrLoadModule("/src/lib/tokens.ts");
+  const { highlightState } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/probes.svelte.ts");
+  const { tokenRowToScore } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/loom.svelte.ts");
+  const { highlightStyleString } = await server.ssrLoadModule("/../drowse/webui/src/lib/highlight.ts");
+  const { SURPRISE_TARGET, ENTROPY_TARGET } = await server.ssrLoadModule("/../drowse/webui/src/lib/tokens.ts");
   const measured = [
     { text: " likely", logprob: -0.1, sampler_entropy: 0.2 },
     { text: " unusual", logprob: -3, sampler_entropy: 1.4 },
@@ -216,7 +216,7 @@ try {
   assert.doesNotMatch(render(RawBuffer).body, /class="color-mirror |class="color-notice /, "No color removes the mirror and notices");
   highlightState.compareTarget = null;
   highlightState.smoothBlend = false;
-  const { default: Chat } = await server.ssrLoadModule("/src/panels/Chat.svelte");
+  const { default: Chat } = await server.ssrLoadModule("/../drowse/webui/src/panels/Chat.svelte");
   assert.doesNotMatch(render(Chat, { props: { headersVisible: false } }).body, /aria-label="Active model"/);
   sessionState.info = { model_id: "fixture/instruct", is_base_model: false };
   setGenUiMode("chat");
@@ -224,8 +224,8 @@ try {
   sessionState.info = { model_id: "fixture/base", is_base_model: true };
   console.log("Base token colors: edit and live mirrors, surprise, entropy, compare, zero/missing readings, text alignment, and model identity passed");
 
-  const { default: SteeringRack } = await server.ssrLoadModule("/src/panels/SteeringRack.svelte");
-  const { default: ProbeRack } = await server.ssrLoadModule("/src/panels/ProbeRack.svelte");
+  const { default: SteeringRack } = await server.ssrLoadModule("/../drowse/webui/src/panels/SteeringRack.svelte");
+  const { default: ProbeRack } = await server.ssrLoadModule("/../drowse/webui/src/panels/ProbeRack.svelte");
   const { default: JLensMissingState } = await server.ssrLoadModule("/src/hosted/ui/JLensMissingState.svelte");
   const { default: JLensSourceSection } = await server.ssrLoadModule("/src/hosted/ui/JLensSourceSection.svelte");
   assert.match(render(SteeringRack, { props: { family: "subspace" } }).body, /Add a direction to steer the next completion/);
@@ -317,7 +317,7 @@ try {
   assert.doesNotMatch(landingSource, /capabilities as capability, index|0\{index \+ 1\}/,
     "feature headings do not have decorative mono labels above them");
 
-  const { default: ModelProviderLogo } = await server.ssrLoadModule("/src/hosted/ui/ModelProviderLogo.svelte");
+  const { default: ModelProviderLogo } = await server.ssrLoadModule("/../drowse/webui/src/lib/ui/ModelProviderLogo.svelte");
   for (const [modelId, provider] of [
     ["gemma3-1b-pt-q4f32_1", "gemma"], ["google/gemma-3-1b-pt", "gemma"],
     ["qwen35-2b-base-q4f32_1", "qwen"], ["Qwen/Qwen3-1.7B", "qwen"],
@@ -330,7 +330,7 @@ try {
     assert.doesNotMatch(logo, /https?:\/\//, "provider images are bundled, not remotely loaded");
   }
   assert.doesNotMatch(render(ModelProviderLogo, { props: { modelId: "unrecognized/model" } }).body, /data-provider/);
-  const logoSource = await readFile(new URL("../src/hosted/ui/ModelProviderLogo.svelte", import.meta.url), "utf8");
+  const logoSource = await readFile(new URL("../../drowse/webui/src/lib/ui/ModelProviderLogo.svelte", import.meta.url), "utf8");
   assert.match(logoSource, /\[data-provider="eleutherai"\] \.raster-mark \{ mask-mode: luminance;/,
     "the white-on-black EleutherAI asset must not become a solid alpha-mask square");
   const setupSource = await readFile(new URL("../src/hosted/ui/HostedApp.svelte", import.meta.url), "utf8");

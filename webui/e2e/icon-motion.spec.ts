@@ -21,7 +21,7 @@ test("favicon animation maintains a smooth cadence without the app renderer", as
     observer.disconnect();
     controller.dispose();
     return { updates, unique: hrefs.size };
-  }, `/@fs${resolve("src/lib/tabIdentity.ts")}`);
+  }, `/@fs${resolve("../drowse/webui/src/lib/tabIdentity.ts")}`);
   expect(result.updates).toBeGreaterThan(36);
   expect(result.unique).toBeGreaterThan(18);
 });

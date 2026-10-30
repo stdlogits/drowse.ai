@@ -36,7 +36,7 @@ try {
 async function observeSerialization(drowseHome) {
   await runNode("webui/scripts/drowse-archive-browser.test.mjs");
   await runNode("webui/scripts/browser-core-pack.test.mjs");
-  await runPython(["-m", "pytest", "-q", "tests/test_drowse_archive.py"], drowseHome);
+  await runPython(["-m", "pytest", "-q", "drowse/tests/test_drowse_archive.py"], drowseHome);
   return {
     manifoldV10RoundTripPassed: true,
     safetensorsRoundTripPassed: true,
@@ -63,17 +63,17 @@ async function observeSharedGoldens(drowseHome) {
     "-m",
     "pytest",
     "-q",
-    "tests/test_browser_steering_fixture.py",
-    "tests/test_browser_loom_transcript_fixture.py",
-    "tests/test_browser_measurements_fixture.py",
-    "tests/test_browser_structured_program_fixture.py",
-    "tests/test_browser_sampling_fixture.py",
-    "tests/test_browser_topology_rbf_fixture.py",
-    "tests/test_drowse_archive.py",
-    "tests/test_loom_diff.py",
-    "tests/test_measurements_envelope.py",
-    "tests/test_manifold_math.py",
-    "tests/test_manifold_topology.py",
+    "drowse/tests/test_browser_steering_fixture.py",
+    "drowse/tests/test_browser_loom_transcript_fixture.py",
+    "drowse/tests/test_browser_measurements_fixture.py",
+    "drowse/tests/test_browser_structured_program_fixture.py",
+    "drowse/tests/test_browser_sampling_fixture.py",
+    "drowse/tests/test_browser_topology_rbf_fixture.py",
+    "drowse/tests/test_drowse_archive.py",
+    "drowse/tests/test_loom_diff.py",
+    "drowse/tests/test_measurements_envelope.py",
+    "drowse/tests/test_manifold_math.py",
+    "drowse/tests/test_manifold_topology.py",
   ], drowseHome);
   const fitting = JSON.parse(await runNode(
     "webui/scripts/fitting-wasm-browser.test.mjs",

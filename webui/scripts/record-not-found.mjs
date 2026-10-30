@@ -39,7 +39,7 @@ const identity = {
   modelLibrarySha256: artifactHash("model_library"), runtimeAbi: manifest.runtimeAbi, hookAbi: manifest.hookAbi,
   hiddenSize: manifest.hiddenSize, layerMap: manifest.layerMap,
 };
-const webllmPath = resolve(root, "node_modules/@drowse/web-llm/lib/index.js");
+const webllmPath = resolve(root, "../node_modules/@drowse/web-llm/lib/index.js");
 const webllmSha256 = createHash("sha256").update(await readFile(webllmPath)).digest("hex");
 const vite = await createViteServer({ root, configFile: false, appType: "custom", logLevel: "error", server: { middlewareMode: true, hmr: false, watch: null } });
 const server = createServer(async (request, response) => {

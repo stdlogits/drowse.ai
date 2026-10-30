@@ -9,7 +9,7 @@ import type {
   RuntimeIdentity,
   ModelVariant,
   VerifiedCatalog,
-} from "./contracts";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import {

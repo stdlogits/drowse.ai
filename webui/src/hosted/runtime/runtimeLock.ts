@@ -2,7 +2,7 @@ import runtimeLock from "../../../../browser-runtime/runtime-lock.json";
 import type {
   ModelThinkingProfile,
   StructuredHookProfileId,
-} from "../../lib/runtime/contracts";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
 
 export type BrowserRuntimeReleaseStatus = "feasibility-required" | "verified";
 

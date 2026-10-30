@@ -19,7 +19,7 @@ try {
     SteeringExpressionError,
   } = await server.ssrLoadModule("/src/hosted/runtime/steeringExpression.ts");
   const sharedFixture = JSON.parse(await readFile(
-    new URL("../../tests/fixtures/browser_steering_expression.json", import.meta.url),
+    new URL("../../drowse/tests/fixtures/browser_steering_expression.json", import.meta.url),
     "utf8",
   ));
   assert.equal(sharedFixture.schemaVersion, 1);

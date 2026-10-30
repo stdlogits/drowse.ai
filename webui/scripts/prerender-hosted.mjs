@@ -84,7 +84,7 @@ export function prerender(key, props) { return render(components[key], { props }
         },
       },
       svelte({
-        configFile: fileURLToPath(new URL("../svelte.config.js", import.meta.url)),
+        configFile: fileURLToPath(new URL("../../drowse/webui/svelte.config.js", import.meta.url)),
         emitCss: false,
         compilerOptions: { dev: false, hmr: false },
       }),

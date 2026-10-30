@@ -1,4 +1,4 @@
-import { migrateLegacyDatabase } from "../runtime/brandMigration";
+import { migrateLegacyDatabase } from "../../../../drowse/webui/src/lib/brandMigration";
 
 const DATABASE_NAME = "drowse-hosted-authoring";
 const DATABASE_VERSION = 1;

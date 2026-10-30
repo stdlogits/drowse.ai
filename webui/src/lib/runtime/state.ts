@@ -2,7 +2,7 @@ import type {
   RuntimeFailure,
   RuntimeOperationState,
   RuntimeSnapshot,
-} from "./contracts";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
 
 export function idleOperation(): RuntimeOperationState {
   return {

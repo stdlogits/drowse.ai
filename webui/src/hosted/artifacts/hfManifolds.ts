@@ -1,6 +1,6 @@
-import type { RemoteManifoldInfo } from "../../lib/types";
+import type { RemoteManifoldInfo } from "../../../../drowse/webui/src/lib/types";
 import { DROWSE_ARCHIVE_MAX_TOTAL_BYTES } from "./types";
-import { drowseStorageRoot } from "../runtime/brandMigration";
+import { drowseStorageRoot } from "../../../../drowse/webui/src/lib/brandMigration";
 import { randomUuid } from "../runtime/randomId";
 
 const HF_ORIGIN = "https://huggingface.co";

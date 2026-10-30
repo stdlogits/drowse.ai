@@ -1,4 +1,4 @@
-import type { LoomNodeJSON, LoomTokenRowJSON } from "../../lib/types";
+import type { LoomNodeJSON, LoomTokenRowJSON } from "../../../../drowse/webui/src/lib/types";
 
 type AggregateOperator = "agg" | "any" | "last";
 type ComparisonOperator = ">" | ">=" | "<" | "<=";

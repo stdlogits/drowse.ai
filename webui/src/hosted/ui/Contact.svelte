@@ -1,11 +1,11 @@
 <script lang="ts">
-  import PageHeader from "./PageHeader.svelte";
+  import PageHeader from "../../../../drowse/webui/src/lib/ui/PageHeader.svelte";
   import PageFooter from "./PageFooter.svelte";
-  import TabIdentity from "../../lib/ui/TabIdentity.svelte";
-  import ContactForm from "../../lib/ui/ContactForm.svelte";
+  import TabIdentity from "../../../../drowse/webui/src/lib/ui/TabIdentity.svelte";
+  import ContactForm from "../../../../drowse/webui/src/lib/ui/ContactForm.svelte";
   import PwaUpdatePrompt from "./PwaUpdatePrompt.svelte";
-  import { CONTACT_ADDRESS, CONTACT_REASONS, contactTopics } from "../../lib/contact";
-  import { contactDrafts } from "../../lib/stores/contact.svelte";
+  import { CONTACT_ADDRESS, CONTACT_REASONS, contactTopics } from "../../../../drowse/webui/src/lib/contact";
+  import { contactDrafts } from "../../../../drowse/webui/src/lib/stores/contact.svelte";
   import { onMount } from "svelte";
 
   // Links such as /contact?reason=teaching preselect a reason, unless a draft is already in progress.

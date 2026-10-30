@@ -1,22 +1,27 @@
 # Hosted Drowse shell
 
-This Vite root is isolated from the dashboard bundled by `drowse serve`.
+This Vite root wraps the dashboard source from the `drowse` submodule
+(`../drowse/webui/src`) with the browser runtime. Dependencies install once at
+the repository root (an npm workspace), so the submodule's shared files resolve
+them too.
 
 ```bash
-npm ci
+git submodule update --init   # once, after cloning
+npm ci                        # from the repository root
+cd webui
 npm run check:hosted
 npm run test:hosted
 npm run preview:hosted
 ```
 
-Cloudflare Pages preview projects use `webui/` as the project root, `npm ci &&
-npm run build:hosted` as the build command, and `dist-hosted` as the output
-directory. The root `wrangler.jsonc` carries the equivalent static Pages
-configuration.
+Cloudflare Pages preview projects use the repository root as the project
+root (with submodules), `npm ci && npm run build:hosted -w webui` as the build
+command, and `webui/dist-hosted` as the output directory. `webui/wrangler.jsonc`
+carries the equivalent static Pages configuration.
 
 `public-hosted/_headers` deliberately sends `X-Robots-Tag: noindex, nofollow`
 while the hosted runtime remains an access-controlled feasibility preview.
-The production project must use `npm ci && npm run build:hosted:release`. That
+The production project must use `npm ci && npm run build:hosted:release -w webui`. That
 command fails unless the runtime, distribution, and model backend are verified,
 then removes the preview-only noindex policy from the generated output. Source
 preview files remain fail-closed.

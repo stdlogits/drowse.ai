@@ -77,10 +77,10 @@ class FakeTransportWorker {
 }
 
 try {
-  const contracts = await server.ssrLoadModule("/src/lib/runtime/contracts.ts");
-  const { ApiError } = await server.ssrLoadModule("/src/lib/runtime/errors.ts");
+  const contracts = await server.ssrLoadModule("/../drowse/webui/src/lib/runtime/contracts.ts");
+  const { ApiError } = await server.ssrLoadModule("/../drowse/webui/src/lib/runtime/errors.ts");
   const { isFittingCancellation } = await server.ssrLoadModule(
-    "/src/lib/runtime/fittingCancellation.ts",
+    "/../drowse/webui/src/lib/runtime/fittingCancellation.ts",
   );
   const catalogModule = await server.ssrLoadModule("/src/lib/runtime/catalog.ts");
   const workerModule = await server.ssrLoadModule("/src/hosted/runtime/worker.ts");
@@ -161,8 +161,8 @@ try {
 
   test("hosted authoring forms expose one typed fitting cancel action without changing HTTP mode", async () => {
     const [templated, templateLab] = await Promise.all([
-      readFile("src/drawers/manifold/TemplatedForm.svelte", "utf8"),
-      readFile("src/drawers/TemplateLabDrawer.svelte", "utf8"),
+      readFile("../drowse/webui/src/drawers/manifold/TemplatedForm.svelte", "utf8"),
+      readFile("../drowse/webui/src/drawers/TemplateLabDrawer.svelte", "utf8"),
     ]);
     for (const source of [templated, templateLab]) {
       assert.match(source, /getHostedController\(\)/);

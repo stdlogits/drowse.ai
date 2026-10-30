@@ -151,12 +151,12 @@ expectFailure(
 const previewHtml = `
   <meta name="drowse-release-channel" content="preview">
   <meta name="drowse-source-revision" content="preview">
-  <meta name="drowse-source-url" content="https://github.com/a9lim/drowse">`;
+  <meta name="drowse-source-url" content="https://github.com/stdlogits/drowse.ai">`;
 assert.doesNotThrow(() => assertChannelHtml(previewHtml, "preview"));
 const releaseHtml = `
   <meta name="drowse-release-channel" content="release">
   <meta name="drowse-source-revision" content="${revision}">
-  <meta name="drowse-source-url" content="https://github.com/a9lim/drowse/tree/${revision}">`;
+  <meta name="drowse-source-url" content="https://github.com/stdlogits/drowse.ai/tree/${revision}">`;
 assert.doesNotThrow(() => assertChannelHtml(releaseHtml, "release"));
 assert.doesNotThrow(() => assertChannelHtml(releaseHtml, "candidate"));
 assert.throws(() => assertChannelHtml(releaseHtml.replace(`/tree/${revision}`, ""), "release"));

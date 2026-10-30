@@ -1,7 +1,7 @@
 import type {
   RuntimeProgressEvent,
   RuntimeServiceRequest,
-} from "../../lib/runtime/contracts";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
 import type {
   InstrumentFamilyBlock,
   ProbeRequest,
@@ -9,7 +9,7 @@ import type {
   WSGenerateRequest,
   WSServerMessage,
   WSSubmitRequest,
-} from "../../lib/types";
+} from "../../../../drowse/webui/src/lib/types";
 import { BrowserLoomRuntime, type BrowserGenerationPort } from "./browserLoom";
 import type {
   BrowserGenerationPerformance,
@@ -26,7 +26,7 @@ import type { WebLlmCaptureRuntimePort } from "./webLlmActivationCapture";
 import type { BrowserInstrumentRuntime } from "./browserInstrumentRuntime";
 import type { WebLlmRuntimeCapabilities } from "./webLlmGeneration";
 import type { WebLlmThinkingProfile } from "./webLlmGeneration";
-import { defaultOutputTokenCount, outputTokenLimitForRuntime } from "../../lib/runtime/outputTokenPolicy";
+import { defaultOutputTokenCount, outputTokenLimitForRuntime } from "../../../../drowse/webui/src/lib/runtime/outputTokenPolicy";
 
 interface DrowseWebLlmRuntimePort extends BrowserGenerationPort, WebLlmCaptureRuntimePort {
   load(request: BrowserModelLoadRequest): Promise<BrowserModelLoadResult>;

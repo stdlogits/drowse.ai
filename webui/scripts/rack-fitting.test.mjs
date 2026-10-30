@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import ts from "typescript";
 
-const source = await readFile("src/drawers/RackDrawer.svelte", "utf8");
+const source = await readFile("../drowse/webui/src/drawers/RackDrawer.svelte", "utf8");
 const fit = source.slice(source.indexOf("  function onFit("), source.indexOf("  function onDeleteClick("));
 const inspect = source.slice(source.indexOf("  async function toggleInspect("), source.indexOf("</script>"));
 const { outputText } = ts.transpileModule(`${fit}\n${inspect}\nreturn { onFit, toggleInspect };`, {

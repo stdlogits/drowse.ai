@@ -1,13 +1,13 @@
 import type {
   RuntimeProgressEvent,
   RuntimeServiceRequest,
-} from "../../lib/runtime/contracts";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
 import type {
   SessionInfo,
   WSGenerateRequest,
   WSServerMessage,
   WSSubmitRequest,
-} from "../../lib/types";
+} from "../../../../drowse/webui/src/lib/types";
 import { DeterministicFakeRuntime } from "./fakeRuntime";
 import type {
   BrowserModelBackend,

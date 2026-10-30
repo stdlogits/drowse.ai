@@ -11,7 +11,7 @@ test("info, warning, and error notifications stack at the bottom right", async (
     for (const kind of ["info", "warning", "error"]) {
       pushToast(`${kind} notification`, { kind, ttlMs: null });
     }
-  }, `/@fs/${resolve("src/lib/stores.svelte.ts")}`);
+  }, `/@fs/${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`);
   await expect(page.locator(".toast")).toHaveCount(3);
   for (const viewport of [{ width: 320, height: 568 }, { width: 440, height: 796 }, { width: 844, height: 390 }, { width: 1440, height: 900 }]) {
     await page.setViewportSize(viewport);

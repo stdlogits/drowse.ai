@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
 
-const storesUrl = `/@fs${resolve("src/lib/stores.svelte.ts")}`;
+const storesUrl = `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
 const compose = (page: Page) => page.getByRole("textbox", { name: /^Compose as / });
 const send = (page: Page) => page.getByRole("button", { name: /^(Send|Generate reply)$/ });
 const bottomGap = (page: Page) => page.locator(".log").evaluate(el =>

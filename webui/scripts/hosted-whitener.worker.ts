@@ -11,7 +11,7 @@ import {
   contextBindingSha256,
   runtimeIdentitySha256,
 } from "../src/lib/runtime/catalog";
-import type { ModelVariant, RuntimeIdentity } from "../src/lib/runtime/contracts";
+import type { ModelVariant, RuntimeIdentity } from "../../drowse/webui/src/lib/runtime/contracts";
 import {
   DrowseWebLlmRuntime,
   type DrowseCaptureRow,

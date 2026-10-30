@@ -12,7 +12,7 @@ import { siteTitle } from "../scripts/site-metadata.mjs";
 
 const devUrl = "http://127.0.0.1:4176";
 const fixtureResponse = "This is a deterministic local Drowse runtime fixture.";
-const toastModuleUrl = `/@fs/${resolve("src/lib/stores.svelte.ts")}`;
+const toastModuleUrl = `/@fs/${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
 const fixtureModelHashes = [
   "f85e180e7e8d61d1e225062424360dcc7b1997ce4c28233188af886d8511156f",
   "89ff00a0903817d42e9fddb23babfbc8d2956d5e9b044729074062d1dc41bb93",
@@ -284,7 +284,7 @@ async function savedConversationAvatarSeed(page: Page, name: string): Promise<st
 
 test("chats autosave with Blobatar identities and safe Loom clearing and cuts", async ({ page }, testInfo) => {
   await openFixtureWorkbench(page);
-  const libraryUrl = `/@fs/${resolve("src/lib/stores/savedConversations.svelte.ts")}`;
+  const libraryUrl = `/@fs/${resolve("../drowse/webui/src/lib/stores/savedConversations.svelte.ts")}`;
   const records = () => page.evaluate(async url => (await import(url)).conversationLibrary.list(), libraryUrl);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Automatic marmot notes");
   await sendButton(page).click();
@@ -368,7 +368,7 @@ test("chats autosave with Blobatar identities and safe Loom clearing and cuts", 
 
 test("autosave failures are visible and retry preserves the same chat", async ({ page }) => {
   await openFixtureWorkbench(page);
-  const libraryUrl = `/@fs/${resolve("src/lib/stores/savedConversations.svelte.ts")}`;
+  const libraryUrl = `/@fs/${resolve("../drowse/webui/src/lib/stores/savedConversations.svelte.ts")}`;
   const records = () => page.evaluate(async url => {
     const { conversationLibrary } = await import(url);
     const { conversations } = await conversationLibrary.list();
@@ -531,7 +531,7 @@ test("saved chat cards keep summaries and open or export the latest stored trans
       IDBObjectStore.prototype.getAll = originalGetAll;
     }
     return record.id as string;
-  }, { storesUrl: toastModuleUrl, workspaceUrl: `/@fs/${resolve("src/lib/conversationWorkspace.ts")}` });
+  }, { storesUrl: toastModuleUrl, workspaceUrl: `/@fs/${resolve("../drowse/webui/src/lib/conversationWorkspace.ts")}` });
 
   const changeStoredPrompt = async (text: string) => {
     await page.evaluate(async ({ storesUrl, id, text }) => {

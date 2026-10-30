@@ -18,7 +18,7 @@ test("purple accents connect conversation, controls, and Loom in both themes", a
 
   for (const theme of ["light", "dark"] as const) {
     await page.evaluate(async ({ url, theme }) => { (await import(url)).setTheme(theme); }, {
-      url: `/@fs/${resolve("src/lib/theme.ts")}`, theme,
+      url: `/@fs/${resolve("../drowse/webui/src/lib/theme.ts")}`, theme,
     });
     const accent = theme === "dark" ? "rgb(197, 179, 255)" : "rgb(91, 63, 191)";
     const selection = theme === "dark" ? "rgb(48, 50, 61)" : "rgb(228, 231, 238)";

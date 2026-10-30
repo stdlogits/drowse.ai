@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import ts from "typescript";
 
-const source = await readFile("src/lib/stores/persistence.svelte.ts", "utf8");
+const source = await readFile("../drowse/webui/src/lib/stores/persistence.svelte.ts", "utf8");
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 });
@@ -28,7 +28,7 @@ const imports = {
   "./loom.svelte": { loomTree: {} },
   "./probes.svelte": { highlightState },
   "./session.svelte": { sessionState },
-  "../../hosted/runtime/brandMigration": {
+  "../brandMigration": {
     migrateLegacyStorageItem: (store, key) => store.getItem(key),
     removeLegacyStorageItem: (store, key) => store.removeItem(key),
   },
@@ -87,8 +87,8 @@ currentDispose();
 assert.equal(roots.size, 0);
 assert.equal(timers.size, 0);
 
-const app = await readFile("src/App.svelte", "utf8");
-const bootstrap = await readFile("src/lib/stores/bootstrap.svelte.ts", "utf8");
+const app = await readFile("../drowse/webui/src/App.svelte", "utf8");
+const bootstrap = await readFile("../drowse/webui/src/lib/stores/bootstrap.svelte.ts", "utf8");
 assert.match(app, /\$effect\(\(\) => \{\s*if \(bootStatus === "ready"\) return attachPersistence\(\);/);
 assert.doesNotMatch(bootstrap, /attachPersistence\(/, "async bootstrap cannot create an orphan after unmount");
 console.log("Persistence lifecycle: 100 mount/unmount cycles, single-owner replacement, stale cleanup, model keys, and pending-write cleanup passed");

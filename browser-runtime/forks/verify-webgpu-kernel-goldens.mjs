@@ -1,5 +1,5 @@
-import { chromium } from "../../webui/node_modules/playwright/index.mjs";
-import ts from "../../webui/node_modules/typescript/lib/typescript.js";
+import { chromium } from "../../node_modules/playwright/index.mjs";
+import ts from "../../node_modules/typescript/lib/typescript.js";
 import { dirname, resolve } from "node:path";
 import { createServer } from "node:http";
 import { readFile, writeFile } from "node:fs/promises";

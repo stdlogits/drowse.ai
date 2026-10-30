@@ -5,7 +5,7 @@ import {BrowserActivationSpool} from "../src/hosted/fitting/activationSpool";
 import {BrowserFeasibilityCorePackCompiler} from "../src/hosted/runtime/browserCorePack";
 import {DrowseWebLlmRuntime} from "../src/hosted/runtime/webLlmEngine";
 import type {BrowserModelArtifact, BrowserModelLoadRequest} from "../src/hosted/runtime/modelBackend";
-import type {CatalogFile, RuntimeIdentity} from "../src/lib/runtime/contracts";
+import type {CatalogFile, RuntimeIdentity} from "../../drowse/webui/src/lib/runtime/contracts";
 
 interface RunRequest {
   type: "run";

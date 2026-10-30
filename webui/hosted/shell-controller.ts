@@ -3,7 +3,7 @@ import type {
   HostedModelOption,
   HostedShellController,
   HostedShellSnapshot,
-} from "../src/hosted/ui/types";
+} from "../../drowse/webui/src/lib/shell";
 import {
   createHostedRuntime,
   type HostedRuntimeBundle,
@@ -16,7 +16,7 @@ import type {
   ModelVariant,
   RuntimeCapabilities,
   RuntimeSnapshot,
-} from "../src/lib/runtime/contracts";
+} from "../../drowse/webui/src/lib/runtime/contracts";
 import {
   conservativeDownlinkBytesPerSecond,
   roundedEtaRange,
@@ -25,7 +25,7 @@ import { measuredDecodeTokensPerSecond } from "../src/lib/runtime/recommendation
 import { formatBytes } from "../src/lib/format/bytes";
 import { optionalPackHardwareBlock } from "../src/hosted/runtime/optionalPackCompatibility";
 import { hostedNetworkIsOffline } from "../src/hosted/runtime/networkState";
-import { userFacingError } from "../src/lib/runtime/userFacingError";
+import { userFacingError } from "../../drowse/webui/src/lib/runtime/userFacingError";
 
 const releaseBuild = typeof __DROWSE_HOSTED_RELEASE__ !== "undefined" &&
   __DROWSE_HOSTED_RELEASE__;

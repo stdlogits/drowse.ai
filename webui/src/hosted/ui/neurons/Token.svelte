@@ -1,6 +1,6 @@
 <script lang="ts">
   import { hasChinese, stem, tokenParts } from "./data";
-  import MorphText from "../../../lib/ui/MorphText.svelte";
+  import MorphText from "../../../../../drowse/webui/src/lib/ui/MorphText.svelte";
   import { gloss, shortGloss } from "./gloss.svelte";
 
   let { token, count = 1, flags = 0, size = "md", value }: {

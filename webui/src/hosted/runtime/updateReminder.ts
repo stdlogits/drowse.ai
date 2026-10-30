@@ -1,4 +1,4 @@
-import { migrateLegacyStorageItem, removeLegacyStorageItem } from "./brandMigration";
+import { migrateLegacyStorageItem, removeLegacyStorageItem } from "../../../../drowse/webui/src/lib/brandMigration";
 
 export const UPDATE_REMINDER_KEY = "drowse.pwa-update-reminder.v1";
 

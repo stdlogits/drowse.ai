@@ -25,7 +25,7 @@ if (metadata("drowse-release-channel") !== "release") {
 if (!/^[0-9a-f]{40}$/.test(revision)) {
   throw new Error("hosted release output has no exact source revision");
 }
-if (metadata("drowse-source-url") !== `https://github.com/a9lim/drowse/tree/${revision}`) {
+if (metadata("drowse-source-url") !== `https://github.com/stdlogits/drowse.ai/tree/${revision}`) {
   throw new Error("hosted release source URL does not match its revision");
 }
 if (builtLicense !== sourceLicense) {

@@ -5,7 +5,7 @@ import { selectWorkspaceView } from "./workbench-navigation";
 
 const devUrl = "http://127.0.0.1:4176";
 const moduleUrl = (path: string) => `/@fs${resolve(path)}`;
-const storesUrl = moduleUrl("src/lib/stores.svelte.ts");
+const storesUrl = moduleUrl("../drowse/webui/src/lib/stores.svelte.ts");
 
 test.describe.configure({ mode: "parallel" });
 
@@ -16,7 +16,7 @@ async function openPage(page: Page, path: string) {
 
 async function setTheme(page: Page, theme: string) {
   await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme), {
-    url: moduleUrl("src/lib/theme.ts"), theme,
+    url: moduleUrl("../drowse/webui/src/lib/theme.ts"), theme,
   });
 }
 
@@ -103,7 +103,7 @@ async function mountStorageHome(page: Page) {
     } });
   }, {
     componentUrl: moduleUrl("src/hosted/ui/HostedHome.svelte"),
-    libraryUrl: moduleUrl("src/lib/stores/savedConversations.svelte.ts"),
+    libraryUrl: moduleUrl("../drowse/webui/src/lib/stores/savedConversations.svelte.ts"),
   });
 }
 
@@ -209,7 +209,7 @@ for (const theme of ["dark", "light"]) {
         mount(Button, { target, props: { variant, disabled: true, children: createRawSnippet(() => ({ render: () => `<span>${variant}</span>` })) } });
       }
       mount(NumberInput, { target, props: { value: 42, disabled: true, ariaLabel: "Disabled numeric value" } });
-    }, { buttonUrl: moduleUrl("src/lib/ui/Button.svelte"), numberUrl: moduleUrl("src/lib/NumberInput.svelte") });
+    }, { buttonUrl: moduleUrl("../drowse/webui/src/lib/ui/Button.svelte"), numberUrl: moduleUrl("../drowse/webui/src/lib/NumberInput.svelte") });
     await expect(page.getByRole("spinbutton", { name: "Disabled numeric value" })).toBeDisabled();
     await expect(page.locator(".sk-number")).toHaveCSS("opacity", "0.65");
     await expect(page.locator(".sk-number-input")).toHaveCSS("opacity", "1");
@@ -235,7 +235,7 @@ for (const theme of ["dark", "light"]) {
           const stores = await import(storesUrl);
           const { captureConversationSnapshot } = await import(workspaceUrl);
           await stores.conversationLibrary.create({ name: "Contrast audit", snapshot: captureConversationSnapshot() });
-        }, { storesUrl, workspaceUrl: moduleUrl("src/lib/conversationWorkspace.ts") });
+        }, { storesUrl, workspaceUrl: moduleUrl("../drowse/webui/src/lib/conversationWorkspace.ts") });
         await page.evaluate(async url => (await import(url)).openDrawer("load_conversation"), storesUrl);
       }
       await setTheme(page, theme);

@@ -2499,7 +2499,7 @@ try {
   assert.notEqual(resetTree.root_id, beforeReset.root_id);
 
   const sharedLoomFixture = JSON.parse(await readFile(
-    new URL("../../browser-runtime/fixtures/loom-operation-transcript-v1.json", import.meta.url),
+    new URL("../../drowse/tests/fixtures/browser/loom-operation-transcript-v1.json", import.meta.url),
     "utf8",
   ));
   const sharedIds = sharedLoomFixture.operations

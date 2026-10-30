@@ -22,10 +22,10 @@ const observed = {
 };
 
 const fixture = JSON.parse(await readFile(
-  new URL("../../browser-runtime/fixtures/affine-fisher-fit-v1.json", import.meta.url),
+  new URL("../../drowse/tests/fixtures/browser/affine-fisher-fit-v1.json", import.meta.url),
 ));
 const topologyFixture = JSON.parse(await readFile(
-  new URL("../../browser-runtime/fixtures/topology-rbf-parity-v1.json", import.meta.url),
+  new URL("../../drowse/tests/fixtures/browser/topology-rbf-parity-v1.json", import.meta.url),
 ));
 const wasm = await readFile(new URL(
   "../public-hosted/wasm/drowse_fitting_wasm_bg.wasm",
@@ -445,8 +445,8 @@ if (releaseEvidenceType === null) {
     producedAt: new Date().toISOString(),
     passed: true,
     fixturePath: releaseEvidenceType === "fittingKernelParity"
-      ? "browser-runtime/fixtures/affine-fisher-fit-v1.json"
-      : "browser-runtime/fixtures/topology-rbf-parity-v1.json",
+      ? "drowse/tests/fixtures/browser/affine-fisher-fit-v1.json"
+      : "drowse/tests/fixtures/browser/topology-rbf-parity-v1.json",
     results,
   })}\n`);
 }

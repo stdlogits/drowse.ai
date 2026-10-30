@@ -14,7 +14,7 @@ const server = await createServer({
 });
 
 try {
-  const { normalizeSteeringPositions } = await server.ssrLoadModule("/src/lib/runtime/steeringPositions.ts");
+  const { normalizeSteeringPositions } = await server.ssrLoadModule("/../drowse/webui/src/lib/runtime/steeringPositions.ts");
   let positionSeed = 739391;
   const nextPositionRandom = () => (positionSeed = (Math.imul(positionSeed, 1664525) + 1013904223) >>> 0);
   for (let trial = 0; trial < 256; trial++) {
@@ -79,7 +79,7 @@ try {
     tokenAlternativeDefault,
     tokenAlternativeLimit,
   } = await server.ssrLoadModule(
-    "/src/lib/runtime/samplingCapabilities.ts",
+    "/../drowse/webui/src/lib/runtime/samplingCapabilities.ts",
   );
   const {
     STANDARD_STRUCTURED_HOOK_PROFILE,
@@ -1986,7 +1986,7 @@ try {
   );
 
   const sharedMeasurementFixture = JSON.parse(await readFile(
-    new URL("../../browser-runtime/fixtures/measurement-envelope-v1.json", import.meta.url),
+    new URL("../../drowse/tests/fixtures/browser/measurement-envelope-v1.json", import.meta.url),
     "utf8",
   ));
   const sharedGeometry = sharedMeasurementFixture.geometry;

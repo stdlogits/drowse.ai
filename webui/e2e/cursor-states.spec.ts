@@ -23,9 +23,9 @@ test("workbench cursors describe editing, inspecting, adjusting and navigating",
   await selectWorkspaceView(page, "Controls");
   const slider = page.getByRole("slider", { name: "Temperature", exact: true });
   await expect(slider).toHaveCSS("cursor", "ew-resize");
-  await page.evaluate(async url => { (await import(url)).steerRack.customExpression = "0.3 jlens/orange"; }, `/@fs${resolve("src/lib/stores.svelte.ts")}`);
+  await page.evaluate(async url => { (await import(url)).steerRack.customExpression = "0.3 jlens/orange"; }, `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`);
   await expect(page.getByRole("button", { name: "Copy response recipe", exact: true })).toHaveCSS("cursor", "copy");
-  await page.evaluate(async url => { (await import(url)).steerRack.customExpression = null; }, `/@fs${resolve("src/lib/stores.svelte.ts")}`);
+  await page.evaluate(async url => { (await import(url)).steerRack.customExpression = null; }, `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`);
   await selectWorkspaceView(page, "Conversation");
   await composer.fill("Describe the shape of a thought.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
@@ -64,7 +64,7 @@ test("busy and unavailable states override the normal action cursor", async ({ p
       ["Waiting action", true, true], ["Unavailable action", false, true],
     ] as const) mount(Button, { target, props: { ariaLabel, busy, disabled, children: createRawSnippet(() => ({ render: () => `<span>${ariaLabel}</span>` })) } });
     mount(Slider, { target, props: { value: 0.5, disabled: true, ariaLabel: "Unavailable slider" } });
-  }, { buttonUrl: `/@fs${resolve("src/lib/ui/Button.svelte")}`, sliderUrl: `/@fs${resolve("src/lib/Slider.svelte")}` });
+  }, { buttonUrl: `/@fs${resolve("../drowse/webui/src/lib/ui/Button.svelte")}`, sliderUrl: `/@fs${resolve("../drowse/webui/src/lib/Slider.svelte")}` });
   for (const [name, cursor] of [
     ["Available action", "pointer"], ["Working action", "progress"],
     ["Waiting action", "wait"], ["Unavailable action", "not-allowed"],

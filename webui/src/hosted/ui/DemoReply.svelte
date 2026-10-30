@@ -1,7 +1,7 @@
 <script lang="ts">
   import { flip } from "svelte/animate";
-  import { motionDuration } from "../../lib/motion";
-  import MorphText from "../../lib/ui/MorphText.svelte";
+  import { motionDuration } from "../../../../drowse/webui/src/lib/motion";
+  import MorphText from "../../../../drowse/webui/src/lib/ui/MorphText.svelte";
 
   let { text }: { text: string } = $props();
   const words = $derived(text.match(/\S+\s*/g) ?? []);

@@ -2,8 +2,8 @@ import { expect, test } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { resolve } from "node:path";
 
-const storesUrl = `/@fs${resolve("src/lib/stores.svelte.ts")}`;
-const registryUrl = `/@fs${resolve("src/lib/runtime/registry.ts")}`;
+const storesUrl = `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
+const registryUrl = `/@fs${resolve("../drowse/webui/src/lib/runtime/registry.ts")}`;
 
 test("Edit steering supports Enter and Space activation", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });

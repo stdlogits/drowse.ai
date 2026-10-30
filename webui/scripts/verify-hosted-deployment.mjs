@@ -260,10 +260,10 @@ export function assertChannelHtml(html, channel, expectedRevision = null) {
     if (expectedRevision !== null) {
       assert.equal(revision, expectedRevision, "Release HTML revision differs from --revision");
     }
-    assert.equal(sourceUrl, `https://github.com/a9lim/drowse/tree/${revision}`);
+    assert.equal(sourceUrl, `https://github.com/stdlogits/drowse.ai/tree/${revision}`);
   } else {
     assert.equal(revision, "preview", "Preview HTML must not claim a release revision");
-    assert.equal(sourceUrl, "https://github.com/a9lim/drowse");
+    assert.equal(sourceUrl, "https://github.com/stdlogits/drowse.ai");
   }
 }
 

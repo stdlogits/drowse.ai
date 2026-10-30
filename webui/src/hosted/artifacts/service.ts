@@ -1,4 +1,4 @@
-import type { RuntimeProgressEvent, RuntimeServiceRequest } from "../../lib/runtime/contracts";
+import type { RuntimeProgressEvent, RuntimeServiceRequest } from "../../../../drowse/webui/src/lib/runtime/contracts";
 import type {
   CreateDiscoverManifoldRequest,
   CreateManifoldFromTemplateRequest,
@@ -7,8 +7,8 @@ import type {
   InstallManifoldRequest,
   ManifoldInfo,
   MergeManifoldRequest,
-} from "../../lib/types";
-import type { ManifoldFitInfo } from "../../lib/types.gen";
+} from "../../../../drowse/webui/src/lib/types";
+import type { ManifoldFitInfo } from "../../../../drowse/webui/src/lib/types.gen";
 import {
   BrowserDrowseArchiveRepository,
   type InstalledDrowseArchive,

@@ -2,9 +2,9 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
 
-const storesUrl = `/@fs${resolve("src/lib/stores.svelte.ts")}`;
-const savedUrl = `/@fs${resolve("src/lib/stores/savedConversations.svelte.ts")}`;
-const workspaceUrl = `/@fs${resolve("src/lib/conversationWorkspace.ts")}`;
+const storesUrl = `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
+const savedUrl = `/@fs${resolve("../drowse/webui/src/lib/stores/savedConversations.svelte.ts")}`;
+const workspaceUrl = `/@fs${resolve("../drowse/webui/src/lib/conversationWorkspace.ts")}`;
 
 async function conversation(page: Page) {
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -38,7 +38,7 @@ test("each speaker has a distinct container and its saved avatar or live accent 
   expect(await model.locator("img").evaluate(img => (img as HTMLImageElement).complete && (img as HTMLImageElement).naturalWidth > 0)).toBe(true);
 
   for (const theme of ["Light", "Dark"]) {
-    await page.evaluate(async ({ url, theme }) => { (await import(url)).setTheme(theme); }, { url: `/@fs${resolve("src/lib/theme.ts")}`, theme: theme.toLowerCase() });
+    await page.evaluate(async ({ url, theme }) => { (await import(url)).setTheme(theme); }, { url: `/@fs${resolve("../drowse/webui/src/lib/theme.ts")}`, theme: theme.toLowerCase() });
     for (const accent of ["rose", "sky", "purple"]) {
       await page.evaluate(async ({ url, accent }) => { (await import(url)).savedConversationState.accent = accent; }, { url: savedUrl, accent });
       await expect.poll(() => user.locator(".user-avatar").evaluate(el => {
@@ -115,7 +115,7 @@ test("updating a saved avatar and opening another chat keeps model pictures in s
   const reopenedAvatar = await page.locator(".model-avatar img").getAttribute("src");
   await page.evaluate(async ({ url, another }) => {
     (await import(url)).queueConversationOpen(another.id, another.modelId);
-  }, { url: `/@fs${resolve("src/hosted/runtime/entryExperience.ts")}`, another });
+  }, { url: `/@fs${resolve("../drowse/webui/src/lib/entryExperience.ts")}`, another });
   await page.reload();
   await expect(page.locator(".model-avatar img")).toHaveAttribute("src", reopenedAvatar!);
 });

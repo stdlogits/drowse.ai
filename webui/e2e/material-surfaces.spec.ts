@@ -8,7 +8,7 @@ test("landing keeps its full-page shader and quiet button sheen in both themes",
   await expect(page.locator(".landing-shell")).toBeVisible();
   for (const theme of ["dark", "light"]) {
     await page.evaluate(async ({ url, theme }) => (await import(url)).setTheme(theme), {
-      url: `/@fs${resolve("src/lib/theme.ts")}`, theme,
+      url: `/@fs${resolve("../drowse/webui/src/lib/theme.ts")}`, theme,
     });
     await expect(page.locator(".primary-action").first()).toHaveCSS("background-image", /linear-gradient/);
     const cards = page.locator(".capabilities li, .model-group");

@@ -1,4 +1,4 @@
-import { migrateLegacyStorageItem, removeLegacyStorageItem } from "./brandMigration";
+import { migrateLegacyStorageItem, removeLegacyStorageItem } from "../../../../drowse/webui/src/lib/brandMigration";
 
 const RECOVERY_KEY = "drowse:chunk-recovery";
 const RECOVERY_PARAM = "app-recovery";

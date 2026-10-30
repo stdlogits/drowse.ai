@@ -329,7 +329,7 @@ try {
 
   test("matches the shared Python DLS keep and all-fail fallback fixtures", async () => {
     const fixture = JSON.parse(await readFile(new URL(
-      "../../browser-runtime/fixtures/dls-axes-v1.json",
+      "../../drowse/tests/fixtures/browser/dls-axes-v1.json",
       import.meta.url,
     )));
     const layers = new Map(fixture.layers.map((layer) => [layer.layer, {
@@ -360,7 +360,7 @@ try {
 
   test("matches Python neutral anchoring in the shared consensus layout", async () => {
     const fixture = JSON.parse(await readFile(new URL(
-      "../../browser-runtime/fixtures/affine-fisher-fit-v1.json",
+      "../../drowse/tests/fixtures/browser/affine-fisher-fit-v1.json",
       import.meta.url,
     )));
     const expected = fixture.expected;

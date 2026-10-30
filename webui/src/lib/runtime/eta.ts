@@ -1,4 +1,4 @@
-import { MEBIBYTE } from "./contracts";
+import { MEBIBYTE } from "../../../../drowse/webui/src/lib/runtime/contracts";
 
 const DEFAULT_ALPHA = 0.2;
 const STALL_MS = 10_000;

@@ -1,4 +1,4 @@
-import type { InstrumentFamily, ProbeInfo, SteerEntry } from "../types";
+import type { InstrumentFamily, ProbeInfo, SteerEntry } from "../../../../drowse/webui/src/lib/types";
 
 export type OptionalInstrumentPackKind = "jlens" | "sae";
 

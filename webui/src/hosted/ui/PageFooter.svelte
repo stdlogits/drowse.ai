@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { CONTACT_ADDRESS } from "../../lib/contact";
-  import FluentIcon from "../../lib/ui/FluentIcon.svelte";
+  import { CONTACT_ADDRESS } from "../../../../drowse/webui/src/lib/contact";
+  import FluentIcon from "../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
 
   type Current = "home" | "credits" | "contact" | "learn" | "privacy" | "about" | "contribute" | "neurons";
   let { current, hosted = true, compact = false }: { current?: Current; hosted?: boolean; compact?: boolean } = $props();
@@ -8,9 +8,9 @@
   const releaseBuild = typeof __DROWSE_HOSTED_RELEASE__ !== "undefined" && __DROWSE_HOSTED_RELEASE__;
   const sourceRevision = typeof __DROWSE_SOURCE_REVISION__ === "string" ? __DROWSE_SOURCE_REVISION__ : "preview";
   // AGPL section 13 source offer: release builds link the exact revision they were built from.
-  const sourceUrl = typeof __DROWSE_SOURCE_URL__ === "string" ? __DROWSE_SOURCE_URL__ : "https://github.com/a9lim/drowse";
+  const sourceUrl = typeof __DROWSE_SOURCE_URL__ === "string" ? __DROWSE_SOURCE_URL__ : "https://github.com/stdlogits/drowse.ai";
   const version = typeof __DROWSE_VERSION__ === "string" ? __DROWSE_VERSION__ : "";
-  const repositoryUrl = "https://github.com/a9lim/drowse";
+  const repositoryUrl = "https://github.com/stdlogits/drowse";
 
   const site = $derived(hosted ? "" : "https://drowse.ai");
   type FooterLink = { label: string; href: string; page?: Current; detail?: string; external?: boolean };

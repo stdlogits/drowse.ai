@@ -1,4 +1,4 @@
-import { RuntimeRequestJournal, replayRequest } from "../../lib/runtime/requestJournal";
+import { RuntimeRequestJournal, replayRequest } from "../../../../drowse/webui/src/lib/runtime/requestJournal";
 import type {
   RuntimeClient,
   RuntimeEventChannel,
@@ -18,13 +18,13 @@ import type {
   WorkerScopedFailure,
   WorkerMessage,
   WorkerRequest,
-} from "../../lib/runtime/contracts";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
 import {
   isRuntimeServiceMethod,
   RUNTIME_PROTOCOL_VERSION,
-} from "../../lib/runtime/contracts";
-import { ApiError } from "../../lib/runtime/errors";
-import type { WSClientMessage, WSServerMessage } from "../../lib/types";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
+import { ApiError } from "../../../../drowse/webui/src/lib/runtime/errors";
+import type { WSClientMessage, WSServerMessage } from "../../../../drowse/webui/src/lib/types";
 
 export interface WorkerLike {
   postMessage(message: unknown, transfer?: Transferable[]): void;

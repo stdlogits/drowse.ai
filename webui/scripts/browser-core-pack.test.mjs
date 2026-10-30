@@ -17,15 +17,15 @@ const tests = [];
 const test = (name, run) => tests.push({ name, run });
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const loweringGolden = JSON.parse(readFileSync(
-  new URL("../../browser-runtime/fixtures/affine-rank-one-lowering-v1.json", import.meta.url),
+  new URL("../../drowse/tests/fixtures/browser/affine-rank-one-lowering-v1.json", import.meta.url),
   "utf8",
 ));
 const composedGolden = JSON.parse(readFileSync(
-  new URL("../../browser-runtime/fixtures/affine-composed-lowering-v1.json", import.meta.url),
+  new URL("../../drowse/tests/fixtures/browser/affine-composed-lowering-v1.json", import.meta.url),
   "utf8",
 ));
 const ablationGolden = JSON.parse(readFileSync(
-  new URL("../../browser-runtime/fixtures/affine-ablation-lowering-v1.json", import.meta.url),
+  new URL("../../drowse/tests/fixtures/browser/affine-ablation-lowering-v1.json", import.meta.url),
   "utf8",
 ));
 

@@ -1,4 +1,4 @@
-import type { HostedModelOption, HostedShellSnapshot } from "./types";
+import type { HostedModelOption, HostedShellSnapshot } from "../../../../drowse/webui/src/lib/shell";
 import { formatBytes } from "../../lib/format/bytes";
 
 export function modelsBySize(models: HostedModelOption[]): HostedModelOption[] {

@@ -10,8 +10,8 @@ const originalFetch = globalThis.fetch;
 const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
 try {
   Object.defineProperty(globalThis, "navigator", { configurable: true, value: { onLine: true } });
-  const store = await server.ssrLoadModule("/src/lib/stores/contact.svelte.ts");
-  const { CONTACT_REASONS, contactTopics } = await server.ssrLoadModule("/src/lib/contact.ts");
+  const store = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/contact.svelte.ts");
+  const { CONTACT_REASONS, contactTopics } = await server.ssrLoadModule("/../drowse/webui/src/lib/contact.ts");
 
   for (const [value, label] of [["funding", "Funding and sponsorship"], ["teaching", "Teaching with Drowse"]]) {
     assert.ok(CONTACT_REASONS.some(reason => reason.value === value && reason.label === label), `${value} is a contact reason`);
@@ -60,12 +60,12 @@ try {
   await store.submitContact("contact");
   assert.equal(current.status, "sent");
 
-  const form = await readFile("src/lib/ui/ContactForm.svelte", "utf8");
+  const form = await readFile("../drowse/webui/src/lib/ui/ContactForm.svelte", "utf8");
   assert.match(form, /ariaLabelledby=\{`\$\{uid\}-reason-label`\}/, "Reason announces its label and current value");
   assert.match(form, /All fields are required unless marked optional\./);
-  const select = await readFile("src/lib/Select.svelte", "utf8");
+  const select = await readFile("../drowse/webui/src/lib/Select.svelte", "utf8");
   assert.match(select, /aria-labelledby=\{ariaLabelledby \? `\$\{ariaLabelledby\} \$\{uid\}-value` : undefined\}/);
-  const storeSource = await readFile("src/lib/stores/contact.svelte.ts", "utf8");
+  const storeSource = await readFile("../drowse/webui/src/lib/stores/contact.svelte.ts", "utf8");
   assert.match(storeSource, /sessionStorage/, "drafts survive a reload in the same tab");
   assert.match(storeSource, /removeItem\(key\)/, "a sent draft is cleared from storage");
   const contact = await readFile("src/hosted/ui/Contact.svelte", "utf8");

@@ -1,4 +1,4 @@
-import type { StructuredHookProfileId } from "../../lib/runtime/contracts";
+import type { StructuredHookProfileId } from "../../../../drowse/webui/src/lib/runtime/contracts";
 
 export const WEB_LLM_RUNTIME_MIN_STORAGE_BUFFERS_PER_SHADER_STAGE = 10;
 export const EXACT_READOUT_MIN_COMPUTE_WORKGROUP_SIZE_X = 256;

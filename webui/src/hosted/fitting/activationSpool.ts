@@ -1,4 +1,4 @@
-import { migrateLegacyDatabase, drowseStorageRoot } from "../runtime/brandMigration";
+import { migrateLegacyDatabase, drowseStorageRoot } from "../../../../drowse/webui/src/lib/brandMigration";
 import { randomUuid } from "../runtime/randomId";
 
 export const ACTIVATION_SPOOL_SCHEMA_VERSION = 1 as const;

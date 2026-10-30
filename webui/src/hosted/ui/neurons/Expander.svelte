@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import FluentIcon from "../../../lib/ui/FluentIcon.svelte";
+  import FluentIcon from "../../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
 
   // A disclosure whose body slides open: grid rows transition 0fr → 1fr, so the motion is interruptible.
   let { label, openLabel, children, open = $bindable(false) }: {

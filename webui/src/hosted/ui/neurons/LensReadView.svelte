@@ -1,5 +1,5 @@
 <script lang="ts">
-  import MorphText from "../../../lib/ui/MorphText.svelte";
+  import MorphText from "../../../../../drowse/webui/src/lib/ui/MorphText.svelte";
   import Token from "./Token.svelte";
   import { LENSES, type LensRead } from "./data";
 

@@ -9,11 +9,11 @@ import {
   reloadInstructions,
   appRefreshSafetyMessage,
 } from "../src/hosted/runtime/chunkRecovery";
-import { initializeTheme } from "../src/lib/theme";
-import { initializeInputModality } from "../src/lib/inputModality";
-import "../src/lib/style/fonts.css";
-import "../src/lib/style/tokens.css";
-import "../src/lib/style/global.css";
+import { initializeTheme } from "../../drowse/webui/src/lib/theme";
+import { initializeInputModality } from "../../drowse/webui/src/lib/inputModality";
+import "../../drowse/webui/src/lib/style/fonts.css";
+import "../../drowse/webui/src/lib/style/tokens.css";
+import "../../drowse/webui/src/lib/style/global.css";
 
 const target = document.getElementById("app");
 if (!target) throw new Error("drowse hosted: #app element missing in index.html");
@@ -22,14 +22,14 @@ initializeInputModality();
 // WebMCP is ~50 KB and inert without the browser's experimental model context, so load it on demand.
 // It must start before any route mounts, because app routes attach their tools to the running adapter.
 const webMcpReady = "modelContext" in document || "modelContext" in navigator
-  ? import("../src/lib/webmcp").then(({ startWebMcp }) => startWebMcp(true)).catch(() => undefined)
+  ? import("../../drowse/webui/src/lib/webmcp").then(({ startWebMcp }) => startWebMcp(true)).catch(() => undefined)
   : undefined;
 const path = window.location.pathname.replace(/\/+$/, "") || "/";
 // Indexing policy lives in the static HTML: prerendered pages are indexable, while the app shell
 // and the not-found page already carry `noindex, follow`.
 const learnGuides = new Set(["/learn/activation-steering", "/learn/interpretability", "/learn/browser-models", "/learn/experiments"]);
 
-let controller: import("../src/hosted/ui/types").HostedShellController | undefined;
+let controller: import("../../drowse/webui/src/lib/shell").HostedShellController | undefined;
 let component = null;
 let props = {};
 // Matches the `data-prerendered` key written by scripts/prerender-hosted.mjs for this route.
@@ -74,14 +74,14 @@ try {
       { installHostedController, installRuntimeCapabilities, installRuntimeClient },
     ] = await Promise.all([
       import("../src/hosted/runtime/fixtureHostedRuntime"),
-      import("../src/lib/runtime/registry"),
+      import("../../drowse/webui/src/lib/runtime/registry"),
     ]);
     const fixture = createFixtureHostedRuntime(searchParams.get("layoutFixture") === "instruments", searchParams.get("layoutFixture") === "base");
     const capabilities = await fixture.controller.check();
     installRuntimeClient(fixture.runtime);
     installRuntimeCapabilities(capabilities);
     installHostedController(fixture.controller);
-    component = (await import("../src/App.svelte")).default;
+    component = (await import("../../drowse/webui/src/App.svelte")).default;
   } else if (path === "/") {
     component = (await import("../src/hosted/ui/LandingRoot.svelte")).default;
     prerenderedKey = "landing";

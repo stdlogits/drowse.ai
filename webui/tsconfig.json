@@ -1,0 +1,39 @@
+{
+  "extends": "@tsconfig/svelte/tsconfig.json",
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "types": [
+      "svelte"
+    ],
+    "baseUrl": ".",
+    "paths": {
+      "@runtime-jlens-missing": [
+        "src/hosted/ui/JLensMissingState.svelte"
+      ],
+      "@runtime-jlens-source": [
+        "src/hosted/ui/JLensSourceSection.svelte"
+      ],
+      "@runtime-local-drawer": [
+        "src/drawers/LocalRuntimeDrawer.svelte"
+      ],
+      "@runtime-sae-source": [
+        "src/hosted/ui/SaeSourceSection.svelte"
+      ],
+      "@runtime-session-drawer": [
+        "../drowse/webui/src/drawers/UnavailableRuntimeDrawer.svelte"
+      ]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.svelte"
+  ]
+}

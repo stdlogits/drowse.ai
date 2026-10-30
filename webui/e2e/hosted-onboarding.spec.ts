@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import type {
   HostedModelOption,
   HostedShellSnapshot,
-} from "../src/hosted/ui/types";
+} from "../../drowse/webui/src/lib/shell";
 
 const devUrl = "http://127.0.0.1:4176";
 const hostedAppModuleUrl = `/@fs/${resolve("src/hosted/ui/HostedApp.svelte")}`;
@@ -133,11 +133,11 @@ async function mountHostedApp(
   await page.route("**/main.ts*", route => route.fulfill({
     contentType: "application/javascript",
     body: `
-      import "/@fs/${resolve("src/lib/style/fonts.css")}";
-      import "/@fs/${resolve("src/lib/style/tokens.css")}";
-      import "/@fs/${resolve("src/lib/style/global.css")}";
-      import { initializeTheme } from "/@fs/${resolve("src/lib/theme.ts")}";
-      import { initializeInputModality } from "/@fs/${resolve("src/lib/inputModality.ts")}";
+      import "/@fs/${resolve("../drowse/webui/src/lib/style/fonts.css")}";
+      import "/@fs/${resolve("../drowse/webui/src/lib/style/tokens.css")}";
+      import "/@fs/${resolve("../drowse/webui/src/lib/style/global.css")}";
+      import { initializeTheme } from "/@fs/${resolve("../drowse/webui/src/lib/theme.ts")}";
+      import { initializeInputModality } from "/@fs/${resolve("../drowse/webui/src/lib/inputModality.ts")}";
       initializeTheme();
       initializeInputModality();
     `,

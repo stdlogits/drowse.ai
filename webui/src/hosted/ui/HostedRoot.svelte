@@ -1,24 +1,24 @@
 <script lang="ts">
-  import TabIdentity from "../../lib/ui/TabIdentity.svelte";
+  import TabIdentity from "../../../../drowse/webui/src/lib/ui/TabIdentity.svelte";
   import { onDestroy, onMount, tick, type Component } from "svelte";
   import { fade, fly } from "svelte/transition";
   import { createShellController } from "../../../hosted/shell-controller";
-  import { mountHostedWebMcp } from "../../lib/webmcp";
-  import { registerPageActions } from "../../lib/webmcp/lifecycle";
+  import { mountHostedWebMcp } from "../../../../drowse/webui/src/lib/webmcp";
+  import { registerPageActions } from "../../../../drowse/webui/src/lib/webmcp/lifecycle";
   import {
     installHostedController,
     installRuntimeCapabilities,
     installRuntimeClient,
-  } from "../../lib/runtime/registry";
+  } from "../../../../drowse/webui/src/lib/runtime/registry";
   import HostedApp from "./HostedApp.svelte";
   import HostedHome from "./HostedHome.svelte";
-  import PageHeader from "./PageHeader.svelte";
+  import PageHeader from "../../../../drowse/webui/src/lib/ui/PageHeader.svelte";
   import PageFooter from "./PageFooter.svelte";
   import PwaUpdatePrompt from "./PwaUpdatePrompt.svelte";
-  import { conversationLibrary, flushConversationAutosave } from "../../lib/stores/savedConversations.svelte";
-  import type { SavedConversationSummary } from "../../lib/conversationLibrary";
-  import type { HostedShellController, HostedShellSnapshot } from "./types";
-  import { userFacingError } from "../../lib/runtime/userFacingError";
+  import { conversationLibrary, flushConversationAutosave } from "../../../../drowse/webui/src/lib/stores/savedConversations.svelte";
+  import type { SavedConversationSummary } from "../../../../drowse/webui/src/lib/conversationLibrary";
+  import type { HostedShellController, HostedShellSnapshot } from "../../../../drowse/webui/src/lib/shell";
+  import { userFacingError } from "../../../../drowse/webui/src/lib/runtime/userFacingError";
   import {
     chunkLoadFailureMessage,
     completeChunkRecovery,
@@ -34,14 +34,14 @@
     modalOut,
     scrimIn,
     scrimOut,
-  } from "../../lib/motion";
+  } from "../../../../drowse/webui/src/lib/motion";
   import {
     clearConversationOpen,
     forgetEntryModel,
     queueConversationOpen,
     readEntryMemory,
     rememberCompletedOnboarding,
-  } from "../runtime/entryExperience";
+  } from "../../../../drowse/webui/src/lib/entryExperience";
 
   type EntryView = "resolving" | "home" | "models";
   type HistoryMode = "push" | "replace";
@@ -387,7 +387,7 @@
         installRuntimeClient(appController.runtimeClient());
         installRuntimeCapabilities(capabilities);
         installHostedController(appController.hostedController());
-        const component = (await import("../../App.svelte")).default;
+        const component = (await import("../../../../drowse/webui/src/App.svelte")).default;
         if (!disposed) {
           if (appController.current().runtime.phase === "ready") {
             Workbench = component;

@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker, { allowedOrigin, dailyLimit, emailContent, titleError } from "../src/index";
-import { emptyContact, parseContact, validateContact } from "../../src/lib/contact";
+import { emptyContact, parseContact, validateContact } from "../../../drowse/webui/src/lib/contact";
 
 const fields = () => ({ ...emptyContact("feedback"), title: "A useful improvement", body: "Please make this easier to find." });
 const request = (body: unknown, overrides: RequestInit = {}) => new Request("https://drowse.ai/api/contact", {

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 
+// Provenance names the prompts by their path in the drowse repository, mounted here as the submodule.
 const BASELINE_PROMPTS_PATH = "drowse/data/baseline_prompts.json";
 const ROOT_ENTRIES = ["LICENSE.txt", "manifold.json", "nodes", "provenance.json"];
 const MANIFEST_KEYS = [
@@ -43,7 +44,7 @@ export async function readCoreManifoldSource(directory, repositoryRoot) {
     readJson(resolve(root, "manifold.json"), "manifold.json"),
     readJson(resolve(root, "provenance.json"), "provenance.json"),
     readFile(resolve(root, "LICENSE.txt"), "utf8"),
-    readFile(resolve(repositoryRoot, BASELINE_PROMPTS_PATH)),
+    readFile(resolve(repositoryRoot, "drowse", BASELINE_PROMPTS_PATH)),
   ]);
   const baselinePrompts = parseJson(baselineBytes, BASELINE_PROMPTS_PATH);
   if (

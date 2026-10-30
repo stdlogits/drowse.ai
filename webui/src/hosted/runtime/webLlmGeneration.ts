@@ -7,18 +7,18 @@ import type {
   ScalarReadingJSON,
   TokenAltJSON,
   WSSampling,
-} from "../../lib/types";
+} from "../../../../drowse/webui/src/lib/types";
 import type { RankOneHookProgramBuffers } from "./rankOneHookProgram";
-import { BROWSER_RETURN_TOP_K_MAX, BROWSER_SAMPLING_TOP_K_MAX } from "../../lib/runtime/samplingCapabilities";
-import { MAX_OUTPUT_TOKEN_COUNT } from "../../lib/runtime/outputTokenPolicy";
+import { BROWSER_RETURN_TOP_K_MAX, BROWSER_SAMPLING_TOP_K_MAX } from "../../../../drowse/webui/src/lib/runtime/samplingCapabilities";
+import { MAX_OUTPUT_TOKEN_COUNT } from "../../../../drowse/webui/src/lib/runtime/outputTokenPolicy";
 import {
   geometryCoordinateMean,
   createStructuredHookControlEvaluator,
   type StructuredGeometryMeasurementProbe,
   type StructuredHookProgramBuffers,
 } from "./structuredHookProgram";
-import { isRoleSlug } from "./roleSlug";
-import { normalizeSteeringPositions, type SteeringPositionSelection } from "../../lib/runtime/steeringPositions";
+import { isRoleSlug } from "../../../../drowse/webui/src/lib/roleSlug";
+import { normalizeSteeringPositions, type SteeringPositionSelection } from "../../../../drowse/webui/src/lib/runtime/steeringPositions";
 
 export const BROWSER_EXACT_READOUT_TOP_K_CAPACITY = 8;
 

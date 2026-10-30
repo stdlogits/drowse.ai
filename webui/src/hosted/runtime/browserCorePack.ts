@@ -8,7 +8,7 @@ import {
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import type { BrowserModelArtifact, BrowserModelLoadRequest } from "./modelBackend";
-import { LEGACY_PRODUCT_SLUGS } from "./brandMigration";
+import { LEGACY_PRODUCT_SLUGS } from "../../../../drowse/webui/src/lib/brandMigration";
 import {
   contextBindingSha256,
   runtimeIdentitySha256,
@@ -37,7 +37,7 @@ import type {
   ProbeRequest,
   ProfileListResponse,
   VectorInfo,
-} from "../../lib/types";
+} from "../../../../drowse/webui/src/lib/types";
 import {
   compileRankOneHookProgram,
   type RankOneHookLayer,

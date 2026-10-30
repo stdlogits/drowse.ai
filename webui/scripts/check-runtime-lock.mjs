@@ -56,9 +56,9 @@ const capabilitiesPath = new URL(
   import.meta.url,
 );
 const packagePath = new URL("../package.json", import.meta.url);
-const packageLockPath = new URL("../package-lock.json", import.meta.url);
+const packageLockPath = new URL("../../package-lock.json", import.meta.url);
 const installedWebLlmPackagePath = new URL(
-  "../node_modules/@drowse/web-llm/package.json",
+  "../../node_modules/@drowse/web-llm/package.json",
   import.meta.url,
 );
 const forkManifestPath = new URL(
@@ -1402,8 +1402,9 @@ export function validateWebLlmDependency(
       "browser backend must use the runtime-locked Drowse WebLLM archive",
     );
   }
+  // The workspace lock at the repository root records the archive root-relative.
   const locked = packageLock.packages?.["node_modules/@drowse/web-llm"];
-  if (!locked || locked.resolved !== expectedSpecifier) {
+  if (!locked || locked.resolved !== `file:${packagePin.path}`) {
     throw new Error(
       "package lock does not resolve the runtime-locked Drowse WebLLM archive",
     );
@@ -2064,16 +2065,20 @@ async function requireTrackedRegularFile(
     isAbsolute(realRelativePath)
   )
     throw new Error(`${label} resolves outside the repository`);
+  // Engine files and parity goldens are tracked by the drowse submodule itself.
+  const tracked = repositoryPath.startsWith("drowse/")
+    ? { cwd: resolve(root, "drowse"), path: repositoryPath.slice("drowse/".length) }
+    : { cwd: root, path: repositoryPath };
   try {
-    execFileSync("git", ["ls-files", "--error-unmatch", "--", repositoryPath], {
-      cwd: root,
+    execFileSync("git", ["ls-files", "--error-unmatch", "--", tracked.path], {
+      cwd: tracked.cwd,
       stdio: "ignore",
     });
     const committedObject = execFileSync(
       "git",
-      ["rev-parse", `HEAD:${repositoryPath}`],
+      ["rev-parse", `HEAD:./${tracked.path}`],
       {
-        cwd: root,
+        cwd: tracked.cwd,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
       },

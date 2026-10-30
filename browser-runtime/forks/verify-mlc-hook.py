@@ -1450,7 +1450,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fixture",
         type=Path,
-        default=repository_root / "browser-runtime/fixtures/post-block-rank-one-v2.json",
+        default=repository_root / "drowse/tests/fixtures/browser/post-block-rank-one-v2.json",
     )
     return parser.parse_args()
 

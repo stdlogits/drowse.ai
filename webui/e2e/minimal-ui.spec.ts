@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 
 const devUrl = "http://127.0.0.1:4176";
-const storesUrl = `/@fs${resolve("src/lib/stores.svelte.ts")}`;
+const storesUrl = `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
 
 test("main workspaces and dialogs keep a clean responsive layout", async ({ page }, testInfo) => {
   test.setTimeout(90_000);

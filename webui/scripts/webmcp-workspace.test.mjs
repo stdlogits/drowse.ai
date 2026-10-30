@@ -8,7 +8,7 @@ const server = await createServer({
   server: { middlewareMode: true, watch: null },
 });
 try {
-  const registry = await server.ssrLoadModule("/src/lib/runtime/registry.ts");
+  const registry = await server.ssrLoadModule("/../drowse/webui/src/lib/runtime/registry.ts");
   let validate = async expression => ({ valid: !expression.includes("invalid"), expression, error: "Unknown control" });
   const patches = [];
   const castWrites = [];
@@ -23,16 +23,16 @@ try {
     detach: async () => {},
   } };
   registry.installRuntimeClient(runtime);
-  const { sessionState } = await server.ssrLoadModule("/src/lib/stores/session.svelte.ts");
-  const { loomTree, castState } = await server.ssrLoadModule("/src/lib/stores/loom.svelte.ts");
-  const { samplingState } = await server.ssrLoadModule("/src/lib/stores/sampling.svelte.ts");
-  const { chatLog, genStatus, setGenUiMode } = await server.ssrLoadModule("/src/lib/stores/chat.svelte.ts");
-  const { steerRack } = await server.ssrLoadModule("/src/lib/stores/steering.svelte.ts");
-  const { probeRack, highlightState } = await server.ssrLoadModule("/src/lib/stores/probes.svelte.ts");
-  const { reservePendingGeneration } = await server.ssrLoadModule("/src/lib/stores/pending.svelte.ts");
-  const { registerComposerController, registerRawBufferController, getComposerController, registerWorkspaceController, registerSystemPromptController, registerCastController } = await server.ssrLoadModule("/src/lib/workspaceController.ts");
-  const { createWorkspaceTools, workspaceRevision } = await server.ssrLoadModule("/src/lib/webmcp/workspaceTools.ts");
-  const { validateInput } = await server.ssrLoadModule("/src/lib/webmcp/validation.ts");
+  const { sessionState } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/session.svelte.ts");
+  const { loomTree, castState } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/loom.svelte.ts");
+  const { samplingState } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/sampling.svelte.ts");
+  const { chatLog, genStatus, setGenUiMode } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/chat.svelte.ts");
+  const { steerRack } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/steering.svelte.ts");
+  const { probeRack, highlightState } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/probes.svelte.ts");
+  const { reservePendingGeneration } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/pending.svelte.ts");
+  const { registerComposerController, registerRawBufferController, getComposerController, registerWorkspaceController, registerSystemPromptController, registerCastController } = await server.ssrLoadModule("/../drowse/webui/src/lib/workspaceController.ts");
+  const { createWorkspaceTools, workspaceRevision } = await server.ssrLoadModule("/../drowse/webui/src/lib/webmcp/workspaceTools.ts");
+  const { validateInput } = await server.ssrLoadModule("/../drowse/webui/src/lib/webmcp/validation.ts");
   const tools = new Map(createWorkspaceTools().map(tool => [tool.name, tool]));
   const context = { signal: new AbortController().signal, runtime, jobs: { list: () => [] }, capabilities: null, hosted: null, shell: null };
   const invoke = async (name, input) => {

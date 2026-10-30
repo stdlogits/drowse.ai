@@ -1,8 +1,10 @@
+import { existsSync } from "node:fs";
 import { expect, test, type Page, type Locator } from "@playwright/test";
 import { resolve } from "node:path";
 
 const dev = "http://127.0.0.1:4176";
-const moduleUrl = (path: string) => `/@fs${resolve(`src/${path}`)}`;
+// Hosted modules live here; shared dashboard modules come from the drowse submodule.
+const moduleUrl = (path: string) => `/@fs${existsSync(resolve(`src/${path}`)) ? resolve(`src/${path}`) : resolve(`../drowse/webui/src/${path}`)}`;
 const layoutFrame = (page: Page) => page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 
 async function workbench(page: Page, fixture = "1") {

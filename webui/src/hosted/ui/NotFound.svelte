@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import TabIdentity from "../../lib/ui/TabIdentity.svelte";
-  import PageHeader from "./PageHeader.svelte";
+  import TabIdentity from "../../../../drowse/webui/src/lib/ui/TabIdentity.svelte";
+  import PageHeader from "../../../../drowse/webui/src/lib/ui/PageHeader.svelte";
   import PageFooter from "./PageFooter.svelte";
   import HeroShader from "./HeroShader.svelte";
   import RecordedTokenText from "./RecordedTokenText.svelte";

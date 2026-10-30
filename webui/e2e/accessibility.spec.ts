@@ -7,7 +7,7 @@ import { resolve } from "node:path";
 import { setAppearance } from "./workbench-navigation";
 
 const devUrl = "http://127.0.0.1:4176";
-const drawerStoreUrl = `/@fs/${resolve("src/lib/stores.svelte.ts")}`;
+const drawerStoreUrl = `/@fs/${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
 
 const sendButton = (page: Page) => page.getByRole("button", {
   name: /^(Send|Generate reply|Add message)$/,

@@ -24,7 +24,7 @@ try {
     mutatesPersistedHostedSession,
   } = await server.ssrLoadModule("/src/hosted/runtime/sessionCoordinator.ts");
   const { BrowserSessionPersistence } = await server.ssrLoadModule(
-    "/src/hosted/runtime/sessionPersistence.ts",
+    "/../drowse/webui/src/lib/sessionPersistence.ts",
   );
 
   test("restores only an exactly compatible session and applies tree before config", async () => {

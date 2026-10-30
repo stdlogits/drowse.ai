@@ -1,7 +1,7 @@
-import { attachProbe, chatLog, openDrawer } from "../../src/lib/stores.svelte";
-import { getRuntimeClient } from "../../src/lib/runtime/registry";
-import { drilldownUi } from "../../src/drawers/token/drilldown.svelte";
-import type { InstrumentFamily, MeasurementsEnvelopeJSON } from "../../src/lib/types";
+import { attachProbe, chatLog, openDrawer } from "../../../drowse/webui/src/lib/stores.svelte";
+import { getRuntimeClient } from "../../../drowse/webui/src/lib/runtime/registry";
+import { drilldownUi } from "../../../drowse/webui/src/drawers/token/drilldown.svelte";
+import type { InstrumentFamily, MeasurementsEnvelopeJSON } from "../../../drowse/webui/src/lib/types";
 
 const pending: Array<{
   family: InstrumentFamily;

@@ -15,7 +15,7 @@ test("native browser storage requests settle without blocking the page", async (
       (window as any).__nativeStorageResult = await requestPersistentStorage(navigator.storage, 250);
     };
     document.body.replaceChildren(button);
-  }, moduleUrl("src/lib/runtime/storagePersistence.ts"));
+  }, moduleUrl("../drowse/webui/src/lib/runtime/storagePersistence.ts"));
   await page.getByRole("button", { name: "Request native protection" }).click();
   await expect.poll(() => page.evaluate(() => typeof (window as any).__nativeStorageResult)).toBe("boolean");
   const result = await page.evaluate(async () => ({
@@ -88,8 +88,8 @@ async function mountNotice(page: Page, surface: "models" | "chats", scenario: Sc
   }, {
     surface, scenario, appUrl: moduleUrl("src/hosted/ui/HostedApp.svelte"),
     homeUrl: moduleUrl("src/hosted/ui/HostedHome.svelte"),
-    persistenceUrl: moduleUrl("src/lib/runtime/storagePersistence.ts"),
-    libraryUrl: moduleUrl("src/lib/stores/savedConversations.svelte.ts"),
+    persistenceUrl: moduleUrl("../drowse/webui/src/lib/runtime/storagePersistence.ts"),
+    libraryUrl: moduleUrl("../drowse/webui/src/lib/stores/savedConversations.svelte.ts"),
   });
   if (surface === "models") await page.locator(".model-grid > button").first().click();
 }
@@ -183,8 +183,8 @@ test("chats save and reload without persistent storage permission", async ({ pag
     const record = await conversationLibrary.create({ name: "Unprotected saved chat", snapshot: captureConversationSnapshot() });
     return { id: record.id, protectedStorage };
   }, {
-    libraryUrl: moduleUrl("src/lib/stores/savedConversations.svelte.ts"),
-    snapshotUrl: moduleUrl("src/lib/conversationWorkspace.ts"),
+    libraryUrl: moduleUrl("../drowse/webui/src/lib/stores/savedConversations.svelte.ts"),
+    snapshotUrl: moduleUrl("../drowse/webui/src/lib/conversationWorkspace.ts"),
   });
   expect(record.protectedStorage).toBe(false);
   await page.reload();
@@ -192,5 +192,5 @@ test("chats save and reload without persistent storage permission", async ({ pag
   expect(await page.evaluate(async ({ url, id }) => {
     const { conversationLibrary } = await import(url);
     return (await conversationLibrary.get(id)).name;
-  }, { url: moduleUrl("src/lib/stores/savedConversations.svelte.ts"), id: record.id })).toBe("Unprotected saved chat");
+  }, { url: moduleUrl("../drowse/webui/src/lib/stores/savedConversations.svelte.ts"), id: record.id })).toBe("Unprotected saved chat");
 });

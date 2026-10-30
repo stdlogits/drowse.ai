@@ -30,7 +30,7 @@
 
 <script lang="ts">
   import { onMount } from "svelte";
-  import { subscribeTheme } from "../../lib/theme";
+  import { subscribeTheme } from "../../../../drowse/webui/src/lib/theme";
   let { paused = false, contained = false, closeup = false, motionControl = false }: {
     paused?: boolean;
     contained?: boolean;

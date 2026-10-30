@@ -39,7 +39,7 @@ const catalog = {
 
 try {
   const { catalogInstrumentAvailability } = await server.ssrLoadModule(
-    "/src/lib/runtime/instrumentAvailability.ts",
+    "/../drowse/webui/src/lib/runtime/instrumentAvailability.ts",
   );
   assert.equal(
     catalogInstrumentAvailability(catalog, "with-sae", 2048, "sae"),

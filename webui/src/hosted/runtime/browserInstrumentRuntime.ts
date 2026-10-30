@@ -2,7 +2,7 @@ import type {
   InstalledInstrumentPackActivationResult,
   RuntimeProgressEvent,
   RuntimeServiceRequest,
-} from "../../lib/runtime/contracts";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
 import type {
   InstrumentFamily,
   InstrumentFamilyBlock,
@@ -11,11 +11,11 @@ import type {
   PreparationStatusJSON,
   ProbeInfo,
   ProbeRequest,
-} from "../../lib/types";
+} from "../../../../drowse/webui/src/lib/types";
 import type { BrowserFeasibilityCorePackCompiler } from "./browserCorePack";
 import type { BrowserJlensRuntimeResolver } from "./browserInstrumentPacks";
 import { BROWSER_EXACT_READOUT_TOP_K_CAPACITY } from "./webLlmGeneration";
-import { loadSaeDescription } from "../../lib/saeDescriptions";
+import { loadSaeDescription } from "../../../../drowse/webui/src/lib/saeDescriptions";
 
 type TokenLookup = (
   nodeId: string,

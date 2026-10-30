@@ -2,9 +2,9 @@ import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
 
 const modules = {
-  stores: `/@fs${resolve("src/lib/stores.svelte.ts")}`,
-  saved: `/@fs${resolve("src/lib/stores/savedConversations.svelte.ts")}`,
-  workspace: `/@fs${resolve("src/lib/conversationWorkspace.ts")}`,
+  stores: `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`,
+  saved: `/@fs${resolve("../drowse/webui/src/lib/stores/savedConversations.svelte.ts")}`,
+  workspace: `/@fs${resolve("../drowse/webui/src/lib/conversationWorkspace.ts")}`,
   home: `/@fs${resolve("src/hosted/ui/HostedHome.svelte")}`,
 };
 async function seed(page: Page) {

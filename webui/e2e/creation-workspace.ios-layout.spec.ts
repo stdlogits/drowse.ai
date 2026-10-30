@@ -2,9 +2,9 @@ import { expect, test, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { resolve } from "node:path";
 
-const registryUrl = `/@fs${resolve("src/lib/runtime/registry.ts")}`;
-const drawersUrl = `/@fs${resolve("src/lib/stores/drawers.svelte.ts")}`;
-const themeUrl = `/@fs${resolve("src/lib/theme.ts")}`;
+const registryUrl = `/@fs${resolve("../drowse/webui/src/lib/runtime/registry.ts")}`;
+const drawersUrl = `/@fs${resolve("../drowse/webui/src/lib/stores/drawers.svelte.ts")}`;
+const themeUrl = `/@fs${resolve("../drowse/webui/src/lib/theme.ts")}`;
 const creatorName = "Create a concept or scale";
 
 async function prepare(page: Page) {

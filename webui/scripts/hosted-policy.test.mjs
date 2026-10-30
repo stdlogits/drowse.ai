@@ -289,7 +289,7 @@ try {
     "/src/hosted/runtime/runtimeLock.ts",
   );
   const uiCapabilityModule = await server.ssrLoadModule(
-    "/src/lib/runtime/ui-capabilities.ts",
+    "/../drowse/webui/src/lib/runtime/ui-capabilities.ts",
   );
 
   assert.equal(

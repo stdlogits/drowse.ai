@@ -1,0 +1,2 @@
+# Fork patches carry upstream whitespace verbatim.
+browser-runtime/forks/*.patch whitespace=-blank-at-eol

@@ -1,7 +1,7 @@
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { runtimeIdentitySha256 } from "../src/lib/runtime/catalog";
-import type { ModelVariant, RuntimeIdentity } from "../src/lib/runtime/contracts";
+import type { ModelVariant, RuntimeIdentity } from "../../drowse/webui/src/lib/runtime/contracts";
 import {
   DrowseWebLlmRuntime,
   type DrowseWebLlmModule,

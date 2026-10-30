@@ -15,7 +15,7 @@ import type {
   TopologyResult,
 } from "./workerContracts";
 import { applySerializedInverse } from "./mahalanobis";
-import type { ManifoldDomain } from "../../lib/types";
+import type { ManifoldDomain } from "../../../../drowse/webui/src/lib/types";
 
 export interface ActivationCaptureSink {
   appendRows(layer: number, startRow: number, values: Float32Array): Promise<void>;
@@ -1995,7 +1995,7 @@ function identity(value: ActivationSpoolIdentity): ActivationSpoolIdentity {
     captureSha256: value.captureSha256,
   };
 }
-import { requireBrowserDomain } from "../../lib/manifolds/surfaceGeometry";
+import { requireBrowserDomain } from "../../../../drowse/webui/src/lib/manifolds/surfaceGeometry";
 
 async function forEachFittingLayer<T>(
   source: Iterable<T>,

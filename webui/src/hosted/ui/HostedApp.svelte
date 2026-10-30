@@ -1,31 +1,31 @@
 <script lang="ts">
-  import MorphText from "../../lib/ui/MorphText.svelte";
-  import FluentIcon from "../../lib/ui/FluentIcon.svelte";
-  import StateIcon from "../../lib/ui/StateIcon.svelte";
-  import BaseModelTag from "../../lib/ui/BaseModelTag.svelte";
-  import { animatedDetails } from "../../lib/animatedDetails";
-  import RollingNumber from "../../lib/ui/RollingNumber.svelte";
-  import TabIdentity from "../../lib/ui/TabIdentity.svelte";
-  import { setupTabState } from "../../lib/tabIdentity";
+  import MorphText from "../../../../drowse/webui/src/lib/ui/MorphText.svelte";
+  import FluentIcon from "../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
+  import StateIcon from "../../../../drowse/webui/src/lib/ui/StateIcon.svelte";
+  import BaseModelTag from "../../../../drowse/webui/src/lib/ui/BaseModelTag.svelte";
+  import { animatedDetails } from "../../../../drowse/webui/src/lib/animatedDetails";
+  import RollingNumber from "../../../../drowse/webui/src/lib/ui/RollingNumber.svelte";
+  import TabIdentity from "../../../../drowse/webui/src/lib/ui/TabIdentity.svelte";
+  import { setupTabState } from "../../../../drowse/webui/src/lib/tabIdentity";
   import { onMount } from "svelte";
-  import { registerModelPicker } from "../../lib/webmcp/lifecycle";
+  import { registerModelPicker } from "../../../../drowse/webui/src/lib/webmcp/lifecycle";
   import { fade, fly } from "svelte/transition";
-  import InfoTip from "../../lib/ui/InfoTip.svelte";
-  import PageHeader from "./PageHeader.svelte";
+  import InfoTip from "../../../../drowse/webui/src/lib/ui/InfoTip.svelte";
+  import PageHeader from "../../../../drowse/webui/src/lib/ui/PageHeader.svelte";
   import PageFooter from "./PageFooter.svelte";
-  import ModelProviderLogo from "./ModelProviderLogo.svelte";
+  import ModelProviderLogo from "../../../../drowse/webui/src/lib/ui/ModelProviderLogo.svelte";
   import { formatEtaRange } from "../../lib/runtime/eta";
   import type {
     HostedCheckState,
     HostedModelOption,
     HostedShellController,
     HostedShellSnapshot,
-  } from "./types";
-  import type { BrowserRuntimeClass } from "../../lib/runtime/contracts";
-  import { contentIn, contentOut } from "../../lib/motion";
-  import { userFacingError } from "../../lib/runtime/userFacingError";
+  } from "../../../../drowse/webui/src/lib/shell";
+  import type { BrowserRuntimeClass } from "../../../../drowse/webui/src/lib/runtime/contracts";
+  import { contentIn, contentOut } from "../../../../drowse/webui/src/lib/motion";
+  import { userFacingError } from "../../../../drowse/webui/src/lib/runtime/userFacingError";
   import { reloadInstructions, appRefreshSafetyMessage } from "../runtime/chunkRecovery";
-  import { clearConversationOpen } from "../runtime/entryExperience";
+  import { clearConversationOpen } from "../../../../drowse/webui/src/lib/entryExperience";
   import {
     defaultModelSelection,
     downloadSizeSummary,

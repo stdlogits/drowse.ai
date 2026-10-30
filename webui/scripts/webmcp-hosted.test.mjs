@@ -6,11 +6,11 @@ const server = await createServer({ root: fileURLToPath(new URL("..", import.met
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async () => { throw Error("Network calls are forbidden in this unit test"); };
 try {
-  const { createHostedTools } = await server.ssrLoadModule("/src/lib/webmcp/hostedTools.ts");
-  const { createPublicTools } = await server.ssrLoadModule("/src/lib/webmcp/publicTools.ts");
-  const { registerModelPicker } = await server.ssrLoadModule("/src/lib/webmcp/lifecycle.ts");
-  const { JobRegistry } = await server.ssrLoadModule("/src/lib/webmcp/jobs.ts");
-  const { validateInput } = await server.ssrLoadModule("/src/lib/webmcp/validation.ts");
+  const { createHostedTools } = await server.ssrLoadModule("/../drowse/webui/src/lib/webmcp/hostedTools.ts");
+  const { createPublicTools } = await server.ssrLoadModule("/../drowse/webui/src/lib/webmcp/publicTools.ts");
+  const { registerModelPicker } = await server.ssrLoadModule("/../drowse/webui/src/lib/webmcp/lifecycle.ts");
+  const { JobRegistry } = await server.ssrLoadModule("/../drowse/webui/src/lib/webmcp/jobs.ts");
+  const { validateInput } = await server.ssrLoadModule("/../drowse/webui/src/lib/webmcp/validation.ts");
   const state = { phase: "supported", detail: "Ready", models: [{ id: "chat", name: "Chat", fit: "fits", reason: "Fits", setupComplete: true, firstRunPacks: [{ id: "core", requiredForSetup: true, selected: true }] }], download: { phase: "idle" }, runtime: { phase: "unloaded" } };
   const hosted = { snapshot: { lifecycle: "ready", modelVariantId: "chat", generation: { phase: "idle" }, fitting: { phase: "idle" }, download: { phase: "idle" } } };
   let downloaded = 0, opened = 0, chosen = null, downloadState = "installed";
@@ -80,8 +80,8 @@ try {
       registered.set(tool.name, tool);
       signal.addEventListener("abort", () => registered.delete(tool.name), { once: true });
     } } } });
-    const { startWebMcp } = await server.ssrLoadModule("/src/lib/webmcp/index.ts");
-    const { clearDrowseLocalData } = await server.ssrLoadModule("/src/lib/runtime/localData.ts");
+    const { startWebMcp } = await server.ssrLoadModule("/../drowse/webui/src/lib/webmcp/index.ts");
+    const { clearDrowseLocalData } = await server.ssrLoadModule("/../drowse/webui/src/lib/runtime/localData.ts");
     const localStorage = { length: 0, key: () => null, removeItem: () => {} };
     const provider = document.modelContext;
     delete document.modelContext;

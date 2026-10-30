@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { verifiedSaeDescriptionSource, parseSaeDescription, loadSaeDescription } from "../src/lib/saeDescriptions.ts";
+import { verifiedSaeDescriptionSource, parseSaeDescription, loadSaeDescription } from "../../drowse/webui/src/lib/saeDescriptions.ts";
 
 const headers = await readFile(new URL("../public-hosted/_headers", import.meta.url), "utf8");
 assert.match(headers, /connect-src[^;]*https:\/\/www\.neuronpedia\.org(?:\s|;)/);

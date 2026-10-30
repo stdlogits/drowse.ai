@@ -35,7 +35,7 @@ const reports = await mkdtemp(resolve(tmpdir(), "drowse-base-browser-"));
 const modelBase = `/model/resolve/${manifest.source.revision}/`;
 const routes = new Map([
   ["/model-lib.wasm", library],
-  ["/webllm.js", resolve(import.meta.dirname, "../node_modules/@drowse/web-llm/lib/index.js")],
+  ["/webllm.js", resolve(import.meta.dirname, "../../node_modules/@drowse/web-llm/lib/index.js")],
   ["/capture-parity.mjs", resolve(import.meta.dirname, "base-capture-parity.mjs")],
 ]);
 const assets = [];

@@ -5,11 +5,11 @@ import type {
 import type {
   ModelVariantRequirements,
   StructuredHookProfileId,
-} from "../../lib/runtime/contracts";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
 import {
   MAX_OUTPUT_TOKEN_COUNT,
   outputTokenLimitForRuntime,
-} from "../../lib/runtime/outputTokenPolicy";
+} from "../../../../drowse/webui/src/lib/runtime/outputTokenPolicy";
 import type { GpuAdapterLike } from "./capabilities";
 import type { RankOneHookProgramBuffers } from "./rankOneHookProgram";
 import {

@@ -2,9 +2,9 @@ import { chooseFixtureModel } from "./workbench-navigation";
 import { returnToChats, setAppearance } from "./workbench-navigation";
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
-import { CHAT_ACCENTS } from "../src/lib/chatAccent";
+import { CHAT_ACCENTS } from "../../drowse/webui/src/lib/chatAccent";
 
-const savedUrl = `/@fs${resolve("src/lib/stores/savedConversations.svelte.ts")}`;
+const savedUrl = `/@fs${resolve("../drowse/webui/src/lib/stores/savedConversations.svelte.ts")}`;
 const rgb = (hex: string) => `rgb(${[1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)).join(", ")})`;
 
 test("chat accents are independent, persistent, accessible, and follow the active workspace", async ({ page }, testInfo) => {

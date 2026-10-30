@@ -1,7 +1,7 @@
 <script lang="ts">
   import SitePage from "./SitePage.svelte";
   import GuideContent from "./GuideContent.svelte";
-  import FluentIcon from "../../../lib/ui/FluentIcon.svelte";
+  import FluentIcon from "../../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
   import { htmlGuides } from "../../../../scripts/site-content.mjs";
 
   const page = htmlGuides.find(guide => guide.path === "/learn")!;

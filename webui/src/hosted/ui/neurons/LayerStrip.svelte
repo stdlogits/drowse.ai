@@ -1,7 +1,7 @@
 <script lang="ts">
-  import MorphText from "../../../lib/ui/MorphText.svelte";
-  import InfoTip from "../../../lib/ui/InfoTip.svelte";
-  import FluentIcon from "../../../lib/ui/FluentIcon.svelte";
+  import MorphText from "../../../../../drowse/webui/src/lib/ui/MorphText.svelte";
+  import InfoTip from "../../../../../drowse/webui/src/lib/ui/InfoTip.svelte";
+  import FluentIcon from "../../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
   import TitleText from "./TitleText.svelte";
   import { BANDS, FLAG_DETECTOR, FLAG_LABELLED, FLAG_PREDICTS, FLAG_SUPPRESSES, MIDDLE_CAUTION, bandOf, neuronId, type IndexRow } from "./data";
 

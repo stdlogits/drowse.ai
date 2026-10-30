@@ -4,7 +4,7 @@ import {
   type RuntimeServiceMap,
   type RuntimeServiceName,
   type RuntimeServiceRequest,
-} from "../../lib/runtime/contracts";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
 
 export type RuntimeServiceRoute =
   | "artifact"

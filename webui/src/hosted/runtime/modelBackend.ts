@@ -6,12 +6,12 @@ import type {
   ModelVariant,
   RuntimeProgressEvent,
   RuntimeServiceRequest,
-} from "../../lib/runtime/contracts";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
 import type {
   WSGenerateRequest,
   WSServerMessage,
   WSSubmitRequest,
-} from "../../lib/types";
+} from "../../../../drowse/webui/src/lib/types";
 import type { ActivationSpool } from "../fitting/activationSpool";
 import type { GpuAdapterLike } from "./capabilities";
 

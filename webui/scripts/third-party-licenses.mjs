@@ -6,7 +6,8 @@ import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const webuiRoot = fileURLToPath(new URL("../", import.meta.url));
-const nodeModules = resolve(webuiRoot, "node_modules");
+// The npm workspace installs at the repository root.
+const nodeModules = resolve(webuiRoot, "..", "node_modules");
 const serviceWorkerPackages = ["workbox-core", "workbox-routing", "workbox-strategies", "workbox-precaching", "workbox-expiration", "workbox-cacheable-response"];
 const noticeFile = /^(?:licen[cs]e|copying|notice)(?:[.-].*)?$/i;
 
@@ -41,7 +42,8 @@ async function sourceFiles(directory) {
 export async function importedDependencies() {
   const manifest = JSON.parse(await readFile(resolve(webuiRoot, "package.json"), "utf8"));
   const dependencies = Object.keys(manifest.dependencies ?? {});
-  const sources = (await Promise.all(["src", "hosted"].map(root => sourceFiles(resolve(webuiRoot, root)))))
+  // The hosted build also compiles the shared dashboard source from the drowse submodule.
+  const sources = (await Promise.all(["src", "hosted", "../drowse/webui/src"].map(root => sourceFiles(resolve(webuiRoot, root)))))
     .flat();
   const text = (await Promise.all(sources.map(file => readFile(file, "utf8")))).join("\n");
   return dependencies.filter(name => new RegExp(`(?:from\\s*|import\\s*\\(\\s*)["']${name.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}(?:/[^"']*)?["']`).test(text));

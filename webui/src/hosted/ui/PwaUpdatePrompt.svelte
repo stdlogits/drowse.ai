@@ -1,12 +1,12 @@
 <script lang="ts">
-  import MorphText from "../../lib/ui/MorphText.svelte";
+  import MorphText from "../../../../drowse/webui/src/lib/ui/MorphText.svelte";
   import { onDestroy, onMount } from "svelte";
-  import { registerUpdateActions } from "../../lib/webmcp/lifecycle";
+  import { registerUpdateActions } from "../../../../drowse/webui/src/lib/webmcp/lifecycle";
   import { fly } from "svelte/transition";
   import { registerSW } from "virtual:pwa-register";
-  import { userFacingError } from "../../lib/runtime/userFacingError";
+  import { userFacingError } from "../../../../drowse/webui/src/lib/runtime/userFacingError";
   import { hostedNetworkIsOffline } from "../runtime/networkState";
-  import { contentIn, contentOut } from "../../lib/motion";
+  import { contentIn, contentOut } from "../../../../drowse/webui/src/lib/motion";
   import {
     UPDATE_REMINDER_KEY, readUpdateReminder, markUpdateShown,
     deferUpdate, clearUpdateReminder,

@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { pageTransition } from "../../lib/motion";
-  import MorphText from "../../lib/ui/MorphText.svelte";
+  import { pageTransition } from "../../../../drowse/webui/src/lib/motion";
+  import MorphText from "../../../../drowse/webui/src/lib/ui/MorphText.svelte";
   import DemoReply from "./DemoReply.svelte";
-  import Slider from "../../lib/Slider.svelte";
-  import SegmentedTabs from "../../lib/ui/SegmentedTabs.svelte";
+  import Slider from "../../../../drowse/webui/src/lib/Slider.svelte";
+  import SegmentedTabs from "../../../../drowse/webui/src/lib/ui/SegmentedTabs.svelte";
   import RecordedTokenText from "./RecordedTokenText.svelte";
   import recording from "../data/neighbor-example.json";
 

@@ -1,0 +1,11 @@
+{
+  "name": "drowse-ai",
+  "private": true,
+  "description": "drowse.ai: the hosted browser edition of drowse. Dependencies install here so the drowse submodule's shared dashboard source resolves them too.",
+  "workspaces": [
+    "webui"
+  ],
+  "engines": {
+    "node": "24.x"
+  }
+}

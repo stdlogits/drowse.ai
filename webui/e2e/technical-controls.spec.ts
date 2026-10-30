@@ -2,13 +2,13 @@ import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 import { readFile } from "node:fs/promises";
 
-const storesUrl = `/@fs/${resolve("src/lib/stores.svelte.ts")}`;
+const storesUrl = `/@fs/${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
 
 test("max tokens follows the model limit and rejects repeated oversized edits", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
   await expect(page.getByRole("button", { name: /^Controls/ })).toBeVisible();
-  const registryUrl = `/@fs${resolve("src/lib/runtime/registry.ts")}`;
+  const registryUrl = `/@fs${resolve("../drowse/webui/src/lib/runtime/registry.ts")}`;
   async function setModelLimit(limit: number) {
     await page.evaluate(async ({ storesUrl, registryUrl, limit }) => {
       const registry = await import(registryUrl);
@@ -136,7 +136,7 @@ test("technical controls preserve full names, slider behavior, and translucent s
   await page.emulateMedia({ forcedColors: "active" });
   await expect(page.getByRole("dialog", { name: "Add manifold", exact: true })).toHaveCSS("backdrop-filter", "none");
   expect(await page.getByRole("dialog", { name: "Add manifold", exact: true }).evaluate(el => getComputedStyle(el).backgroundColor)).not.toContain("0.9");
-  const sliderSource = await readFile(resolve("src/lib/Slider.svelte"), "utf8");
+  const sliderSource = await readFile(resolve("../drowse/webui/src/lib/Slider.svelte"), "utf8");
   expect(sliderSource).toMatch(/::-webkit-slider-thumb\s*\{[^}]*margin-top:\s*-8px;/);
 });
 

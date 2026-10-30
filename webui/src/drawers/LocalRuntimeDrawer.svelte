@@ -1,16 +1,16 @@
 <script lang="ts">
-  import MorphText from "../lib/ui/MorphText.svelte";
-  import RollingNumber from "../lib/ui/RollingNumber.svelte";
-  import ResetSettings from "../lib/ui/ResetSettings.svelte";
+  import MorphText from "../../../drowse/webui/src/lib/ui/MorphText.svelte";
+  import RollingNumber from "../../../drowse/webui/src/lib/ui/RollingNumber.svelte";
+  import ResetSettings from "../../../drowse/webui/src/lib/ui/ResetSettings.svelte";
   import { onMount } from "svelte";
-  import DrawerCloseButton from "../lib/ui/DrawerCloseButton.svelte";
-  import Disclosure from "../lib/Disclosure.svelte";
+  import DrawerCloseButton from "../../../drowse/webui/src/lib/ui/DrawerCloseButton.svelte";
+  import Disclosure from "../../../drowse/webui/src/lib/Disclosure.svelte";
   import {
     getHostedController,
     getRuntimeCapabilities,
-  } from "../lib/runtime/registry";
+  } from "../../../drowse/webui/src/lib/runtime/registry";
   import { initialRuntimeSnapshot } from "../lib/runtime/state";
-  import { userFacingError } from "../lib/runtime/userFacingError";
+  import { userFacingError } from "../../../drowse/webui/src/lib/runtime/userFacingError";
   import { formatEtaRange } from "../lib/runtime/eta";
   import { hostedNetworkIsOffline } from "../hosted/runtime/networkState";
   import { optionalPackHardwareBlock } from "../hosted/runtime/optionalPackCompatibility";
@@ -24,13 +24,13 @@
     ModelVariant,
     RuntimeSnapshot,
     VerifiedCatalog,
-  } from "../lib/runtime/contracts";
+  } from "../../../drowse/webui/src/lib/runtime/contracts";
   import {
     closeDrawer,
     currentSteeringExpression,
     probeRack,
     steerRack,
-  } from "../lib/stores.svelte";
+  } from "../../../drowse/webui/src/lib/stores.svelte";
 
   let { params = null }: { params?: unknown } = $props();
   const embedded = $derived(

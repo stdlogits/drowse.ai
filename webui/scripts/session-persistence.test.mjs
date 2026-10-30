@@ -24,7 +24,7 @@ try {
     BrowserSessionStateStore,
     SessionPersistenceError,
     validatePersistedHostedSession,
-  } = await server.ssrLoadModule("/src/hosted/runtime/sessionPersistence.ts");
+  } = await server.ssrLoadModule("/../drowse/webui/src/lib/sessionPersistence.ts");
 
   test("round-trips one authoritative session per model variant", async () => {
     const store = memoryStore();

@@ -84,7 +84,7 @@ fn gram(points: &[Vec<f64>]) -> Vec<f64> {
 
 #[test]
 fn shared_adversarial_shapes_and_coordinate_fidelity() {
-    for line in include_str!("../../fixtures/topology-adversarial-v1.csv")
+    for line in include_str!("../../../drowse/tests/fixtures/browser/topology-adversarial-v1.csv")
         .lines()
         .skip(1)
     {

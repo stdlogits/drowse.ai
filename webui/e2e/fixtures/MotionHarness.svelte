@@ -1,15 +1,15 @@
 <script lang="ts">
-  import MorphText from "../../src/lib/ui/MorphText.svelte";
-  import RollingNumber from "../../src/lib/ui/RollingNumber.svelte";
-  import Slider from "../../src/lib/Slider.svelte";
-  import NumberInput from "../../src/lib/NumberInput.svelte";
-  import LayerStrip from "../../src/panels/rack/LayerStrip.svelte";
-  import TraceDetail from "../../src/lib/charts/TraceDetail.svelte";
-  import TemplatePreview from "../../src/lib/ui/TemplatePreview.svelte";
-  import ManifoldMiniMap from "../../src/panels/manifold/ManifoldMiniMap.svelte";
-  import ProbeReadingRow from "../../src/panels/rack/ProbeReadingRow.svelte";
-  import RackCard from "../../src/panels/rack/RackCard.svelte";
-  import Bar from "../../src/lib/charts/Bar.svelte";
+  import MorphText from "../../../drowse/webui/src/lib/ui/MorphText.svelte";
+  import RollingNumber from "../../../drowse/webui/src/lib/ui/RollingNumber.svelte";
+  import Slider from "../../../drowse/webui/src/lib/Slider.svelte";
+  import NumberInput from "../../../drowse/webui/src/lib/NumberInput.svelte";
+  import LayerStrip from "../../../drowse/webui/src/panels/rack/LayerStrip.svelte";
+  import TraceDetail from "../../../drowse/webui/src/lib/charts/TraceDetail.svelte";
+  import TemplatePreview from "../../../drowse/webui/src/lib/ui/TemplatePreview.svelte";
+  import ManifoldMiniMap from "../../../drowse/webui/src/panels/manifold/ManifoldMiniMap.svelte";
+  import ProbeReadingRow from "../../../drowse/webui/src/panels/rack/ProbeReadingRow.svelte";
+  import RackCard from "../../../drowse/webui/src/panels/rack/RackCard.svelte";
+  import Bar from "../../../drowse/webui/src/lib/charts/Bar.svelte";
   let text = $state("Ready");
   let value = $state<number | null>(12);
   let slider = $state(.5);

@@ -7,7 +7,7 @@ import { createServer } from "vite";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const fixture = JSON.parse(await readFile(
-  new URL("../../browser-runtime/fixtures/structured-program-parity-v1.json", import.meta.url),
+  new URL("../../drowse/tests/fixtures/browser/structured-program-parity-v1.json", import.meta.url),
   "utf8",
 ));
 const server = await createServer({

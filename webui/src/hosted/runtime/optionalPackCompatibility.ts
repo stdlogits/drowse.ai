@@ -2,8 +2,8 @@ import type {
   CatalogInstrumentPack,
   ModelVariant,
   RuntimeCapabilities,
-} from "../../lib/runtime/contracts";
-import { MEBIBYTE } from "../../lib/runtime/contracts";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
+import { MEBIBYTE } from "../../../../drowse/webui/src/lib/runtime/contracts";
 
 const FP32_BYTES = 4;
 const EXACT_READOUT_TOP_K = 8;

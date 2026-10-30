@@ -19,16 +19,16 @@ import type {
   WorkerEventEnvelope,
   WorkerRequest,
   WorkerSuccessResponse,
-} from "../../lib/runtime/contracts";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
 import {
   isRuntimeServiceMethod,
   RUNTIME_PROTOCOL_VERSION,
-} from "../../lib/runtime/contracts";
-import { MEBIBYTE } from "../../lib/runtime/contracts";
-import { selectorReferencesManifold } from "../../lib/manifolds/selectors";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
+import { MEBIBYTE } from "../../../../drowse/webui/src/lib/runtime/contracts";
+import { selectorReferencesManifold } from "../../../../drowse/webui/src/lib/manifolds/selectors";
 import { initialRuntimeSnapshot, runtimeFailure } from "../../lib/runtime/state";
 import { assessModelVariant } from "../../lib/runtime/recommendation";
-import { outputTokenLimitForSignals } from "../../lib/runtime/outputTokenPolicy";
+import { outputTokenLimitForSignals } from "../../../../drowse/webui/src/lib/runtime/outputTokenPolicy";
 import {
   CatalogValidationError,
   runtimeIdentitySha256,
@@ -71,7 +71,7 @@ import {
   type BrowserSessionCoordinatorOptions,
   type SessionCoordinatorPersistencePort,
 } from "./sessionCoordinator";
-import { BrowserSessionPersistence } from "./sessionPersistence";
+import { BrowserSessionPersistence } from "../../../../drowse/webui/src/lib/sessionPersistence";
 import {
   isFittingLifecycleRequest,
   runtimeServiceOperationPolicy,
@@ -80,7 +80,7 @@ import {
 import { BrowserDrowseArchiveService } from "../artifacts/service";
 import { optionalPackHardwareBlock } from "./optionalPackCompatibility";
 import { clearOwnedRuntimeStorage } from "./legacyRuntimeStorage";
-import { LEGACY_PRODUCT_SLUGS } from "./brandMigration";
+import { LEGACY_PRODUCT_SLUGS } from "../../../../drowse/webui/src/lib/brandMigration";
 import {
   ActivationSpool,
   BrowserActivationSpool,
@@ -90,7 +90,7 @@ import type {
   WSGenerateRequest,
   WSSubmitRequest,
   WSTreeMutatedEvent,
-} from "../../lib/types";
+} from "../../../../drowse/webui/src/lib/types";
 
 export interface WorkerScopeLike {
   postMessage(message: unknown): void;

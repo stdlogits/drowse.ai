@@ -1,4 +1,4 @@
-import { RuntimeRequestJournal, replayRequest } from "../../lib/runtime/requestJournal";
+import { RuntimeRequestJournal, replayRequest } from "../../../../drowse/webui/src/lib/runtime/requestJournal";
 import type {
   CatalogInstrumentPack,
   InstalledInstrumentPackActivationRequest,
@@ -13,7 +13,7 @@ import type {
   RuntimeSessionsService,
   RuntimeTemplatesService,
   RuntimeTreeService,
-} from "../../lib/runtime/contracts";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
 import type {
   InstrumentFamily,
   InstrumentFamilyBlock,
@@ -31,7 +31,7 @@ import type {
   WSGenerateRequest,
   WSServerMessage,
   WSSubmitRequest,
-} from "../../lib/types";
+} from "../../../../drowse/webui/src/lib/types";
 import { DROWSE_HOOK_ABI, type RankOneHookProgramBuffers } from "./rankOneHookProgram";
 import { BrowserLoomRuntime, type BrowserGenerationPort } from "./browserLoom";
 import type {
@@ -104,7 +104,7 @@ export class DeterministicFakeRuntime implements RuntimeClient {
       validateSteering: (
         expression: string,
         _id?: string,
-        options?: import("../../lib/runtime/contracts").SteeringValidationOptions,
+        options?: import("../../../../drowse/webui/src/lib/runtime/contracts").SteeringValidationOptions,
       ) => this.loomRequest(
           "sessions",
           "validateSteering",

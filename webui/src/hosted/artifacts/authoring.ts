@@ -4,14 +4,14 @@ import type {
   CreateManifoldRequest,
   CreateTemplateRequest,
   ManifoldDomain,
-} from "../../lib/types";
+} from "../../../../drowse/webui/src/lib/types";
 import type {
   ManifoldInfo,
   ManifoldFitInfo,
   ManifoldNodeDetail,
   TemplateDetail,
   TemplateSummary,
-} from "../../lib/types.gen";
+} from "../../../../drowse/webui/src/lib/types.gen";
 import { buildDrowseArchive, jsonBytes } from "./builder";
 import { parseDrowseTensorFilename } from "./drowseArchive";
 
@@ -427,4 +427,4 @@ function affineRank(values: number[][]): number {
   }
   return rank;
 }
-import { requireBrowserDomain } from "../../lib/manifolds/surfaceGeometry";
+import { requireBrowserDomain } from "../../../../drowse/webui/src/lib/manifolds/surfaceGeometry";

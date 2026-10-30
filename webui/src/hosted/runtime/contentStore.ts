@@ -1,5 +1,5 @@
-import type { DeviceLoadRecord } from "../../lib/runtime/contracts";
-import { migrateLegacyDatabase, drowseStorageRoot } from "./brandMigration";
+import type { DeviceLoadRecord } from "../../../../drowse/webui/src/lib/runtime/contracts";
+import { migrateLegacyDatabase, drowseStorageRoot } from "../../../../drowse/webui/src/lib/brandMigration";
 
 const DATABASE_NAME = "drowse-hosted-runtime";
 const DATABASE_VERSION = 5;

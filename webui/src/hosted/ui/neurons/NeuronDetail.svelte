@@ -1,7 +1,7 @@
 <script lang="ts">
-  import FluentIcon from "../../../lib/ui/FluentIcon.svelte";
-  import MorphText from "../../../lib/ui/MorphText.svelte";
-  import InfoTip from "../../../lib/ui/InfoTip.svelte";
+  import FluentIcon from "../../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
+  import MorphText from "../../../../../drowse/webui/src/lib/ui/MorphText.svelte";
+  import InfoTip from "../../../../../drowse/webui/src/lib/ui/InfoTip.svelte";
   import PoleColumn from "./PoleColumn.svelte";
   import TitleText from "./TitleText.svelte";
   import { MIDDLE_CAUTION, bandOf, neuronId, type NeuronDetail } from "./data";

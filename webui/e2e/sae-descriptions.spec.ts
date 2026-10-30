@@ -2,8 +2,8 @@ import { expect, test, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-const storesUrl = `/@fs/${resolve("src/lib/stores.svelte.ts")}`;
-const registryUrl = `/@fs${resolve("src/lib/runtime/registry.ts")}`;
+const storesUrl = `/@fs/${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
+const registryUrl = `/@fs${resolve("../drowse/webui/src/lib/runtime/registry.ts")}`;
 
 async function openFeatures(page: Page, size: string, layer: number) {
   const index = JSON.parse(await readFile(resolve(`src/lib/data/sae-descriptions/gemma-3-${size}-it.json`), "utf8"));
@@ -62,7 +62,7 @@ for (const [size, layer] of [["270m", 12], ["1b", 13], ["4b", 17]] as const) {
 }
 
 test("published SAE descriptions remain readable in the live feature panel", async ({ page }, testInfo) => {
-  const index = JSON.parse(await readFile(resolve("src/lib/data/sae-descriptions/gemma-3-1b-it.json"), "utf8"));
+  const index = JSON.parse(await readFile(resolve("../drowse/webui/src/lib/data/sae-descriptions/gemma-3-1b-it.json"), "utf8"));
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
   await expect(page.locator(".shell")).toBeVisible();
@@ -81,7 +81,7 @@ test("published SAE descriptions remain readable in the live feature panel", asy
     recordSaeReadoutFrame([{ id: 1, activation: 4, label: null, max_act: 10 }]);
     await backfillSaeMeta();
     setInspectorTab("sae");
-  }, { storesUrl, registryUrl, source: index.source, descriptionUrl: `/@fs${resolve("src/lib/saeDescriptions.ts")}` });
+  }, { storesUrl, registryUrl, source: index.source, descriptionUrl: `/@fs${resolve("../drowse/webui/src/lib/saeDescriptions.ts")}` });
   await page.getByRole("button", { name: /^Controls/ }).click();
   const panel = page.getByRole("list", { name: "SAE feature probes" });
   const label = panel.locator(".feature-description").filter({ hasText: index.explanations["1"][0] });

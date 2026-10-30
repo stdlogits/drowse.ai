@@ -8,8 +8,8 @@ const server = await createServer({ root: fileURLToPath(new URL("..", import.met
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
 try {
-  const { JobRegistry } = await server.ssrLoadModule("/src/lib/webmcp/jobs.ts");
-  const { awaitGenerationReceipt } = await server.ssrLoadModule("/src/lib/webmcp/generationReceipt.ts");
+  const { JobRegistry } = await server.ssrLoadModule("/../drowse/webui/src/lib/webmcp/jobs.ts");
+  const { awaitGenerationReceipt } = await server.ssrLoadModule("/../drowse/webui/src/lib/webmcp/generationReceipt.ts");
   const bounded = new JobRegistry();
   const firstBounded = bounded.start("generate", () => new Promise(() => {}), { requestId: "capacity-retry" });
   for (let index = 1; index < 128; index += 1) bounded.start("generate", () => new Promise(() => {}));
@@ -235,7 +235,7 @@ try {
   });
   assert.equal((await recoveredReceipt).state, "completed", "missing terminal is recovered only from authoritative status");
 
-  const { RuntimeRequestJournal } = await server.ssrLoadModule("/src/lib/runtime/requestJournal.ts");
+  const { RuntimeRequestJournal } = await server.ssrLoadModule("/../drowse/webui/src/lib/runtime/requestJournal.ts");
   globalThis.sessionStorage = storage;
   const journal = new RuntimeRequestJournal();
   const commandPayload = { type: "generate", request_id: "persisted", input: "hello" };

@@ -13,11 +13,11 @@ import type {
   VerifiedCatalog,
   WorkerEventEnvelope,
   WorkerScopedFailure,
-} from "../../lib/runtime/contracts";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
 import { rankCatalogModels } from "../../lib/runtime/recommendation";
-import { ApiError } from "../../lib/runtime/errors";
+import { ApiError } from "../../../../drowse/webui/src/lib/runtime/errors";
 import { cacheOfflineRuntimeAssets } from "./offlineRuntimeAssets";
-import { clearDrowseLocalData } from "../../lib/runtime/localData";
+import { clearDrowseLocalData } from "../../../../drowse/webui/src/lib/runtime/localData";
 import { initialRuntimeSnapshot, runtimeFailure } from "../../lib/runtime/state";
 import {
   BrowserRuntimeClient,
@@ -348,7 +348,7 @@ export class HostedControllerImpl implements HostedController {
       if (this.currentSnapshot.lifecycle === "failed") this.ownership?.release();
       this.emit();
     } else if (event.event === "device_lost") {
-      const failure = event.payload as import("../../lib/runtime/contracts").RuntimeFailure;
+      const failure = event.payload as import("../../../../drowse/webui/src/lib/runtime/contracts").RuntimeFailure;
       this.ownership?.release();
       this.update({ lifecycle: "failed", error: failure });
     } else if (event.event === "error") {
@@ -509,7 +509,7 @@ function toFailure(
   code: string,
   error: unknown,
   recoverable: boolean,
-): import("../../lib/runtime/contracts").RuntimeFailure {
+): import("../../../../drowse/webui/src/lib/runtime/contracts").RuntimeFailure {
   const nested = error instanceof ApiError && error.body && typeof error.body === "object"
     ? (error.body as { error?: { code?: unknown } }).error
     : null;

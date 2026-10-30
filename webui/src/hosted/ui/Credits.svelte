@@ -1,27 +1,27 @@
 <script lang="ts">
-  import FluentIcon from "../../lib/ui/FluentIcon.svelte";
+  import FluentIcon from "../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
   import a9limPortrait from "../../assets/credits/a9lim.jpg";
   import treetownPortrait from "../../assets/credits/treetown.jpg";
   import katPortrait from "../../assets/credits/transkatgirl.jpg";
   import vogelPortrait from "../../assets/credits/voooooogel.jpg";
   import motionPortrait from "../../assets/credits/motion_so.jpg";
   import claudeLogo from "../../assets/credits/claude.svg";
-  import openaiLogo from "../../assets/model-providers/openai.png";
+  import openaiLogo from "../../../../drowse/webui/src/assets/model-providers/openai.png";
   import VerificationBadge from "./VerificationBadge.svelte";
   import HeroShader from "./HeroShader.svelte";
-  import PageHeader from "./PageHeader.svelte";
+  import PageHeader from "../../../../drowse/webui/src/lib/ui/PageHeader.svelte";
   import PageFooter from "./PageFooter.svelte";
-  import TabIdentity from "../../lib/ui/TabIdentity.svelte";
+  import TabIdentity from "../../../../drowse/webui/src/lib/ui/TabIdentity.svelte";
   import PwaUpdatePrompt from "./PwaUpdatePrompt.svelte";
-  import Button from "../../lib/ui/Button.svelte";
-  import MorphText from "../../lib/ui/MorphText.svelte";
+  import Button from "../../../../drowse/webui/src/lib/ui/Button.svelte";
+  import MorphText from "../../../../drowse/webui/src/lib/ui/MorphText.svelte";
   import { onMount } from "svelte";
 
   const pageDescription = "The people, research, models and software behind Drowse, a local workbench for exploring language models.";
   const releaseBuild = typeof __DROWSE_HOSTED_RELEASE__ !== "undefined" && __DROWSE_HOSTED_RELEASE__;
   const sourceRevision = typeof __DROWSE_SOURCE_REVISION__ === "string" ? __DROWSE_SOURCE_REVISION__ : "preview";
   const version = typeof __DROWSE_VERSION__ === "string" ? __DROWSE_VERSION__ : "5.3.0";
-  const repositoryUrl = "https://github.com/a9lim/drowse";
+  const repositoryUrl = "https://github.com/stdlogits/drowse";
   // X profile verification snapshot, checked 2026-09-06 (voooooogel: 2026-09-07).
   const team = [
     { name: "a9lim", handle: "@_a9lim", profile: "https://x.com/_a9lim", website: "a9l.im", portrait: a9limPortrait, verification: "blue" },

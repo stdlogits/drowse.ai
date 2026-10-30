@@ -1,6 +1,6 @@
 export const siteName = "Drowse";
 export const siteTitle = "Drowse | Local LLM interpretability and activation steering";
-export const sourceRepository = "https://github.com/a9lim/drowse";
+export const sourceRepository = "https://github.com/stdlogits/drowse";
 export const siteDescription = "Open-source, fully local LLM interpretability workbench in your browser. Inspect token predictions and steer a model's internal activity.";
 export const siteAccent = "#c5b3ff";
 // Browser chrome follows the page surface, not the accent: these match theme-init.js and tokens.css.

@@ -3,7 +3,7 @@ import type {
   CatalogInstrumentPack,
   RuntimeCapabilities,
   VerifiedCatalog,
-} from "../../lib/runtime/contracts";
+} from "../../../../drowse/webui/src/lib/runtime/contracts";
 import { DeterministicBrowserModelBackend } from "./fakeModelBackend";
 import { BrowserContentStore } from "./contentStore";
 import { VerifiedArtifactDownloader } from "./downloader";

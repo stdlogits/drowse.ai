@@ -1,5 +1,5 @@
 <script lang="ts">
-  import FluentIcon from "../../../lib/ui/FluentIcon.svelte";
+  import FluentIcon from "../../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
   import { htmlGuidePaths, type GuidePage, type GuideLink } from "../../../../scripts/site-content.mjs";
 
   let { page }: { page: GuidePage } = $props();

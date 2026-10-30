@@ -1,11 +1,11 @@
-import type { RuntimeProgressEvent, RuntimeServiceRequest } from "../../lib/runtime/contracts";
+import type { RuntimeProgressEvent, RuntimeServiceRequest } from "../../../../drowse/webui/src/lib/runtime/contracts";
 import {
   clampOutputTokenCount,
   MAX_OUTPUT_TOKEN_COUNT,
-} from "../../lib/runtime/outputTokenPolicy";
+} from "../../../../drowse/webui/src/lib/runtime/outputTokenPolicy";
 import { blake2b } from "@noble/hashes/blake2.js";
-import { SAMPLING_TEMPERATURE_MAX } from "../../lib/runtime/samplingCapabilities";
-import { normalizeSteeringPositions, type SteeringPositionSpan, type SteeringPositionSelection } from "../../lib/runtime/steeringPositions";
+import { SAMPLING_TEMPERATURE_MAX } from "../../../../drowse/webui/src/lib/runtime/samplingCapabilities";
+import { normalizeSteeringPositions, type SteeringPositionSpan, type SteeringPositionSelection } from "../../../../drowse/webui/src/lib/runtime/steeringPositions";
 import type {
   ChatRole,
   LoomNodeJSON,
@@ -20,7 +20,7 @@ import type {
   WSServerMessage,
   WSSubmitRequest,
   WSTreeMutatedEvent,
-} from "../../lib/types";
+} from "../../../../drowse/webui/src/lib/types";
 import type { RankOneHookProgramBuffers } from "./rankOneHookProgram";
 import type { StructuredHookProgramBuffers } from "./structuredHookProgram";
 import type {
@@ -28,7 +28,7 @@ import type {
   BrowserTokenReplayRequest,
 } from "./browserInstrumentRuntime";
 import { parseSteeringExpression } from "./steeringExpression";
-import { validateHostedLoomTree } from "./sessionPersistence";
+import { validateHostedLoomTree } from "../../../../drowse/webui/src/lib/sessionPersistence";
 import { filterBrowserTree } from "./browserTreeFilter";
 import {
   exportBrowserTranscript,
@@ -52,7 +52,7 @@ import {
   webLlmGenerationErrorUsage,
 } from "./webLlmGeneration";
 import { randomUuid } from "./randomId";
-import { isRoleSlug } from "./roleSlug";
+import { isRoleSlug } from "../../../../drowse/webui/src/lib/roleSlug";
 
 type BrowserHookProgram = RankOneHookProgramBuffers | StructuredHookProgramBuffers;
 
@@ -1166,7 +1166,7 @@ export class BrowserLoomRuntime {
   private async replayTokenReadout(
     request: BrowserTokenReplayRequest,
     onProgress: (event: RuntimeProgressEvent) => void,
-  ): Promise<import("../../lib/types").MeasurementsEnvelopeJSON> {
+  ): Promise<import("../../../../drowse/webui/src/lib/types").MeasurementsEnvelopeJSON> {
     return this.withReplayLock(async () => {
       const node = this.replayableNode(request.nodeId);
       if (request.rawIndex >= node.raw_token_ids!.length) {
@@ -1217,7 +1217,7 @@ export class BrowserLoomRuntime {
       };
       emitProgress("context", 0, "Preparing the conversation context");
       const hookProgram = await this.compileRequiredSteering(settings.steering ?? "");
-      let measurement: import("../../lib/types").MeasurementsEnvelopeJSON | null = null;
+      let measurement: import("../../../../drowse/webui/src/lib/types").MeasurementsEnvelopeJSON | null = null;
       await this.generation.streamGeneration({
         input: generationInput(
           { type: "generate", input: null, raw: this.session.is_base_model || request.options.raw || false },
@@ -1268,7 +1268,7 @@ export class BrowserLoomRuntime {
   private async jointLogprobs(
     aId: string,
     bId: string,
-  ): Promise<import("../../lib/types").JointLogprobsJSON> {
+  ): Promise<import("../../../../drowse/webui/src/lib/types").JointLogprobsJSON> {
     if (aId === bId) {
       throw loomError("INVALID_RUNTIME_REQUEST", "Compared conversation nodes must differ");
     }
@@ -1487,7 +1487,7 @@ export class BrowserLoomRuntime {
   private tokenMeasurements(
     nodeId: string,
     rawIndex: number,
-  ): import("../../lib/types").MeasurementsEnvelopeJSON | null {
+  ): import("../../../../drowse/webui/src/lib/types").MeasurementsEnvelopeJSON | null {
     const node = this.requireNode(nodeId);
     for (const row of [...(node.thinking_tokens ?? []), ...(node.tokens ?? [])]) {
       if (row.raw_index === rawIndex && row.measurements !== undefined) {

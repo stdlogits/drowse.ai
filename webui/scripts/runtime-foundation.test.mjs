@@ -697,7 +697,7 @@ try {
   const eta = await server.ssrLoadModule("/src/lib/runtime/eta.ts");
   const range = await server.ssrLoadModule("/src/lib/runtime/range.ts");
   const catalog = await server.ssrLoadModule("/src/lib/runtime/catalog.ts");
-  const contracts = await server.ssrLoadModule("/src/lib/runtime/contracts.ts");
+  const contracts = await server.ssrLoadModule("/../drowse/webui/src/lib/runtime/contracts.ts");
   const browser = await server.ssrLoadModule(
     "/src/hosted/runtime/browserRuntimeClient.ts",
   );
@@ -713,8 +713,8 @@ try {
   const hostedController = await server.ssrLoadModule(
     "/src/hosted/runtime/hostedController.ts",
   );
-  const localData = await server.ssrLoadModule("/src/lib/runtime/localData.ts");
-  const userErrors = await server.ssrLoadModule("/src/lib/runtime/userFacingError.ts");
+  const localData = await server.ssrLoadModule("/../drowse/webui/src/lib/runtime/localData.ts");
+  const userErrors = await server.ssrLoadModule("/../drowse/webui/src/lib/runtime/userFacingError.ts");
   const { cacheOfflineRuntimeAssets } = await server.ssrLoadModule("/src/hosted/runtime/offlineRuntimeAssets.ts");
   test("model setup caches only missing app modules and rejects unsafe or unavailable files", async () => {
     const originalFetch = globalThis.fetch;
