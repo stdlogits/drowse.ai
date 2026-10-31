@@ -165,7 +165,7 @@ try {
     architecture: "qwen3",
     sourceRepository,
     sourceRevision,
-    convertedRepository: "logitsml/drowse-web-qwen3-0.6b",
+    convertedRepository: "stdlogits/drowse-web-qwen3-0.6b",
     convertedRevision: revision,
     manifestSha256: role(base, "converted_manifest").sha256,
     librarySha256: role(base, "model_library").sha256,
@@ -410,13 +410,13 @@ try {
   }
 
   const wrongCore = structuredClone(spec);
-  wrongCore.models[0].packs[0].sourceRepository = "logitsml/drowse-web-wrong";
+  wrongCore.models[0].packs[0].sourceRepository = "stdlogits/drowse-web-wrong";
   await assert.rejects(
     () => prepareCatalog(wrongCore, runtimeLock, root, validateSemantics),
     /must share the immutable model revision/,
   );
   const wrongInstrument = structuredClone(spec);
-  wrongInstrument.models[0].packs[1].sourceRepository = "logitsml/drowse-web-other-instruments";
+  wrongInstrument.models[0].packs[1].sourceRepository = "stdlogits/drowse-web-other-instruments";
   await assert.rejects(
     () => prepareCatalog(wrongInstrument, runtimeLock, root, validateSemantics),
     /must use the provisioned instrument repository/,

@@ -236,7 +236,7 @@ test("production-app catalog closes the runtime lock and pack bindings", () => {
     id: "qwen3-1.7b",
     sourceRepository: "Qwen/Qwen3-1.7B",
     sourceRevision: "b".repeat(40),
-    convertedRepository: "logitsml/drowse-web-qwen3-1.7b",
+    convertedRepository: "stdlogits/drowse-web-qwen3-1.7b",
     manifestSha256: "1".repeat(64),
     librarySha256: "2".repeat(64),
     tokenizerSha256: "3".repeat(64),
@@ -288,9 +288,9 @@ test("production-app catalog closes the runtime lock and pack bindings", () => {
   assert.deepEqual(variant.packs[1].compatibleContextBindingSha256,
     variant.contextProfiles.map((profile) => profile.bindingSha256));
   assert.match(variant.files[0].url,
-    /^https:\/\/huggingface\.co\/logitsml\/drowse-web-qwen3-1\.7b\/resolve\/a{40}\//u);
+    /^https:\/\/huggingface\.co\/stdlogits\/drowse-web-qwen3-1\.7b\/resolve\/a{40}\//u);
   assert.equal(variant.packs[1].sourceRepository,
-    "logitsml/drowse-web-qwen3-1.7b-instruments");
+    "stdlogits/drowse-web-qwen3-1.7b-instruments");
   assert.equal(variant.requirements.limits.maxComputeWorkgroupSizeX, 256);
   const exactReadout = createProductionAppCatalog({
     runtimeLock: { runtimeAbi: "drowse-web-runtime-v1", hookAbi: "post-block-residual-v4" },
@@ -320,7 +320,7 @@ test("production-app catalog closes the runtime lock and pack bindings", () => {
       ...lock,
       id: "qwen3-4b",
       sourceRepository: "Qwen/Qwen3-4B",
-      convertedRepository: "logitsml/drowse-web-qwen3-4b",
+      convertedRepository: "stdlogits/drowse-web-qwen3-4b",
       quantization: "q4f16_1",
       structuredHookProfile: "standard-v3",
     },

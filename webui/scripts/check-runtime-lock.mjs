@@ -1280,7 +1280,7 @@ function validateDistribution(value) {
     throw new Error("invalid browser distribution lock status");
   }
   const expectedBase =
-    "https://huggingface.co/logitsml/drowse-web-catalog/resolve/main/";
+    "https://huggingface.co/stdlogits/drowse-web-catalog/resolve/main/";
   if (value.catalogUrl !== `${expectedBase}catalog.json`) {
     throw new Error("unexpected browser catalog URL");
   }

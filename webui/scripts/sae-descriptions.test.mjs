@@ -92,7 +92,7 @@ try {
 console.log("SAE descriptions: exact dictionary binding, provenance, missing labels, retry, cache, and request privacy passed");
 
 if (process.argv.includes("--live-catalog")) {
-  const catalog = await (await fetch("https://huggingface.co/logitsml/drowse-web-catalog/resolve/main/catalog.json")).json();
+  const catalog = await (await fetch("https://huggingface.co/stdlogits/drowse-web-catalog/resolve/main/catalog.json")).json();
   for (const model of catalog.models) for (const variant of model.variants) {
     for (const pack of variant.packs.filter(pack => pack.kind === "sae")) {
       const file = pack.files.find(file => file.path.endsWith("/manifest.json"));

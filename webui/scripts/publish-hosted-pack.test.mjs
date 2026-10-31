@@ -19,15 +19,15 @@ assert.equal(
 assert.throws(() => parseArguments(["qwen3-0.6b", "unknown", "./pack"]), /usage/);
 assert.throws(() => parseArguments(["qwen3-0.6b", "core", "./pack", "--force"]), /usage/);
 
-const model = { convertedRepository: "logitsml/drowse-web-qwen3-0.6b" };
+const model = { convertedRepository: "stdlogits/drowse-web-qwen3-0.6b" };
 assert.equal(targetRepository(model, "core"), model.convertedRepository);
 assert.equal(
   targetRepository(model, "sae"),
-  "logitsml/drowse-web-qwen3-0.6b-instruments",
+  "stdlogits/drowse-web-qwen3-0.6b-instruments",
 );
 assert.equal(
   targetRepository(model, "jlens"),
-  "logitsml/drowse-web-qwen3-0.6b-instruments",
+  "stdlogits/drowse-web-qwen3-0.6b-instruments",
 );
 assert.throws(() => targetRepository({}, "core"), /converted repository/);
 assert.deepEqual(

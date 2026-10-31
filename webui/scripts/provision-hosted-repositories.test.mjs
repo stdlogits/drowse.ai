@@ -7,34 +7,34 @@ import {
 
 const runtimeLock = {
   models: [
-    { convertedRepository: "logitsml/model-a" },
-    { convertedRepository: "logitsml/model-b" },
+    { convertedRepository: "stdlogits/model-a" },
+    { convertedRepository: "stdlogits/model-b" },
   ],
 };
 const distributionLock = {
-  catalogUrl: "https://huggingface.co/logitsml/catalog/resolve/main/catalog.json",
-  signatureUrl: "https://huggingface.co/logitsml/catalog/resolve/main/catalog.sig.json",
+  catalogUrl: "https://huggingface.co/stdlogits/catalog/resolve/main/catalog.json",
+  signatureUrl: "https://huggingface.co/stdlogits/catalog/resolve/main/catalog.sig.json",
 };
 
 assert.deepEqual(parseArguments([]), { create: false });
 assert.deepEqual(parseArguments(["--create"]), { create: true });
 assert.throws(() => parseArguments(["--unknown"]), /usage/);
 assert.deepEqual(repositoryPlan(runtimeLock, distributionLock), {
-  owner: "logitsml",
+  owner: "stdlogits",
   repositories: [
-    "logitsml/catalog",
-    "logitsml/model-a",
-    "logitsml/model-b",
-    "logitsml/model-a-instruments",
-    "logitsml/model-b-instruments",
+    "stdlogits/catalog",
+    "stdlogits/model-a",
+    "stdlogits/model-b",
+    "stdlogits/model-a-instruments",
+    "stdlogits/model-b-instruments",
   ],
 });
 
 const calls = [];
-const existing = new Set(["logitsml/catalog", "logitsml/model-a"]);
+const existing = new Set(["stdlogits/catalog", "stdlogits/model-a"]);
 const run = async (command, args) => {
   calls.push([command, args]);
-  if (args[0] === "auth") return { stdout: '{"user":"logitsml","orgs":[]}\n' };
+  if (args[0] === "auth") return { stdout: '{"user":"stdlogits","orgs":[]}\n' };
   if (args[0] === "repos") {
     existing.add(args[2]);
     return { stdout: "created\n" };
@@ -47,11 +47,11 @@ const run = async (command, args) => {
 assert.deepEqual(
   await provisionRepositories({ create: true, runtimeLock, distributionLock, run }),
   [
-    { repository: "logitsml/catalog", private: false, gated: false },
-    { repository: "logitsml/model-a", private: false, gated: false },
-    { repository: "logitsml/model-b", private: false, gated: false },
-    { repository: "logitsml/model-a-instruments", private: false, gated: false },
-    { repository: "logitsml/model-b-instruments", private: false, gated: false },
+    { repository: "stdlogits/catalog", private: false, gated: false },
+    { repository: "stdlogits/model-a", private: false, gated: false },
+    { repository: "stdlogits/model-b", private: false, gated: false },
+    { repository: "stdlogits/model-a-instruments", private: false, gated: false },
+    { repository: "stdlogits/model-b-instruments", private: false, gated: false },
   ],
 );
 assert.equal(calls.filter(([, args]) => args[0] === "repos").length, 3);
@@ -65,7 +65,7 @@ await assert.rejects(
       ? { stdout: '{"user":"someone-else","orgs":[]}\n' }
       : { stdout: '{"private":false,"gated":false}\n' },
   }),
-  /cannot provision logitsml repositories/,
+  /cannot provision stdlogits repositories/,
 );
 
 console.log("hosted repository provisioning checks passed");

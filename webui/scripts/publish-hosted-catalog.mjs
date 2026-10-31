@@ -17,15 +17,34 @@ const webuiRoot = fileURLToPath(new URL("..", import.meta.url));
 const runtimeLockUrl = new URL("../../browser-runtime/runtime-lock.json", import.meta.url);
 const distributionLockUrl = new URL("../../browser-runtime/distribution-lock.json", import.meta.url);
 
+// --previous-lock names the distribution lock the published catalog was signed
+// under. A key rotation that cannot sign with the outgoing key uses it so the
+// published catalog is still verified, and the sequence still advances.
 export function parseArguments(args) {
-  const upload = args.includes("--upload");
-  const values = args.filter((value) => value !== "--upload");
-  if (values.length !== 2 || args.some((value) => value.startsWith("--") && value !== "--upload")) {
-    throw new Error("usage: node publish-hosted-catalog.mjs CATALOG SIGNATURE [--upload]");
+  const usage = "usage: node publish-hosted-catalog.mjs CATALOG SIGNATURE " +
+    "[--previous-lock DISTRIBUTION_LOCK] [--upload]";
+  let upload = false;
+  let previousLockPath = null;
+  const values = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index];
+    if (value === "--upload" && !upload) {
+      upload = true;
+    } else if (value === "--previous-lock" && previousLockPath === null) {
+      const path = args[++index];
+      if (!path || path.startsWith("--")) throw new Error(usage);
+      previousLockPath = resolve(path);
+    } else if (value.startsWith("--")) {
+      throw new Error(usage);
+    } else {
+      values.push(value);
+    }
   }
+  if (values.length !== 2) throw new Error(usage);
   return {
     catalogPath: resolve(values[0]),
     signaturePath: resolve(values[1]),
+    previousLockPath,
     upload,
   };
 }
@@ -203,8 +222,14 @@ async function main() {
     fetchExact(`${currentBase}catalog.json`, true),
     fetchExact(`${currentBase}catalog.sig.json`, true),
   ]);
+  const publishedKeys = options.previousLockPath === null
+    ? distribution.publicKeys
+    : JSON.parse(await readFile(options.previousLockPath, "utf8")).publicKeys;
+  if (!Array.isArray(publishedKeys) || publishedKeys.length === 0) {
+    throw new Error("the previous distribution lock has no public keys");
+  }
   const previousSequence = validateCatalogAdvance(
-    bundle.sequence, currentCatalog, currentSignature, distribution.publicKeys,
+    bundle.sequence, currentCatalog, currentSignature, publishedKeys,
   );
   if (!options.upload) {
     console.log(JSON.stringify({

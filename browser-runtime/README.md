@@ -142,7 +142,7 @@ from the manifest.
 
 ## Hosted repository provisioning
 
-The runtime and distribution locks target the `logitsml` Hugging Face namespace.
+The runtime and distribution locks target the `stdlogits` Hugging Face namespace.
 Changing this configuration does not transfer repositories or publish artifacts.
 The pinned revisions must exist there, and the catalog must be signed for the new
 artifact URLs before downloads can work. Check repositories without mutation, or
@@ -552,6 +552,11 @@ signed identity claim that does not match those artifact digests is rejected.
 
 The catalog signing key is never stored in this repository. The signing tool
 accepts an Ed25519 PKCS#8 PEM key path and signs the exact `catalog.json` bytes.
+The publisher verifies the currently published catalog against the lock's keys
+before it advances the sequence. A rotation that cannot sign with the outgoing
+key replaces both keys in the lock and passes the lock the published catalog was
+signed under: `--previous-lock OLD_DISTRIBUTION_LOCK`. Builds with the old lock
+reject the new catalog, so deploy the new build right after publishing.
 ## Cloudflare Pages deployment
 
 Cloudflare credentials, Pages project creation, Access policy, DNS, deployment,

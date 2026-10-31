@@ -2879,7 +2879,7 @@ try {
     assert.notStrictEqual(verified.exactBytes, signed.exactBytes);
 
     const alternateOwner = JSON.parse(
-      JSON.stringify(catalogDocument()).replaceAll("a9lim/drowse-web-", "logitsml/drowse-web-"),
+      JSON.stringify(catalogDocument()).replaceAll("a9lim/drowse-web-", "stdlogits/drowse-web-"),
     );
     const signedAlternateOwner = await signedCatalog(alternateOwner, signed.pair);
     const verifiedAlternateOwner = await catalog.verifyCatalog(
@@ -2893,7 +2893,7 @@ try {
         runtimeLockModels: runtimeLockModelsFor(alternateOwner),
       },
     );
-    assert.equal(verifiedAlternateOwner.document.models[0].variants[0].files[0].url.includes("/logitsml/"), true);
+    assert.equal(verifiedAlternateOwner.document.models[0].variants[0].files[0].url.includes("/stdlogits/"), true);
 
     const tampered = signed.exactBytes.slice();
     tampered[tampered.length - 1] ^= 1;

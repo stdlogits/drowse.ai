@@ -149,7 +149,7 @@ try {
 
 function workerSource(options, manifest, runtimeIdentity) {
   const revision = "a".repeat(40);
-  const repository = `logitsml/drowse-web-${options.id}`;
+  const repository = `stdlogits/drowse-web-${options.id}`;
   return `import * as webllm from "/webllm.js";
 import { DrowseWebLlmRuntime } from "/src/hosted/runtime/webLlmEngine.ts";
 import { resolveStructuredHookProfile } from "/src/hosted/runtime/structuredHookProfile.ts";

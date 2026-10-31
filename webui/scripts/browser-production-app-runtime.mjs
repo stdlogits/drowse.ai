@@ -46,7 +46,7 @@ import {
 } from "./release-tool-storage-quota.mjs";
 
 const execFile = promisify(execFileCallback);
-const CATALOG_REPOSITORY = "logitsml/drowse-web-catalog-e2e";
+const CATALOG_REPOSITORY = "stdlogits/drowse-web-catalog-e2e";
 const PROMPT_SENTINEL = "DROWSE_PRODUCTION_APP_E2E_PROMPT";
 const CORE_GEOMETRY_SELECTOR = "default/welcoming.detached";
 const KEY_ID = "production-app-current";

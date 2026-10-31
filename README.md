@@ -66,7 +66,7 @@ This repository builds an isolated Svelte PWA for the on-device WebGPU
 edition. The runtime and distribution locks are `verified`, enabling installation
 from the signed catalog after the browser's device checks pass. These release
 checks do not guarantee that every GPU remains stable under model load.
-The [published model files](https://huggingface.co/logitsml/drowse-web-catalog)
+The [published model files](https://huggingface.co/stdlogits/drowse-web-catalog)
 are available separately; their upload alone does not establish compatibility.
 Base-model file links appear on the home page without a beta badge.
 Gemma PT still has a matched-weight numerical discrepancy; Qwen 3.5 still needs

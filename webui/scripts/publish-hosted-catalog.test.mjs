@@ -19,10 +19,24 @@ import {
 assert.deepEqual(parseArguments(["catalog.json", "catalog.sig.json"]), {
   catalogPath: join(process.cwd(), "catalog.json"),
   signaturePath: join(process.cwd(), "catalog.sig.json"),
+  previousLockPath: null,
   upload: false,
 });
 assert.equal(parseArguments(["catalog.json", "catalog.sig.json", "--upload"]).upload, true);
+assert.equal(
+  parseArguments(["--previous-lock", "old.json", "catalog.json", "catalog.sig.json"]).previousLockPath,
+  join(process.cwd(), "old.json"),
+);
 assert.throws(() => parseArguments(["catalog.json"]), /usage/);
+assert.throws(() => parseArguments(["catalog.json", "catalog.sig.json", "--previous-lock"]), /usage/);
+assert.throws(
+  () => parseArguments(["catalog.json", "catalog.sig.json", "--previous-lock", "--upload"]),
+  /usage/,
+);
+assert.throws(
+  () => parseArguments(["catalog.json", "catalog.sig.json", "--upload", "--upload"]),
+  /usage/,
+);
 
 const lockedModels = lockedCatalogModels({
   runtimeAbi: "drowse-web-runtime-v1",
@@ -48,7 +62,7 @@ const lockedModels = lockedCatalogModels({
 assert.equal(lockedModels[0].structuredHookProfile, "standard-v3");
 assert.equal(lockedModels[0].thinkingProfile, null);
 
-const repository = "logitsml/drowse-web-catalog";
+const repository = "stdlogits/drowse-web-catalog";
 const distribution = {
   catalogUrl: `https://huggingface.co/${repository}/resolve/main/catalog.json`,
   signatureUrl: `https://huggingface.co/${repository}/resolve/main/catalog.sig.json`,
