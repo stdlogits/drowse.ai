@@ -14,6 +14,12 @@ const storesUrl = `/@fs/${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
 const servicesUrl = `/@fs/${resolve("../drowse/webui/src/lib/runtime/services.ts")}`;
 test.use({ hasTouch: true });
 
+/** Wait two frames: since Svelte 5.57, layout that depends on a resize or a
+ *  route change lands one frame after the event, not in the same task. */
+async function layoutSettled(page: Page) {
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+}
+
 async function expectWebGpuRequirement(page: Page) {
   const note = page.locator(".hero-action-row > span");
   await expect(note).toHaveAttribute("data-webgpu", /^(available|unavailable)$/);
@@ -859,6 +865,7 @@ test("page navigation keeps the wordmark anchored and fades without trapping out
     await page.evaluate(() => document.fonts.ready);
     const modelLogo = await page.locator(".page-brand").evaluate(el => ({ ...el.getBoundingClientRect().toJSON(), y: el.getBoundingClientRect().y + scrollY }));
     const assertHeader = async () => {
+      await layoutSettled(page);
       const logo = await page.locator(".page-brand").evaluate(el => ({ ...el.getBoundingClientRect().toJSON(), y: el.getBoundingClientRect().y + scrollY }));
       const inWorkbench = await page.locator(".shell").isVisible();
       const compact = await page.locator(".page-header").evaluate(el => el.classList.contains("compact"));
@@ -2958,6 +2965,7 @@ test("landing actions and local-compute copy have room at phone and desktop size
     await page.emulateMedia({ colorScheme });
     for (const width of [320, 390, 768, 1440]) {
       await page.setViewportSize({ width, height: 900 });
+      await layoutSettled(page);
       for (const element of [action, note, privacy]) {
         const box = (await element.boundingBox())!;
         expect(box.x).toBeGreaterThanOrEqual(16);
