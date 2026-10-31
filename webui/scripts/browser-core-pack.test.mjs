@@ -1733,6 +1733,7 @@ try {
     const dictionary = compiler.jlensGpuDictionary();
     assert.ok(dictionary);
     const resolver = {
+      vocabularySize() { return 128; },
       async tokenizeText(text) {
         const word = text.trim();
         if (word === "split") return [100, 101];
@@ -1782,13 +1783,30 @@ try {
     assert.equal(exact.jLensTokenIds[0], 7);
     assertFloatArray(exact.affineBasis.slice(0, 2), [7 / Math.sqrt(113), 8 / Math.sqrt(113)]);
     assert.deepEqual(batches, [[7]], "the exact id reuses the resolved directions");
+    // An id past the vocabulary fails as drowse's InvalidTokenIdError does,
+    // before any direction lookup reaches the runtime.
+    for (const expression of ["0.5 jlens/#128", "0.5 x@when:jlens/#4096>0.01"]) {
+      await assert.rejects(
+        compiler.prepareJlensSelectors(expression, resolver),
+        (error) =>
+          error.code === "JLENS_TOKENIZATION_INVALID" &&
+          /outside this vocabulary \(size 128\)/u.test(error.message),
+        expression,
+      );
+    }
+    await assert.rejects(
+      compiler.prepareJlensWords(["#128"], resolver),
+      (error) => error.code === "JLENS_TOKENIZATION_INVALID",
+    );
+    await compiler.prepareJlensSelectors("0.5 jlens/#127", resolver);
+    assert.deepEqual(batches, [[7], [127]], "the last in-vocabulary id still resolves");
     resolver.tokenizeText = tokenize;
 
     await compiler.prepareJlensWords(
       Array.from({ length: 10 }, (_, index) => `word${index}`),
       resolver,
     );
-    assert.deepEqual(batches.slice(1).map((batch) => batch.length), [8, 2]);
+    assert.deepEqual(batches.slice(2).map((batch) => batch.length), [8, 2]);
     assert.equal(compiler.validateLensToken("word9").token_id, 29);
     await assert.rejects(
       compiler.prepareJlensWords(["split"], resolver),

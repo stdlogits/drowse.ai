@@ -108,6 +108,8 @@ export interface BrowserExactSaeFitting {
 
 export interface BrowserJlensRuntimeResolver {
   tokenizeText(text: string): Promise<number[]>;
+  /** The loaded model's vocabulary size; a `jlens/#<id>` id must fall below it. */
+  vocabularySize(): number;
   decodeTokens(tokenIds: readonly number[]): Promise<string>;
   resolveJlensTokenDirections(
     bindingId: string,
@@ -977,12 +979,18 @@ async function resolveJlensWordToken(
   resolver: BrowserJlensRuntimeResolver,
   word: string,
 ): Promise<number> {
-  // `jlens/#<id>` names the vocab id exactly, as in drowse's grammar.
+  // `jlens/#<id>` names the vocab id exactly, as in drowse's grammar, and is
+  // bounds-checked against the loaded model's vocabulary (drowse's
+  // InvalidTokenIdError) rather than reaching the runtime out of range.
   const exact = /^#(\d+)$/u.exec(word);
   if (exact !== null) {
     const tokenId = Number(exact[1]);
-    if (!Number.isSafeInteger(tokenId) || tokenId > 0x7fff_ffff) {
-      throw instrumentError("JLENS_TOKENIZATION_INVALID", `J-lens token id ${exact[1]} is out of range`);
+    const vocabularySize = resolver.vocabularySize();
+    if (!Number.isSafeInteger(tokenId) || tokenId >= vocabularySize) {
+      throw instrumentError(
+        "JLENS_TOKENIZATION_INVALID",
+        `token id ${exact[1]} is outside this vocabulary (size ${vocabularySize})`,
+      );
     }
     return tokenId;
   }

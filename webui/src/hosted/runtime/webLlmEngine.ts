@@ -272,6 +272,7 @@ export interface CompiledDrowseStructuredHookProfile {
 export class DrowseWebLlmRuntime {
   private engine: DrowseWebLlmEngineInstance | null = null;
   private captureSpecialTokenIds: number[] | null = null;
+  private vocabSize: number | null = null;
   private generating = false;
   private reusablePlainChatPrefix = false;
   private structuredHooks = false;
@@ -520,10 +521,12 @@ export class DrowseWebLlmRuntime {
         );
       }
       this.captureSpecialTokenIds = [...prepared.captureSpecialTokenIds];
+      this.vocabSize = prepared.vocabSize;
       initializationPhase = null;
       return { prefillTokensPerSecond: null, decodeTokensPerSecond: null };
     } catch (error) {
       this.captureSpecialTokenIds = null;
+      this.vocabSize = null;
       this.structuredHooks = false;
       this.curvedHooks = false;
       this.saeHooks = false;
@@ -558,6 +561,7 @@ export class DrowseWebLlmRuntime {
     this.engine = null;
     this.reusablePlainChatPrefix = false;
     this.captureSpecialTokenIds = null;
+    this.vocabSize = null;
     this.structuredHooks = false;
     this.curvedHooks = false;
     this.saeHooks = false;
@@ -676,6 +680,15 @@ export class DrowseWebLlmRuntime {
       );
     }
     return tokenizeWebLlmText(engine, text);
+  }
+
+  /** The loaded model's vocabulary size: valid token ids are `[0, size)`. */
+  vocabularySize(): number {
+    this.requireEngine();
+    if (this.vocabSize === null) {
+      throw runtimeError("MODEL_NOT_LOADED", "No browser model runtime is loaded");
+    }
+    return this.vocabSize;
   }
 
   async decodeTokens(tokenIds: readonly number[]): Promise<string> {

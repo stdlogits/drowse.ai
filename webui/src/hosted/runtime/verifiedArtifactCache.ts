@@ -12,6 +12,8 @@ export interface VerifiedWebLlmArtifacts {
   modelUrl: string;
   modelLibraryUrl: string;
   captureSpecialTokenIds: number[];
+  /** The model's vocabulary size (unembedding rows), from mlc-chat-config.json. */
+  vocabSize: number;
   isBaseModel: boolean;
   defaultUserRole: string | null;
   defaultAssistantRole: string | null;
@@ -75,6 +77,10 @@ export async function prepareVerifiedWebLlmArtifacts(
   }
 
   const config = await parseJsonFile(chatConfig, signal);
+  const vocabSize = config.vocab_size;
+  if (!Number.isSafeInteger(vocabSize) || (vocabSize as number) <= 0) {
+    throw invalid("MLC_CHAT_CONFIG_INVALID", "mlc-chat-config.json must declare a positive vocab_size");
+  }
   const tokenizerFiles = stringArray(config.tokenizer_files);
   if (
     tokenizerFiles.length === 0 ||
@@ -179,6 +185,7 @@ export async function prepareVerifiedWebLlmArtifacts(
     modelUrl,
     modelLibraryUrl: modelLibrary.manifest.url,
     captureSpecialTokenIds,
+    vocabSize: vocabSize as number,
     isBaseModel,
     defaultUserRole: defaultRoles.user,
     defaultAssistantRole: defaultRoles.assistant,

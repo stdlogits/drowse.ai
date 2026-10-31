@@ -21,6 +21,7 @@ try {
   const revision = "a".repeat(40);
   const base = `https://huggingface.co/a9lim/drowse-web-fixture/resolve/${revision}/`;
   const config = JSON.stringify({
+    vocab_size: 16,
     tokenizer_files: [
       "tokenizer.json",
       "vocab.json",
@@ -72,6 +73,17 @@ try {
   assert.equal(prepared.modelUrl, base);
   assert.equal(prepared.modelLibraryUrl, `${base}model-lib.wasm`);
   assert.deepEqual(prepared.captureSpecialTokenIds, [1, 2, 9]);
+  assert.equal(prepared.vocabSize, 16);
+  for (const vocabSize of [undefined, 0, -1, 1.5, "16"]) {
+    const unsized = fixture().map((entry) => {
+      if (entry.manifest.path !== "mlc-chat-config.json") return entry;
+      const values = JSON.parse(config);
+      values.vocab_size = vocabSize;
+      return artifact(entry.manifest.path, "configuration", JSON.stringify(values));
+    });
+    await assert.rejects(prepareVerifiedWebLlmArtifacts(unsized),
+      (error) => error.code === "MLC_CHAT_CONFIG_INVALID", String(vocabSize));
+  }
   assert.equal(prepared.isBaseModel, false);
   assert.equal(prepared.defaultUserRole, "user");
   assert.equal(prepared.defaultAssistantRole, "model");
@@ -137,6 +149,7 @@ try {
     (error) => error.code === "MLC_COMPLETION_PREFIX_INVALID");
 
   const legacyConfig = JSON.stringify({
+    vocab_size: 16,
     tokenizer_files: [
       "tokenizer.json",
       "vocab.json",
@@ -189,6 +202,7 @@ try {
     "mlc-chat-config.json",
     "configuration",
     JSON.stringify({
+      vocab_size: 16,
       tokenizer_files: ["tokenizer.json", "tokenizer_config.json"],
       bos_token_id: 1,
       eos_token_id: 2,
@@ -289,6 +303,7 @@ try {
     "mlc-chat-config.json",
     "configuration",
     JSON.stringify({
+      vocab_size: 16,
       tokenizer_files: ["tokenizer.json", "tokenizer_config.json"],
       bos_token_id: 1,
       eos_token_id: 2,

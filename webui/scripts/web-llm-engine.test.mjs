@@ -43,6 +43,7 @@ try {
   const sha = "b".repeat(64);
   const base = `https://huggingface.co/a9lim/drowse-web-fixture/resolve/${revision}/`;
   const config = JSON.stringify({
+    vocab_size: 16,
     tokenizer_files: ["tokenizer.json", "tokenizer_config.json"],
     drowse_capture_special_token_ids: [9],
     conv_template: {
@@ -325,6 +326,10 @@ try {
     () => runtime.hookCapabilities(),
     (error) => error.code === "MODEL_NOT_LOADED",
   );
+  assert.throws(
+    () => runtime.vocabularySize(),
+    (error) => error.code === "MODEL_NOT_LOADED",
+  );
   assert.deepEqual(await runtime.load(loadRequest({
     onProgress: (event) => loadProgress.push(event),
   })), {
@@ -354,6 +359,7 @@ try {
     defaultAssistantRole: "assistant",
   });
   assert.deepEqual(await runtime.tokenizeText(" lead"), [32, 108, 101, 97, 100]);
+  assert.equal(runtime.vocabularySize(), 16);
   assert.equal(await runtime.decodeTokens([115, 117, 98]), "sub");
   assert.deepEqual(runtime.hookCapabilities(), {
     rank_one: true,
