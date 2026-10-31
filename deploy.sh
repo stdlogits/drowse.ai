@@ -9,7 +9,8 @@
 #   ./deploy.sh --dry-run  build and check only
 #
 # Wrangler is webui/contact-worker's pinned copy. It needs access to the Cloudflare account that
-# hosts drowse.ai: `wrangler login` once, or CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID.
+# hosts drowse.ai: `wrangler login` once, or CLOUDFLARE_API_TOKEN. CLOUDFLARE_ACCOUNT_ID defaults
+# to that account.
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -40,6 +41,15 @@ rev=$(git rev-parse HEAD)
 
 wrangler="$PWD/webui/contact-worker/node_modules/.bin/wrangler"
 [[ -x "$wrangler" ]] || npm ci --prefix webui/contact-worker
+
+# A login that reaches several accounts cannot pick one non-interactively, so name the one that
+# hosts drowse-web, and check access now rather than after the build.
+export CLOUDFLARE_ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID:-18903e07043611bf77d67976b4bbc530}"
+if [[ "$dry_run" == 0 ]] &&
+  ! "$wrangler" pages deployment list --project-name drowse-web >/dev/null 2>&1; then
+  echo 'deploy: cannot reach the drowse-web Pages project; check the Cloudflare login and account' >&2
+  exit 1
+fi
 
 cd webui
 export DROWSE_PUBLIC_ORIGIN=https://drowse.ai
