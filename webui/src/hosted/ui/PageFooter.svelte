@@ -2,7 +2,7 @@
   import { CONTACT_ADDRESS } from "../../../../drowse/webui/src/lib/contact";
   import FluentIcon from "../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
 
-  type Current = "home" | "credits" | "contact" | "learn" | "privacy" | "about" | "contribute" | "neurons";
+  type Current = "home" | "credits" | "contact" | "learn" | "privacy" | "about" | "contribute";
   let { current, hosted = true, compact = false }: { current?: Current; hosted?: boolean; compact?: boolean } = $props();
 
   const releaseBuild = typeof __DROWSE_HOSTED_RELEASE__ !== "undefined" && __DROWSE_HOSTED_RELEASE__;
