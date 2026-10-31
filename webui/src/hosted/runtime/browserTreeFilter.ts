@@ -12,8 +12,9 @@ interface FilterClause {
 
 const AGGREGATE_OPERATORS = new Set<AggregateOperator>(["agg", "any", "last"]);
 // A persisted reading key's probe name (drowse/loom/filter.py): `[ns/]name[.pole]`
-// for geometry and J-lens probes, `sae/<feature id>` for SAE features.
-const PROBE_NAME = /^(?:(?:[A-Za-z][A-Za-z0-9_-]*\/)?[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)?|sae\/[0-9]+)$/u;
+// for geometry and J-lens probes, `jlens/#<id>` / `slens/#<id>` for lens probes
+// by vocab id, `sae/<feature id>` for SAE features.
+const PROBE_NAME = /^(?:(?:[A-Za-z][A-Za-z0-9_-]*\/)?[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)?|(?:jlens|slens)\/#[0-9]+|sae\/[0-9]+)$/u;
 
 type GateChannel =
   | { kind: "axis"; index: number }
@@ -122,7 +123,7 @@ function probeKey(raw: string, probe: string): string {
   }
   if (!PROBE_NAME.test(ref.probe)) {
     throw new BrowserTreeFilterError(
-      `clause ${JSON.stringify(raw)}: probe ${JSON.stringify(probe)} is not a valid identifier ([ns/]name[.pole] or sae/<id>)`,
+      `clause ${JSON.stringify(raw)}: probe ${JSON.stringify(probe)} is not a valid identifier ([ns/]name[.pole], jlens/#<id> or sae/<id>)`,
     );
   }
   return ref.probe;

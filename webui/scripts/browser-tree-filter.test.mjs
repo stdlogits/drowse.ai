@@ -25,8 +25,8 @@ try {
       token({ confidence: 0.6 }),
       token({ confidence: 0.5, "sae/12": 4 }),
     ]),
-    node("c", { confidence: 0.9 }, [
-      token({ confidence: 0.2 }),
+    node("c", { confidence: 0.9, "jlens/#12": 0.02 }, [
+      token({ confidence: 0.2, "jlens/#12": 0.05 }),
       token({ confidence: 0.4 }),
     ]),
     node("d", { confidence: 0.1 }, [
@@ -69,7 +69,19 @@ try {
       expression,
     );
   }
-  for (const expression of ["sae/1.5 > 0", "default/sae/1 > 0", "x[ 0] > 0", "jlens/#7 > 0"]) {
+  // Lens probes attached by vocab id persist under `jlens/#<id>` / `slens/#<id>`.
+  assert.deepEqual(filterBrowserTree(rows, "agg:jlens/#12 > 0.01"), ["c"]);
+  assert.deepEqual(filterBrowserTree(rows, "any:jlens/#12 > 0.04"), ["c"]);
+  assert.deepEqual(parseBrowserTreeFilter("last:slens/#3 < 0.5").map((clause) => clause.probe), ["slens/#3"]);
+  for (const expression of [
+    "sae/1.5 > 0",
+    "default/sae/1 > 0",
+    "x[ 0] > 0",
+    "jlens/7 > 0",
+    "jlens/#x > 0",
+    "sae/#3 > 0",
+    "alice/#7 > 0",
+  ]) {
     assert.throws(() => parseBrowserTreeFilter(expression), /not a valid identifier/, expression);
   }
   assert.deepEqual(filterBrowserTree(rows, "agg:missing > 0"), []);
