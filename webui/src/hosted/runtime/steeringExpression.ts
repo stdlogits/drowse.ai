@@ -378,7 +378,10 @@ class Parser {
       return String(this.nonNegativeInteger("SAE feature id"));
     }
     if (TOKEN_ID_NAMESPACES.has(namespace) && this.peek().kind === "HASH") {
-      this.consume();
+      const hash = this.consume();
+      if (this.peek().column !== hash.column + 1) {
+        throw this.error("token id must follow '#' with no space", this.peek());
+      }
       return `#${this.nonNegativeInteger("token id")}`;
     }
     return String(this.expect("IDENT").value);
