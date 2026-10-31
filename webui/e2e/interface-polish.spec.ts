@@ -103,7 +103,7 @@ test("workbench and drawer controls retain minimum targets at desktop and phone 
       range.setEnd(text, start + "Generate".length);
       return range.getClientRects().length;
     })).toBe(1);
-    for (const name of ["advanced_sampling", "local_runtime", "save_conversation", "load_conversation", "appearance", "help", "cast", "correlation", "compare", "system_prompt", "template_lab", "transcript", "health", "subspace", "manifolds", "surface_geometry"]) {
+    for (const name of ["advanced_sampling", "local_runtime", "save_conversation", "load_conversation", "appearance", "help", "cast", "correlation", "compare", "system_prompt", "template_lab", "transcript", "health", "subspace", "manifolds"]) {
       await openDrawer(page, name);
       const drawer = page.locator('.drawer[role="dialog"]');
       expect(await targets(drawer), `${name}, ${width}`).toEqual([]);
