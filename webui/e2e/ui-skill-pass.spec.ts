@@ -786,7 +786,7 @@ test("shared page headers and footers align across public pages and workbench", 
       await expect(page.locator(".page-header .theme-toggle")).toHaveCount(1);
       const site = await page.locator(".page-header").evaluate(el => el.classList.contains("site"));
       await expect(page.locator(".page-header nav a")).toHaveText(site
-        ? ["Learn", "Neurons", "Models", "Credits", "Contribute"] : ["Chats", "Models"]);
+        ? ["Learn", "Models", "Credits", "Contribute"] : ["Chats", "Models"]);
       await page.screenshot({ path: testInfo.outputPath(`${name}-${width}.png`) });
       const footer = page.locator(".page-footer");
       await footer.scrollIntoViewIfNeeded();

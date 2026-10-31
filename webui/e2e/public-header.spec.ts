@@ -19,7 +19,7 @@ for (const path of ["/", "/credits", "/app?layoutFixture=setup", "compact"]) {
     const brand = header.locator(".page-brand");
     const nav = header.getByRole("navigation", { name: "Primary navigation" });
     const site = path === "/" || path === "/credits";
-    const destinations = site ? ["Learn", "Neurons", "Models", "Credits", "Contribute"] : ["Chats", "Models"];
+    const destinations = site ? ["Learn", "Models", "Credits", "Contribute"] : ["Chats", "Models"];
     for (const width of [1440, 800, 761, 760, 600, 481, 480, 468, 431, 390, 375, 320, 390, 600, 1440]) {
       await page.setViewportSize({ width, height: 900 });
       await expect(brand).toBeVisible();
