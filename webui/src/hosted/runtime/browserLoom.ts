@@ -77,7 +77,6 @@ interface GenerationReservation {
 
 interface ContinuationContext {
   node: LoomNodeJSON;
-  original: LoomNodeJSON;
   parentId: string;
   forcedPrefix: number[];
 }
@@ -696,21 +695,18 @@ export class BrowserLoomRuntime {
           break;
         }
         if (!stateless && this.tree.nodes.some((candidate) => candidate.id === node.id)) {
-          if (continuation !== null) {
-            this.tree.active_node_id = continuation.original.id;
-            this.replaceNodeWithoutActivation(continuation.original);
+          if (continuation !== null || holdsTokens(node)) {
+            // drowse's `_discard_unanswered`: a continuation is never removed and a
+            // reply cut after some tokens keeps them. Neither is finalized, so the
+            // node stays as streamed: no finish reason, raw ids or applied steering.
+            node.raw_token_ids = null;
+            node.applied_steering = null;
+            const kept = this.replaceGeneratedNode(node);
             await emit(this.updatedMutation(
               "finalize_assistant",
-              continuation.original,
-              continuation.original.id,
+              kept,
+              continuation !== null ? kept.id : null,
             ));
-          } else if (holdsTokens(node)) {
-            // A reply cut by an engine error keeps the tokens it holds (drowse's
-            // `_discard_unanswered`), with no finish reason.
-            node.raw_token_ids = sawRawToken && rawTokenIdentityComplete ? [...rawTokenIds] : null;
-            node.applied_steering = node.recipe?.steering ?? null;
-            const kept = this.replaceGeneratedNode(node);
-            await emit(this.updatedMutation("finalize_assistant", kept));
           } else {
             // An engine error before the first token leaves no empty assistant node.
             this.removeLeaf(node.id);
@@ -1759,7 +1755,6 @@ export class BrowserLoomRuntime {
     }
     return {
       node: candidate,
-      original: clone(candidate),
       parentId: candidate.parent_id,
       forcedPrefix: [...forcedPrefix],
     };

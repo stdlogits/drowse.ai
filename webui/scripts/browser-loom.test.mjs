@@ -386,7 +386,19 @@ try {
     /continuation failed/,
   );
   const failedContinuationAfter = failedContinuationRuntime.snapshot();
-  assert.deepEqual(failedContinuationAfter.tree.nodes, failedContinuationBefore.tree.nodes);
+  // drowse never discards a continuation: the node stays as rebuilt, unfinalized.
+  assert.deepEqual(
+    failedContinuationAfter.tree.nodes.filter((node) => node.id !== continuedId),
+    failedContinuationBefore.tree.nodes.filter((node) => node.id !== continuedId),
+  );
+  const failedContinued = failedContinuationAfter.tree.nodes.find((node) => node.id === continuedId);
+  const continuedBefore = failedContinuationBefore.tree.nodes.find((node) => node.id === continuedId);
+  assert.equal(continuedBefore.finish_reason, "stop");
+  assert.equal(failedContinued.text, continuedBefore.text);
+  assert.equal(failedContinued.finish_reason, null);
+  assert.equal(failedContinued.raw_token_ids, null);
+  assert.equal(failedContinued.applied_steering, null);
+  assert.equal(failedContinued.aggregate_measurements, null);
   assert.equal(failedContinuationAfter.tree.active_node_id, continuedId);
   assert.equal(failedContinuationAfter.tree.rev, failedContinuationBefore.tree.rev + 2);
   assert.deepEqual(
@@ -2101,6 +2113,8 @@ try {
   assert.equal(keptReply.text, "Partial");
   assert.equal(keptReply.tokens.length, 1);
   assert.equal(keptReply.finish_reason, null);
+  assert.equal(keptReply.raw_token_ids, null);
+  assert.equal(keptReply.applied_steering, null);
 
   // An engine error before the first token leaves no empty assistant node.
   const silentFailure = new BrowserLoomRuntime({
