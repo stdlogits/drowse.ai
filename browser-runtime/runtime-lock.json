@@ -6,7 +6,7 @@
   "hookAbi": "block-sites-v5",
   "exactReadoutAbi": "exact-readout-v2",
   "toolchain": {
-    "forkManifestSha256": "e03b271a841848034caefb261cc7d31a8b17b1bf7798b027b54b0a2ec1dadf76",
+    "forkManifestSha256": "4967cc8258a3c58566bc000b316490784f35d2f7590f174f0128e19abadfe186",
     "mlcLlmFork": {
       "repository": "https://github.com/a9lim/mlc-llm-polythetic",
       "commit": null
