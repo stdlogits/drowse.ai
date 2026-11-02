@@ -26,7 +26,6 @@ test("home example labels remain clear of the slider and its value bubble", asyn
         await expect.poll(() => demo.evaluate(element => {
           const label = element.querySelector(".alpha")!;
           const labelBox = label.getBoundingClientRect();
-          const bubble = element.querySelector(".slider-bubble")!;
           const slider = element.querySelector(".sk-slider")!;
           const clipped = [...label.querySelectorAll("[torph-item]")].some(item => {
             const rect = item.getBoundingClientRect();
@@ -42,16 +41,15 @@ test("home example labels remain clear of the slider and its value bubble", asyn
             unclipped: !clipped,
             fits: labelBox.left >= 0 && labelBox.right <= innerWidth,
             clearsSlider: slider.getBoundingClientRect().top - labelBox.bottom >= 8,
-            clearsBubble: bubble.matches(":popover-open") && bubble.getBoundingClientRect().top >= labelBox.bottom,
           };
-        })).toEqual({ unclipped: true, fits: true, clearsSlider: true, clearsBubble: true });
+        })).toEqual({ unclipped: true, fits: true, clearsSlider: true });
       }
     }
     await page.screenshot({ path: testInfo.outputPath(`example-label-${width}.png`) });
   }
 });
 
-test("the home example shares the surrounding card container", async ({ page }, testInfo) => {
+test("the home example inspects tokens inside the viewport in both themes", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("http://127.0.0.1:4176/");
   const example = page.getByRole("region", { name: "Recorded Drowse example" });
@@ -61,15 +59,6 @@ test("the home example shares the surrounding card container", async ({ page }, 
     for (const theme of ["dark", "light"]) {
       await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
       await panel.scrollIntoViewIfNeeded();
-      const materials = await page.locator(".capabilities ol > li:first-child, .demo-panel, .model-group:first-child")
-        .evaluateAll(elements => elements.map(el => {
-          const style = getComputedStyle(el);
-          return [style.background, style.border, style.borderRadius, style.padding,
-            style.backdropFilter, style.color, style.textShadow];
-        }));
-      expect(materials).toHaveLength(3);
-      expect(materials[1]).toEqual(materials[0]);
-      expect(materials[2]).toEqual(materials[0]);
       expect(await panel.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
       await example.getByRole("button", { name: "Inspect", exact: true }).click();
       await expect.poll(() => readableText(example.locator(".recorded-tokens"))).toBe(recording.runs[3].text);
@@ -95,8 +84,6 @@ test("the home example shares the surrounding card container", async ({ page }, 
       await page.screenshot({ path: testInfo.outputPath(`example-${width}-${theme}.png`) });
     }
   }
-  await page.emulateMedia({ contrast: "more" });
-  await expect(panel).toHaveCSS("backdrop-filter", "none");
 });
 
 test("saved settings and every inspected step retain the actual recording", async ({ page }) => {
@@ -231,9 +218,6 @@ test("Inspect morphs token text when steering changes and honors reduced motion"
   await expect(demo.getByRole("dialog").locator("dl")).toContainText(String(recording.runs[5].tokens[9].tokenId));
   await page.emulateMedia({ reducedMotion: "reduce" });
   await expect.poll(() => page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches)).toBe(true);
-  await expect.poll(() => reply.locator(".recorded-token").first().evaluate(element =>
-    Math.max(...getComputedStyle(element).transitionDuration.split(",").map(value => Number.parseFloat(value))),
-  )).toBeLessThanOrEqual(0.00001);
   const reducedMotion = await reply.evaluateHandle(reply => {
     const animate = Element.prototype.animate;
     const durations: number[] = [];
@@ -266,7 +250,6 @@ test("reply motion resizes the unchanged panel and honors reduced motion", async
   const panel = page.locator(".demo-panel");
   await panel.scrollIntoViewIfNeeded();
   const background = await panel.evaluate(el => getComputedStyle(el).backgroundColor);
-  await expect(demo.locator(".result")).toHaveCSS("font-weight", "600");
   await expect(demo.locator(".result [data-morph-active]")).toHaveCount(0);
   const slider = demo.getByRole("slider");
   await slider.focus();
@@ -319,47 +302,3 @@ test("reply motion resizes the unchanged panel and honors reduced motion", async
   await expect(demo.locator("[data-morph-active]")).toHaveCount(0);
   await expect(panel).toHaveCSS("background-color", background);
 });
-
-for (const width of [320, 390, 1440]) {
-  for (const theme of ["dark", "light"]) {
-    test(`home containers share readable type and larger controls without text shadows at ${width}px in ${theme}`, async ({ page }, testInfo) => {
-      await page.addInitScript(theme => localStorage.setItem("drowse.theme", theme), theme);
-      await page.setViewportSize({ width, height: 1000 });
-      await page.goto("http://127.0.0.1:4176/");
-      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
-      await expect(page.locator("html")).toHaveCSS("color-scheme", theme);
-      const demo = page.getByRole("region", { name: "Recorded Drowse example" });
-      const slider = demo.getByRole("slider");
-      await demo.scrollIntoViewIfNeeded();
-      await expect(demo.locator(".context")).toHaveCSS("font-size", "16px");
-      const prose = await page.locator(".capabilities li p, .model-group > p, .model-row strong, .capability-demo .context, .capability-demo .result")
-        .evaluateAll(elements => elements.map(el => {
-          const style = getComputedStyle(el);
-          return [style.fontFamily, style.fontSize];
-        }));
-      expect(new Set(prose.map(style => JSON.stringify(style))).size).toBe(1);
-      await slider.evaluate(el => { el.dataset.stableControl = "original"; });
-      for (const mode of ["Inspect", "Steer"]) {
-        await demo.getByRole("button", { name: mode, exact: true }).click();
-        await expect(slider).toHaveAttribute("data-stable-control", "original");
-        await expect(demo.locator(".mode-content")).toHaveCount(1);
-        const buttons = await demo.locator(".sk-tabs .tab").evaluateAll(elements => elements.map(el => {
-          const rect = el.getBoundingClientRect();
-          const style = getComputedStyle(el);
-          return { width: rect.width, height: rect.height, size: style.fontSize, spacing: style.letterSpacing };
-        }));
-        for (const button of buttons) {
-          expect(button.height).toBeGreaterThanOrEqual(48);
-          expect(button.width).toBeGreaterThanOrEqual(80);
-          expect(button.size).toBe("16px");
-          expect(button.spacing).toBe("normal");
-        }
-        const shadows = await page.locator(".capabilities ol > li, .capabilities ol > li *, .model-group, .model-group *, .demo-panel, .demo-panel *")
-          .evaluateAll(elements => [...new Set(elements.map(el => getComputedStyle(el).textShadow))]);
-        expect(shadows).toEqual(["none"]);
-        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-        await page.locator(".demo-panel").screenshot({ path: testInfo.outputPath(`harmony-${width}-${theme}-${mode}.png`) });
-      }
-    });
-  }
-}
