@@ -462,7 +462,7 @@ export function webLlmStaticReads(
     const out = await run([{
       fn: "drowse_log_sum_exp", args: [host(toDevice(x, "x"), x.shape)], out: "lse",
     }], ["lse"]);
-    return f32(out.lse, [x.shape[0]]);
+    return f32Tensor(fromDevice(out.lse.data as Float32Array), [x.shape[0]]);
   };
 
   members.topK = async (x: F32Tensor, k: number) => {

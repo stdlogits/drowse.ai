@@ -466,8 +466,9 @@ async function staticReads(backendModule, modelBackend, capabilities, residualCa
 
   // A residual library runs the readout reads and refuses the unit ones.
   const residual = backendModule.webLlmBlockSitesBackend(residualCapabilities, computingBridge([]));
-  const lse = await residual.logSumExp(f32(Float32Array.of(0, 0), [1, 2]));
+  const lse = await residual.logSumExp(f32(Float32Array.of(0, 0, -Infinity, -Infinity), [2, 2]));
   assert.ok(Math.abs(lse.data[0] - Math.log(2)) < 1e-6);
+  assert.equal(lse.data[1], -Infinity, "an all -inf row comes back as -inf, not the device's lowest");
   await assert.rejects(residual.headWriteGrams([{ layer: 0, head: 0 }]), modelBackend.UnsupportedBlockError);
   await assert.rejects(residual.unembedCotangent(f32(new Float32Array(64), [1, 64]), Int32Array.of(1)),
     modelBackend.UnsupportedBlockError);
