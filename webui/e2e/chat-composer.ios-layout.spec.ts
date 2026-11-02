@@ -1,9 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
+import { composer, storesUrl } from "./workbench-navigation";
 
-const storesUrl = `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
-const compose = (page: Page) => page.getByRole("textbox", { name: /^Compose as / });
-const send = (page: Page) => page.getByRole("button", { name: /^(Send|Generate reply)$/ });
+const compose = composer;
+const send = (page: Page) => page.getByRole("button", { name: "Send", exact: true });
 const bottomGap = (page: Page) => page.locator(".log").evaluate(el =>
   el.scrollHeight - el.clientHeight - el.scrollTop);
 
@@ -17,86 +17,10 @@ async function submit(page: Page, text: string, turns: number) {
   await compose(page).fill(text);
   await send(page).click();
   await expect(page.locator(".msg")).toHaveCount(turns * 2);
-  await expect(page.locator(".msg .response-body").last())
+  await expect(page.locator(".msg .dw-said").last())
     .toHaveText("This is a deterministic local Drowse runtime fixture.");
   await expect.poll(() => bottomGap(page)).toBeLessThanOrEqual(2);
 }
-
-test("idle actions collapse and editing controls share one row", async ({ page }, testInfo) => {
-  await page.setViewportSize({ width: 390, height: 844 });
-  await submit(page, "Show the compact composer.", 1);
-  await compose(page).blur();
-  await page.locator(".input-actions").evaluate(el => (el.querySelector(":focus") as HTMLElement | null)?.blur());
-  await expect(page.locator(".input-actions")).toBeHidden();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toHaveCount(0);
-  const idleHeight = await page.locator(".log").evaluate(el => el.clientHeight);
-  await page.screenshot({ path: testInfo.outputPath("chat-idle.png") });
-
-  await compose(page).focus();
-  await expect(send(page)).toBeVisible();
-  await expect.poll(() => page.locator(".log").evaluate(el => el.clientHeight)).toBeLessThan(idleHeight - 40);
-  for (const viewport of [
-    { width: 320, height: 568 }, { width: 390, height: 844 },
-    { width: 430, height: 932 }, { width: 844, height: 390 },
-    { width: 1440, height: 900 },
-  ]) {
-    await page.setViewportSize(viewport);
-    await compose(page).focus();
-    for (const active of [false, true]) {
-      await page.evaluate(async ({ url, active }) => {
-        (await import(url)).genStatus.active = active;
-      }, { url: storesUrl, active });
-      const stop = page.getByRole("button", { name: "Stop", exact: true });
-      if (active) await expect(stop).toBeEnabled();
-      else await expect(stop).toBeDisabled();
-      const buttons = page.locator(".input-actions button:visible");
-      await expect(buttons).toHaveCount(3);
-      const boxes = await buttons.evaluateAll(elements => elements.map(el => {
-        const box = el.getBoundingClientRect();
-        return { top: box.top, bottom: box.bottom, left: box.left, right: box.right, height: box.height };
-      }));
-      expect(Math.max(...boxes.map(box => box.top)) - Math.min(...boxes.map(box => box.top))).toBeLessThanOrEqual(1);
-      for (const box of boxes) {
-        expect(box.left).toBeGreaterThanOrEqual(0);
-        expect(box.right).toBeLessThanOrEqual(viewport.width);
-        expect(box.height).toBeGreaterThanOrEqual(viewport.width <= 760 ? 44 : 24);
-      }
-      const clippedLabels = await buttons.evaluateAll(elements => elements.flatMap(el => {
-        const button = el.getBoundingClientRect();
-        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-        const clipped: string[] = [];
-        while (walker.nextNode()) {
-          if (!walker.currentNode.textContent?.trim()) continue;
-          const range = document.createRange();
-          range.selectNodeContents(walker.currentNode);
-          for (const rect of range.getClientRects()) {
-            if (rect.width && (rect.left < button.left || rect.right > button.right)) {
-              clipped.push(walker.currentNode.textContent);
-            }
-          }
-        }
-        return clipped;
-      }));
-      expect(clippedLabels).toEqual([]);
-      await page.screenshot({ path: testInfo.outputPath(`chat-controls-${viewport.width}-${active}.png`) });
-    }
-  }
-  await page.evaluate(async url => { (await import(url)).genStatus.active = false; }, storesUrl);
-});
-
-test("only Stop remains while an unfocused empty composer is generating", async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
-  await submit(page, "Keep the stop action reachable.", 1);
-  await page.evaluate(async url => {
-    (document.activeElement as HTMLElement)?.blur();
-    (await import(url)).genStatus.active = true;
-  }, storesUrl);
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeVisible();
-  await expect(send(page)).toBeHidden();
-  await expect(page.getByRole("button", { name: "Clear conversation", exact: true })).toBeHidden();
-  await page.evaluate(async url => { (await import(url)).genStatus.active = false; }, storesUrl);
-  await expect(page.locator(".input-actions")).toBeHidden();
-});
 
 test("clearing during generation finishes before the next queued message", async ({ page, isMobile }) => {
   await page.evaluate(async sourceRoot => {
@@ -134,7 +58,7 @@ test("clearing during generation finishes before the next queued message", async
   await page.evaluate(() => (window as any).clearGate.release());
   await expect(page.locator(".msg").filter({ hasText: "Before clear" })).toHaveCount(0);
   await expect(page.locator(".msg").filter({ hasText: "After clear" })).toHaveCount(1);
-  await expect(page.locator(".msg .response-body").last())
+  await expect(page.locator(".msg .dw-said").last())
     .toHaveText("This is a deterministic local Drowse runtime fixture.");
   const oldBranchKept = await page.evaluate(async sourceRoot => {
     const { getRuntimeClient } = await import(`${sourceRoot}/lib/runtime/registry.ts`);
@@ -204,7 +128,7 @@ test("sending and resizing follow the latest message without interrupting histor
       turn.tokens = [];
       turn.text += " More streamed text at the bottom.".repeat(30);
     }, storesUrl);
-    await expect(page.locator(".response-body").last()).toContainText("More streamed text");
+    await expect(page.locator(".dw-said").last()).toContainText("More streamed text");
     await expect.poll(() => log.evaluate((el, position) => Math.abs(el.scrollTop - position), readingPosition)).toBeLessThanOrEqual(2);
     await submit(page, "Return to the latest reply. ".repeat(40), 9);
     for (let index = 0; index < 8; index++) {

@@ -71,6 +71,12 @@ export async function openMenuItem(page: Page, name: string): Promise<void> {
   await menu.getByRole("menuitem", { name, exact: true }).click();
 }
 
+/** Leaves the workbench for the hosted shell's Your chats (the Menu's Settings group). */
+export async function returnToChats(page: Page): Promise<void> {
+  await openMenuItem(page, "Your chats");
+  await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
+}
+
 /** The one dialog tools open in, by its label (App.svelte's DIALOG_LABELS). */
 export const toolDialog = (page: Page, name: string): Locator =>
   page.getByRole("dialog", { name, exact: true });
