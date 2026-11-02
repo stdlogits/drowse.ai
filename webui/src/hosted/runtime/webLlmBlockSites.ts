@@ -311,8 +311,10 @@ export function replayProgram(
     capabilities.layerCount,
     capabilities.blockSpec!.headDim,
   );
+  const spec = capabilities.blockSpec!;
   return {
     ...base,
+    unitShape: Object.freeze({ dFF: spec.dFF, nHeads: spec.nHeads, headDim: spec.headDim }),
     unitMeta: new Uint32Array(layout.metaLength),
     unitCoeff: new Float32Array(layout.coeffLength),
     unitActive: new Float32Array(layout.activeLength),

@@ -402,6 +402,10 @@ async function staticReads(backendModule, modelBackend, programs, capabilities, 
   // An unbound tapped head (zero gram) fails closed at install and replay; a bound one passes.
   assert.throws(() => backendModule.replayProgram(capabilities, tapped), (error) => error.code === "TAP_GRAMS_UNBOUND");
   assert.equal(backendModule.replayProgram(capabilities, bound), bound);
+  // An unsteered replay runs the units superset with a whole, empty unit section.
+  const empty = backendModule.replayProgram(capabilities, null);
+  programs.validateStructuredHookProgram(empty);
+  assert.deepEqual(empty.unitShape, { dFF: spec.dFF, nHeads: spec.nHeads, headDim: spec.headDim });
   assert.throws(() => programs.assertStructuredTapGramsBound(tapped), TypeError, "no shape, no check");
   const gather = log.at(-1).steps[0];
   assert.equal(gather.fn, "drowse_gather_head_grams");
