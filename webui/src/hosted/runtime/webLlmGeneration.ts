@@ -885,10 +885,52 @@ async function assertWebLlmGenerationCapabilities(
   if (missing) throw generationError(missing.code, missing.message);
 }
 
-function buildRequest(plan: WebLlmGenerationPlan): Record<string, unknown> {
+/** What a generation plan prefills from: a chat's messages with the generated seat, its role
+ *  and thinking switch (WebLLM renders the reply header from them), or a completion's prompt.
+ *  Generation's request carries exactly this; a node replay asks the bridge for the ids it
+ *  renders (`prepareDrowseGenerationInputIds`). */
+export type WebLlmPromptPlan = Pick<
+  WebLlmGenerationPlan,
+  "input" | "generationSeat" | "generationRoleName" | "thinking" | "thinkingProfile"
+>;
+
+/** Whether the bridge renders a chat plan's turn order: its request check opens the generated seat
+ *  only after the other seat's turn (a user seat after an assistant turn, an assistant seat after
+ *  a user turn) and takes a system message only first. drowse stitches any order; a browser
+ *  generation never records another, so only a node from elsewhere can need one. */
+export function bridgeRendersTurnOrder(plan: Pick<WebLlmPromptPlan, "input" | "generationSeat">): boolean {
+  if (plan.input.kind !== "chat") return true;
+  const messages = plan.input.messages;
+  const last = messages.at(-1);
+  const opposite = (plan.generationSeat ?? "assistant") === "user" ? "assistant" : "user";
+  return last?.role === opposite &&
+    messages.every((message, index) => message.role !== "system" || index === 0);
+}
+
+export function webLlmPromptRequest(plan: WebLlmPromptPlan): Record<string, unknown> {
   validateInput(plan.input);
   validateGenerationRole(plan);
   validateGenerationSeat(plan);
+  if (plan.input.kind !== "chat") return { prompt: plan.input.prompt };
+  const extraBody = {
+    ...(plan.generationSeat === null || plan.generationSeat === undefined
+      ? {}
+      : { drowse_generation_seat: plan.generationSeat }),
+    ...(plan.thinkingProfile == null || plan.thinking === null || plan.thinking === undefined
+      ? {}
+      : { enable_thinking: plan.thinking }),
+    ...(plan.generationRoleName === null || plan.generationRoleName === undefined
+      ? {}
+      : { drowse_generation_role: plan.generationRoleName }),
+  };
+  return {
+    messages: plan.input.messages.map((message) => ({ ...message })),
+    ...(Object.keys(extraBody).length > 0 ? { extra_body: extraBody } : {}),
+  };
+}
+
+function buildRequest(plan: WebLlmGenerationPlan): Record<string, unknown> {
+  const prompt = webLlmPromptRequest(plan);
   validateReplay(plan.replay);
   const sampling = applyOutputTokenLimit(
     plan,
@@ -907,28 +949,11 @@ function buildRequest(plan: WebLlmGenerationPlan): Record<string, unknown> {
     ...(plan.measurementStartRawIndex === undefined ? {} : { drowse_readout_start_index: plan.measurementStartRawIndex }),
     ...(plan.measurementTargetRawIndex === undefined ? {} : { drowse_readout_target_index: plan.measurementTargetRawIndex }),
   };
-  if (plan.input.kind === "chat") {
-    request.messages = plan.input.messages.map((message) => ({ ...message }));
-    const extraBody = {
-      ...replayExtraBody,
-      ...(plan.generationSeat === null || plan.generationSeat === undefined
-        ? {}
-        : { drowse_generation_seat: plan.generationSeat }),
-      ...(plan.thinkingProfile == null || plan.thinking === null || plan.thinking === undefined
-        ? {}
-        : { enable_thinking: plan.thinking }),
-      ...(plan.generationRoleName === null || plan.generationRoleName === undefined
-        ? {}
-        : { drowse_generation_role: plan.generationRoleName }),
-    };
-    if (Object.keys(extraBody).length > 0) {
-      request.extra_body = extraBody;
-    }
-  } else {
-    request.prompt = plan.input.prompt;
-    if (Object.keys(replayExtraBody).length > 0) {
-      request.extra_body = replayExtraBody;
-    }
+  const { extra_body: promptExtraBody, ...promptFields } = prompt as { extra_body?: Record<string, unknown> };
+  Object.assign(request, promptFields);
+  const extraBody = { ...replayExtraBody, ...promptExtraBody };
+  if (Object.keys(extraBody).length > 0) {
+    request.extra_body = extraBody;
   }
   return request;
 }
@@ -1198,8 +1223,9 @@ function validateSampling(value: WSSampling | null | undefined): WSSampling {
     0,
     BROWSER_RETURN_TOP_K_MAX,
   );
-  optionalFiniteRange(sampling.presence_penalty, "presence_penalty", -2, 2);
-  optionalFiniteRange(sampling.frequency_penalty, "frequency_penalty", -2, 2);
+  // Any finite penalty, as native's sampling params take (`FiniteFloat`).
+  optionalFinite(sampling.presence_penalty, "presence_penalty");
+  optionalFinite(sampling.frequency_penalty, "frequency_penalty");
   optionalBoolean(sampling.return_probe_readings, "return_probe_readings");
   optionalBoolean(sampling.persist_per_layer_scores, "persist_per_layer_scores");
   optionalBoolean(sampling.persist_subspace_coords, "persist_subspace_coords");

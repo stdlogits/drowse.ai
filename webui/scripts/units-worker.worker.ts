@@ -20,6 +20,9 @@ interface HarnessConfig {
   document: CatalogDocument;
   capabilities: RuntimeCapabilities;
   runtimeLockModels: CatalogRuntimeLockModel[];
+  /** The units reads' S→R band, when the harness reads at a golden's (drowse sets
+   *  `session.lens.band` the same way); the default otherwise. */
+  lensBand?: { lo: number; hi: number };
 }
 
 const FIXTURE_ORIGIN = "https://fixture.invalid/";
@@ -71,6 +74,7 @@ new HostedRuntimeWorker(globalThis as unknown as WorkerScopeLike, {
   modelBackend: createLazyBrowserModelBackend(
     () => import(/* @vite-ignore */ WEB_LLM_URL) as Promise<DrowseWebLlmModule>,
     artifacts,
+    config.lensBand === undefined ? {} : { lensBand: config.lensBand },
   ),
   runtimeLockModels: config.runtimeLockModels,
 });

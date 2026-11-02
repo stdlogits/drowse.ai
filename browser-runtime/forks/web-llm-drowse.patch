@@ -1,5 +1,5 @@
 diff --git a/package-lock.json b/package-lock.json
-index 0070bde..04a0042 100644
+index 0070bde..ea2a000 100644
 --- a/package-lock.json
 +++ b/package-lock.json
 @@ -1,21 +1,21 @@
@@ -7,7 +7,7 @@ index 0070bde..04a0042 100644
 -  "name": "@mlc-ai/web-llm",
 -  "version": "0.2.84",
 +  "name": "@drowse/web-llm",
-+  "version": "0.2.84-drowse.47",
++  "version": "0.2.84-drowse.49",
    "lockfileVersion": 3,
    "requires": true,
    "packages": {
@@ -15,7 +15,7 @@ index 0070bde..04a0042 100644
 -      "name": "@mlc-ai/web-llm",
 -      "version": "0.2.84",
 +      "name": "@drowse/web-llm",
-+      "version": "0.2.84-drowse.47",
++      "version": "0.2.84-drowse.49",
        "license": "Apache-2.0",
        "dependencies": {
 -        "loglevel": "^1.9.1"
@@ -170,7 +170,7 @@ index 0070bde..04a0042 100644
        "version": "9.3.0",
        "resolved": "https://registry.npmjs.org/v8-to-istanbul/-/v8-to-istanbul-9.3.0.tgz",
 diff --git a/package.json b/package.json
-index cabfc3d..4eb66fc 100644
+index cabfc3d..06cec60 100644
 --- a/package.json
 +++ b/package.json
 @@ -1,12 +1,12 @@
@@ -178,7 +178,7 @@ index cabfc3d..4eb66fc 100644
 -  "name": "@mlc-ai/web-llm",
 -  "version": "0.2.84",
 +  "name": "@drowse/web-llm",
-+  "version": "0.2.84-drowse.47",
++  "version": "0.2.84-drowse.49",
    "description": "Hardware accelerated language model chats on browsers",
    "main": "lib/index.js",
    "types": "lib/index.d.ts",
@@ -275,7 +275,7 @@ index 6bf8d4f..69bf5db 100644
  }
  
 diff --git a/src/config.ts b/src/config.ts
-index 6c45add..3db69db 100644
+index 6c45add..1a5f839 100644
 --- a/src/config.ts
 +++ b/src/config.ts
 @@ -1,3 +1,5 @@
@@ -292,7 +292,27 @@ index 6c45add..3db69db 100644
  
  /**
   * Conversation template config
-@@ -105,6 +108,7 @@ export interface ChatConfig {
+@@ -25,6 +28,19 @@ export interface ConvTemplateConfig {
+   system_prefix_token_ids?: Array<number>;
+   stop_token_ids: Array<number>;
+   add_role_after_system_message?: boolean;
++  /**
++   * Drowse: a template that folds the system message into the first turn (Gemma's chat
++   * template: `<start_of_turn>user\n{system}\n\n{content}`) names the separator here. A
++   * non-empty system message then prefixes the first message's text with itself and this
++   * separator, and the system template is not rendered.
++   */
++  drowse_system_fold_sep?: string;
++  /**
++   * Drowse: a template that trims each turn's text (Gemma 3's `| trim`) says so here; the text is
++   * trimmed before the system fold composes with it, which stays as given (drowse's scene
++   * grammar: `content_trim`, the fold untrimmed).
++   */
++  drowse_content_trim?: boolean;
+ }
+ 
+ /**
+@@ -105,6 +121,7 @@ export interface ChatConfig {
    top_p: number;
    temperature: number;
    bos_token_id?: number;
@@ -300,7 +320,7 @@ index 6c45add..3db69db 100644
    // Model type identifier from mlc-chat-config.json (e.g. "phi3_v", "gemma3_v")
    model_type?: string;
    // Nested model config from mlc-chat-config.json, contains model-specific parameters
-@@ -148,6 +152,7 @@ export interface GenerationConfig {
+@@ -148,6 +165,7 @@ export interface GenerationConfig {
    ignore_eos?: boolean;
    // Shared by MLC and OpenAI APIs
    top_p?: number | null;
@@ -308,7 +328,7 @@ index 6c45add..3db69db 100644
    temperature?: number | null;
    // Only in OpenAI APIs
    max_tokens?: number | null;
-@@ -162,6 +167,12 @@ export interface GenerationConfig {
+@@ -162,6 +180,12 @@ export interface GenerationConfig {
    // extra_body in ChatCompletionsRequest
    enable_thinking?: boolean | null;
    enable_latency_breakdown?: boolean | null;
@@ -321,22 +341,27 @@ index 6c45add..3db69db 100644
  }
  
  export function postInitAndCheckGenerationConfigValues(
-@@ -171,6 +182,44 @@ export function postInitAndCheckGenerationConfigValues(
-     // if we use `if value` directly, `value` being 0 evaluates to false, violating semantics
+@@ -172,16 +196,53 @@ export function postInitAndCheckGenerationConfigValues(
      return value !== undefined && value !== null;
    }
-+  if (
+   if (
+-    config.frequency_penalty &&
+-    (config.frequency_penalty < -2.0 || config.frequency_penalty > 2.0)
 +    _hasValue(config.drowse_generation_role) &&
 +    (typeof config.drowse_generation_role !== "string" ||
 +      !/^[a-z0-9._-]+$/.test(config.drowse_generation_role))
-+  ) {
+   ) {
+-    throw new RangeError("frequency_penalty", -2.0, 2.0);
 +    throw new TypeError("drowse_generation_role must be a lowercase role slug");
-+  }
-+  if (
+   }
+   if (
+-    config.presence_penalty &&
+-    (config.presence_penalty < -2.0 || config.presence_penalty > 2.0)
 +    _hasValue(config.drowse_generation_seat) &&
 +    config.drowse_generation_seat !== "user" &&
 +    config.drowse_generation_seat !== "assistant"
-+  ) {
+   ) {
+-    throw new RangeError("presence_penalty", -2.0, 2.0);
 +    throw new TypeError("drowse_generation_seat must be `user` or `assistant`");
 +  }
 +  for (const index of [
@@ -363,10 +388,20 @@ index 6c45add..3db69db 100644
 +      throw new TypeError(`${name} must contain non-negative token IDs`);
 +    }
 +  }
-   if (
-     config.frequency_penalty &&
-     (config.frequency_penalty < -2.0 || config.frequency_penalty > 2.0)
-@@ -189,11 +238,27 @@ export function postInitAndCheckGenerationConfigValues(
++  // Drowse: any finite penalty, as drowse's sampler takes one (its goldens decode distinct
++  // tokens with a presence penalty of 1e4); OpenAI's [-2, 2] does not bind it.
++  for (const name of ["frequency_penalty", "presence_penalty"] as const) {
++    const value = config[name];
++    if (
++      _hasValue(value) &&
++      (typeof value !== "number" || !Number.isFinite(value))
++    ) {
++      throw new TypeError(`${name} must be a finite number`);
++    }
+   }
+   if (_hasValue(config.repetition_penalty) && config.repetition_penalty! <= 0) {
+     throw new MinValueError("repetition_penalty", 0);
+@@ -189,11 +250,27 @@ export function postInitAndCheckGenerationConfigValues(
    if (_hasValue(config.max_tokens) && config.max_tokens! <= 0) {
      throw new MinValueError("max_tokens", 0);
    }
@@ -397,7 +432,7 @@ index 6c45add..3db69db 100644
    }
    // If only one of frequency or presence penatly is set, make the other one 0.0
    if (
-@@ -235,9 +300,16 @@ export function postInitAndCheckGenerationConfigValues(
+@@ -235,9 +312,16 @@ export function postInitAndCheckGenerationConfigValues(
      if (!config.logprobs) {
        throw new DependencyError("top_logprobs", "logprobs", true);
      }
@@ -417,7 +452,7 @@ index 6c45add..3db69db 100644
      }
    }
    // If defined logprobs but not top_logprobs, simply make it 0
-@@ -305,6 +377,14 @@ export interface ModelRecord {
+@@ -305,6 +389,14 @@ export interface ModelRecord {
   * - "sync": require OPFS sync access handles.
   * - "auto": use sync access handles when available and fall back to async OPFS otherwise.
   *
@@ -432,7 +467,7 @@ index 6c45add..3db69db 100644
   * @note Note that the Cache API is the most well-tested in WebLLM as of now.
   */
  export type CacheBackend = "cache" | "indexeddb" | "cross-origin" | "opfs";
-@@ -314,6 +394,9 @@ export interface AppConfig {
+@@ -314,6 +406,9 @@ export interface AppConfig {
    model_list: Array<ModelRecord>;
    cacheBackend?: CacheBackend;
    opfsAccessMode?: OPFSAccessMode;
@@ -443,13 +478,44 @@ index 6c45add..3db69db 100644
  
  export function getCacheBackend(appConfig: AppConfig): CacheBackend {
 diff --git a/src/conversation.ts b/src/conversation.ts
-index 122e933..a9fb36b 100644
+index 122e933..83964fe 100644
 --- a/src/conversation.ts
 +++ b/src/conversation.ts
-@@ -25,6 +25,34 @@ import {
- } from "./error";
+@@ -1,6 +1,7 @@
+ import {
+   ChatConfig,
+   ConvTemplateConfig,
++  GenerationConfig,
+   MessagePlaceholders,
+   Role,
+ } from "./config";
+@@ -26,6 +27,58 @@ import {
  
  type ImageURL = ChatCompletionContentPartImage.ImageURL;
+ 
++/**
++ * Python's `str.strip()` (what the Jinja `trim` filter and drowse's scene grammar run): the
++ * characters `str.isspace()` accepts. JavaScript's `trim()` differs on U+0085 and U+001C-U+001F
++ * (Python strips them) and U+FEFF (JavaScript strips it).
++ */
++const PYTHON_WHITESPACE = new Set([
++  0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x85, 0xa0,
++  0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007,
++  0x2008, 0x2009, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000,
++]);
++
++export function pythonStrip(text: string): string {
++  let start = 0;
++  let end = text.length;
++  while (start < end && PYTHON_WHITESPACE.has(text.charCodeAt(start))) {
++    start += 1;
++  }
++  while (end > start && PYTHON_WHITESPACE.has(text.charCodeAt(end - 1))) {
++    end -= 1;
++  }
++  return text.slice(start, end);
++}
++
 +const DROWSE_SYSTEM_ROLE = "drowse_system" as const;
 +type ConversationRole = Role | typeof DROWSE_SYSTEM_ROLE;
 +
@@ -478,10 +544,11 @@ index 122e933..a9fb36b 100644
 +    `Drowse named ${role} headers require a supported role-prefixed conversation template`,
 +  );
 +}
- 
++
  /**
   * Helper to keep track of history conversations.
-@@ -35,7 +63,11 @@ export class Conversation {
+  */
+@@ -35,7 +88,11 @@ export class Conversation {
     *  string or an array of contentPart for possible image input.
     */
    public messages: Array<
@@ -494,7 +561,33 @@ index 122e933..a9fb36b 100644
    > = [];
    readonly config: ConvTemplateConfig;
  
-@@ -93,6 +125,21 @@ export class Conversation {
+@@ -79,10 +136,21 @@ export class Conversation {
+     if (this.override_system_message !== undefined) {
+       system_message = this.override_system_message;
+     }
+-    const system_prompt = this.config.system_template.replace(
+-      MessagePlaceholders.system,
+-      system_message,
+-    );
++    // Drowse: an empty system message renders no system block (a chat template renders one
++    // only for a system message), and a folding template carries a non-empty one into the
++    // first turn's text instead of its own block.
++    const fold = this.config.drowse_system_fold_sep;
++    const system_prompt =
++      system_message === "" || fold !== undefined
++        ? ""
++        : this.config.system_template.replace(
++            MessagePlaceholders.system,
++            system_message,
++          );
++    let pendingFold =
++      addSystem && fold !== undefined && system_message !== ""
++        ? system_message + fold
++        : "";
+     const ret: Array<string | Array<string | ImageURL>> =
+       addSystem && system_prompt !== "" ? [system_prompt] : [];
+ 
+@@ -93,6 +161,21 @@ export class Conversation {
        const role_str = item[1];
        const messageContent = item[2];
  
@@ -516,7 +609,19 @@ index 122e933..a9fb36b 100644
        // 1. Message from `appendReplyHeader()`, message is empty; not much processing is needed.
        if (messageContent === undefined) {
          if (i !== this.messages.length - 1) {
-@@ -299,10 +346,56 @@ export class Conversation {
+@@ -149,6 +232,11 @@ export class Conversation {
+         // 2.2 content is just a string
+         textContentPart = messageContent;
+       }
++      if (this.config.drowse_content_trim === true) {
++        textContentPart = pythonStrip(textContentPart);
++      }
++      textContentPart = pendingFold + textContentPart;
++      pendingFold = "";
+ 
+       // 3. Format textContentPart with role and sep to get message_str and role_prefix
+       let message_str;
+@@ -299,10 +387,56 @@ export class Conversation {
      return this.config.stop_token_ids;
    }
  
@@ -573,7 +678,7 @@ index 122e933..a9fb36b 100644
    ) {
      if (this.isTextCompletion) {
        throw new TextCompletionConversationError("appendMessage");
-@@ -316,28 +409,47 @@ export class Conversation {
+@@ -316,28 +450,47 @@ export class Conversation {
      if (!(role in this.config.roles)) {
        throw Error("Role is not supported: " + role);
      }
@@ -626,7 +731,57 @@ index 122e933..a9fb36b 100644
    }
  
    finishReply(message: string) {
-@@ -488,9 +600,17 @@ export function getConversationFromChatCompletionRequest(
+@@ -360,6 +513,49 @@ export class Conversation {
+   }
+ }
+ 
++/** The empty thinking block a generation with thinking off opens its reply with. */
++export const DROWSE_EMPTY_THINKING_BLOCK = "<think>\n\n</think>\n\n";
++
++/**
++ * Append a generation's last input and the generated seat's header to `conversation`, as a
++ * prefill does (`LLMChatPipeline.prefillStep`, `prepareDrowseGenerationInputIds`): a text
++ * completion takes the input as its prompt; a chat appends the last message, then the header
++ * of the seat being generated (`drowse_generation_seat`, under `drowse_generation_role`). An
++ * assistant seat with thinking off opens with an empty thinking block; a user seat never does
++ * (drowse's scene grammar appends the generation scaffold to the assistant seat only). Returns
++ * the reply's output prefix (that block, or "").
++ */
++export function appendDrowseGenerationTurn(
++  conversation: Conversation,
++  inp: string,
++  msgRole: Role,
++  inpRoleStr: string | undefined,
++  genConfig?: GenerationConfig,
++): string {
++  if (conversation.isTextCompletion) {
++    conversation.prompt = inp;
++    return "";
++  }
++  conversation.appendMessage(msgRole, inp, inpRoleStr);
++  const generationSeat =
++    genConfig?.drowse_generation_seat === "user" ? Role.user : Role.assistant;
++  const roleName = genConfig?.drowse_generation_role ?? undefined;
++  if (
++    genConfig?.enable_thinking === false &&
++    generationSeat === Role.assistant
++  ) {
++    conversation.appendEmptyThinkingReplyHeader(
++      generationSeat,
++      DROWSE_EMPTY_THINKING_BLOCK,
++      roleName,
++    );
++    return DROWSE_EMPTY_THINKING_BLOCK;
++  }
++  if (roleName === undefined) conversation.appendReplyHeader(generationSeat);
++  else conversation.appendReplyHeader(generationSeat, roleName);
++  return "";
++}
++
+ export function getConversation(
+   conv_template: ConvTemplateConfig,
+   conv_config?: Partial<ConvTemplateConfig>,
+@@ -488,9 +684,17 @@ export function getConversationFromChatCompletionRequest(
    // 2. Populate conversation.messages
    const input = request.messages;
    const lastId = input.length - 1;
@@ -2693,10 +2848,18 @@ index 0000000..74d754a
 +  }
 +}
 diff --git a/src/engine.ts b/src/engine.ts
-index 1934771..6771f14 100644
+index 1934771..6900412 100644
 --- a/src/engine.ts
 +++ b/src/engine.ts
-@@ -76,11 +76,45 @@ import {
+@@ -45,6 +45,7 @@ import {
+ } from "./types";
+ import {
+   compareConversationObject,
++  Conversation,
+   getConversation,
+   getConversationFromChatCompletionRequest,
+ } from "./conversation";
+@@ -76,11 +77,90 @@ import {
  } from "./cache_util";
  import { EmbeddingPipeline } from "./embedding";
  import { verifyIntegrity } from "./integrity";
@@ -2729,6 +2892,51 @@ index 1934771..6771f14 100644
 +  );
 +}
 +
++/**
++ * A request's conversation before its last input, and that input as a prefill takes it: a chat's
++ * history (all but its last message) with the last message's text, seat and name; a
++ * completion's empty text-completion conversation with its prompt.
++ */
++function drowseGenerationInput(
++  input: ChatCompletionRequest | CompletionCreateParams,
++  chatConfig: ChatConfig,
++): {
++  conversation: Conversation;
++  input: string;
++  role: Role;
++  roleName: string | undefined;
++} {
++  if (!("messages" in input)) {
++    return {
++      conversation: getConversation(
++        chatConfig.conv_template,
++        chatConfig.conv_config,
++        true,
++      ),
++      input: input.prompt,
++      role: Role.user,
++      roleName: undefined,
++    };
++  }
++  const last = input.messages[
++    input.messages.length - 1
++  ] as ChatCompletionMessageParam;
++  return {
++    conversation: getConversationFromChatCompletionRequest(input, chatConfig),
++    input: last.content as string,
++    role:
++      last.role === "tool"
++        ? Role.tool
++        : last.role === "assistant"
++          ? Role.assistant
++          : Role.user,
++    roleName:
++      (last.role === "user" || last.role === "assistant") && last.name
++        ? last.name
++        : undefined,
++  };
++}
++
 +function requireDrowseFinishReason(
 +  pipeline: LLMChatPipeline,
 +): API.DrowseGenerationFinishReason {
@@ -2742,7 +2950,7 @@ index 1934771..6771f14 100644
  /**
   * Creates `MLCEngine`, and loads `modelId` onto WebGPU.
   *
-@@ -135,6 +169,10 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -135,6 +215,10 @@ export class MLCEngine implements MLCEngineInterface {
     * each model only processes one request at at time.
     */
    private loadedModelIdToLock: Map<string, CustomLock>;
@@ -2753,7 +2961,7 @@ index 1934771..6771f14 100644
  
    // Others
    private logger: (msg: string) => void = log.info;
-@@ -144,6 +182,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -144,6 +228,7 @@ export class MLCEngine implements MLCEngineInterface {
  
    // Signals and flags
    private interruptSignal = false;
@@ -2761,7 +2969,7 @@ index 1934771..6771f14 100644
    private deviceLostIsError = true; // whether device.lost is due to actual error or model reload
    private reloadController: AbortController | undefined;
  
-@@ -155,6 +194,8 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -155,6 +240,8 @@ export class MLCEngine implements MLCEngineInterface {
      this.loadedModelIdToChatConfig = new Map<string, ChatConfig>();
      this.loadedModelIdToModelType = new Map<string, ModelType>();
      this.loadedModelIdToLock = new Map<string, CustomLock>();
@@ -2770,7 +2978,7 @@ index 1934771..6771f14 100644
      this.appConfig = engineConfig?.appConfig || prebuiltAppConfig;
      this.setLogLevel(engineConfig?.logLevel || DefaultLogLevel);
      this.setInitProgressCallback(engineConfig?.initProgressCallback);
-@@ -307,7 +348,13 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -307,7 +394,13 @@ export class MLCEngine implements MLCEngineInterface {
        throw new MissingModelWasmError(modelRecord.model_id);
      }
      const fetchWasmSource = async () => {
@@ -2785,7 +2993,7 @@ index 1934771..6771f14 100644
          // do not cache wasm on local host as we might update code frequently
          return (await fetch(wasmUrl)).arrayBuffer();
        } else if (!wasmUrl.startsWith("http")) {
-@@ -345,7 +392,12 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -345,7 +438,12 @@ export class MLCEngine implements MLCEngineInterface {
      }
  
      // detect GPU
@@ -2799,7 +3007,7 @@ index 1934771..6771f14 100644
      if (gpuDetectOutput == undefined) {
        throw new WebGPUNotAvailableError();
      }
-@@ -374,11 +426,14 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -374,11 +472,14 @@ export class MLCEngine implements MLCEngineInterface {
      let deviceLostInReload = false;
      gpuDetectOutput.device.lost.then((info: any) => {
        if (this.deviceLostIsError) {
@@ -2815,7 +3023,7 @@ index 1934771..6771f14 100644
          deviceLostInReload = true;
        }
      });
-@@ -408,6 +463,11 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -408,6 +509,11 @@ export class MLCEngine implements MLCEngineInterface {
          tokenizer,
          curModelConfig,
          logitProcessor,
@@ -2827,7 +3035,7 @@ index 1934771..6771f14 100644
        );
      }
      await newPipeline.asyncLoadWebGPUPipelines();
-@@ -430,24 +490,38 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -430,24 +536,38 @@ export class MLCEngine implements MLCEngineInterface {
    }
  
    async unload() {
@@ -2875,7 +3083,7 @@ index 1934771..6771f14 100644
    }
  
    //---------------------------------------------------
-@@ -462,7 +536,6 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -462,7 +582,6 @@ export class MLCEngine implements MLCEngineInterface {
      chatConfig: ChatConfig,
      genConfig: GenerationConfig,
    ): Promise<string> {
@@ -2883,7 +3091,7 @@ index 1934771..6771f14 100644
      if (genConfig !== undefined) {
        postInitAndCheckGenerationConfigValues(genConfig);
      }
-@@ -535,41 +608,39 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -535,41 +654,39 @@ export class MLCEngine implements MLCEngineInterface {
      const created = getUnixTimestampSeconds();
      const id = crypto.randomUUID();
      this.interruptSignal = false;
@@ -2951,7 +3159,7 @@ index 1934771..6771f14 100644
        if (isChatCompletion) {
          const chunk: ChatCompletionChunk = {
            id: id,
-@@ -577,6 +648,9 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -577,6 +694,9 @@ export class MLCEngine implements MLCEngineInterface {
              {
                delta: { content: deltaMessage, role: "assistant" },
                finish_reason: null, // not finished yet
@@ -2961,7 +3169,7 @@ index 1934771..6771f14 100644
                index: 0,
                logprobs: logprobs,
              },
-@@ -593,6 +667,9 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -593,6 +713,9 @@ export class MLCEngine implements MLCEngineInterface {
              {
                text: deltaMessage,
                finish_reason: null, // not finished yet
@@ -2971,7 +3179,7 @@ index 1934771..6771f14 100644
                index: 0,
                logprobs: logprobs,
              },
-@@ -615,7 +692,13 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -615,7 +738,13 @@ export class MLCEngine implements MLCEngineInterface {
        throw err;
      }
      if (curChunk) {
@@ -2986,7 +3194,7 @@ index 1934771..6771f14 100644
      }
  
      while (!pipeline.stopped()) {
-@@ -633,7 +716,13 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -633,7 +762,13 @@ export class MLCEngine implements MLCEngineInterface {
          throw err;
        }
        if (curChunk) {
@@ -3001,7 +3209,7 @@ index 1934771..6771f14 100644
        }
      }
  
-@@ -645,6 +734,13 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -645,6 +780,13 @@ export class MLCEngine implements MLCEngineInterface {
      // 3. Last chunk empty marking the end
      // If function calling, use the last chunk to return tool_calls
      let finish_reason = pipeline.getFinishReason()!;
@@ -3015,7 +3223,7 @@ index 1934771..6771f14 100644
      let tool_calls:
        | Array<ChatCompletionChunk.Choice.Delta.ToolCall>
        | undefined;
-@@ -675,6 +771,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -675,6 +817,7 @@ export class MLCEngine implements MLCEngineInterface {
                  }
                : {},
              finish_reason: finish_reason,
@@ -3023,7 +3231,7 @@ index 1934771..6771f14 100644
              index: 0,
            },
          ],
-@@ -690,6 +787,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -690,6 +833,7 @@ export class MLCEngine implements MLCEngineInterface {
            {
              text: "",
              finish_reason: finish_reason,
@@ -3031,7 +3239,7 @@ index 1934771..6771f14 100644
              index: 0,
            },
          ],
-@@ -706,7 +804,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -706,7 +850,7 @@ export class MLCEngine implements MLCEngineInterface {
          "response_format" in request &&
          (request.response_format?.type === "grammar" ||
            request.response_format?.type === "json_object");
@@ -3040,7 +3248,7 @@ index 1934771..6771f14 100644
        const prompt_tokens = pipeline.getCurRoundPrefillTotalTokens();
        const prefill_tokens_per_s = pipeline.getCurRoundPrefillTokensPerSec();
        const decode_tokens_per_s = pipeline.getCurRoundDecodingTokensPerSec();
-@@ -814,6 +912,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -814,6 +958,7 @@ export class MLCEngine implements MLCEngineInterface {
        max_tokens: request.max_tokens,
        stop: request.stop,
        top_p: request.top_p,
@@ -3048,7 +3256,7 @@ index 1934771..6771f14 100644
        temperature: request.temperature,
        logit_bias: request.logit_bias,
        logprobs: request.logprobs,
-@@ -822,6 +921,15 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -822,6 +967,15 @@ export class MLCEngine implements MLCEngineInterface {
        ignore_eos: request.ignore_eos,
        enable_thinking: request.extra_body?.enable_thinking,
        enable_latency_breakdown: request.extra_body?.enable_latency_breakdown,
@@ -3064,7 +3272,7 @@ index 1934771..6771f14 100644
      };
  
      // 0.5 Block wait until this pipeline finishes all previous requests
-@@ -842,6 +950,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -842,6 +996,7 @@ export class MLCEngine implements MLCEngineInterface {
  
      // Big try-finally to release lock in case of errors
      try {
@@ -3072,7 +3280,7 @@ index 1934771..6771f14 100644
        if (request.seed !== null && request.seed !== undefined) {
          selectedPipeline.setSeed(request.seed);
        }
-@@ -889,12 +998,14 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -889,12 +1044,14 @@ export class MLCEngine implements MLCEngineInterface {
  
          choices.push({
            finish_reason: finish_reason,
@@ -3092,7 +3300,7 @@ index 1934771..6771f14 100644
            message: isFunctionCalling
              ? {
                  content: null,
-@@ -906,7 +1017,8 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -906,7 +1063,8 @@ export class MLCEngine implements MLCEngineInterface {
                  role: "assistant",
                },
          });
@@ -3102,7 +3310,7 @@ index 1934771..6771f14 100644
          prompt_tokens += selectedPipeline.getCurRoundPrefillTotalTokens();
          prefill_time += selectedPipeline.getCurRoundPrefillTotalTime();
          decode_time += selectedPipeline.getCurRoundDecodingTotalTime();
-@@ -997,11 +1109,20 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -997,11 +1155,20 @@ export class MLCEngine implements MLCEngineInterface {
        max_tokens: request.max_tokens,
        stop: request.stop,
        top_p: request.top_p,
@@ -3123,7 +3331,7 @@ index 1934771..6771f14 100644
      };
  
      // 0.5 Block wait until this pipeline finishes all previous requests
-@@ -1022,6 +1143,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -1022,6 +1189,7 @@ export class MLCEngine implements MLCEngineInterface {
  
      // Big try-finally to release lock in case of errors
      try {
@@ -3131,7 +3339,7 @@ index 1934771..6771f14 100644
        if (request.seed !== null && request.seed !== undefined) {
          selectedPipeline.setSeed(request.seed);
        }
-@@ -1051,15 +1173,18 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -1051,15 +1219,18 @@ export class MLCEngine implements MLCEngineInterface {
  
          choices.push({
            finish_reason: finish_reason,
@@ -3156,7 +3364,7 @@ index 1934771..6771f14 100644
          prompt_tokens += selectedPipeline.getCurRoundPrefillTotalTokens();
          prefill_time += selectedPipeline.getCurRoundPrefillTotalTime();
          decode_time += selectedPipeline.getCurRoundDecodingTotalTime();
-@@ -1302,6 +1427,481 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -1302,6 +1473,481 @@ export class MLCEngine implements MLCEngineInterface {
      return selectedPipeline.forwardTokensAndSample(inputIds, isPrefill);
    }
  
@@ -3638,25 +3846,99 @@ index 1934771..6771f14 100644
    /**
     * Get the current generated response.
     *
-@@ -1402,8 +2002,16 @@ export class MLCEngine implements MLCEngineInterface {
-       ] as ChatCompletionMessageParam;
-       input_str = last_msg.content as string;
-       input_role_str =
+@@ -1373,17 +2019,12 @@ export class MLCEngine implements MLCEngineInterface {
+     if (chatConfig === undefined) {
+       throw new ConfigurationNotInitializedError();
+     }
+-    let input_str: string;
+-    let input_role_str: string | undefined;
+-    let lastMsgRole = Role.user;
++    const turn = drowseGenerationInput(input, chatConfig);
+     if ("messages" in input) {
+       // For ChatCompletionRequest, we prepare input using `messages`
+-      // 1. Get new conversation based on request, determine if we are in multiround chatting
++      // 1. Determine if we are in multiround chatting
+       const oldConv = pipeline.getConversationObject();
+-      const newConv = getConversationFromChatCompletionRequest(
+-        input,
+-        chatConfig,
+-      );
++      const newConv = turn.conversation;
+       if (!compareConversationObject(oldConv, newConv)) {
+         // Not the same conversation, so not multiround chatting, reset everything (KV cache, etc.)
+         pipeline.resetChat();
+@@ -1395,30 +2036,51 @@ export class MLCEngine implements MLCEngineInterface {
+       } else {
+         log.info("Multiround chatting, reuse KVCache.");
+       }
+-
+-      // 2. Treat the last message as the usual input
+-      const last_msg = input.messages[
+-        input.messages.length - 1
+-      ] as ChatCompletionMessageParam;
+-      input_str = last_msg.content as string;
+-      input_role_str =
 -        last_msg.role === "user" && last_msg.name ? last_msg.name : undefined;
 -      lastMsgRole = last_msg.role === "tool" ? Role.tool : Role.user;
-+        (last_msg.role === "user" || last_msg.role === "assistant") &&
-+        last_msg.name
-+          ? last_msg.name
-+          : undefined;
-+      lastMsgRole =
-+        last_msg.role === "tool"
-+          ? Role.tool
-+          : last_msg.role === "assistant"
-+            ? Role.assistant
-+            : Role.user;
      } else {
-       // For CompletionCreateParams, the input is just the prompt
-       input_str = input.prompt;
+-      // For CompletionCreateParams, the input is just the prompt
+-      input_str = input.prompt;
+       pipeline.resetChat();
+-      const newConv = getConversation(
+-        chatConfig.conv_template,
+-        chatConfig.conv_config,
+-        true,
+-      );
+-      pipeline.setConversation(newConv);
++      pipeline.setConversation(turn.conversation);
+     }
++    // 2. Treat the last message as the usual input
+     return pipeline.prefillStep(
+-      input_str,
+-      lastMsgRole,
+-      input_role_str,
++      turn.input,
++      turn.role,
++      turn.roleName,
++      genConfig,
++    );
++  }
++
++  /**
++   * The token ids a generation of `request` prefills, rendered by the same conversation, last
++   * turn and generated-seat header `prefill` uses (`appendDrowseGenerationTurn`), without
++   * touching the model's KV cache or conversation. A Drowse node replay names its prompt with it.
++   */
++  async prepareDrowseGenerationInputIds(
++    request: ChatCompletionRequest | CompletionCreateParams,
++  ): Promise<number[]> {
++    const [selectedModelId, selectedPipeline, selectedChatConfig] =
++      this.getLLMStates("prepareDrowseGenerationInputIds", request.model);
++    const modelType = this.loadedModelIdToModelType.get(selectedModelId)!;
++    const genConfig: GenerationConfig = {};
++    if ("messages" in request) {
++      API.postInitAndCheckFieldsChatCompletion(
++        request,
++        selectedModelId,
++        modelType,
++      );
++      genConfig.enable_thinking = request.extra_body?.enable_thinking;
++      genConfig.drowse_generation_role =
++        request.extra_body?.drowse_generation_role;
++      genConfig.drowse_generation_seat =
++        request.extra_body?.drowse_generation_seat;
++    } else {
++      API.postInitAndCheckFieldsCompletion(request, selectedModelId);
++    }
++    const turn = drowseGenerationInput(request, selectedChatConfig);
++    return selectedPipeline.prepareDrowseGenerationInputIds(
++      turn.conversation,
++      turn.input,
++      turn.role,
++      turn.roleName,
+       genConfig,
+     );
+   }
 diff --git a/src/gpu.ts b/src/gpu.ts
 new file mode 100644
 index 0000000..3881ae1
@@ -3877,17 +4159,26 @@ index d583419..9a057a6 100644
    hasModelInCache,
    deleteChatConfigInCache,
 diff --git a/src/llm_chat.ts b/src/llm_chat.ts
-index 616cff4..2504400 100644
+index 616cff4..3336e91 100644
 --- a/src/llm_chat.ts
 +++ b/src/llm_chat.ts
-@@ -1,4 +1,6 @@
+@@ -1,20 +1,28 @@
  import * as tvmjs from "@mlc-ai/web-runtime";
 +import { DrowseGpuTopK } from "./drowse_gpu_topk";
 +import { createDrowseCurveControlKernel } from "./drowse_gpu_controls";
  import * as xgr from "@mlc-ai/web-xgrammar";
  import log from "loglevel";
  import { Tokenizer } from "@mlc-ai/web-tokenizers";
-@@ -10,11 +12,13 @@ import {
+ import { ChatConfig, GenerationConfig, Role } from "./config";
+-import { getConversation, Conversation } from "./conversation";
++import {
++  appendDrowseGenerationTurn,
++  getConversation,
++  Conversation,
++} from "./conversation";
+ import { LogitProcessor, LatencyBreakdown } from "./types";
+ import {
+   getChunkedPrefillInputData,
    getImageDataFromURL,
    getRGBArrayFromImageData,
    getTokenTableFromTokenizer,
@@ -3902,7 +4193,7 @@ index 616cff4..2504400 100644
    TopLogprob,
    ResponseFormat,
    ChatCompletionContentPartImage,
-@@ -23,6 +27,7 @@ import {
+@@ -23,6 +31,7 @@ import {
    AttentionSinkSizeError,
    ContextWindowSizeExceededError,
    MinValueError,
@@ -3910,7 +4201,7 @@ index 616cff4..2504400 100644
    RangeError,
    WindowSizeConfigurationError,
    WindowSizeSpecificationError,
-@@ -30,6 +35,84 @@ import {
+@@ -30,6 +39,84 @@ import {
    TextCompletionExpectsKVEmptyError,
    CannotFindImageEmbedError,
  } from "./error";
@@ -3995,7 +4286,7 @@ index 616cff4..2504400 100644
  
  type ImageURL = ChatCompletionContentPartImage.ImageURL;
  
-@@ -47,6 +130,437 @@ type VMFunctionAvailability = {
+@@ -47,6 +134,469 @@ type VMFunctionAvailability = {
  
  type VMFunctionRegistry = Record<string, tvmjs.PackedFunc | undefined>;
  
@@ -4298,6 +4589,38 @@ index 616cff4..2504400 100644
 +
 +export const DROWSE_DEFAULT_TOP_K = 1024;
 +
++const LEHMER_MODULUS = 2147483647;
++
++function fmix32(value: number): number {
++  let h = value >>> 0;
++  h ^= h >>> 16;
++  h = Math.imul(h, 0x85ebca6b);
++  h ^= h >>> 13;
++  h = Math.imul(h, 0xc2b2ae35);
++  h ^= h >>> 16;
++  return h >>> 0;
++}
++
++/**
++ * The state TVM's sampler starts from for a request seed. TVM's generator is Lehmer's
++ * (state <- 48271 * state mod 2^31 - 1) and takes the seed as its state, so a small seed's first
++ * draw is about 2.2e-5 * seed and samples the top token at any temperature. Both 32-bit halves of
++ * the seed go through murmur3's finalizer into [1, 2^31 - 2]: deterministic per seed, spread for
++ * neighbouring seeds.
++ */
++export function drowseSamplerSeed(seed: number): number {
++  if (!Number.isSafeInteger(seed)) {
++    throw new Error(
++      "Drowse sampler received a seed that is not a safe integer",
++    );
++  }
++  const magnitude = Math.abs(seed);
++  const low = magnitude % 2 ** 32;
++  const high = Math.floor(magnitude / 2 ** 32) + (seed < 0 ? 0x80000000 : 0);
++  const mixed = fmix32(low ^ fmix32(high + 0x9e3779b9));
++  return 1 + (mixed % (LEHMER_MODULUS - 1));
++}
++
 +export function effectiveDrowseTopK(topK: number, vocabSize: number): number {
 +  if (!Number.isSafeInteger(topK) || topK < 0) {
 +    throw new Error("Drowse sampler received an invalid top-k value");
@@ -4433,7 +4756,7 @@ index 616cff4..2504400 100644
  type ResolvedModelABI = {
    kvStateKind: Exclude<KVStateKind, "none">;
    prefillABI: ComputeABIKind;
-@@ -67,6 +581,21 @@ export class LLMChatPipeline {
+@@ -67,6 +617,21 @@ export class LLMChatPipeline {
    private vm: tvmjs.VirtualMachine;
    private prefill: tvmjs.PackedFunc;
    private decoding: tvmjs.PackedFunc;
@@ -4455,7 +4778,7 @@ index 616cff4..2504400 100644
    private resolvedModelABI!: ResolvedModelABI;
    private kvStateKind: KVStateKind = "kv_cache";
    private image_embed: tvmjs.PackedFunc | undefined;
-@@ -94,7 +623,82 @@ export class LLMChatPipeline {
+@@ -94,7 +659,82 @@ export class LLMChatPipeline {
    private prefillLogitPositionHost = new Int32Array(1);
    private maxHistorySize = 1;
    private logitsOnCPU?: tvmjs.Tensor = undefined;
@@ -4538,7 +4861,7 @@ index 616cff4..2504400 100644
  
    // meta data
    private bosTokenId = 1;
-@@ -109,8 +713,12 @@ export class LLMChatPipeline {
+@@ -109,8 +749,12 @@ export class LLMChatPipeline {
    // states
    private outputMessage = "";
    private outputIds: Array<number> = [];
@@ -4551,7 +4874,7 @@ index 616cff4..2504400 100644
    // frequency of appeared token ids till now (refresh after PrefillStep); token_id mapped to freq
    private appearedTokensFreq = new Map<number, number>();
    private imageDataCache = new Map<string, ImageData>();
-@@ -130,6 +738,10 @@ export class LLMChatPipeline {
+@@ -130,6 +774,10 @@ export class LLMChatPipeline {
    private curRoundPrefillTotalTokens = 0;
    private curRoundDecodingTotalTime = 0;
    private curRoundPrefillTotalTime = 0;
@@ -4562,7 +4885,7 @@ index 616cff4..2504400 100644
  
    // additional stats, reset at every prefillStep()
    public curRoundLatencyBreakdown: LatencyBreakdown = {
-@@ -181,12 +793,14 @@ export class LLMChatPipeline {
+@@ -181,12 +829,14 @@ export class LLMChatPipeline {
      tokenizer: Tokenizer,
      config: ChatConfig,
      logitProcessor?: LogitProcessor,
@@ -4577,7 +4900,7 @@ index 616cff4..2504400 100644
      this.fullVocabSize = this.config.vocab_size;
      this.bitmaskSize = Math.ceil(this.fullVocabSize / 32);
  
-@@ -233,6 +847,26 @@ export class LLMChatPipeline {
+@@ -233,6 +883,26 @@ export class LLMChatPipeline {
        "batch_prefill",
        "decode",
        "batch_decode",
@@ -4604,7 +4927,7 @@ index 616cff4..2504400 100644
        "create_tir_paged_kv_cache",
        "create_rnn_state",
        "sample_with_top_p",
-@@ -253,9 +887,15 @@ export class LLMChatPipeline {
+@@ -253,9 +923,15 @@ export class LLMChatPipeline {
  
      const vmFunctionAvailability =
        LLMChatPipeline.getVMFunctionAvailability(vmFunctionRegistry);
@@ -4620,7 +4943,7 @@ index 616cff4..2504400 100644
      );
      const stateKinds: string[] = [];
      if (this.resolvedModelABI.needsKVCache) {
-@@ -287,6 +927,130 @@ export class LLMChatPipeline {
+@@ -287,6 +963,130 @@ export class LLMChatPipeline {
          vmFunctionRegistry,
        ),
      );
@@ -4751,20 +5074,10 @@ index 616cff4..2504400 100644
      if (this.resolvedModelABI.prefillABI === "batch") {
        log.info("Using batch_prefill kernel.");
      }
-@@ -480,31 +1244,2687 @@ export class LLMChatPipeline {
-       this.tvm.empty([numProbs], "float32", this.device),
-     );
- 
--    tvm.endScope();
-+    tvm.endScope();
-+  }
-+
-+  dispose() {
-+    // TODO: Do we need to dispose all PackedFuncs here?
-+    this.grammarMatcher?.dispose();
-+    this.params.dispose();
-+    this.decoding.dispose();
-+    this.prefill.dispose();
+@@ -489,6 +1289,43 @@ export class LLMChatPipeline {
+     this.params.dispose();
+     this.decoding.dispose();
+     this.prefill.dispose();
 +    this.drowseStructuredDecoding?.dispose();
 +    this.drowseStructuredPrefill?.dispose();
 +    this.drowseCurvedDecoding?.dispose();
@@ -4802,24 +5115,13 @@ index 616cff4..2504400 100644
 +    this.disposeDrowseProgram();
 +    this.disposeDrowseJlensDictionary();
 +    this.disposeDrowseSaeDictionary();
-+    this.embed.dispose();
-+    this.image_embed?.dispose();
-+    this.prefillLogitPositions?.dispose();
-+    this.rnnState?.dispose();
-+    this.kvCache?.dispose();
-+    this.fsampleWithTopP.dispose();
-+    this.fargsortProbs.dispose();
-+    this.sampleIndicesDevice?.dispose();
-+    this.topPDevice?.dispose();
-+    this.vm.dispose();
-+    this.fclearKVCaches.dispose();
-+    this.logitsOnCPU?.dispose();
-+    this.tvm.dispose();
-+    this.tokenizer.dispose();
-+    this.xgTokenizerInfo?.dispose();
-+    this.grammarCompiler?.dispose();
-+  }
-+
+     this.embed.dispose();
+     this.image_embed?.dispose();
+     this.prefillLogitPositions?.dispose();
+@@ -507,6 +1344,2625 @@ export class LLMChatPipeline {
+     this.grammarCompiler?.dispose();
+   }
+ 
 +  supportsDrowseStructuredHooks(): boolean {
 +    return (
 +      this.drowseHookProfile !== undefined &&
@@ -7402,30 +7704,8 @@ index 616cff4..2504400 100644
 +    }
 +    this.drowseStructuredMode = undefined;
 +    this.drowseHiddenCaptureRequested = false;
-   }
- 
--  dispose() {
--    // TODO: Do we need to dispose all PackedFuncs here?
--    this.grammarMatcher?.dispose();
--    this.params.dispose();
--    this.decoding.dispose();
--    this.prefill.dispose();
--    this.embed.dispose();
--    this.image_embed?.dispose();
--    this.prefillLogitPositions?.dispose();
--    this.rnnState?.dispose();
--    this.kvCache?.dispose();
--    this.fsampleWithTopP.dispose();
--    this.fargsortProbs.dispose();
--    this.sampleIndicesDevice?.dispose();
--    this.topPDevice?.dispose();
--    this.vm.dispose();
--    this.fclearKVCaches.dispose();
--    this.logitsOnCPU?.dispose();
--    this.tvm.dispose();
--    this.tokenizer.dispose();
--    this.xgTokenizerInfo?.dispose();
--    this.grammarCompiler?.dispose();
++  }
++
 +  private disposeDrowseJlensDictionary(): void {
 +    const dictionary = this.drowseJlensDictionary;
 +    if (dictionary !== undefined) {
@@ -7459,10 +7739,12 @@ index 616cff4..2504400 100644
 +    this.disposeDrowsePendingSaeReadback();
 +    this.drowseSaeTopFeaturesHost = undefined;
 +    this.drowseMeasurementBundleHost = undefined;
-   }
- 
++  }
++
    /**
-@@ -514,6 +3934,11 @@ export class LLMChatPipeline {
+    * Get the current message.
+    */
+@@ -514,6 +3970,11 @@ export class LLMChatPipeline {
      return this.outputMessage;
    }
  
@@ -7474,7 +7756,7 @@ index 616cff4..2504400 100644
    /**
     * Reset the runtime statistics
     */
-@@ -535,6 +3960,7 @@ export class LLMChatPipeline {
+@@ -535,6 +3996,7 @@ export class LLMChatPipeline {
      }
      this.resetKVCache();
      this.filledKVCacheLength = 0;
@@ -7482,7 +7764,7 @@ index 616cff4..2504400 100644
      this.logitProcessor?.resetState();
      this.tvm.endScope();
    }
-@@ -543,6 +3969,7 @@ export class LLMChatPipeline {
+@@ -543,6 +4005,7 @@ export class LLMChatPipeline {
     * Reset KV Cache
     */
    resetKVCache() {
@@ -7490,7 +7772,7 @@ index 616cff4..2504400 100644
      const states = this.getActiveKVStates();
      for (const state of states) {
        this.fclearKVCaches(state);
-@@ -572,6 +3999,10 @@ export class LLMChatPipeline {
+@@ -572,6 +4035,10 @@ export class LLMChatPipeline {
      return this.finishReason;
    }
  
@@ -7501,7 +7783,7 @@ index 616cff4..2504400 100644
    /**
     * @returns tokenLogprobArray for this current round of autoregressive generation.
     * Updated upon each sampled token, cleared upon each prefillStep().
-@@ -587,6 +4018,10 @@ export class LLMChatPipeline {
+@@ -587,6 +4054,10 @@ export class LLMChatPipeline {
      return this.curRoundDecodingTotalTokens;
    }
  
@@ -7512,7 +7794,20 @@ index 616cff4..2504400 100644
    /**
     * @returns the number of tokens decoded for a single request or a single choice in the request.
     */
-@@ -721,13 +4156,17 @@ export class LLMChatPipeline {
+@@ -665,10 +4136,10 @@ export class LLMChatPipeline {
+   }
+ 
+   /**
+-   * Set the seed for the RNG `this.tvm.rng`.
++   * Set the seed for the RNG `this.tvm.rng`, mixed first (`drowseSamplerSeed`).
+    */
+   setSeed(seed: number): void {
+-    this.tvm.setSeed(seed);
++    this.tvm.setSeed(drowseSamplerSeed(seed));
+   }
+ 
+   private getResponseFormatKey(
+@@ -721,13 +4192,17 @@ export class LLMChatPipeline {
     */
    async prefillStep(
      inp: string,
@@ -7533,7 +7828,7 @@ index 616cff4..2504400 100644
        );
      }
      if (this.resetStatsPerPrefill) {
-@@ -738,8 +4177,10 @@ export class LLMChatPipeline {
+@@ -738,8 +4213,10 @@ export class LLMChatPipeline {
  
      // cleanup the per convo states
      this.outputIds = [];
@@ -7544,7 +7839,7 @@ index 616cff4..2504400 100644
      this.tokenLogprobArray = [];
      this.curRoundDecodingTotalTokens = 0;
      this.curRoundPrefillTotalTokens = 0;
-@@ -747,6 +4188,10 @@ export class LLMChatPipeline {
+@@ -747,6 +4224,10 @@ export class LLMChatPipeline {
      this.curRoundDecodingTotalTime = 0;
      this.curRoundGrammarInitTotalTime = 0;
      this.curRoundGrammarPerTokenTotalTime = 0;
@@ -7555,7 +7850,7 @@ index 616cff4..2504400 100644
  
      this.curRoundLatencyBreakdown = {
        logitProcessorTime: [],
-@@ -758,6 +4203,8 @@ export class LLMChatPipeline {
+@@ -758,6 +4239,8 @@ export class LLMChatPipeline {
      };
  
      this.stopTriggered = false;
@@ -7564,40 +7859,38 @@ index 616cff4..2504400 100644
      const conversation = this.conversation;
  
      // -1. Instantiate grammar matcher according to generation config. This step is overlapped
-@@ -835,17 +4282,28 @@ export class LLMChatPipeline {
-       conversation.prompt = inp;
-     } else {
-       conversation.appendMessage(msgRole, inp, inp_role_str);
-+      const generationSeat =
-+        genConfig?.drowse_generation_seat === "user"
-+          ? Role.user
-+          : Role.assistant;
-       if (genConfig?.enable_thinking === false) {
-         // TODO(Charlie): In future we should make emptyThinkingBlockStr configurable.
-         const emptyThinkingBlockStr = "<think>\n\n</think>\n\n";
+@@ -831,23 +4314,13 @@ export class LLMChatPipeline {
+     }
+ 
+     // 0. Get inputData from conversation
+-    if (conversation.isTextCompletion) {
+-      conversation.prompt = inp;
+-    } else {
+-      conversation.appendMessage(msgRole, inp, inp_role_str);
+-      if (genConfig?.enable_thinking === false) {
+-        // TODO(Charlie): In future we should make emptyThinkingBlockStr configurable.
+-        const emptyThinkingBlockStr = "<think>\n\n</think>\n\n";
 -        const encoded = this.tokenizer.encode(emptyThinkingBlockStr);
 -        this.outputIds.push(...encoded);
-+        this.outputPrefix = emptyThinkingBlockStr;
-         conversation.appendEmptyThinkingReplyHeader(
+-        conversation.appendEmptyThinkingReplyHeader(
 -          Role.assistant,
-+          generationSeat,
-           emptyThinkingBlockStr,
-+          genConfig.drowse_generation_role ?? undefined,
-         );
-       } else {
+-          emptyThinkingBlockStr,
+-        );
+-      } else {
 -        conversation.appendReplyHeader(Role.assistant);
-+        if (genConfig?.drowse_generation_role === undefined) {
-+          conversation.appendReplyHeader(generationSeat);
-+        } else {
-+          conversation.appendReplyHeader(
-+            generationSeat,
-+            genConfig.drowse_generation_role ?? undefined,
-+          );
-+        }
-       }
-     }
+-      }
+-    }
++    this.outputPrefix = appendDrowseGenerationTurn(
++      conversation,
++      inp,
++      msgRole,
++      inp_role_str,
++      genConfig,
++    );
      const [inputData, promptLen, getEmbedSize] = await this.getInputData();
-@@ -944,8 +4402,9 @@ export class LLMChatPipeline {
+ 
+     // Check if LLMChatPipeline fits for forwarding image input
+@@ -944,8 +4417,9 @@ export class LLMChatPipeline {
      }
      this.stopTriggered = true;
      this.finishReason = "abort";
@@ -7608,7 +7901,7 @@ index 616cff4..2504400 100644
      }
    }
  
-@@ -999,9 +4458,11 @@ export class LLMChatPipeline {
+@@ -999,9 +4473,11 @@ export class LLMChatPipeline {
      if (stopTokens.includes(nextToken)) {
        this.stopTriggered = true;
        this.finishReason = "stop";
@@ -7620,7 +7913,7 @@ index 616cff4..2504400 100644
        // Update token appearance frequency
        const curFreq = this.appearedTokensFreq.get(nextToken);
        if (curFreq !== undefined) {
-@@ -1013,6 +4474,7 @@ export class LLMChatPipeline {
+@@ -1013,6 +4489,7 @@ export class LLMChatPipeline {
  
      // Stop condition 2: stop string; update `this.outputMessage` subsequently
      let outputMessage = this.tokenizer.decode(new Int32Array(this.outputIds));
@@ -7628,7 +7921,7 @@ index 616cff4..2504400 100644
      let stopPos = -1;
      for (const stopStr of stopStrs) {
        // Stop at the first stopStr we find
-@@ -1021,32 +4483,36 @@ export class LLMChatPipeline {
+@@ -1021,32 +4498,36 @@ export class LLMChatPipeline {
          outputMessage = outputMessage.substring(0, stopPos);
          this.stopTriggered = true;
          this.finishReason = "stop";
@@ -7667,7 +7960,7 @@ index 616cff4..2504400 100644
        }
      }
    }
-@@ -1227,7 +4693,87 @@ export class LLMChatPipeline {
+@@ -1227,7 +4708,87 @@ export class LLMChatPipeline {
    private async embedAndForward(
      inputData: Array<Array<number> | ImageURL>,
      inputDataLen: number,
@@ -7755,7 +8048,7 @@ index 616cff4..2504400 100644
      if (inputDataLen > this.prefillChunkSize) {
        throw new Error(
          "InternalError: expect inputDataLen <= this.prefillChunkSize.",
-@@ -1238,51 +4784,140 @@ export class LLMChatPipeline {
+@@ -1238,51 +4799,140 @@ export class LLMChatPipeline {
  
      // 1. Embed all inputData
      this.tvm.beginScope();
@@ -7937,7 +8230,7 @@ index 616cff4..2504400 100644
      this.tvm.attachToCurrentScope(logits);
      return logits;
    }
-@@ -1292,7 +4927,14 @@ export class LLMChatPipeline {
+@@ -1292,7 +4942,14 @@ export class LLMChatPipeline {
      names: string[],
    ): VMFunctionRegistry {
      const registry: VMFunctionRegistry = {};
@@ -7953,7 +8246,7 @@ index 616cff4..2504400 100644
        try {
          const func = vm.getFunction(name) as unknown;
          if (typeof func === "function") {
-@@ -1365,6 +5007,7 @@ export class LLMChatPipeline {
+@@ -1365,6 +5022,7 @@ export class LLMChatPipeline {
    private static resolveModelABI(
      kvStateKind: KVStateKind,
      availability: VMFunctionAvailability,
@@ -7961,7 +8254,7 @@ index 616cff4..2504400 100644
    ): ResolvedModelABI {
      const hasSingleKernelPair = availability.prefill && availability.decode;
      const hasBatchKernelPair =
-@@ -1450,6 +5093,17 @@ export class LLMChatPipeline {
+@@ -1450,6 +5108,17 @@ export class LLMChatPipeline {
      }
  
      // kv_cache
@@ -7979,7 +8272,7 @@ index 616cff4..2504400 100644
      if (hasSingleKernelPair) {
        return {
          kvStateKind,
-@@ -1525,14 +5179,151 @@ export class LLMChatPipeline {
+@@ -1525,14 +5194,151 @@ export class LLMChatPipeline {
      return states;
    }
  
@@ -8132,7 +8425,7 @@ index 616cff4..2504400 100644
          this.params,
        );
      }
-@@ -1549,27 +5340,42 @@ export class LLMChatPipeline {
+@@ -1549,27 +5355,42 @@ export class LLMChatPipeline {
        this.resolvedModelABI.needsKVCache &&
        this.resolvedModelABI.needsRNNState
      ) {
@@ -8179,7 +8472,7 @@ index 616cff4..2504400 100644
          this.params,
        );
      }
-@@ -1577,20 +5383,68 @@ export class LLMChatPipeline {
+@@ -1577,20 +5398,68 @@ export class LLMChatPipeline {
        this.resolvedModelABI.needsKVCache &&
        this.resolvedModelABI.needsRNNState
      ) {
@@ -8250,7 +8543,7 @@ index 616cff4..2504400 100644
    // NOTE: caller must call device.sync()
    private updateLogitsOnCPU(logits: tvmjs.Tensor): tvmjs.Tensor {
      if (this.logitsOnCPU == undefined) {
-@@ -1610,7 +5464,7 @@ export class LLMChatPipeline {
+@@ -1610,7 +5479,7 @@ export class LLMChatPipeline {
      logitsOnGPU: tvmjs.Tensor,
      genConfig?: GenerationConfig,
    ) {
@@ -8259,7 +8552,7 @@ index 616cff4..2504400 100644
      // Also load other genConfig items like logit_bias. Consume all fields of `genConfig` here.
      function _hasValue(value: any): boolean {
        // if we use `if value` directly, `value` being 0 evaluates to false, violating semantics
-@@ -1618,6 +5472,7 @@ export class LLMChatPipeline {
+@@ -1618,6 +5487,7 @@ export class LLMChatPipeline {
      }
      let temperature: number = this.config.temperature;
      let top_p: number = this.config.top_p;
@@ -8267,7 +8560,7 @@ index 616cff4..2504400 100644
      let repetition_penalty: number = this.config.repetition_penalty;
      let frequency_penalty: number = this.config.frequency_penalty;
      let presence_penalty: number = this.config.presence_penalty;
-@@ -1633,6 +5488,9 @@ export class LLMChatPipeline {
+@@ -1633,6 +5503,9 @@ export class LLMChatPipeline {
        if (_hasValue(genConfig.top_p)) {
          top_p = genConfig.top_p!;
        }
@@ -8277,7 +8570,7 @@ index 616cff4..2504400 100644
        // TODO: setting top_p to 1.0 by default might run into issues since
        // top_p masking in relax uses < instead of <=
        // Set default top_p to 1.0 if not set
-@@ -1675,11 +5533,14 @@ export class LLMChatPipeline {
+@@ -1675,26 +5548,24 @@ export class LLMChatPipeline {
        }
      }
      // Check range validity
@@ -8295,7 +8588,27 @@ index 616cff4..2504400 100644
      }
      if (repetition_penalty <= 0) {
        throw new MinValueError("repetition_penalty", 0);
-@@ -1894,13 +5755,38 @@ export class LLMChatPipeline {
+     }
+-    if (
+-      frequency_penalty &&
+-      (frequency_penalty < -2.0 || frequency_penalty > 2.0)
+-    ) {
+-      throw new RangeError("frequency_penalty", -2.0, 2.0);
++    // Drowse: any finite penalty, as drowse's sampler takes (postInitAndCheckGenerationConfigValues).
++    if (_hasValue(frequency_penalty) && !Number.isFinite(frequency_penalty)) {
++      throw new TypeError("frequency_penalty must be finite");
+     }
+-    if (
+-      presence_penalty &&
+-      (presence_penalty < -2.0 || presence_penalty > 2.0)
+-    ) {
+-      throw new RangeError("presence_penalty", -2.0, 2.0);
++    if (_hasValue(presence_penalty) && !Number.isFinite(presence_penalty)) {
++      throw new TypeError("presence_penalty must be finite");
+     }
+ 
+     const outputTokenBegin = performance.now();
+@@ -1894,13 +5765,38 @@ export class LLMChatPipeline {
      // 4. Sample token from logits
      const sampleBegin = performance.now();
  
@@ -8338,7 +8651,7 @@ index 616cff4..2504400 100644
  
      this.tvm.beginScope();
      const temperaturesDevice = this.tvm
-@@ -1913,79 +5799,131 @@ export class LLMChatPipeline {
+@@ -1913,79 +5809,131 @@ export class LLMChatPipeline {
      );
      probs = probs.view([numProbs, this.fullVocabSize]);
  
@@ -8520,39 +8833,100 @@ index 616cff4..2504400 100644
    }
  
    /**
-@@ -2028,20 +5966,37 @@ export class LLMChatPipeline {
-       if (this.filledKVCacheLength !== 0) {
-         throw new TextCompletionExpectsKVEmptyError();
-       }
-+      const legacyConfig = this.config as ChatConfig & Record<string, unknown>;
-+      const prefixes = ["drowse", "polythetic", "saklas"]
-+        .map((name) => legacyConfig[`${name}_completion_prefix_token_ids`])
-+        .filter((value) => value !== undefined);
-+      if (
-+        prefixes.some(
-+          (value) => JSON.stringify(value) !== JSON.stringify(prefixes[0]),
-+        )
-+      ) {
-+        throw new Error(
-+          "The completion-prefix metadata contains conflicting values",
-+        );
-+      }
-+      const prefix = (prefixes[0] ?? []) as number[];
-+      if (
-+        !Array.isArray(prefix) ||
-+        prefix.some(
-+          (id) =>
-+            !Number.isSafeInteger(id) || id < 0 || id >= this.fullVocabSize,
-+        )
-+      ) {
+@@ -2015,34 +5963,90 @@ export class LLMChatPipeline {
+    *   imageUrl2,
+    *   token array for "\nSome user input<|end|>\n"
+    */
++  /** The ids a prefill feeds before its first prompt segment: a text completion's
++   *  completion prefix, a conversation's `system_prefix_token_ids`. */
++  private drowsePromptPrefixIds(conversation: Conversation): number[] {
++    if (!conversation.isTextCompletion) {
++      return [...(conversation.config.system_prefix_token_ids ?? [])];
++    }
++    const legacyConfig = this.config as ChatConfig & Record<string, unknown>;
++    const prefixes = ["drowse", "polythetic", "saklas"]
++      .map((name) => legacyConfig[`${name}_completion_prefix_token_ids`])
++      .filter((value) => value !== undefined);
++    if (
++      prefixes.some(
++        (value) => JSON.stringify(value) !== JSON.stringify(prefixes[0]),
++      )
++    ) {
++      throw new Error(
++        "The completion-prefix metadata contains conflicting values",
++      );
++    }
++    const prefix = (prefixes[0] ?? []) as number[];
++    if (
++      !Array.isArray(prefix) ||
++      prefix.some(
++        (id) => !Number.isSafeInteger(id) || id < 0 || id >= this.fullVocabSize,
++      )
++    ) {
++      throw new TypeError(
++        "Text completion prefix must contain valid vocabulary token IDs",
++      );
++    }
++    return [...prefix];
++  }
++
++  /** A prefill's prompt segments, each encoded on its own. */
++  private drowsePromptArray(
++    conversation: Conversation,
++  ): Array<string | Array<string | ImageURL>> {
++    return conversation.isTextCompletion
++      ? conversation.getPromptArrayTextCompletion()
++      : conversation.getPromptArray(this.config);
++  }
++
++  /**
++   * The token ids a generation prefills for `conversation` once `appendDrowseGenerationTurn`
++   * has added its last input and the generated seat's header: the prefix ids, then each prompt
++   * segment encoded on its own, as `getInputData` feeds them. Text only; touches no device or
++   * KV state, so a node replay names its prompt exactly as the generation that produced it.
++   */
++  prepareDrowseGenerationInputIds(
++    conversation: Conversation,
++    inp: string,
++    msgRole: Role,
++    inpRoleStr: string | undefined,
++    genConfig?: GenerationConfig,
++  ): number[] {
++    appendDrowseGenerationTurn(
++      conversation,
++      inp,
++      msgRole,
++      inpRoleStr,
++      genConfig,
++    );
++    const ids = this.drowsePromptPrefixIds(conversation);
++    for (const segment of this.drowsePromptArray(conversation)) {
++      if (typeof segment !== "string") {
 +        throw new TypeError(
-+          "Text completion prefix must contain valid vocabulary token IDs",
++          "Drowse generation prompts render text messages only",
 +        );
 +      }
-+      curTokens = [...prefix];
-       prompts = this.conversation.getPromptArrayTextCompletion();
-     } else {
-       // 1.2. Conversation style
++      ids.push(...this.tokenizer.encode(segment));
++    }
++    return ids;
++  }
++
+   private async getInputData(): Promise<
+     [Array<Array<number> | ImageURL>, number, (image: ImageURL) => number]
+   > {
+     const ret: Array<Array<number> | ImageURL> = [];
+-    let curTokens: Array<number> = [];
+-    let prompts: Array<string | Array<string | ImageURL>>;
+-
+-    // 1. Get prompts
+-    if (this.conversation.isTextCompletion) {
+-      // 1.1. Non-conversation style
+-      if (this.filledKVCacheLength !== 0) {
+-        throw new TextCompletionExpectsKVEmptyError();
+-      }
+-      prompts = this.conversation.getPromptArrayTextCompletion();
+-    } else {
+-      // 1.2. Conversation style
 -      if (this.filledKVCacheLength === 0) {
 -        if (
 -          this.conversation.config.system_prefix_token_ids !== undefined &&
@@ -8564,12 +8938,16 @@ index 616cff4..2504400 100644
 -      } else {
 -        prompts = this.conversation.getPromptArrayLastRound(this.config);
 -      }
-+      curTokens = [...(this.conversation.config.system_prefix_token_ids ?? [])];
-+      prompts = this.conversation.getPromptArray(this.config);
++    if (this.conversation.isTextCompletion && this.filledKVCacheLength !== 0) {
++      throw new TextCompletionExpectsKVEmptyError();
      }
++    // 1. Get prompts
++    let curTokens = this.drowsePromptPrefixIds(this.conversation);
++    const prompts = this.drowsePromptArray(this.conversation);
  
      // 1.5. Preload image dimensions to compute per-image embed sizes
-@@ -2082,7 +6037,7 @@ export class LLMChatPipeline {
+     const imageDimensions = new Map<string, [number, number]>();
+@@ -2082,7 +6086,7 @@ export class LLMChatPipeline {
  
      // 3. Encode all prompts. Iterate through each message in the prompt array, where each
      // prompt can either be a string, or an array of a mixture of string and ImageURLs.
@@ -8578,7 +8956,7 @@ index 616cff4..2504400 100644
      for (let i = 0; i < prompts.length; i++) {
        const curPrompt = prompts[i];
        if (typeof curPrompt === "string") {
-@@ -2116,6 +6071,26 @@ export class LLMChatPipeline {
+@@ -2116,6 +6120,26 @@ export class LLMChatPipeline {
          }
        }
      }
@@ -8605,7 +8983,7 @@ index 616cff4..2504400 100644
      // Deal with last curTokens
      if (curTokens.length !== 0) {
        ret.push([...curTokens]);
-@@ -2186,50 +6161,51 @@ export class LLMChatPipeline {
+@@ -2186,50 +6210,51 @@ export class LLMChatPipeline {
    }
  
    /**
@@ -8673,7 +9051,7 @@ index 616cff4..2504400 100644
      } as ChatCompletionTokenLogprob;
    }
  
-@@ -2284,3 +6260,10 @@ export class LLMChatPipeline {
+@@ -2284,3 +6309,10 @@ export class LLMChatPipeline {
      log.info(msg);
    }
  }
@@ -8685,10 +9063,22 @@ index 616cff4..2504400 100644
 +  );
 +}
 diff --git a/src/message.ts b/src/message.ts
-index 8be38bb..716ff0b 100644
+index 8be38bb..5be0387 100644
 --- a/src/message.ts
 +++ b/src/message.ts
-@@ -11,6 +11,21 @@ import {
+@@ -1,16 +1,33 @@
+ import { AppConfig, ChatOptions } from "./config";
+ import { InitProgressReport, LogLevel } from "./types";
+ import {
++  ChatCompletionRequest,
+   ChatCompletionRequestStreaming,
+   ChatCompletionRequestNonStreaming,
+   ChatCompletion,
+   ChatCompletionChunk,
++  CompletionCreateParams,
+   CompletionCreateParamsNonStreaming,
+   CompletionCreateParamsStreaming,
+   Completion,
    EmbeddingCreateParams,
    CreateEmbeddingResponse,
  } from "./openai_api_protocols/index";
@@ -8710,7 +9100,7 @@ index 8be38bb..716ff0b 100644
  
  /**
   * Message kind used by worker
-@@ -24,6 +39,30 @@ type RequestKind =
+@@ -24,6 +41,31 @@ type RequestKind =
    | "getMaxStorageBufferBindingSize"
    | "getGPUVendor"
    | "forwardTokensAndSample"
@@ -8723,6 +9113,7 @@ index 8be38bb..716ff0b 100644
 +  | "tokenizeDrowseText"
 +  | "decodeDrowseTokens"
 +  | "prepareDrowseCaptureRows"
++  | "prepareDrowseGenerationInputIds"
 +  | "captureDrowseResiduals"
 +  | "setDrowseStructuredProgram"
 +  | "updateDrowseStructuredControls"
@@ -8741,7 +9132,7 @@ index 8be38bb..716ff0b 100644
    | "chatCompletionNonStreaming"
    | "completionNonStreaming"
    | "embedding"
-@@ -58,6 +97,47 @@ export interface ForwardTokensAndSampleParams {
+@@ -58,6 +100,50 @@ export interface ForwardTokensAndSampleParams {
    isPrefill: boolean;
    modelId?: string;
  }
@@ -8786,10 +9177,13 @@ index 8be38bb..716ff0b 100644
 +  rows: DrowseCaptureRow[];
 +  specialTokenIds: number[];
 +}
++export interface PrepareDrowseGenerationInputIdsParams {
++  request: ChatCompletionRequest | CompletionCreateParams;
++}
  
  // Notes on the following Params with modelId and chatOpts:
  // These fields are the model and chatOpts that the frontend engine expects the backend
-@@ -111,6 +191,17 @@ export type MessageContent =
+@@ -111,6 +197,18 @@ export type MessageContent =
    | GetMessageParams
    | RuntimeStatsTextParams
    | ForwardTokensAndSampleParams
@@ -8804,10 +9198,11 @@ index 8be38bb..716ff0b 100644
 +  | ResolveDrowseJlensTokenDirectionsParams
 +  | CaptureDrowseResidualsParams
 +  | PrepareDrowseCaptureRowsParams
++  | PrepareDrowseGenerationInputIdsParams
    | ChatCompletionNonStreamingParams
    | ChatCompletionStreamInitParams
    | CompletionNonStreamingParams
-@@ -123,6 +214,17 @@ export type MessageContent =
+@@ -123,6 +221,17 @@ export type MessageContent =
    | string
    | null
    | number
@@ -9070,7 +9465,7 @@ index c91f751..d2ee04e 100644
  
  export {
 diff --git a/src/types.ts b/src/types.ts
-index ed79af5..0677468 100644
+index ed79af5..3436cd5 100644
 --- a/src/types.ts
 +++ b/src/types.ts
 @@ -15,6 +15,21 @@ import {
@@ -9095,7 +9490,7 @@ index ed79af5..0677468 100644
  
  /**
   * Report during intialization.
-@@ -234,6 +249,100 @@ export interface MLCEngineInterface {
+@@ -234,6 +249,108 @@ export interface MLCEngineInterface {
      modelId?: string,
    ): Promise<number>;
  
@@ -9127,6 +9522,14 @@ index ed79af5..0677468 100644
 +    specialTokenIds: number[],
 +    modelId?: string,
 +  ): Promise<DrowsePreparedCaptureRow[]>;
++
++  /**
++   * The token ids a generation of `request` prefills (its conversation, last input and the
++   * generated seat's header, encoded as the prefill encodes them), without generating.
++   */
++  prepareDrowseGenerationInputIds(
++    request: ChatCompletionRequest | CompletionCreateParams,
++  ): Promise<number[]>;
 +
 +  captureDrowseResiduals(
 +    inputIds: number[],
@@ -9217,10 +9620,10 @@ index 84433f8..e74d73b 100644
    // Check if both configurations have the same number of model records
    if (config1.model_list.length !== config2.model_list.length) {
 diff --git a/src/web_worker.ts b/src/web_worker.ts
-index c683c00..c245986 100644
+index c683c00..08f4f1a 100644
 --- a/src/web_worker.ts
 +++ b/src/web_worker.ts
-@@ -37,6 +37,17 @@ import {
+@@ -37,6 +37,18 @@ import {
    GetMessageParams,
    RuntimeStatsTextParams,
    CompletionStreamNextChunkParams,
@@ -9230,6 +9633,7 @@ index c683c00..c245986 100644
 +  DrowseBlockSitesParams,
 +  CaptureDrowseResidualsParams,
 +  PrepareDrowseCaptureRowsParams,
++  PrepareDrowseGenerationInputIdsParams,
 +  TokenizeDrowseTextParams,
 +  DecodeDrowseTokensParams,
 +  ResolveDrowseJlensTokenDirectionsParams,
@@ -9238,7 +9642,7 @@ index c683c00..c245986 100644
  } from "./message";
  import log from "loglevel";
  import { MLCEngine } from "./engine";
-@@ -46,6 +57,56 @@ import {
+@@ -46,6 +58,56 @@ import {
  } from "./error";
  import { areArraysEqual } from "./utils";
  import { getModelIdToUse } from "./support";
@@ -9295,7 +9699,7 @@ index c683c00..c245986 100644
  
  /**
   * Worker handler that can be used in a WebWorker
-@@ -81,8 +142,8 @@ export class WebWorkerMLCEngineHandler {
+@@ -81,8 +143,8 @@ export class WebWorkerMLCEngineHandler {
    /**
     * @param engine A concrete implementation of MLCEngineInterface
     */
@@ -9306,7 +9710,7 @@ index c683c00..c245986 100644
      this.loadedModelIdToAsyncGenerator = new Map<
        string,
        AsyncGenerator<ChatCompletionChunk | Completion, void, void>
-@@ -121,11 +182,10 @@ export class WebWorkerMLCEngineHandler {
+@@ -121,11 +183,10 @@ export class WebWorkerMLCEngineHandler {
        };
        this.postMessage(msg);
      } catch (err) {
@@ -9319,7 +9723,7 @@ index c683c00..c245986 100644
        };
        this.postMessage(msg);
      }
-@@ -167,6 +227,276 @@ export class WebWorkerMLCEngineHandler {
+@@ -167,6 +228,287 @@ export class WebWorkerMLCEngineHandler {
          });
          return;
        }
@@ -9431,6 +9835,17 @@ index c683c00..c245986 100644
 +            params.rows,
 +            params.specialTokenIds,
 +            params.modelId,
++          );
++          onComplete?.(res);
++          return res;
++        });
++        return;
++      }
++      case "prepareDrowseGenerationInputIds": {
++        this.handleTask(msg.uuid, async () => {
++          const params = msg.content as PrepareDrowseGenerationInputIdsParams;
++          const res = await this.engine.prepareDrowseGenerationInputIds(
++            params.request,
 +          );
 +          onComplete?.(res);
 +          return res;
@@ -9596,7 +10011,7 @@ index c683c00..c245986 100644
        // For engine.chat.completions.create()
        case "chatCompletionNonStreaming": {
          // Directly return the ChatCompletion response
-@@ -633,6 +963,274 @@ export class WebWorkerMLCEngine implements MLCEngineInterface {
+@@ -633,6 +975,285 @@ export class WebWorkerMLCEngine implements MLCEngineInterface {
      return await this.getPromise<number>(msg);
    }
  
@@ -9703,6 +10118,17 @@ index c683c00..c245986 100644
 +      content: { rows, specialTokenIds, modelId },
 +    };
 +    return await this.getPromise<DrowsePreparedCaptureRow[]>(msg);
++  }
++
++  async prepareDrowseGenerationInputIds(
++    request: ChatCompletionRequest | CompletionCreateParams,
++  ): Promise<number[]> {
++    const msg: WorkerRequest = {
++      kind: "prepareDrowseGenerationInputIds",
++      uuid: crypto.randomUUID(),
++      content: { request },
++    };
++    return await this.getPromise<number[]>(msg);
 +  }
 +
 +  async setDrowseStructuredProgram(
@@ -9900,10 +10326,21 @@ index 074f5e7..58997b9 100644
    const indexedConfig: AppConfig = {
      ...baseAppConfig,
 diff --git a/tests/conversation.test.ts b/tests/conversation.test.ts
-index 8fa04b2..92ae4af 100644
+index 8fa04b2..0d5455d 100644
 --- a/tests/conversation.test.ts
 +++ b/tests/conversation.test.ts
-@@ -53,6 +53,72 @@ describe("Test basic conversation loading and getPromptArray", () => {
+@@ -1,8 +1,10 @@
+ import { ChatConfig, Role } from "../src/config";
+ import {
++  appendDrowseGenerationTurn,
+   compareConversationObject,
+   getConversation,
+   getConversationFromChatCompletionRequest,
++  pythonStrip,
+ } from "../src/conversation";
+ import { describe, expect, test } from "@jest/globals";
+ import {
+@@ -53,6 +55,72 @@ describe("Test basic conversation loading and getPromptArray", () => {
  });
  
  describe("Test getConversationFromChatCompletionRequest with Qwen3", () => {
@@ -9976,7 +10413,7 @@ index 8fa04b2..92ae4af 100644
    test("Test Qwen3 appendEmptyThinkingReplyHeader", () => {
      const config_json = JSON.parse(qwen3ChatConfigJSONString);
      const config = { ...config_json } as ChatConfig;
-@@ -84,6 +150,162 @@ describe("Test getConversationFromChatCompletionRequest with Qwen3", () => {
+@@ -84,6 +152,347 @@ describe("Test getConversationFromChatCompletionRequest with Qwen3", () => {
    });
  });
  
@@ -10065,6 +10502,192 @@ index 8fa04b2..92ae4af 100644
 +  });
 +});
 +
++describe("Drowse system rendering matches the model's chat template", () => {
++  const gemma = (fold?: string) =>
++    getConversation({
++      system_template: "{system_message}",
++      system_message: "",
++      roles: {
++        user: "<start_of_turn>user",
++        assistant: "<start_of_turn>model",
++        tool: "<start_of_turn>tool",
++      },
++      role_templates: {
++        user: "{user_message}",
++        assistant: "{assistant_message}",
++      },
++      role_content_sep: "\n",
++      role_empty_sep: "\n",
++      seps: ["<end_of_turn>\n"],
++      stop_str: ["<end_of_turn>"],
++      stop_token_ids: [1],
++      ...(fold === undefined ? {} : { drowse_system_fold_sep: fold }),
++    });
++  const chatml = (system_message: string) =>
++    getConversation({
++      system_template: "<|im_start|>system\n{system_message}<|im_end|>\n",
++      system_message,
++      roles: {
++        user: "<|im_start|>user",
++        assistant: "<|im_start|>assistant",
++        tool: "",
++      },
++      role_content_sep: "\n",
++      role_empty_sep: "\n",
++      seps: ["<|im_end|>\n"],
++      stop_str: ["<|im_end|>"],
++      stop_token_ids: [2],
++    });
++
++  test("a folding template carries the system message into the first turn, whatever its seat", () => {
++    const user = gemma("\n\n");
++    user.override_system_message = "Be brief.";
++    user.appendMessage(Role.user, "Hi there");
++    user.appendMessage(Role.assistant, "Hello");
++    user.appendMessage(Role.user, "Again");
++    user.appendReplyHeader(Role.assistant);
++    expect(user.getPromptArray().join("")).toEqual(
++      "<start_of_turn>user\nBe brief.\n\nHi there<end_of_turn>\n" +
++        "<start_of_turn>model\nHello<end_of_turn>\n" +
++        "<start_of_turn>user\nAgain<end_of_turn>\n" +
++        "<start_of_turn>model\n",
++    );
++    const assistant = gemma("\n\n");
++    assistant.override_system_message = "Be brief.";
++    assistant.appendMessage(Role.assistant, "Where to?");
++    assistant.appendReplyHeader(Role.user);
++    expect(assistant.getPromptArray().join("")).toEqual(
++      "<start_of_turn>model\nBe brief.\n\nWhere to?<end_of_turn>\n" +
++        "<start_of_turn>user\n",
++    );
++    // Without a system message nothing folds; MLC's own template prepends it bare.
++    const plain = gemma("\n\n");
++    plain.appendMessage(Role.user, "Hi there");
++    expect(plain.getPromptArray().join("")).toEqual(
++      "<start_of_turn>user\nHi there<end_of_turn>\n",
++    );
++    const unfolded = gemma();
++    unfolded.override_system_message = "Be brief.";
++    unfolded.appendMessage(Role.user, "Hi there");
++    expect(unfolded.getPromptArray().join("")).toEqual(
++      "Be brief.<start_of_turn>user\nHi there<end_of_turn>\n",
++    );
++  });
++
++  test("a trimming template trims each turn's text before the fold", () => {
++    const conversation = getConversation({
++      ...gemma("\n\n").config,
++      drowse_content_trim: true,
++    });
++    conversation.override_system_message = "  Be brief.";
++    conversation.appendMessage(Role.user, "  Hi there \n");
++    conversation.appendMessage(Role.assistant, "Hello.\n");
++    conversation.appendReplyHeader(Role.user);
++    expect(conversation.getPromptArray().join("")).toEqual(
++      "<start_of_turn>user\n  Be brief.\n\nHi there<end_of_turn>\n" +
++        "<start_of_turn>model\nHello.<end_of_turn>\n" +
++        "<start_of_turn>user\n",
++    );
++  });
++
++  test("thinking off scaffolds the assistant seat only, as drowse's scene grammar on Qwen3", () => {
++    // qwen3-1.7b's MLC template with the production rule (system_message ""); the expected strings
++    // are drowse's render_scene on the model's own chat template (gen_extra rides the assistant
++    // seat only; tests/model/test_scene.py test_gen_extra_rides_assistant_seat_only).
++    const qwen3 = () =>
++      getConversation({
++        name: "qwen3",
++        system_template: "<|im_start|>system\n{system_message}<|im_end|>\n",
++        system_message: "",
++        roles: {
++          user: "<|im_start|>user",
++          assistant: "<|im_start|>assistant",
++        },
++        role_templates: {
++          user: "{user_message}",
++          assistant: "{assistant_message}",
++          tool: "{tool_message}",
++        },
++        seps: ["<|im_end|>\n"],
++        role_content_sep: "\n",
++        role_empty_sep: "\n",
++        stop_str: ["<|endoftext|>", "<|im_end|>"],
++        system_prefix_token_ids: undefined,
++        add_role_after_system_message: true,
++        stop_token_ids: [151643, 151645],
++        function_string: "",
++        use_function_calling: false,
++      } as unknown as ChatConfig["conv_template"]);
++    const thinkingOff = { enable_thinking: false } as const;
++    const assistant = qwen3();
++    assistant.override_system_message = "Be brief.";
++    expect(
++      appendDrowseGenerationTurn(
++        assistant,
++        "Hi there",
++        Role.user,
++        undefined,
++        thinkingOff,
++      ),
++    ).toBe("<think>\n\n</think>\n\n");
++    expect(assistant.getPromptArray().join("")).toEqual(
++      "<|im_start|>system\nBe brief.<|im_end|>\n<|im_start|>user\nHi there<|im_end|>\n" +
++        "<|im_start|>assistant\n<think>\n\n</think>\n\n",
++    );
++    const user = qwen3();
++    user.override_system_message = "Be brief.";
++    user.appendMessage(Role.user, "Hi there");
++    expect(
++      appendDrowseGenerationTurn(user, "Hello.", Role.assistant, undefined, {
++        ...thinkingOff,
++        drowse_generation_seat: "user",
++      }),
++    ).toBe("");
++    expect(user.getPromptArray().join("")).toEqual(
++      "<|im_start|>system\nBe brief.<|im_end|>\n<|im_start|>user\nHi there<|im_end|>\n" +
++        "<|im_start|>assistant\nHello.<|im_end|>\n<|im_start|>user\n",
++    );
++  });
++
++  test("the trim is Python's str.strip(), as the template's trim filter", () => {
++    const conversation = getConversation({
++      ...gemma().config,
++      drowse_content_trim: true,
++    });
++    conversation.appendMessage(Role.user, "\u0085\u001c Hi \u3000");
++    conversation.appendMessage(Role.assistant, "\ufeffHello\ufeff");
++    conversation.appendReplyHeader(Role.user);
++    expect(conversation.getPromptArray().join("")).toEqual(
++      "<start_of_turn>user\nHi<end_of_turn>\n" +
++        "<start_of_turn>model\n\ufeffHello\ufeff<end_of_turn>\n" +
++        "<start_of_turn>user\n",
++    );
++    expect(pythonStrip("\t\n\v\f\r\u001f x \u2028\u2029\u202f\u205f")).toBe(
++      "x",
++    );
++  });
++
++  test("an empty system message renders no system block", () => {
++    const none = chatml("");
++    none.appendMessage(Role.user, "Hi there");
++    none.appendReplyHeader(Role.assistant);
++    expect(none.getPromptArray().join("")).toEqual(
++      "<|im_start|>user\nHi there<|im_end|>\n<|im_start|>assistant\n",
++    );
++    const given = chatml("");
++    given.override_system_message = "Be brief.";
++    given.appendMessage(Role.user, "Hi there");
++    expect(given.getPromptArray().join("")).toEqual(
++      "<|im_start|>system\nBe brief.<|im_end|>\n<|im_start|>user\nHi there<|im_end|>\n",
++    );
++    const defaulted = chatml("You are a helpful assistant.");
++    defaulted.appendMessage(Role.user, "Hi there");
++    expect(defaulted.getPromptArray()[0]).toEqual(
++      "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n",
++    );
++  });
++});
++
 +test("Gemma turn templates preserve named Drowse roles", () => {
 +  const conversation = getConversation({
 +    system_template: "{system_message}",
@@ -10119,8 +10742,7 @@ index 8fa04b2..92ae4af 100644
 +  conversation.appendMessage(Role.user, "hello", "curious_user", true);
 +  conversation.appendReplyHeader(Role.assistant, "forest_guide");
 +  expect(conversation.getPromptArray().join("")).toEqual(
-+    "<|start_header_id|>system<|end_header_id|>\n\n<|eot_id|>" +
-+      "<|start_header_id|>curious user<|end_header_id|>\n\nhello<|eot_id|>" +
++    "<|start_header_id|>curious user<|end_header_id|>\n\nhello<|eot_id|>" +
 +      "<|start_header_id|>forest guide<|end_header_id|>\n\n",
 +  );
 +});
@@ -11091,10 +11713,10 @@ index 0000000..dea121b
 +});
 diff --git a/tests/drowse_pipeline.test.ts b/tests/drowse_pipeline.test.ts
 new file mode 100644
-index 0000000..6f36833
+index 0000000..d42d829
 --- /dev/null
 +++ b/tests/drowse_pipeline.test.ts
-@@ -0,0 +1,1156 @@
+@@ -0,0 +1,1278 @@
 +import { jest, test, expect } from "@jest/globals";
 +
 +import {
@@ -12251,6 +12873,128 @@ index 0000000..6f36833
 +  expect(result["drowseHiddenCapture"]).toBeUndefined();
 +  expect((await result.readDrowseMeasurementBundle()).hidden).toBeUndefined();
 +});
++
++test("generation input ids are what the prefill feeds, for either seat, thinking off and a completion", async () => {
++  const result = pipeline();
++  result["config"] = {
++    model_config: { hidden_size: 4, num_hidden_layers: 2 },
++    drowse_completion_prefix_token_ids: [5],
++    conv_template: {
++      system_template: "{system_message}",
++      system_message: "",
++      roles: { user: "<start_of_turn>user", assistant: "<start_of_turn>model" },
++      role_content_sep: "\n",
++      role_empty_sep: "\n",
++      seps: ["<e>\n"],
++      stop_str: [],
++      stop_token_ids: [999],
++      system_prefix_token_ids: [7],
++      drowse_system_fold_sep: "\n\n",
++    },
++  };
++  result["fullVocabSize"] = 1000;
++  result["filledKVCacheLength"] = 0;
++  result["imageDataCache"] = new Map();
++  result["tokenizer"] = {
++    encode: (text: string) =>
++      Int32Array.from(
++        Array.from(text, (character) => character.codePointAt(0)!),
++      ),
++  };
++  const { getConversation } = await import("../src/conversation");
++  const { Role } = await import("../src/config");
++  const text = (ids: number[]) =>
++    ids
++      .map((id) =>
++        id < 32 && id !== 10 ? `<${id}>` : String.fromCodePoint(id),
++      )
++      .join("");
++  const cases: Array<
++    [string, boolean, (conv: any) => void, string, any, any, string]
++  > = [
++    [
++      "assistant",
++      false,
++      (conv) => {
++        conv.override_system_message = "Be brief.";
++      },
++      "Hi",
++      Role.user,
++      {},
++      "<7><start_of_turn>user\nBe brief.\n\nHi<e>\n<start_of_turn>model\n",
++    ],
++    [
++      "user seat",
++      false,
++      (conv) => {
++        conv.appendMessage(Role.user, "Hi");
++      },
++      "Hello",
++      Role.assistant,
++      {
++        drowse_generation_seat: "user",
++        drowse_generation_role: "curious_user",
++      },
++      "<7><start_of_turn>user\nHi<e>\n<start_of_turn>model\nHello<e>\n<start_of_turn>curious user\n",
++    ],
++    [
++      "thinking off",
++      false,
++      () => {},
++      "Hi",
++      Role.user,
++      { enable_thinking: false },
++      "<7><start_of_turn>user\nHi<e>\n<start_of_turn>model\n<think>\n\n</think>\n\n",
++    ],
++    [
++      "user seat, thinking off",
++      false,
++      (conv) => {
++        conv.appendMessage(Role.user, "Hi");
++      },
++      "Hello",
++      Role.assistant,
++      { enable_thinking: false, drowse_generation_seat: "user" },
++      "<7><start_of_turn>user\nHi<e>\n<start_of_turn>model\nHello<e>\n<start_of_turn>user\n",
++    ],
++    ["completion", true, () => {}, "Once", Role.user, {}, "<5>Once"],
++  ];
++  for (const [
++    name,
++    completion,
++    history,
++    input,
++    role,
++    genConfig,
++    expected,
++  ] of cases) {
++    const fresh = () => {
++      const conv = getConversation(
++        result["config"].conv_template,
++        undefined,
++        completion,
++      );
++      history(conv);
++      return conv;
++    };
++    const ids = result.prepareDrowseGenerationInputIds(
++      fresh(),
++      input,
++      role,
++      undefined,
++      genConfig,
++    );
++    expect(text(ids)).toBe(expected);
++    // The prefill's own input data, from the same appended turn.
++    const prefilled = fresh();
++    const { appendDrowseGenerationTurn } = await import("../src/conversation");
++    appendDrowseGenerationTurn(prefilled, input, role, undefined, genConfig);
++    result["conversation"] = prefilled;
++    const [inputData] = await result["getInputData"]();
++    expect(inputData.flat()).toEqual(ids);
++    expect(name).toBeTruthy();
++  }
++});
 diff --git a/tests/drowse_positions.test.ts b/tests/drowse_positions.test.ts
 new file mode 100644
 index 0000000..2ca10a4
@@ -12978,7 +13722,7 @@ index 43b9e95..ee2ca61 100644
      const engine = createEngineWithMultiplePipelines();
      await expect(
 diff --git a/tests/generation_config.test.ts b/tests/generation_config.test.ts
-index e48b225..9940976 100644
+index e48b225..c3056b0 100644
 --- a/tests/generation_config.test.ts
 +++ b/tests/generation_config.test.ts
 @@ -5,6 +5,33 @@ import {
@@ -13038,7 +13782,7 @@ index e48b225..9940976 100644
    });
  
    test("top_logprobs set without setting logprobs", () => {
-@@ -74,6 +110,21 @@ describe("Check generation config illegal values", () => {
+@@ -74,6 +110,33 @@ describe("Check generation config illegal values", () => {
  });
  
  describe("Check generation post init", () => {
@@ -13057,6 +13801,18 @@ index e48b225..9940976 100644
 +      drowse_score_token_ids: [17, 23],
 +    });
 +  });
++  test("penalties take any finite value, as drowse's sampler does", () => {
++    const genConfig: GenerationConfig = {
++      presence_penalty: 1e4,
++      frequency_penalty: -3,
++    };
++    postInitAndCheckGenerationConfigValues(genConfig);
++    expect(genConfig.presence_penalty).toBe(1e4);
++    expect(() =>
++      postInitAndCheckGenerationConfigValues({ presence_penalty: Infinity }),
++    ).toThrow("presence_penalty must be a finite number");
++  });
++
    test("Only set one of presence or frequency penalty", () => {
      const genConfig: GenerationConfig = {
        frequency_penalty: 1.5,
@@ -13206,12 +13962,16 @@ index 0000000..f9c5fd4
 +  expect(fixture.requestDevice).not.toHaveBeenCalled();
 +});
 diff --git a/tests/llm_chat_pipeline.test.ts b/tests/llm_chat_pipeline.test.ts
-index 5138c4e..493c4ae 100644
+index 5138c4e..a7b2278 100644
 --- a/tests/llm_chat_pipeline.test.ts
 +++ b/tests/llm_chat_pipeline.test.ts
-@@ -1,4 +1,23 @@
+@@ -1,4 +1,27 @@
 -import { LLMChatPipeline } from "../src/llm_chat";
-+import { LLMChatPipeline, sampleDrowseTopKTopP } from "../src/llm_chat";
++import {
++  LLMChatPipeline,
++  drowseSamplerSeed,
++  sampleDrowseTopKTopP,
++} from "../src/llm_chat";
 +
 +test("retains the requested alternatives through the full candidate pool", () => {
 +  const probabilities = new Float32Array(4096).fill(1 / 4096);
@@ -13234,7 +13994,7 @@ index 5138c4e..493c4ae 100644
  import { MinValueError } from "../src/error";
  import { Role } from "../src/config";
  import { jest, test, expect, beforeEach } from "@jest/globals";
-@@ -66,6 +85,96 @@ beforeEach(() => {
+@@ -66,6 +89,96 @@ beforeEach(() => {
    compileJSONSchemaMock.mockClear();
  });
  
@@ -13331,7 +14091,7 @@ index 5138c4e..493c4ae 100644
  type PipelineLike = LLMChatPipeline & Record<string, any>;
  
  function createPipeline(): PipelineLike {
-@@ -85,6 +194,8 @@ function createPipeline(): PipelineLike {
+@@ -85,6 +198,8 @@ function createPipeline(): PipelineLike {
    } as any;
    pipeline["config"] = {} as any;
    pipeline["outputIds"] = [];
@@ -13340,7 +14100,7 @@ index 5138c4e..493c4ae 100644
    pipeline["appearedTokensFreq"] = new Map<number, number>();
    pipeline["stopTokens"] = [];
    pipeline["stopStr"] = [];
-@@ -101,6 +212,10 @@ function createPipeline(): PipelineLike {
+@@ -101,6 +216,10 @@ function createPipeline(): PipelineLike {
    pipeline["contextWindowSize"] = 16;
    pipeline["slidingWindowSize"] = -1;
    pipeline["filledKVCacheLength"] = 0;
@@ -13351,7 +14111,7 @@ index 5138c4e..493c4ae 100644
    pipeline["outputMessage"] = "";
    pipeline["curRoundLatencyBreakdown"] = {
      logitProcessorTime: [],
-@@ -167,12 +282,16 @@ test("processNextToken appends tokens until stop string reached", () => {
+@@ -167,12 +286,16 @@ test("processNextToken appends tokens until stop string reached", () => {
      max_tokens: 5,
    });
    expect(pipeline["stopTriggered"]).toBe(false);
@@ -13368,7 +14128,7 @@ index 5138c4e..493c4ae 100644
  });
  
  test("processNextToken respects max_tokens and updates token frequency", () => {
-@@ -215,15 +334,45 @@ test("prefillStep adds thinking reply header when thinking disabled", async () =
+@@ -215,15 +338,45 @@ test("prefillStep adds thinking reply header when thinking disabled", async () =
    pipeline["tokenizer"].encode = jest.fn(() => Int32Array.from([9, 9]));
    await pipeline.prefillStep("hello", Role.user, undefined, {
      enable_thinking: false,
@@ -13415,7 +14175,7 @@ index 5138c4e..493c4ae 100644
  test("prefillStep appends standard reply header when thinking enabled", async () => {
    const pipeline = preparePrefillPipeline();
    pipeline["tokenizer"].encode = jest.fn(() => Int32Array.from([2]));
-@@ -236,6 +385,121 @@ test("prefillStep appends standard reply header when thinking enabled", async ()
+@@ -236,6 +389,136 @@ test("prefillStep appends standard reply header when thinking enabled", async ()
    ).not.toHaveBeenCalled();
  });
  
@@ -13445,6 +14205,21 @@ index 5138c4e..493c4ae 100644
 +    Role.user,
 +    "curious_user",
 +  );
++});
++
++test("a user generation seat with thinking off opens without the thinking scaffold", async () => {
++  const pipeline = preparePrefillPipeline();
++  await pipeline.prefillStep("Where next?", Role.assistant, undefined, {
++    enable_thinking: false,
++    drowse_generation_seat: "user",
++  });
++  expect(pipeline["conversation"].appendReplyHeader).toHaveBeenCalledWith(
++    Role.user,
++  );
++  expect(
++    pipeline["conversation"].appendEmptyThinkingReplyHeader,
++  ).not.toHaveBeenCalled();
++  expect(pipeline["outputPrefix"]).toBe("");
 +});
 +
 +test("Drowse tokenizer preserves leading-space and subword IDs verbatim", () => {
@@ -13537,7 +14312,7 @@ index 5138c4e..493c4ae 100644
  test("prefillStep reuses grammar matcher when schema unchanged", async () => {
    const pipeline = preparePrefillPipeline();
    const matcher = { reset: jest.fn(), dispose: jest.fn() };
-@@ -273,18 +537,83 @@ test("prefillStep compiles custom grammar when response type is grammar", async
+@@ -273,18 +556,83 @@ test("prefillStep compiles custom grammar when response type is grammar", async
    expect(compileGrammarMock).toHaveBeenCalledWith("root ::= WORD");
  });
  
@@ -13605,15 +14380,15 @@ index 5138c4e..493c4ae 100644
 +  expect(pipeline["config"].drowse_completion_prefix_token_ids).toEqual([2]);
 +  pipeline["contextWindowSize"] = 3;
 +  await expect((pipeline as any).getInputData()).rejects.toThrow();
- });
- 
++});
++
 +test("chat prefix tokens count toward the context window too", async () => {
 +  const pipeline = createPipeline();
 +  pipeline["conversation"].config.system_prefix_token_ids = [2];
 +  const prepared = await (pipeline as any).getInputData();
 +  expect(prepared.slice(0, 2)).toEqual([[[2, 1]], 2]);
-+});
-+
+ });
+ 
 +test.each([[100], [-1], [1.5], [NaN], ["2"]])(
 +  "text completion rejects invalid prefix %j",
 +  async (...prefix) => {
@@ -13630,7 +14405,7 @@ index 5138c4e..493c4ae 100644
  test("processNextToken ignores eos when requested", () => {
    const pipeline = createPipeline();
    pipeline["stopTokens"] = [1];
-@@ -370,3 +699,40 @@ describe("computeImageEmbedSize", () => {
+@@ -370,3 +718,86 @@ describe("computeImageEmbedSize", () => {
      );
    });
  });
@@ -13670,6 +14445,52 @@ index 5138c4e..493c4ae 100644
 +      [0, 7],
 +    ),
 +  ).toEqual(sampleDrowseTopKTopP(probabilities, ids, 0, 1024, 0, [0, 7]));
++});
++
++test("a request seed starts TVM's Lehmer sampler from a mixed state", () => {
++  const modulus = 2147483647;
++  // TVM's first draw from a state: (48271 * state mod m) / m (exact: the product stays below 2^53).
++  const firstDraw = (state: number) => ((48271 * state) % modulus) / modulus;
++  const draws = Array.from({ length: 1000 }, (_, seed) =>
++    firstDraw(drowseSamplerSeed(seed)),
++  );
++  // Unmixed, every seed below 1000 draws under 0.0225 (the top token at any temperature).
++  expect(
++    Array.from({ length: 1000 }, (_, seed) => firstDraw(seed || 1)).every(
++      (d) => d < 0.0225,
++    ),
++  ).toBe(true);
++  const mean = draws.reduce((sum, d) => sum + d, 0) / draws.length;
++  expect(mean).toBeGreaterThan(0.45);
++  expect(mean).toBeLessThan(0.55);
++  expect(draws.filter((d) => d < 0.0225).length).toBeLessThan(50);
++  for (const seed of [
++    0,
++    1,
++    42,
++    -7,
++    2 ** 31 - 1,
++    2 ** 32,
++    Date.now(),
++    Number.MAX_SAFE_INTEGER,
++  ]) {
++    const state = drowseSamplerSeed(seed);
++    expect(Number.isInteger(state) && state >= 1 && state < modulus).toBe(true);
++    expect(drowseSamplerSeed(seed)).toBe(state);
++  }
++  expect(drowseSamplerSeed(1)).not.toBe(drowseSamplerSeed(2));
++  expect(drowseSamplerSeed(2 ** 32)).not.toBe(drowseSamplerSeed(0));
++  expect(() => drowseSamplerSeed(1.5)).toThrow(/safe integer/);
++});
++
++test("setSeed hands TVM the mixed state", () => {
++  const seen: number[] = [];
++  const pipeline = Object.create(LLMChatPipeline.prototype) as LLMChatPipeline;
++  (pipeline as unknown as { tvm: { setSeed(seed: number): void } }).tvm = {
++    setSeed: (seed: number) => seen.push(seed),
++  };
++  pipeline.setSeed(42);
++  expect(seen).toEqual([drowseSamplerSeed(42)]);
 +});
 diff --git a/tests/web_worker_handler.test.ts b/tests/web_worker_handler.test.ts
 index 9b04efa..61e3d8b 100644

@@ -112,6 +112,10 @@ try {
   }
   assert.throws(() => validateWebLlmGenerationSettings({ top_k: Number.MAX_SAFE_INTEGER + 1 }, false), /top_k/);
   assert.throws(() => validateWebLlmGenerationSettings({ seed: -1 }, false), /seed/);
+  // Any finite penalty, as native's sampling params take (the goldens decode with 1e4).
+  assert.equal(validateWebLlmGenerationSettings({ presence_penalty: 1e4 }, false).presence_penalty, 1e4);
+  assert.equal(validateWebLlmGenerationSettings({ frequency_penalty: -3 }, false).frequency_penalty, -3);
+  assert.throws(() => validateWebLlmGenerationSettings({ presence_penalty: Infinity }, false), /presence_penalty/);
   assert.equal(validateWebLlmGenerationSettings({ seed: Number.MAX_SAFE_INTEGER }, false).seed, Number.MAX_SAFE_INTEGER);
   const drowseEngineMethods = {
     async getDrowseRuntimeCapabilities() {

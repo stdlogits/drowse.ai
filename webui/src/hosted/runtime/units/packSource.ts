@@ -9,7 +9,7 @@ import type {
   BrowserLensFamily,
   BrowserNeutralStatistics,
 } from "../browserInstrumentPacks";
-import { DEFAULT_LENS_BAND, type LensFamilyName } from "./lensReads";
+import { DEFAULT_LENS_BAND, type LensBand, type LensFamilyName } from "./lensReads";
 import type { UnitStatistics } from "./scales";
 import { pythonRepr } from "./probeDigest";
 import { pythonStrip } from "../steeringExpression";
@@ -40,6 +40,7 @@ export function compilerUnitsPackSource(
   compiler: () => UnitsPackCompiler,
   modelId: string,
   signal: AbortSignal,
+  band: LensBand = DEFAULT_LENS_BAND,
 ): UnitsPackSource {
   const registry = () => compiler().instrumentRegistry();
   let kept: { mask: Uint32Array; ids: Promise<Int32Array> } | null = null;
@@ -79,7 +80,7 @@ export function compilerUnitsPackSource(
     return descriptor;
   };
   return {
-    band: DEFAULT_LENS_BAND,
+    band,
     async statistics() {
       const stats = await neutral();
       if (stats === null) {

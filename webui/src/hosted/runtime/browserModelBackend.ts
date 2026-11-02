@@ -13,6 +13,7 @@ import { DrowseWebLlmBackend } from "./drowseWebLlmBackend";
 import { DrowseWebLlmRuntime, type DrowseWebLlmModule } from "./webLlmEngine";
 import { BrowserInstrumentRuntime } from "./browserInstrumentRuntime";
 import { browserArtifactProducer } from "./buildProvenance";
+import type { LensBand } from "./units/lensReads";
 
 export const BROWSER_MODEL_BACKEND_INTEGRATED = true;
 
@@ -96,6 +97,7 @@ export async function prepareBrowserInstrumentDictionaries(
 export function createLazyBrowserModelBackend(
   loadModule: () => Promise<DrowseWebLlmModule>,
   artifacts: BrowserManifoldArtifactPort,
+  options: BrowserModelBackendOptions = {},
 ): BrowserModelBackend {
   let backend: BrowserModelBackend | null = null;
   let pending: Promise<BrowserModelBackend> | null = null;
@@ -104,7 +106,7 @@ export function createLazyBrowserModelBackend(
     if (pending !== null) return pending;
     pending = loadModule()
       .then((module) => {
-        backend = createDrowseBrowserModelBackend(module, artifacts);
+        backend = createDrowseBrowserModelBackend(module, artifacts, options);
         return backend;
       })
       .catch((error) => {
@@ -148,9 +150,16 @@ const notLoadedBlockSites = rejectingBlockSitesBackend(() =>
   }),
 );
 
+/** Backend options a harness sets; the app passes none. */
+export interface BrowserModelBackendOptions {
+  /** The S→R crossover band of the units reads (native `session.lens.band`; default 0.15–0.35). */
+  readonly lensBand?: LensBand;
+}
+
 export function createDrowseBrowserModelBackend(
   module: DrowseWebLlmModule,
   artifacts: BrowserManifoldArtifactPort,
+  options: BrowserModelBackendOptions = {},
 ): BrowserModelBackend {
   const producer = browserArtifactProducer();
   const runtime = new DrowseWebLlmRuntime(module);
@@ -251,6 +260,7 @@ export function createDrowseBrowserModelBackend(
           (profile) => profile.contextTokens === loadRequest.contextTokens,
         )?.bindingSha256 ?? null,
         false,
+        options.lensBand,
       );
       activeLoadRequest = loadRequest;
       activeCompiler = entry;
