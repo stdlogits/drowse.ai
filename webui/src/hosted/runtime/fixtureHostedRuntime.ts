@@ -173,6 +173,12 @@ const capabilities: RuntimeCapabilities = {
   limits: { manifoldFitMaxIntrinsicDim: 4 },
 };
 
+const FIXTURE_OPTIONAL_PACKS = [
+  { id: "fixture-jlens", kind: "jlens", displayName: "Fixture R-lens", bytes: 1000 },
+  { id: "fixture-slens", kind: "slens", displayName: "Fixture S-lens", bytes: 2000 },
+  { id: "fixture-units", kind: "units", displayName: "Fixture units", bytes: 3000 },
+] as const;
+
 class FixtureHostedController implements HostedController {
   constructor(private readonly withInstruments = false) {}
   private listeners = new Set<(snapshot: RuntimeSnapshot) => void>();
@@ -200,10 +206,15 @@ class FixtureHostedController implements HostedController {
   async catalog(): Promise<VerifiedCatalog> {
     if (!this.withInstruments) return catalog;
     const result = structuredClone(catalog);
-    result.document.models[0].variants[0].packs.push({
-      ...fixtureModel.variants[0].packs[0], id: "fixture-jlens", kind: "jlens",
-      displayName: "Fixture R-lens", bytes: 1000, required: false,
-    });
+    // The optional packs a first run chooses among: the R lens, and 6.0's S lens and units (e2e).
+    result.document.models[0].variants[0].packs.push(...FIXTURE_OPTIONAL_PACKS.map((pack) => ({
+      ...fixtureModel.variants[0].packs[0], ...pack, required: false,
+      // One install file each (a units pack with no bytes would not fit the resident budget).
+      files: [{
+        path: `${pack.id}/${pack.kind}/statistics.bin`, role: "instrument" as const,
+        url: `https://fixture.invalid/${pack.id}.bin`, revision: REVISION, bytes: pack.bytes, sha256: SHA,
+      }],
+    })));
     result.exactBytes = new TextEncoder().encode(JSON.stringify(result.document));
     return result;
   }
@@ -269,7 +280,7 @@ class FixtureHostedController implements HostedController {
     modelVariantId: string,
     packId: string,
   ): Promise<PackDownloadWorkerResult> {
-    if (this.withInstruments && modelVariantId === VARIANT_ID && packId === "fixture-jlens") {
+    if (this.withInstruments && modelVariantId === VARIANT_ID && FIXTURE_OPTIONAL_PACKS.some((pack) => pack.id === packId)) {
       this.installedPacks.add(packId);
       this.patch({ installedPackIds: [...this.installedPacks] });
       return { modelVariantId, packId, installed: true, cancelled: false };
@@ -364,10 +375,15 @@ class FixtureHostedController implements HostedController {
   }
 }
 
+/** Pythia's refusal in the runtime lock (`unitRefusal`, native's UnsupportedBlockError text): the
+ *  base fixture model's library is residual, as Pythia's is. */
+const PYTHIA_UNIT_REFUSAL =
+  "layer 0: block has no softmax self-attention ('self_attn'; found attention, input_layernorm, mlp, post_attention_dropout, post_attention_layernorm, post_mlp_dropout)";
+
 export function createFixtureHostedRuntime(withInstruments = false, baseModel = false): HostedRuntimeBundle {
   const controller = new FixtureHostedController(withInstruments);
   const runtime = new DeterministicFakeRuntime({
-    ...(baseModel ? { rootId: crypto.randomUUID(), tokenDelayMs: 150 } : {}),
+    ...(baseModel ? { rootId: crypto.randomUUID(), tokenDelayMs: 150, unitRefusal: PYTHIA_UNIT_REFUSAL } : {}),
     modelId: baseModel ? "fixture/pythia-70m-base" : VARIANT_ID,
     ...(baseModel ? { sessionOverrides: { is_base_model: true, supports_thinking: false, scene_mode: false, role_substitution_supported: false, user_role_supported: false, default_user_role: null, default_assistant_role: null } } : {}),
     instrumentPacks: withInstruments ? [
@@ -379,7 +395,8 @@ export function createFixtureHostedRuntime(withInstruments = false, baseModel = 
   return {
     controller,
     // The fake runtime serves the units members through the real host ports on the tiny
-    // fixture model (units/fixtureUnits.ts).
+    // fixture model (units/fixtureUnits.ts); the base model's library is residual, so there
+    // they answer Pythia's refusal.
     runtime,
     async dispose() {
       if (disposed) return;

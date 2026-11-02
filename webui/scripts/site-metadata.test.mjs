@@ -60,19 +60,14 @@ test("SEO and social metadata use the requested description and Ledger's colours
   assert.equal(siteAccent, token(light, "--deep"));
   assert.deepEqual(themeColors, { light: token(light, "--paper"), dark: token(dark, "--paper") });
   assert.ok((await readFile("../drowse/webui/public/favicon.svg", "utf8")).includes(`stop-color: ${siteAccent}`), "the mark's ramp starts at the brand colour");
-  assert.ok(socialImagePath.startsWith("/social/drowse.jpg?v=shader-orb"));
-  assert.equal(socialImageType, "image/jpeg");
-  assert.match(socialImageAlt, /shader orb/);
-  // The SVG source of the artwork ships only with the dashboard; the hosted site publishes rasters.
-  await assert.rejects(readFile("public-hosted/social/drowse.svg"), { code: "ENOENT" });
-  for (const root of ["../drowse/webui/public"]) {
-    const artwork = await readFile(`${root}/social/drowse.svg`, "utf8");
-    assert.deepEqual([...artwork.matchAll(/<text\b[^>]*>([^<]*)<\/text>/g)].map(match => match[1]), ["Drowse", "Interpretability Workbench"]);
-    assert.match(artwork, /fill="#ffffff">Drowse<\/text>/);
-    assert.match(artwork, /font-family="DrowseText, sans-serif"[^>]*>Interpretability Workbench<\/text>/);
-    assert.ok(artwork.includes('<image href="data:image/png;base64,'));
-    assert.ok(artwork.includes("data:font/woff2;base64,"));
-  }
+  // The link card is drowse's, byte for byte: drawn in Ledger by drowse's scripts/social-card.mjs, whose
+  // HTML carries the alt text. The site serves the PNG (a flat card is smaller and sharper as PNG).
+  assert.equal(socialImagePath, "/social/drowse.png?v=ledger-card");
+  assert.equal(socialImageType, "image/png");
+  const card = await readFile("../drowse/webui/scripts/social-card.html", "utf8");
+  const cardAlt = card.match(/Alt text: "([^"]+)"/)?.[1].replace(/\s+/g, " ");
+  assert.equal(socialImageAlt, cardAlt, "the alt text is the card's own");
+  await assert.rejects(readFile("public-hosted/social/drowse.jpg"), { code: "ENOENT" }, "one share image");
   assert.deepEqual(await readFile("../drowse/webui/public/social/drowse.png"), await readFile("public-hosted/social/drowse.png"));
 });
 
@@ -102,10 +97,4 @@ test("social preview and icon assets have the declared PNG dimensions", async ()
     assert.ok(index.includes(link), `hosted index links ${link}`);
   }
   await assert.rejects(readFile("public-hosted/icons/tab-home.png"), { code: "ENOENT" }, "tab icons are gone with tab identity");
-  const jpeg = await readFile("public-hosted/social/drowse.jpg");
-  assert.deepEqual([...jpeg.subarray(0, 3)], [0xff, 0xd8, 0xff], "share image must be a JPEG");
-  assert.ok(jpeg.byteLength < 200 * 1024, `share image is ${jpeg.byteLength} bytes`);
-  let offset = 2;
-  while (offset < jpeg.byteLength && !(jpeg[offset + 1] >= 0xc0 && jpeg[offset + 1] <= 0xc3)) offset += 2 + jpeg.readUInt16BE(offset + 2);
-  assert.deepEqual([jpeg.readUInt16BE(offset + 7), jpeg.readUInt16BE(offset + 5)], [1200, 630]);
 });

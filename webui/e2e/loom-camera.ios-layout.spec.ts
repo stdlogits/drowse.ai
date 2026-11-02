@@ -35,9 +35,15 @@ async function seed(page: Page, count = 3) {
   await expect(page.locator(".loom-viewport")).toBeVisible();
 }
 
+// Fitted: every card inside the map viewport. Since drowse PR 71 a phone's map has room too: phones
+// are screens up to 720 px wide or 520 px tall; their Loom page scrolls, and the map is at least
+// min(240px, 45dvh) tall, or a screen less 72 px on a short screen (the page scrolls to it).
 async function expectFitted(page: Page) {
   await expect.poll(() => page.evaluate(() => {
     const viewport = document.querySelector(".loom-viewport")!.getBoundingClientRect();
+    const phone = innerWidth <= 720 || innerHeight <= 520;
+    const room = innerHeight <= 520 ? innerHeight - 72 : Math.min(240, innerHeight * 0.45);
+    if (phone && (viewport.height < room - 2 || viewport.height > innerHeight)) return false;
     return [...document.querySelectorAll(".tree-node-wrap")].every(node => {
       const box = node.getBoundingClientRect();
       return box.left >= viewport.left && box.right <= viewport.right
@@ -47,9 +53,6 @@ async function expectFitted(page: Page) {
 }
 
 test("Loom opens fitted and follows measured cards and phone rotation", async ({ page }) => {
-  // Product bug (lanes/A5.md, "Loom map has no room on a phone"): on the Loom page at 440x796 the
-  // map viewport is 96px tall and starts at y=740; at 844x390 it is 0px tall.
-  test.fixme(true, "the phone Loom map viewport gets almost no height; see lanes/A5.md");
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.setViewportSize({ width: 440, height: 796 });
   await seed(page);
@@ -65,9 +68,6 @@ test("Loom opens fitted and follows measured cards and phone rotation", async ({
 });
 
 test("manual zoom survives resizing and Fit restores responsive framing", async ({ page }) => {
-  // Product bug (lanes/A5.md, "Loom map has no room on a phone"): on the Loom page at 440x796 the
-  // map viewport is 96px tall and starts at y=740; at 844x390 it is 0px tall.
-  test.fixme(true, "the phone Loom map viewport gets almost no height; see lanes/A5.md");
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.setViewportSize({ width: 440, height: 796 });
   await seed(page, 1);
@@ -83,7 +83,7 @@ test("manual zoom survives resizing and Fit restores responsive framing", async 
 });
 
 test("on a wide screen manual zoom survives resizing and Fit restores responsive framing", async ({ page }) => {
-  // The desktop half of the phone test above, which stays fixme until the phone map has room.
+  // The desktop half of the phone test above.
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.setViewportSize({ width: 1280, height: 900 });
   await seed(page, 3);
@@ -104,9 +104,7 @@ test("on a wide screen manual zoom survives resizing and Fit restores responsive
   await expectFitted(page);
 });
 
-test("large Loom releases token cards while hidden and restores every branch", async ({ page, isMobile }) => {
-  // On a phone the map viewport sits below the fold (lanes/A5.md, "Loom map has no room on a phone").
-  test.fixme(isMobile, "the phone Loom map viewport gets almost no height; see lanes/A5.md");
+test("large Loom releases token cards while hidden and restores every branch", async ({ page }) => {
   test.setTimeout(90_000);
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));

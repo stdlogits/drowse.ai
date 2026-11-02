@@ -1122,10 +1122,14 @@ test("installed lens and SAE packs are usable without preparation errors", async
   // Artifacts: the installed packs are in use, and the hosted build offers no fitting or training.
   await selectRoom(page, "Artifacts");
   const sections = page.getByRole("group", { name: "Artifacts sections", exact: true });
+  // The Lenses section is drowse's 2x2 (S and R at out and mid) without the local fit.
   const lenses = page.getByRole("region", { name: "Lenses", exact: true });
-  await expect(lenses.getByRole("button", { name: "Compatible data pack" })).toContainText("fixture-jlens");
-  await expect(lenses.getByRole("button", { name: "In use", exact: true })).toBeDisabled();
+  await expect(lenses).toContainText("R in use");
+  await expect(lenses.getByRole("button", { name: /^fixture-jlens 64 documents/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(lenses.getByRole("region", { name: "The four lenses", exact: true }).getByRole("img", { name: "Holds L0–L1", exact: true })).toBeVisible();
+  await expect(lenses.getByText("No compatible S lens pack is published for this model.", { exact: true })).toBeVisible();
   await expect(lenses.getByRole("button", { name: /^(confirm )?fit\b/i })).toHaveCount(0);
+  await expect(lenses).not.toContainText(/Fit locally|Lens fit progress/);
   await sections.getByRole("button", { name: "SAEs", exact: true }).click();
   const saes = page.getByRole("region", { name: "SAE", exact: true });
   await expect(saes.getByRole("button", { name: "Compatible data pack" })).toContainText("fixture-sae");
@@ -1274,13 +1278,15 @@ test("installed standard and R-lens packs swap live without fitting", async ({ p
     "qwen3-1.7b-fixture",
   ]);
   await selectRoom(page, "Artifacts");
+  // The R column's Sources: the pack in use is pressed; choosing another swaps it live.
   const lenses = page.getByRole("region", { name: "Lenses", exact: true });
-  const source = lenses.getByRole("button", { name: "Compatible data pack" });
-  await source.click();
-  await page.getByRole("option", { name: "fixture-rlens", exact: true }).click();
-  await lenses.getByRole("button", { name: "Use pack", exact: true }).click();
-  await expect(source).toContainText("fixture-rlens");
-  await expect(lenses.getByRole("button", { name: "In use", exact: true })).toBeDisabled();
+  const standard = lenses.getByRole("button", { name: /^fixture-jlens 64 documents/ });
+  const rLens = lenses.getByRole("button", { name: /^fixture-rlens 64 documents/ });
+  await expect(standard).toHaveAttribute("aria-pressed", "true");
+  await rLens.click();
+  await expect(rLens).toHaveAttribute("aria-pressed", "true");
+  await expect(standard).toHaveAttribute("aria-pressed", "false");
+  await expect(lenses.getByRole("region", { name: "The four lenses", exact: true })).toContainText(/fixture-rlens\s*64 documents out/);
   await expect(lenses.getByRole("button", { name: /^(confirm )?fit\b/i })).toHaveCount(0);
 
   await selectRoom(page, "Workbench");

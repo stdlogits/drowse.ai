@@ -553,7 +553,16 @@ export function createShellController(
           candidate.id === pack.id ? { ...candidate, selected: false } : candidate
         );
       }
-      nextPacks = withUnitsCompanions(nextPacks, pack, selected);
+      const withCompanions = withUnitsCompanions(nextPacks, pack, selected);
+      if (withCompanions !== nextPacks) {
+        // The lenses a units pack brings join the budget the units pack was checked against.
+        const chosen = variant.packs.filter((candidate) =>
+          withCompanions.some((next) => next.id === candidate.id && next.selected));
+        const [first, ...rest] = chosen;
+        const block = first === undefined ? null : optionalPackHardwareBlock(first, variant, checkedCapabilities, rest);
+        if (block !== null) throw new Error(block.message);
+      }
+      nextPacks = withCompanions;
       const nextModel = finalizeModelSetup({ ...model, firstRunPacks: nextPacks });
       // Another model's paused or failed download keeps its state and kept files.
       const ownsDownloadState = snapshot.download.modelVariantId === undefined ||
@@ -1048,7 +1057,7 @@ function modelFromRecommendation(
   const modelDownloadBytes = variant.downloadBytes + variant.requiredCorePackBytes;
   const compatiblePacks = context === null
     ? []
-    : variant.packs.filter((pack) =>
+    : variant.packs.filter((pack): pack is CatalogInstrumentPack & { kind: FirstRunPack["kind"] } =>
         !pack.required && pack.kind !== "core" &&
         pack.compatibleContextBindingSha256.includes(context.bindingSha256)
       );
@@ -1113,9 +1122,7 @@ function modelFromRecommendation(
     if (selected) selectedPackManifests.push(pack);
     return [{
       id: pack.id,
-      // The shared shell type names jlens and sae only until drowse's `HostedModelOption`
-      // carries 6.0's slens and units kinds (lanes/B6.md, needs).
-      kind: pack.kind as FirstRunPack["kind"],
+      kind: pack.kind,
       name: pack.displayName,
       // What installs now: a lens or units pack's other layers are fetched as reads need them.
       bytes: packInstallFiles(pack, variant).reduce((total, file) => total + file.bytes, 0),
@@ -1250,22 +1257,22 @@ function withUnitsCompanions(
   changed: FirstRunPack,
   selected: boolean,
 ): HostedModelOption["firstRunPacks"] {
-  const kind = changed.kind as string;
-  const companions = ["slens", "jlens"];
-  const chosen = (candidates: HostedModelOption["firstRunPacks"], lens: string) =>
-    candidates.some((candidate) => (candidate.kind as string) === lens && (candidate.selected || candidate.installed));
+  const { kind } = changed;
+  const companions: FirstRunPack["kind"][] = ["slens", "jlens"];
+  const chosen = (candidates: HostedModelOption["firstRunPacks"], lens: FirstRunPack["kind"]) =>
+    candidates.some((candidate) => candidate.kind === lens && (candidate.selected || candidate.installed));
   if (selected && kind === "units") {
     let next = packs;
     for (const lens of companions) {
       if (chosen(next, lens)) continue;
-      const index = next.findIndex((candidate) => (candidate.kind as string) === lens);
+      const index = next.findIndex((candidate) => candidate.kind === lens);
       if (index >= 0) next = next.map((candidate, at) => at === index ? { ...candidate, selected: true } : candidate);
     }
     return next;
   }
   if (!selected && companions.includes(kind) && !chosen(packs, kind)) {
     return packs.map((candidate) =>
-      (candidate.kind as string) === "units" && !candidate.installed ? { ...candidate, selected: false } : candidate);
+      candidate.kind === "units" && !candidate.installed ? { ...candidate, selected: false } : candidate);
   }
   return packs;
 }

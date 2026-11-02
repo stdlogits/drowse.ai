@@ -26,9 +26,7 @@ async function seed(page: Page) {
   await expect(page.locator(".tree-node-wrap")).toHaveCount(4);
 }
 
-test("long cards widen without crossing columns; search navigates all branches without switching paths", async ({ page, isMobile }) => {
-  // On a phone the map and its search bar sit below the fold (lanes/A5.md, "Loom map has no room on a phone").
-  test.fixme(isMobile, "the phone Loom map viewport gets almost no height; see lanes/A5.md");
+test("long cards widen without crossing columns; search navigates all branches without switching paths", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   await seed(page);

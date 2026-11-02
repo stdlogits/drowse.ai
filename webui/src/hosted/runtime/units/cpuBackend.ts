@@ -54,6 +54,8 @@ export interface CpuBlockSitesOptions {
   readonly profile: BlockSitesCapacityProfile;
   readonly contextTokens: number;
   readonly prefillChunkSize?: number;
+  /** The refusal a residual profile answers with (a lock's `unitRefusal`). */
+  readonly unitRefusal?: string;
 }
 
 interface StoredResident {
@@ -114,7 +116,7 @@ export function cpuBlockSitesBackend(
     contextTokens: options.contextTokens,
     prefillChunkSize: options.prefillChunkSize ?? 2048,
     blockSpec: units ? spec : null,
-    unitRefusal: units ? null : "the reference model's blocks are not dense",
+    unitRefusal: units ? null : options.unitRefusal ?? "the reference model's blocks are not dense",
   });
   const residents = new Map<string, StoredResident>();
   let serial = 0;

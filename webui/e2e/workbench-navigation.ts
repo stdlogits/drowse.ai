@@ -82,8 +82,8 @@ export async function openLoom(page: Page, view: "Map" | "Weave"): Promise<void>
 /** Opens a room: the header's room tabs on a wide screen, the Menu's Rooms group on a phone. */
 export async function selectRoom(page: Page, name: string): Promise<void> {
   const tabs = page.getByRole("navigation", { name: "Rooms", exact: true });
-  // App.svelte's phone layout (rooms in the Menu) is (max-width: 720px).
-  const phone = await page.evaluate(() => matchMedia("(max-width: 720px)").matches);
+  // App.svelte's phone layout (rooms in the Menu): narrow or short screens (drowse PR 71).
+  const phone = await page.evaluate(() => matchMedia("(max-width: 720px), (max-height: 520px)").matches);
   if (!phone) {
     await expect(tabs).toBeVisible();
     await tabs.getByRole("button", { name, exact: true }).click();
