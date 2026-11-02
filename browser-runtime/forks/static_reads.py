@@ -324,6 +324,18 @@ class Reader:
         values, ids = self.dev.topk(logits, k)
         return ids, np.exp(values.astype(np.float64) - lse[:, None])
 
+    def place(self, rows, layer: int, site: str, k: int, of: str, means: dict):
+        """lens.read's two halves of `rows` at (layer, site): (ids, values) per half, or None
+        where the fixture has no lens there."""
+        r = s = None
+        matrix = self.r_matrix(layer, site)
+        if matrix is not False:
+            r = self.r_read(rows, matrix, k)
+        if ("S", site, layer) in self.lenses:
+            centred = rows - means[site][layer] if of == "residual" else rows
+            s = self.s_read(self.pull_s(centred, self.lenses[("S", site, layer)]), k)
+        return {"r": r, "s": s}
+
     def s_read(self, u, k: int):
         scores = self.dev("drowse_footprint_scores", u.astype(np.float32), self.mean_e, self.sigma,
                           self.words)
@@ -378,6 +390,21 @@ def _check_tokens(check, label: str, tokens: list, ids, values, atol: float,
         if {golden_ids[p] for p in block} != {int(ids[p]) for p in block}:
             raise SystemExit(f"{label}: positions {block} hold {[int(ids[p]) for p in block]}, "
                              f"the golden {[golden_ids[p] for p in block]}")
+
+
+def _check_place(check, tol: dict, label: str, golden: dict, got: dict, row: int, doc: dict,
+                 path: str, where: str) -> None:
+    """One row's present R and S halves against a place read's (R probabilities, S z)."""
+    for half, atol in (("r", tol["probability_atol"]), ("s", tol["z_atol"])):
+        want = golden[half]
+        if want is None or want.get("absent") is not None or want.get("unit") == "layer_z":
+            continue
+        if got[half] is None:
+            raise SystemExit(f"{label}: a present {half} half at {where} has no fixture lens")
+        ids, values = got[half]
+        m = len(want["tokens"])
+        _check_tokens(check, f"{label}:{half}", want["tokens"], ids[row][:m], values[row][:m], atol,
+                      declared_groups(doc, f"{path}.{half}.tokens"))
 
 
 def verify_goldens(dev: Device, w: Weights, check, goldens: Path, arch: str, statistics) -> None:
@@ -487,26 +514,36 @@ def verify_goldens(dev: Device, w: Weights, check, goldens: Path, arch: str, sta
     for q, request in enumerate(lens_reads["requests"]):
         if request.get("lens") is not None:
             continue  # a session with no S lens prepared: the absent text only
-        rows, layer, site, k = decode(request["rows"]), request["layer"], request["site"], request["k"]
-        r_ids = r_p = s_ids = s_z = None
-        matrix = reader.r_matrix(layer, site)
-        if matrix is not False:
-            r_ids, r_p = reader.r_read(rows, matrix, k)
-        if ("S", site, layer) in lenses:
-            centred = rows - means[site][layer] if request["of"] == "residual" else rows
-            s_ids, s_z = reader.s_read(reader.pull_s(centred, lenses[("S", site, layer)]), k)
+        layer, site = request["layer"], request["site"]
+        got = reader.place(decode(request["rows"]), layer, site, request["k"], request["of"], means)
         for i, read in enumerate(request["reads"]):
-            for half, ids, values, atol in (("r", r_ids, r_p, tol["probability_atol"]),
-                                            ("s", s_ids, s_z, tol["z_atol"])):
-                golden = read[half]
-                if golden is None or golden.get("absent") is not None:
-                    continue
-                if ids is None:
-                    raise SystemExit(f"lens-reads: a present {half} half at L{layer} {site} "
-                                     "has no fixture lens")
-                _check_tokens(check, f"lens-reads:{half}", golden["tokens"], ids[i][: len(golden["tokens"])],
-                              values[i][: len(golden["tokens"])], atol,
-                              declared_groups(lens_reads, f"requests[{q}].reads[{i}].{half}.tokens"))
+            _check_place(check, tol, "lens-reads", read, got, i, lens_reads,
+                         f"requests[{q}].reads[{i}]", f"L{layer} {site}")
+
+    # unit-reads poles: a neuron's writes (w, −w at its out) and firing directions (â ± b̂ at its
+    # mid) read through lens.read, and each pole's logit-lens skew and kurtosis over the kept
+    # tokens. Hub-hidden halves (unit layer_z) rank by contrast statistics, B5's host composition
+    # rather than a device read; every raw half is checked, hub-hidden read or not.
+    for c, case in enumerate(reads["reads"]):
+        read = case["read"]
+        if read["kind"] != "neuron":
+            continue
+        rows = dev("drowse_neuron_rows", np.array([[read["layer"], read["index"]]], np.int32))[0]
+        w, a, b = rows[0], rows[1], rows[2]
+        moments = dev("drowse_logit_moments", dev("drowse_vocab_logits", w[None]),
+                      reader.words, np.array([1], np.int32), packed=False)[0]
+        places = {"writes": reader.place(np.stack([w, -w]), read["layer"], "out", case["k"],
+                                         "direction", means),
+                  "fires_on": reader.place(np.stack([a + b, a - b]), read["layer"], "mid",
+                                           case["k"], "direction", means)}
+        for p, pole in enumerate(read["poles"]):
+            sign = 1.0 if pole["pole"] == "+" else -1.0
+            check("unit-reads:vocab_moments", [pole["vocab_skew"], pole["vocab_kurt"]],
+                  [sign * float(moments[0]), float(moments[1])], atol=2e-6 + tol["atol"])
+            for where in ("writes", "fires_on"):
+                _check_place(check, tol, f"unit-reads:{where}", pole[where], places[where], p,
+                             reads, f"reads[{c}].read.poles[{p}].{where}",
+                             f"L{read['layer']} {pole[where]['site']}")
 
 
 def verify(env, vm, tensors: dict, goldens: Path, arch: str, check) -> None:

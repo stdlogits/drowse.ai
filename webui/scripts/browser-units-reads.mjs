@@ -299,12 +299,9 @@ export async function verifyReads({ call, f32, i32, u32, weights, golden, decode
 
   const stats3 = await golden("unit-stats");
   const means = { out: decode(stats3.out_mean), mid: decode(stats3.mid_mean) };
-  const lensReads = await golden("lens-reads");
-  for (const [q, request] of lensReads.requests.entries()) {
-    if (request.lens !== undefined && request.lens !== null) continue;
-    const rowsData = Float32Array.from(decode(request.rows));
-    const n = rowsData.length / d;
-    const { layer, site, k } = request;
+  // lens.read's two halves of `n` rows at (layer, site): R probabilities and S z, or null where
+  // the fixture has no lens there.
+  const place = async (rowsData, n, layer, site, k, of) => {
     const rLens = rMatrix(layer, site);
     let r = null;
     if (rLens !== undefined) {
@@ -314,20 +311,54 @@ export async function verifyReads({ call, f32, i32, u32, weights, golden, decode
     let s = null;
     const sLens = resident.get(`S:${site}:${layer}`);
     if (sLens !== undefined) {
-      const centred = request.of === "residual"
+      const centred = of === "residual"
         ? rowsData.map((v, i) => v - means[site][layer * d + (i % d)])
         : rowsData;
       const out = await call("footprintTopK", f32(await pullS(centred, n, sLens), [n, d]), k, stats);
       s = { ids: out.ids.data, p: out.z.data };
     }
-    request.reads.forEach((read, i) => {
-      for (const [half, got, atol] of [["r", r, tolerance.probability_atol], ["s", s, tolerance.z_atol]]) {
-        const want = read[half];
-        if (want === null || want === undefined || want.absent !== null) continue;
-        if (got === null) throw new Error(`lens-reads: a present ${half} half at L${layer} ${site} has no fixture lens`);
-        const m = want.tokens.length;
-        tokens(`lens-reads:${half}`, want.tokens, got.ids.subarray(i * k, i * k + m), got.p.subarray(i * k, i * k + m), atol,
-          declared(lensReads, `requests[${q}].reads[${i}].${half}.tokens`));
+    return { r, s, k };
+  };
+  // One row's present raw halves against a place read (hub-hidden layer_z halves are B5's).
+  const checkPlace = (label, want, got, row, doc, path, where) => {
+    for (const [half, atol] of [["r", tolerance.probability_atol], ["s", tolerance.z_atol]]) {
+      const golden = want[half];
+      if (golden === null || golden === undefined || golden.absent !== null || golden.unit === "layer_z") continue;
+      if (got[half] === null) throw new Error(`${label}: a present ${half} half at ${where} has no fixture lens`);
+      const m = golden.tokens.length;
+      const at = row * got.k;
+      tokens(`${label}:${half}`, golden.tokens, got[half].ids.subarray(at, at + m), got[half].p.subarray(at, at + m), atol,
+        declared(doc, `${path}.${half}.tokens`));
+    }
+  };
+
+  const lensReads = await golden("lens-reads");
+  for (const [q, request] of lensReads.requests.entries()) {
+    if (request.lens !== undefined && request.lens !== null) continue;
+    const rowsData = Float32Array.from(decode(request.rows));
+    const got = await place(rowsData, rowsData.length / d, request.layer, request.site, request.k, request.of);
+    request.reads.forEach((read, i) => checkPlace("lens-reads", read, got, i, lensReads, `requests[${q}].reads[${i}]`, `L${request.layer} ${request.site}`));
+  }
+
+  // unit-reads poles: a neuron's writes (w, −w at its out) and firing directions (â ± b̂ at its
+  // mid) through lens.read, and each pole's logit-lens skew and kurtosis over the kept tokens.
+  for (const [c, entry] of unitReads.reads.entries()) {
+    const read = entry.read;
+    if (read.kind !== "neuron") continue;
+    const ref = [{ kind: "neuron", layer: read.layer, index: read.index }];
+    const w = (await call("unitWeightRows", "neuron_write", ref)).data;
+    const ab = (await call("unitWeightRows", "neuron_read", ref)).data;
+    const [a, b] = [ab.subarray(0, d), ab.subarray(d, 2 * d)];
+    const moments = (await call("vocabLogitMoments", f32(w, [1, d]), stats)).data;
+    const places = {
+      writes: await place(Float32Array.from([...w, ...w.map((v) => -v)]), 2, read.layer, "out", entry.k, "direction"),
+      fires_on: await place(Float32Array.from([...a.map((v, i) => v + b[i]), ...a.map((v, i) => v - b[i])]), 2, read.layer, "mid", entry.k, "direction"),
+    };
+    read.poles.forEach((pole, p) => {
+      const sign = pole.pole === "+" ? 1 : -1;
+      check("unit-reads:vocab_moments", [pole.vocab_skew, pole.vocab_kurt], [sign * moments[0], moments[1]], 2e-6 + tolerance.atol);
+      for (const where of ["writes", "fires_on"]) {
+        checkPlace(`unit-reads:${where}`, pole[where], places[where], p, unitReads, `reads[${c}].read.poles[${p}].${where}`, `L${read.layer} ${pole[where].site}`);
       }
     });
   }

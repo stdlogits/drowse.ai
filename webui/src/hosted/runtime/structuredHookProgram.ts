@@ -3378,6 +3378,40 @@ export function structuredTapGramHeads(
   );
 }
 
+/** Refuses a program whose tapped heads still carry the zero tap grams `withStructuredUnitSection`
+ *  leaves: each tapped head's `G_h = Bᵀ B` has a positive trace, and a zero block would read every
+ *  write norm as 0. `bindStructuredProgram` fills them; installing without it fails closed. */
+export function assertStructuredTapGramsBound(
+  program: StructuredHookProgramBuffers,
+  model: {
+    readonly profile: StructuredHookCapacityProfile;
+    readonly layerCount: number;
+    readonly headDim: number | undefined;
+  } = { profile: program.profile, layerCount: program.layerCount, headDim: program.unitShape?.headDim },
+): void {
+  if (program.unitMeta === undefined) return;
+  if (model.headDim === undefined || program.tapGrams === undefined) {
+    throw new TypeError("Structured hook unit section is incomplete");
+  }
+  const hd = model.headDim;
+  const heads = structuredTapGramHeads({
+    ...program,
+    profile: model.profile,
+    layerCount: model.layerCount,
+    unitShape: { dFF: 0, nHeads: 0, headDim: hd },
+  });
+  heads.forEach(({ layer, index }, slot) => {
+    let trace = 0;
+    for (let k = 0; k < hd; k += 1) trace += program.tapGrams![(slot * hd + k) * hd + k];
+    if (!(trace > 0)) {
+      throw Object.assign(
+        new Error(`The tap of head/L${layer}h${index} has no write gram: bind the program to the loaded model first`),
+        { code: "TAP_GRAMS_UNBOUND" },
+      );
+    }
+  });
+}
+
 /** Native's unit tables (`UnitOp` per module and trigger), as the B3 goldens record them:
  *  coordinate entries of a site of width `width`, one keep and bias per coordinate. */
 export interface StructuredNativeUnitTable {

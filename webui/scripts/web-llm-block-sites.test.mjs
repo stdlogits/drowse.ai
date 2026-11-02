@@ -247,7 +247,7 @@ try {
   await assert.rejects(live.openReplay({ program: null, anatomyPosition: null, activity: null, patternLayers: [1] }), RangeError);
 
   // -------------------------------------------- static reads over a computing bridge ---
-  await staticReads(backendModule, modelBackend, capabilities, residualCapabilities, spec, tapped);
+  await staticReads(backendModule, modelBackend, programs, capabilities, residualCapabilities, spec, tapped);
 
   // ---------------------------------------------------------- unit taps as gate scores ---
   const tapSchema = [
@@ -392,7 +392,7 @@ function computingBridge(log) {
   };
 }
 
-async function staticReads(backendModule, modelBackend, capabilities, residualCapabilities, spec, tapped) {
+async function staticReads(backendModule, modelBackend, programs, capabilities, residualCapabilities, spec, tapped) {
   const log = [];
   const live = backendModule.webLlmBlockSitesBackend(capabilities, computingBridge(log));
   const f32 = modelBackend.f32Tensor;
@@ -401,6 +401,10 @@ async function staticReads(backendModule, modelBackend, capabilities, residualCa
   assert.notEqual(bound, tapped);
   assert.ok(bound.tapGrams.subarray(0, 256).every((value) => value === 23));
   assert.ok(bound.tapGrams.subarray(256).every((value) => value === 0));
+  // An unbound tapped head (zero gram) fails closed at install and replay; a bound one passes.
+  assert.throws(() => backendModule.replayProgram(capabilities, tapped), (error) => error.code === "TAP_GRAMS_UNBOUND");
+  assert.equal(backendModule.replayProgram(capabilities, bound), bound);
+  assert.throws(() => programs.assertStructuredTapGramsBound(tapped), TypeError, "no shape, no check");
   const gather = log.at(-1).steps[0];
   assert.equal(gather.fn, "drowse_gather_head_grams");
   assert.equal(gather.args[0].resident, "head_grams:9");

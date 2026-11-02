@@ -17,6 +17,7 @@ import {
 import type { GpuAdapterLike } from "./capabilities";
 import type { RankOneHookProgramBuffers } from "./rankOneHookProgram";
 import {
+  assertStructuredTapGramsBound,
   STRUCTURED_HOOK_FORMAT,
   type StructuredHookProgramBuffers,
 } from "./structuredHookProgram";
@@ -762,6 +763,7 @@ export class DrowseWebLlmRuntime {
           "The loaded model library does not compile Drowse unit sites",
         );
       }
+      assertStructuredTapGramsBound(program);
       const hasCurve = program.curveRank.some((rank) => rank > 0);
       if (hasCurve && !this.curvedHooks) {
         throw runtimeError(

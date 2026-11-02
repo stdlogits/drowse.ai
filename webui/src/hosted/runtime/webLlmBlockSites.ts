@@ -25,6 +25,7 @@ import {
   type F32Tensor,
 } from "./modelBackend";
 import {
+  assertStructuredTapGramsBound,
   compileStructuredHookProgram,
   structuredUnitSectionLayout,
   type StructuredHookProgramBuffers,
@@ -297,7 +298,14 @@ export function replayProgram(
     Array.from({ length: capabilities.layerCount }, () => ({})),
     capabilities.profile,
   );
-  if (base.unitMeta !== undefined) return base;
+  if (base.unitMeta !== undefined) {
+    assertStructuredTapGramsBound(base, {
+      profile: capabilities.profile,
+      layerCount: capabilities.layerCount,
+      headDim: capabilities.blockSpec!.headDim,
+    });
+    return base;
+  }
   const layout = structuredUnitSectionLayout(
     capabilities.profile,
     capabilities.layerCount,
