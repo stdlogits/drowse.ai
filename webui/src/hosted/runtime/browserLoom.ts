@@ -505,8 +505,9 @@ export class BrowserLoomRuntime {
         };
       }
       validateWebLlmGenerationSettings(siblingSampling, effectiveThinking);
+      // The node keeps the canonical steering its envelopes bind (native's recipe steering).
       const nodeRecipe = recipe(
-        effectiveSteering,
+        boundSteering(hookProgram, effectiveSteering) ?? null,
         siblingSampling,
         effectiveThinking,
         this.session.probes,
@@ -1581,7 +1582,7 @@ export class BrowserLoomRuntime {
           positionSpans: program === null ? null : settings.positionSpans ?? null,
         },
         program,
-        steering: settings.steering ?? null,
+        steering: boundSteering(program, settings.steering) ?? null,
         canThink: settings.thinking === true,
       };
     });
