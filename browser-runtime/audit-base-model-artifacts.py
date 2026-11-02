@@ -10,9 +10,9 @@ from safetensors.torch import load as load_safetensors
 
 
 LENS_REVISION = "0731326edff4ae730ffc5356fe1a4728c748b3a6"
+# Provider J lenses serve only the base models drowse cannot fit (LayerNorm, fused qkv):
+# Gemma 3 1B PT's R and S lenses are native fits (README.md, "Lens, units and core packs").
 LENSES = [
-    ("google/gemma-3-1b-pt", "gemma-3-1b", "gemma-3-1b-pt", 1152,
-     66363652, "39f61074bfdb7c896b5027612a21e9648ca348d6516f0fbdbca6e5690c8b1ab1"),
     ("openai-community/gpt2", "gpt2-small", "gpt2", 768,
      12980477, "d1800a1335ada089ef2e1ec0e4bd4d5bd61e6011eacc31f8618fdb3d10aae762"),
     ("EleutherAI/pythia-70m-deduped", "pythia-70m-deduped", "pythia-70m-deduped", 512,
