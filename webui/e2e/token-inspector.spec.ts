@@ -58,8 +58,11 @@ test("the token view passes automated WCAG checks", async ({ page }) => {
 test("a steered reply's token reads steered or replayed without the steering", async ({ page }) => {
   // The Token view's Readings switch (6.0's captured/replayed boundary): a token generated under a
   // recipe offers Steered (the recipe as its hint) and Unsteered ("Replayed without the steering");
-  // Unsteered asks the runtime to replay every family without the steering, and Steered asks again
-  // with it. A reply sent without steering offers no switch.
+  // Unsteered asks the runtime to replay every family without the steering, and Steered shows the
+  // steered readings again (from drowse's replay cache, so no new request). A reply sent without
+  // steering offers no switch. The fixture runtime ignores `steered`, so the spy marks what an
+  // unsteered replay returns ("unsteered" in the lens, "unsteered feature" in the SAE) to show which
+  // readings the view holds.
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -70,9 +73,16 @@ test("a steered reply's token reads steered or replayed without the steering", a
     const instruments = (await import(registryUrl)).getRuntimeClient().instruments;
     const original = instruments.tokenReadout.bind(instruments);
     (window as any).readouts = [];
-    instruments.tokenReadout = (family: string, nodeId: string, index: number, options: { steered?: boolean }) => {
-      (window as any).readouts.push({ family, steered: options?.steered ?? true });
-      return original(family, nodeId, index, options);
+    instruments.tokenReadout = async (family: string, nodeId: string, index: number, options: { steered?: boolean }) => {
+      const steered = options?.steered ?? true;
+      (window as any).readouts.push({ family, steered });
+      const result = await original(family, nodeId, index, options);
+      if (steered) return result;
+      const lens = result.measurements.instruments.lens?.readout;
+      for (const row of lens?.layers ?? []) for (const read of row.tokens) read.token = " unsteered";
+      for (const chip of lens?.aggregate ?? []) chip.token = " unsteered";
+      for (const feature of result.measurements.instruments.sae?.readout.features ?? []) feature.label = "unsteered feature";
+      return result;
     };
     stores.applyRecipe("0.5 fixture/calm.focused");
   }, { storesUrl, registryUrl });
@@ -81,19 +91,35 @@ test("a steered reply's token reads steered or replayed without the steering", a
 
   const token = await inspectToken(page, "deterministic");
   const readings = token.getByRole("group", { name: "Readings", exact: true });
+  const acrossLayers = token.getByRole("region", { name: "Across layers", exact: true });
+  const features = token.getByRole("region", { name: "Features", exact: true });
+  const showsSteered = async () => {
+    await expect(acrossLayers).toContainText("fixture");
+    await expect(acrossLayers).not.toContainText("unsteered");
+    await expect(features).toContainText("fixture feature");
+    await expect(features).not.toContainText("unsteered feature");
+  };
   await expect(readings.getByRole("button", { name: "Steered", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(token.getByText("0.5 fixture/calm.focused").first()).toBeVisible();
   await expect.poll(async () => (await reads()).filter(read => read.steered).length).toBeGreaterThan(0);
   expect((await reads()).filter(read => !read.steered)).toEqual([]);
+  await showsSteered();
 
   await readings.getByRole("button", { name: "Unsteered", exact: true }).click();
   await expect(readings.getByRole("button", { name: "Unsteered", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect.poll(async () => [...new Set((await reads()).filter(read => !read.steered).map(read => read.family))].sort())
     .toEqual(["lens", "sae"]);
   await expect(token.getByRole("alert")).toHaveCount(0);
+  await expect(acrossLayers).toContainText("unsteered");
+  await expect(acrossLayers).not.toContainText("fixture");
+  await expect(features).toContainText("unsteered feature");
+  await expect(features).not.toContainText("fixture feature");
 
+  const asked = (await reads()).length;
   await readings.getByRole("button", { name: "Steered", exact: true }).click();
   await expect(readings.getByRole("button", { name: "Steered", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await showsSteered();
+  expect((await reads()).slice(asked).filter(read => !read.steered)).toEqual([]);
 
   await inspector(page).getByRole("button", { name: "Close", exact: true }).click();
   await page.evaluate(async url => (await import(url)).applyRecipe(""), storesUrl);
