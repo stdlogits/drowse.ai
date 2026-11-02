@@ -535,7 +535,9 @@ library allocates at its largest context and prefill chunk, the larger of:
   full-context pattern replay reaches it), the head grams, the chunk's MLP gate/up activation
   `[prefill_chunk_size, 2·d_ff]` (MLC's static memory plan allocates it at the chunk bound; a
   replay chunk's `act` is half of it), a layer's head rows (`drowse_head_rows` over every head,
-  `[H, 4, hd, d]`) and every other `blockSitesBufferElements` buffer;
+  `[H, 4, hd, d]`; the adapter splits a longer `unitWeightRows` request into calls of at most `H`
+  heads or `⌊4·H·hd/3⌋` neurons, `unitRowsPerCall`) and every other `blockSitesBufferElements`
+  buffer;
 - a unit read's vocabulary chunk (`UNIT_VOCAB_ROWS` = 8192 rows times a factor of at most
   `max(d, H·hd)` columns), the structured program's buffers, one full-vocabulary static read of
   `VOCAB_READ_ROWS` (64) rows (`[64, V]`; the adapter splits longer

@@ -326,15 +326,21 @@ function computingBridge(log) {
   const run = (fn, a) => {
     const [x, y] = a;
     switch (fn) {
+      // Each unit's rows are tagged with its (layer, index), so a request split across calls
+      // must still come back in request order.
       case "drowse_neuron_rows": {
         const n = x.shape[0];
         const d = 64;
+        const unit = (u) => 100 * x.data[2 * u] + x.data[2 * u + 1];
         return { shape: [n, 3, d], data: Float32Array.from({ length: n * 3 * d }, (_, i) =>
-          1000 * Math.floor(i / (3 * d)) + 100 * (Math.floor(i / d) % 3) + (i % d)) };
+          1000 * unit(Math.floor(i / (3 * d))) + 100 * (Math.floor(i / d) % 3) + (i % d)) };
       }
       case "drowse_head_rows": {
         const n = x.shape[0];
-        return { shape: [n, 4, 16, 64], data: Float32Array.from({ length: n * 4 * 16 * 64 }, (_, i) => i) };
+        const block = 4 * 16 * 64;
+        const unit = (u) => 10 * x.data[2 * u] + x.data[2 * u + 1];
+        return { shape: [n, 4, 16, 64], data: Float32Array.from({ length: n * block }, (_, i) =>
+          100000 * unit(Math.floor(i / block)) + (i % block)) };
       }
       case "drowse_gather_head_grams":
         return { shape: [y.shape[0], 16, 16], data: Float32Array.from({ length: y.shape[0] * 256 }, (_, i) =>
@@ -458,18 +464,35 @@ async function staticReads(backendModule, modelBackend, programs, capabilities, 
   const units = [{ kind: "neuron", layer: 1, index: 5 }, { kind: "neuron", layer: 3, index: 0 }];
   const write = await live.unitWeightRows("neuron_write", units);
   assert.deepEqual(write.shape, [2, 64]);
-  assert.equal(write.data[64 + 7], 1000 + 7);
+  assert.equal(write.data[64 + 7], 1000 * 300 + 7);
   const read = await live.unitWeightRows("neuron_read", units);
   assert.deepEqual(read.shape, [2, 2, 64]);
-  assert.equal(read.data[64], 200);
+  assert.equal(read.data[64], 1000 * 105 + 200);
   await assert.rejects(live.unitWeightRows("neuron_write", [{ kind: "neuron", layer: 4, index: 0 }]), RangeError);
   await assert.rejects(live.unitWeightRows("head_write", units), RangeError);
   const headWrite = await live.unitWeightRows("head_write", [{ kind: "head", layer: 0, index: 1 }]);
   assert.deepEqual(headWrite.shape, [1, 64, 16]);
-  assert.equal(headWrite.data[5 * 16 + 2], 2 * 64 + 5);
+  assert.equal(headWrite.data[5 * 16 + 2], 100000 + 2 * 64 + 5);
   const headRead = await live.unitWeightRows("head_read", [{ kind: "head", layer: 0, index: 1 }]);
   assert.deepEqual(headRead.shape, [1, 3, 16, 64]);
-  assert.equal(headRead.data[0], 16 * 64);
+  assert.equal(headRead.data[0], 100000 + 16 * 64);
+  // A request longer than one call's bound (a layer's head rows, [H, 4, hd, d]) runs in several
+  // calls: every neuron of a layer takes floor(4·H·hd / 3) = 85 and then 11, five heads 4 and 1.
+  const rowCalls = (fn) => log.filter((entry) => entry.steps?.[0]?.fn === fn).map((entry) => entry.steps[0].args[0].tensor.shape[0]);
+  const neuronsBefore = rowCalls("drowse_neuron_rows").length;
+  const layer = Array.from({ length: spec.dFF }, (_, index) => ({ kind: "neuron", layer: 2, index }));
+  assert.equal(modelBackend.unitRowsPerCall(spec, "neuron"), 85);
+  const wholeLayer = await live.unitWeightRows("neuron_write", layer);
+  assert.deepEqual(wholeLayer.shape, [spec.dFF, 64]);
+  assert.deepEqual(rowCalls("drowse_neuron_rows").slice(neuronsBefore), [85, 11]);
+  for (const u of [0, 84, 85, 95]) assert.equal(wholeLayer.data[u * 64 + 3], 1000 * (200 + u) + 3);
+  const heads = [0, 1, 2, 3].map((index) => ({ kind: "head", layer: 0, index })).concat({ kind: "head", layer: 1, index: 2 });
+  const headsBefore = rowCalls("drowse_head_rows").length;
+  const fiveHeads = await live.unitWeightRows("head_read", heads);
+  assert.deepEqual(fiveHeads.shape, [5, 3, 16, 64]);
+  assert.deepEqual(rowCalls("drowse_head_rows").slice(headsBefore), [4, 1]);
+  assert.equal(fiveHeads.data[3 * 3 * 1024], 100000 * 3 + 1024);
+  assert.equal(fiveHeads.data[4 * 3 * 1024], 100000 * 12 + 1024);
 
   // Residents, then the vocabulary reads composed over them.
   const lens = await live.uploadLensLayer("s", "out", 1, f32(new Float32Array(64 * 64), [64, 64]));

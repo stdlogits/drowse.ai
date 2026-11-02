@@ -465,7 +465,8 @@ export interface BrowserBlockSitesBackend {
   /** §4.1 `drowse_unit_weight_rows`: `neuron_write` `s·γ_mo ⊙ W_down[:, n]` → `[n, d]`;
    *  `neuron_read` `(â, b̂)`, `â = γ_mi ⊙ W_gate[n] / max(‖·‖, 1e-12)` → `[n, 2, d]`;
    *  `head_write` `γ_ao ⊙ W_O[:, h·hd:(h+1)·hd]` → `[n, d, hd]`; `head_read` raw
-   *  `(γ_ai ⊙ W_Q^h, γ_ai ⊙ W_K^g, γ_ai ⊙ W_V^g)` → `[n, 3, hd, d]`, units in request order. */
+   *  `(γ_ai ⊙ W_Q^h, γ_ai ⊙ W_K^g, γ_ai ⊙ W_V^g)` → `[n, 3, hd, d]`, units in request order, any
+   *  number of them (`unitRowsPerCall` units per library call). */
   unitWeightRows(kind: UnitWeightRowsKind, units: readonly BlockSitesUnitRef[]): Promise<F32Tensor>;
   /** §2.2/§4.1 `drowse_head_write_grams`: `G_h = Bᵀ B` per head → `[n, hd, hd]`. */
   headWriteGrams(heads: readonly { layer: number; head: number }[]): Promise<F32Tensor>;
@@ -933,6 +934,13 @@ export function blockSitesBufferElements(
  *  `drowse_footprint_scores`): a longer read runs in calls of at most this many rows, so each
  *  `[rows, V]` output stays within the binding the catalog declares (`libraryBindingBytes`). */
 export const VOCAB_READ_ROWS = 64;
+
+/** Units per `drowse_neuron_rows` or `drowse_head_rows` call (`unitWeightRows`): a longer request
+ *  runs in several calls, so each `[n, 3, d]` or `[n, 4, hd, d]` output stays within a layer's head
+ *  rows `[H, 4, hd, d]`, which the binding covers (`blockSitesBindingBytes`). */
+export function unitRowsPerCall(spec: BlockSpec, kind: "neuron" | "head"): number {
+  return kind === "head" ? spec.nHeads : Math.max(1, Math.floor((4 * spec.nHeads * spec.headDim) / 3));
+}
 
 /** Vocabulary rows per `vocabRowsTimes` call in the unit reads (`unitReader.ts`): each call's
  *  `[rows, d]` embedding rows and `[rows, m ≤ H·hd]` product stay within the library's binding. */

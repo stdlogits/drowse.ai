@@ -24,6 +24,7 @@ import {
   type LensFamily,
   type LensSite,
   type UnitWeightRowsKind,
+  unitRowsPerCall,
   VOCAB_READ_ROWS,
 } from "./modelBackend";
 
@@ -552,10 +553,21 @@ export function webLlmStaticReads(
     if (!neuron && kind !== "head_write" && kind !== "head_read") throw new TypeError(`Unknown unit rows ${String(kind)}`);
     const table = unitTable(refs, neuron ? "neuron" : "head");
     const n = refs.length;
-    const out = await run([{
-      fn: neuron ? "drowse_neuron_rows" : "drowse_head_rows", args: [host(table, [n, 2])], out: "rows",
-    }], ["rows"]);
-    const rows = out.rows.data as Float32Array;
+    // In calls of at most `unitRowsPerCall` units, so each call's output stays within the binding.
+    const unitFloats = neuron ? 3 * d : 4 * hd * d;
+    const perCall = unitRowsPerCall(spec, neuron ? "neuron" : "head");
+    const rows = new Float32Array(n * unitFloats);
+    for (let first = 0; first < n; first += perCall) {
+      const last = Math.min(n, first + perCall);
+      const out = await run([{
+        fn: neuron ? "drowse_neuron_rows" : "drowse_head_rows",
+        args: [host(table.slice(2 * first, 2 * last), [last - first, 2])],
+        out: "rows",
+      }], ["rows"]);
+      const part = out.rows.data as Float32Array;
+      if (part.length !== (last - first) * unitFloats) throw new TypeError("The bridge read back unit rows of the wrong size");
+      rows.set(part, first * unitFloats);
+    }
     if (kind === "neuron_write" || kind === "neuron_read") {
       const take = kind === "neuron_write" ? [0] : [1, 2];
       const data = new Float32Array(n * take.length * d);
