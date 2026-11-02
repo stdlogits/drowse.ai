@@ -130,7 +130,8 @@ export interface UnitsReadContext {
   embeddings(): Promise<UnitsEmbeddings>;
   /** The neutral means a residual's S half centres on: `out` and `mid`, `[L, d]`. */
   readonly means: { readonly out: Float32Array | null; readonly mid: Float32Array | null };
-  decode(tokenId: number): string;
+  /** Each id's own text (native `tokenizer.decode([id])`), in order. */
+  tokenTexts(tokenIds: readonly number[]): Promise<string[]>;
 }
 
 export interface UnitsEmbeddings {
@@ -282,6 +283,7 @@ export async function readVectors(
         throw error;
       }
       const result = await run(matrix);
+      const texts = await context.tokenTexts(Array.from(result.ids.subarray(0, n * result.width)));
       return Array.from({ length: n }, (_, row) => ({
         family,
         weight: round6(weight),
@@ -289,8 +291,8 @@ export async function readVectors(
         lens: label,
         centred,
         tokens: Array.from({ length: result.width }, (_, j) => {
-          const id = result.ids[row * result.width + j];
-          return { token_id: id, token: context.decode(id), value: round6(result.values[row * result.width + j]) };
+          const at = row * result.width + j;
+          return { token_id: result.ids[at], token: texts[at], value: round6(result.values[at]) };
         }),
         absent: null,
       }));

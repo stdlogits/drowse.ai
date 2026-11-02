@@ -18,16 +18,20 @@ try {
     server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts"),
     server.ssrLoadModule("/src/hosted/runtime/units/cpuBackend.ts"),
   ]);
-  // Withheld from the hosted client until the model load wires this service (B4).
+  // Routed to the loaded model, which wires this service at load.
   for (const method of service.UNITS_SERVICE_METHODS) {
-    assert.equal(policy.isOfferedRuntimeMethod("instruments", method), false, `${method} is withheld`);
+    assert.equal(policy.runtimeServiceRoute({ service: "instruments", method, args: [] }), "model", `${method} is offered`);
   }
   let attached = [];
   const stubCompiler = {
+    unitSource: undefined,
     instrumentDescriptor: () => ({ jlens: null, sae: null }),
     instrumentLiveState: () => ({ geometry: false, lens: false, lensLayers: null, sae: false }),
     listProbes: () => attached,
     setInstrumentLive() {},
+    setUnitSource(source) { this.unitSource = source; },
+    prepared: [],
+    async prepareUnitProbe(selector) { this.prepared.push(selector); },
   };
   const arch = "gemma3";
   const fx = await unitsFixture(server, arch);
@@ -55,12 +59,35 @@ try {
       };
     },
   };
+  // The service's residents, counted: a reset releases every one it uploaded.
+  const uploaded = new Set();
+  const released = new Set();
+  const counted = new Proxy(fx.backend, {
+    get(target, key) {
+      const value = target[key];
+      if (typeof value !== "function") return value;
+      if (typeof key === "string" && key.startsWith("upload")) {
+        return async (...args) => {
+          const resident = await value.apply(target, args);
+          uploaded.add(resident.id);
+          return resident;
+        };
+      }
+      if (key === "release") {
+        return async (resident) => {
+          released.add(resident.id);
+          return value.call(target, resident);
+        };
+      }
+      return value.bind(target);
+    },
+  });
   const units = new service.BrowserUnitsService({
     modelId: "units-tiny",
-    blockSites: () => fx.backend,
+    blockSites: () => counted,
     packs: () => packs,
-    decode: (id) => fx.tokenizer.decode([id]),
-    resolveToken: (word) => (word.startsWith("#") ? Number(word.slice(1)) : fx.tokenizer.encode(word)[0]),
+    tokenTexts: async (ids) => ids.map((id) => fx.tokenizer.decode([id])),
+    resolveToken: async (word) => (word.startsWith("#") ? Number(word.slice(1)) : fx.tokenizer.encode(word)[0]),
     replay: () => replay,
   });
   const instruments = new runtime.BrowserInstrumentRuntime(stubCompiler, null, null, false);
@@ -69,7 +96,10 @@ try {
   // Before a service is configured: native's 422 for a library without unit sites.
   await assert.rejects(call("unitRead", "neuron/L1n5"), (error) => error.status === 422 && error.code === "UnsupportedBlockError");
   assert.equal(instruments.blocks().some((block) => block.family === "units"), false);
-  instruments.configureUnits(units);
+  await instruments.configureUnits(units);
+  // The compiler's unit source comes from the same service: the library's spec and statistics.
+  assert.equal(stubCompiler.unitSource.spec, fx.backend.capabilities().blockSpec);
+  assert.equal(stubCompiler.unitSource.refusal, null);
   // Native `family_block("units")`: no source, live on by default, its probes; all-or-nothing live.
   attached = [{ family: "units", name: "n", unit: "neuron/L1n5", kind: "neuron", layer: 1, index: 5, layers: [1], intrinsic_dim: 1, feature_space: "unit-readout" }];
   assert.deepEqual(instruments.blocks().find((block) => block.family === "units"), {
@@ -167,14 +197,63 @@ try {
   const { population: _expected, ...expected } = generated.result;
   assert.deepEqual(compareRecord(rest, expected, { root: "cases[0].result", ties: activityGolden.declared_ties, numberTol }), []);
 
+  // ------------------------------------------------------ a replay's gate scorer ---
+  // A replayed forward's name-scored gates, as generation scores them: unit taps, the geometry
+  // readout (the backend's scorer) and the slens/ reads over the [L, d] capture.
+  {
+    const tokenId = fx.tokenizer.encode("e")[0];
+    const probes = [{ name: "slens/e", word: "e", tokenId }];
+    const hidden = Float32Array.from({ length: 4 * fx.model.hiddenSize }, (_, i) => Math.sin(i));
+    const scoring = new service.BrowserUnitsService({
+      modelId: "units-tiny",
+      blockSites: () => fx.backend,
+      packs: () => packs,
+      tokenTexts: async (ids) => ids.map((id) => fx.tokenizer.decode([id])),
+      resolveToken: async (word) => fx.tokenizer.encode(word)[0],
+      replay: () => replay,
+      geometryGateScores: (_program, geometry) => ({ "local/m:membership": geometry[0] }),
+    });
+    const program = { measurementSchema: { slensProbes: probes } };
+    const readback = {
+      measurements: { dtype: "f32", shape: [4, 8], data: new Float32Array(32) },
+      unitTaps: null,
+      geometry: { dtype: "f32", shape: [1], data: Float32Array.of(0.375) },
+      hidden: { dtype: "f32", shape: [4, fx.model.hiddenSize], data: hidden },
+    };
+    const scores = await scoring.replayGateScores(program, readback);
+    const expected = (await scoring.slensReads(hidden, probes)).values;
+    assert.deepEqual(scores, { "local/m:membership": 0.375, ...expected });
+    assert.ok(Number.isFinite(scores["slens/e"]));
+    // Without a capture or a geometry readout, nothing beyond the unit taps is scored.
+    assert.deepEqual(await scoring.replayGateScores(program, { ...readback, geometry: null, hidden: null }), {});
+  }
+
+  // ------------------------------------------- a pack change (the R-source switch) ---
+  // The reset releases every lens matrix and the embedding statistics the session uploaded
+  // (the replays release their own scale tables), takes a unit source over the new session and
+  // prepares the attached slens/ probes again, so their probe hash survives the switch.
+  const sessionUploads = new Set([...uploaded].filter((id) => !released.has(id)));
+  assert.ok(sessionUploads.size > 0, "the reads above uploaded residents");
+  const sourceBefore = stubCompiler.unitSource;
+  attached = [{ family: "lens", namespace: "slens", name: "slens/e", word: "e" }];
+  stubCompiler.prepared = [];
+  await instruments.resetUnits();
+  attached = [];
+  assert.deepEqual([...sessionUploads].filter((id) => !released.has(id)), [], "every session resident is released");
+  assert.notEqual(stubCompiler.unitSource, sourceBefore);
+  assert.deepEqual(stubCompiler.prepared, ["slens/e"]);
+  // The service reopens over the packs after a reset.
+  const again = reads.reads[0];
+  assert.deepEqual(compareRecord(await call("unitRead", again.unit, { k: again.k, hideHubs: again.hide_hubs }), again.read, { root: "reads[0].read", ties: reads.declared_ties, numberTol }), []);
+
   // ------------------------------------------------------- a residual library (422) ---
   const residualBackend = cpu.cpuBlockSitesBackend(fx.model, { profile: profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL, contextTokens: 64 });
   const residual = new service.BrowserUnitsService({
     modelId: "units-tiny",
     blockSites: () => residualBackend,
     packs: () => packs,
-    decode: (id) => fx.tokenizer.decode([id]),
-    resolveToken: () => 0,
+    tokenTexts: async (ids) => ids.map((id) => fx.tokenizer.decode([id])),
+    resolveToken: async () => 0,
     replay: () => replay,
   });
   const refusal = residualBackend.capabilities().unitRefusal;

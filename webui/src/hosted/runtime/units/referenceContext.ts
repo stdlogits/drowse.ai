@@ -95,7 +95,7 @@ export function referenceReadContext(options: ReferenceContextOptions): UnitsRea
     s: family("S"),
     noLens: { R: noLensText("R", options.modelId), S: noLensText("S", options.modelId) },
     means: options.means,
-    decode: options.decode,
+    tokenTexts: async (ids) => ids.map((id) => options.decode(id)),
     embeddings() {
       embeddings ??= (async () => {
         const stats = options.statistics ?? embeddingStatistics(options.model, options.keep);

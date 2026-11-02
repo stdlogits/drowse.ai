@@ -22,7 +22,6 @@ import { parseSteeringExpression, UNIT_NAMESPACES } from "./steeringExpression";
  *  attached probes: it installs lens and SAE gates by the attached probe's family and refuses an
  *  unattached unit or S-lens gate with `instrumentAtomUnavailable`. */
 export type DrowseHookFeature =
-  | "rank_one"
   | "multi_term"
   | "projection"
   | "ablation"
@@ -37,7 +36,6 @@ export type DrowseHookFeature =
 export type DrowseHookCapabilities = Readonly<Record<DrowseHookFeature, boolean>>;
 
 export const AFFINE_FEASIBILITY_CAPABILITIES: DrowseHookCapabilities = Object.freeze({
-  rank_one: true,
   multi_term: true,
   projection: true,
   ablation: true,
@@ -88,7 +86,7 @@ export function requiredHookFeatures(
   const parsed = typeof expression === "string"
     ? parseSteeringExpression(expression)
     : expression;
-  const features = new Set<DrowseHookFeature>(["rank_one"]);
+  const features = new Set<DrowseHookFeature>();
   if (parsed.terms.length > 1) features.add("multi_term");
   for (const term of parsed.terms) collectTermFeatures(term, features);
   return features;

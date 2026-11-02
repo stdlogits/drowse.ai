@@ -31,7 +31,7 @@ def capture_metadata(
     model_id: str = "gemma3-270m-instruct",
 ) -> dict[str, Any]:
     metadata = {
-        "schema_version": 3,
+        "schema_version": 4,
         "produced_at": "2026-08-30T20:00:00.000Z",
         "model_id": model_id,
         "runtime_identity_sha256": "1" * 64,
@@ -45,17 +45,16 @@ def capture_metadata(
         "input_ids": [1, 2],
         "positions": [1],
         "residual_sha256": "2" * 64,
-        "rank_one_control_residual_sha256": "6" * 64,
-        "steered_residual_sha256": "3" * 64,
-        "rank_one_program": {
-            "abiVersion": 1,
+        "control_probe_sha256": "6" * 64,
+        "steered_probe_sha256": "3" * 64,
+        "steering_program": {
+            "format": "drowse-structured-v4",
             "enabledLayer": 1,
-            "direction": [0.6, 0.8],
+            "probeDirections": [[0.6, 0.8], [0.8, -0.6]],
             "target": 1.25,
             "along": 0.4,
-            "collapse": 0.3,
+            "kappa": 0.3,
         },
-        "probe_measurements": [0.1, 0.2],
         "greedy": {
             "prompt": "hello",
             "input_ids": [1],
@@ -147,16 +146,17 @@ def test_greedy_token_ids_honors_multi_eos_ids() -> None:
 
 
 def test_probe_error_is_normalized_to_the_activation_not_a_near_zero_projection() -> None:
-    actual = np.asarray([0.0, 10.0], dtype=np.float32)
-    expected = np.asarray([0.2, 10.1], dtype=np.float32)
-    residuals = np.asarray([[100.0, 0.0], [100.0, 0.0]], dtype=np.float32)
-    errors = _VALIDATOR.probe_relative_error_by_layer(
+    # [layers, positions, probes] probes over [layers, positions, hidden] residuals.
+    actual = np.asarray([[[0.0]], [[10.0]]], dtype=np.float32)
+    expected = np.asarray([[[0.2]], [[10.1]]], dtype=np.float32)
+    residuals = np.asarray([[[100.0, 0.0]], [[100.0, 0.0]]], dtype=np.float32)
+    errors = _VALIDATOR.sketch_relative_error_by_layer(
         actual,
         expected,
         residuals,
-        residuals,
-        np.asarray([1.0, 0.0], dtype=np.float32),
+        np.asarray([[1.0, 0.0]], dtype=np.float32),
         [0, 1],
+        residuals,
     )
 
     assert abs(errors["0"] - 0.002) < 1e-8
@@ -164,20 +164,21 @@ def test_probe_error_is_normalized_to_the_activation_not_a_near_zero_projection(
     assert np.linalg.norm(actual - expected) / np.linalg.norm(expected) > 0.01
 
 
-def test_probe_error_accounts_for_direction_scale() -> None:
-    errors = _VALIDATOR.probe_relative_error_by_layer(
-        np.asarray([2.0], dtype=np.float32),
-        np.asarray([2.2], dtype=np.float32),
-        np.asarray([[3.0, 4.0]], dtype=np.float32),
-        np.asarray([[3.0, 4.0]], dtype=np.float32),
-        np.asarray([0.6, 0.8], dtype=np.float32) * 2,
+def test_probe_error_accounts_for_direction_scale_and_takes_the_worst_probe() -> None:
+    errors = _VALIDATOR.sketch_relative_error_by_layer(
+        np.asarray([[[2.0, 1.0]]], dtype=np.float32),
+        np.asarray([[[2.2, 1.0]]], dtype=np.float32),
+        np.asarray([[[3.0, 4.0]]], dtype=np.float32),
+        np.asarray([[0.6, 0.8], [0.8, -0.6]], dtype=np.float32) * 2,
         [7],
     )
 
     assert abs(errors["7"] - 0.02) < 1e-7
 
 
-def test_rank_one_delta_uses_the_disabled_same_vm_control() -> None:
+def test_steering_delta_uses_the_disabled_same_program_control() -> None:
+    # Probe readings [layers, positions, probes]: the delta at the enabled layer, against the
+    # control's (the same program with its group inactive), not the plain capture's.
     torch_baseline = np.zeros((2, 1, 2), dtype=np.float32)
     torch_steered = torch_baseline.copy()
     torch_steered[1, 0] = [0.6, 0.8]
@@ -199,7 +200,7 @@ def test_rank_one_delta_uses_the_disabled_same_vm_control() -> None:
     ) < 1e-7
 
 
-def test_rank_one_program_ordering_detects_only_pre_enabled_changes() -> None:
+def test_program_ordering_detects_only_pre_enabled_changes() -> None:
     control = np.zeros((3, 1, 2), dtype=np.float32)
     steered = control.copy()
     steered[1:, 0, 0] = 1
@@ -219,16 +220,38 @@ def test_rank_one_program_ordering_detects_only_pre_enabled_changes() -> None:
     ) == 0.125
 
 
-def test_capture_metadata_requires_same_vm_rank_one_control(tmp_path: Path) -> None:
+def test_capture_metadata_requires_the_control_probes(tmp_path: Path) -> None:
     metadata = capture_metadata()
-    del metadata["rank_one_control_residual_sha256"]
+    del metadata["control_probe_sha256"]
     (tmp_path / "capture.json").write_text(json.dumps(metadata))
-    try:
+    with pytest.raises(ValueError, match="invalid schema"):
         _VALIDATOR.load_capture_metadata(tmp_path)
-    except ValueError as error:
-        assert "invalid schema" in str(error)
-    else:
-        raise AssertionError("schema-v3 capture accepted a missing rank-one control")
+
+
+def test_capture_metadata_refuses_a_steering_program_off_the_layer_map(tmp_path: Path) -> None:
+    for field, value in [
+        ("enabledLayer", 2),
+        ("format", "drowse-structured-v3"),
+        ("probeDirections", [[0.6, 0.8, 0.0]]),
+        ("probeDirections", []),
+    ]:
+        metadata = capture_metadata()
+        metadata["steering_program"][field] = value
+        (tmp_path / "capture.json").write_text(json.dumps(metadata))
+        with pytest.raises(ValueError, match="steering program is invalid"):
+            _VALIDATOR.load_capture_metadata(tmp_path)
+
+
+def test_probe_capture_is_digest_and_shape_checked(tmp_path: Path) -> None:
+    values = np.arange(1 * 2 * 2, dtype="<f4").reshape(1, 2, 2)
+    path = tmp_path / "steered-probes.f32"
+    values.tofile(path)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    np.testing.assert_array_equal(_VALIDATOR.load_probes(path, digest, 1, 2, 2), values)
+    with pytest.raises(ValueError, match="wrong size"):
+        _VALIDATOR.load_probes(path, digest, 1, 2, 3)
+    with pytest.raises(ValueError, match="digest does not match"):
+        _VALIDATOR.load_probes(path, "0" * 64, 1, 2, 2)
 
 
 def test_capture_is_bound_to_verified_model_files(tmp_path: Path):

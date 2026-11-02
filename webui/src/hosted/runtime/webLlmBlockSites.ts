@@ -42,6 +42,13 @@ interface BridgeResident {
   bytes: number;
 }
 
+interface BridgeReplayForwardReadback {
+  measurements: Float32Array;
+  unitTaps: Float32Array;
+  geometry: Float32Array | null;
+  hidden: Float32Array | null;
+}
+
 interface BridgeReplayCaptures {
   anatomyTaps: Float32Array | null;
   activityState: Float32Array | null;
@@ -193,7 +200,8 @@ export function webLlmBlockSitesBackend(
     if (!Number.isSafeInteger(tokenCount) || tokenCount < 1 || tokenCount > capabilities.contextTokens) {
       throw new RangeError("A replay's token count must fit the compiled context");
     }
-    await device.installProgram(replayProgram(capabilities, request.program));
+    const installed = replayProgram(capabilities, request.program);
+    await device.installProgram(installed);
     const activity = request.activity;
     await device.call({
       op: "openReplay",
@@ -214,13 +222,23 @@ export function webLlmBlockSitesBackend(
         const readback = await device.call({
           op: "replayForward",
           tokenIds: Array.from(segment.tokenIds),
-          affineActive: segment.controls.affineActive,
-          curveActive: segment.controls.curveActive,
+          // An unsteered replay's segments carry no controls: nothing of its program fires.
+          affineActive: segment.controls.affineActive.length === 0
+            ? new Uint32Array(installed.affineActive.length)
+            : segment.controls.affineActive,
+          curveActive: segment.controls.curveActive.length === 0
+            ? new Uint32Array(installed.curveActive.length)
+            : segment.controls.curveActive,
           unitActive: segment.controls.unitActive ?? new Float32Array(capabilities.profile.maxUnitGroups),
-        }) as { measurements: Float32Array; unitTaps: Float32Array };
+        }) as BridgeReplayForwardReadback;
+        const profile = capabilities.profile;
         return {
-          measurements: f32Tensor(readback.measurements, [L, capabilities.profile.maxProbes]),
-          unitTaps: f32Tensor(readback.unitTaps, [capabilities.profile.maxUnitTaps]),
+          measurements: f32Tensor(readback.measurements, [L, profile.maxProbes]),
+          unitTaps: f32Tensor(readback.unitTaps, [profile.maxUnitTaps]),
+          geometry: readback.geometry === null
+            ? null
+            : f32Tensor(readback.geometry, [L, profile.maxGeometryProbes, profile.geometryOutputStride]),
+          hidden: readback.hidden === null ? null : f32Tensor(readback.hidden, [L, capabilities.hiddenSize]),
         };
       },
       async finish(): Promise<BlockSitesReplayResult> {
@@ -311,8 +329,10 @@ export function replayProgram(
     capabilities.layerCount,
     capabilities.blockSpec!.headDim,
   );
+  const spec = capabilities.blockSpec!;
   return {
     ...base,
+    unitShape: Object.freeze({ dFF: spec.dFF, nHeads: spec.nHeads, headDim: spec.headDim }),
     unitMeta: new Uint32Array(layout.metaLength),
     unitCoeff: new Float32Array(layout.coeffLength),
     unitActive: new Float32Array(layout.activeLength),

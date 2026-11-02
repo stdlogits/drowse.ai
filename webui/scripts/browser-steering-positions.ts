@@ -1,4 +1,3 @@
-import { compileRankOneHookProgram } from "../src/hosted/runtime/rankOneHookProgram";
 import { compileStructuredHookProgram } from "../src/hosted/runtime/structuredHookProgram";
 import { resolveStructuredHookProfile } from "../src/hosted/runtime/structuredHookProfile";
 
@@ -17,12 +16,6 @@ export async function verifySteeringPositions(runtime: any, manifest: any, optio
     Array.from({ length: layers }, (_, i) => i === layer ? {
       affineGroups: [{ active: true, basis: [direction], neutral: zeros, target: [2], along: 1, kappa: [0] }],
     } : {}), resolveStructuredHookProfile(manifest.structuredHookProfile));
-  const rankOne = compileRankOneHookProgram(hidden,
-    Array.from({ length: layers }, (_, i) => ({
-      enabled: i === layer, basis: i === layer ? direction : zeros,
-      neutral: zeros, target: 2, along: 1, collapse: 0,
-      probeBasis: i === layer ? direction : zeros, probeNeutral: zeros,
-    })));
   const forced = (await runtime.tokenizeText(" clear skies and calm water beside the shore.")).slice(0, 7);
   const prompt = "The weather near the quiet lake was pleasant and the sky was";
   const run = async (program: any, positions?: any, reference?: Set<number>, referenceChunkSize = 1) => {
@@ -38,15 +31,10 @@ export async function verifySteeringPositions(runtime: any, manifest: any, optio
           let count = 1;
           while (count < referenceChunkSize && offset + count < tokens.length &&
             reference.has(position + count) === active) count++;
-          if (program.format) {
-            await pipeline.updateDrowseStructuredControls(
-              active ? program.affineActive : new Uint32Array(program.affineActive.length),
-              active ? program.curveActive : new Uint32Array(program.curveActive.length),
-            );
-          } else {
-            pipeline.drowseProgram.enabled.copyFrom(active
-              ? new Int32Array(program.enabled) : new Int32Array(program.enabled.length));
-          }
+          await pipeline.updateDrowseStructuredControls(
+            active ? program.affineActive : new Uint32Array(program.affineActive.length),
+            active ? program.curveActive : new Uint32Array(program.curveActive.length),
+          );
           logits?.dispose();
           logits = await originalForward([tokens.slice(offset, offset + count)], count, useProgram);
           trace.push({ position, length: count, active });
@@ -97,9 +85,8 @@ export async function verifySteeringPositions(runtime: any, manifest: any, optio
   pipeline.prefillChunkSize = Math.min(4, originalChunkSize);
   try {
     if (!options.arithmeticOnly) {
-    for (const [name, program] of [["rank-one", rankOne], ["structured", structured]] as [string, any][]) {
-      const control = program.format ? { ...program, affineActive: new Uint32Array(program.affineActive.length), curveActive: new Uint32Array(program.curveActive.length) }
-        : { ...program, enabled: new Uint32Array(program.enabled.length) };
+    for (const [name, program] of [["structured", structured]] as [string, any][]) {
+      const control = { ...program, affineActive: new Uint32Array(program.affineActive.length), curveActive: new Uint32Array(program.curveActive.length) };
       const baseline = await run(control);
       const all = await run(program);
       const p = baseline.promptTokens;
@@ -174,127 +161,59 @@ export async function verifySteeringPositions(runtime: any, manifest: any, optio
         await run(probeProgram, undefined, expectedPositions), 0));
     }
     }
+    // Injection arithmetic on the compiled hook: a probe on the push direction at every layer
+    // reads the residual after the hook, per position (a fresh prefill through each position).
     const captureTokens = await runtime.tokenizeText(prompt);
     const capturePositions = captureTokens.map((_: number, index: number) => index);
-    const captureSpans: [number, number][] = [[1, 3], [5, 8]];
-    const captureIndices = new Set([1, 2, 5, 6, 7]);
-    const originalCapture = pipeline.captureDrowseRankOneTokenChunkV1.bind(pipeline);
-    pipeline.prefillChunkSize = 1;
-    pipeline.captureDrowseRankOneTokenChunkV1 = async (tokens: number[], positions: number[]) => {
-      pipeline.drowseProgram.enabled.copyFrom(captureIndices.has(pipeline.filledKVCacheLength)
-        ? new Int32Array(rankOne.enabled) : new Int32Array(rankOne.enabled.length));
-      return originalCapture(tokens, positions);
-    };
-    let expectedCapture: any;
-    try {
-      expectedCapture = await engine.captureDrowseRankOneResidualsV1(captureTokens, capturePositions, rankOne);
-    } finally {
-      pipeline.captureDrowseRankOneTokenChunkV1 = originalCapture;
-    }
-    const actualCapture = await engine.captureDrowseRankOneResidualsV1(captureTokens, capturePositions,
-      { ...rankOne, position_spans: captureSpans });
-    if (actualCapture.values.length !== expectedCapture.values.length) throw new Error("Capture size mismatch");
-    let maxAbsResidualError = 0;
-    for (let i = 0; i < actualCapture.values.length; i++) {
-      const error = Math.abs(actualCapture.values[i] - expectedCapture.values[i]);
-      if (!Number.isFinite(error)) throw new Error(`Capture non-finite residual at ${i}`);
-      maxAbsResidualError = Math.max(maxAbsResidualError, error);
-    }
-    if (maxAbsResidualError !== 0) throw new Error(`Position capture mismatch: ${maxAbsResidualError}`);
-    checks.push({ label: "rank-one capture vs independent per-token reference", maxAbsResidualError,
-      positions: capturePositions.length, layers, values: actualCapture.values.length });
-    const baselineCapture = await engine.captureDrowseRankOneResidualsV1(captureTokens, capturePositions,
-      { ...rankOne, position_spans: [] });
+    const row = { inputIds: captureTokens, position: captureTokens.length - 1 };
     const isFp16 = manifest.quantization.includes("f16");
-    const roundResidual = isFp16 ? (Math as any).f16round : Math.fround;
-    if (typeof roundResidual !== "function") throw new Error("The FP16 arithmetic oracle requires Math.f16round");
-    const halfView = new DataView(new ArrayBuffer(2)) as any;
-    const halfNeighbor = (value: number, up: boolean) => {
-      if (value === 0) return up ? 2 ** -24 : -(2 ** -24);
-      halfView.setFloat16(0, value, true);
-      halfView.setUint16(0, halfView.getUint16(0, true) + ((value > 0) === up ? 1 : -1), true);
-      return halfView.getFloat16(0, true) as number;
-    };
-    const halfBound = (value: number, upper: boolean) => {
-      const nearest = roundResidual(value);
-      return upper ? nearest < value ? halfNeighbor(nearest, true) : nearest
-        : nearest > value ? halfNeighbor(nearest, false) : nearest;
+    const probeOn = (target: number) => compileStructuredHookProgram(hidden,
+      Array.from({ length: layers }, (_, i) => ({
+        probes: [{ kind: "linear" as const, direction, bias: 0 }],
+        ...(i === layer
+          ? { affineGroups: [{ active: true, basis: [direction], neutral: zeros, target: [target], along: 1, kappa: [0] }] }
+          : {}),
+      })), resolveStructuredHookProfile(manifest.structuredHookProfile));
+    const unsteered = probeOn(2);
+    const baseline = await runtime.measurePreparedPositions(row, capturePositions,
+      { ...unsteered, affineActive: new Uint32Array(unsteered.affineActive.length) });
+    const maxProbes = unsteered.profile.maxProbes;
+    const reading = (values: Float32Array, p: number, l: number) => values[(p * layers + l) * maxProbes];
+    // The residual's norm at the hook layer bounds the probe's rounding: the hook adds in fp32,
+    // an fp16 library stores the sum in fp16 (2^-11 relative per component) before the probe
+    // reads it, so the dot product on a unit direction moves by at most 2^-11·‖h + Δ‖.
+    const plain = await runtime.capturePreparedPositions(row, capturePositions);
+    const hookNorm = (p: number) => {
+      let sum = 0;
+      for (let d = 0; d < hidden; d++) sum += plain.values[(layer * capturePositions.length + p) * hidden + d] ** 2;
+      return Math.sqrt(sum);
     };
     for (const sign of [1, -1]) {
-      const signedProgram = { ...rankOne, target: Float32Array.from(rankOne.target, value => sign * value),
-        position_spans: captureSpans };
-      const captured = sign === 1 ? actualCapture
-        : await engine.captureDrowseRankOneResidualsV1(captureTokens, capturePositions, signedProgram);
-      let maxArithmeticError = 0;
-      let maxArithmeticLocation: unknown;
-      let offTargetMismatches = 0;
-      let mismatchCount = 0;
-      let outsideRoundingBounds = 0;
-      let firstOutsideRoundingBounds: unknown;
-      let outsideQuantizationBounds = 0;
-      for (let l = 0; l <= layer; l++) for (let p = 0; p < capturePositions.length; p++) {
-        for (let d = 0; d < hidden; d++) {
-          const index = (l * capturePositions.length + p) * hidden + d;
-          const delta = l === layer && captureIndices.has(p) ? sign * 2 * rankOne.basis[layer * hidden + d] : 0;
-          const expected = roundResidual(Math.fround(baselineCapture.values[index] + delta));
-          if (isFp16 && (roundResidual(baselineCapture.values[index]) !== baselineCapture.values[index] ||
-            roundResidual(captured.values[index]) !== captured.values[index])) {
-            throw new Error("The quantized capture does not lie on the expected FP16 grid");
-          }
-          const error = Math.abs(captured.values[index] - expected);
-          if (!Number.isFinite(error)) throw new Error(`Non-finite arithmetic check at ${l}/${p}/${d}`);
-          if (error !== 0) {
-            mismatchCount++;
-            if (delta === 0) offTargetMismatches++;
-            const exact = Math.fround(baselineCapture.values[index] + delta);
-            const neighbor = isFp16 && exact !== expected ? halfNeighbor(expected, expected < exact) : expected;
-            if (captured.values[index] !== neighbor) {
-              outsideRoundingBounds++;
-              firstOutsideRoundingBounds ??= { layer: l, position: p, dimension: d,
-                baseline: baselineCapture.values[index], delta, expected, neighbor, actual: captured.values[index] };
-            }
-            // The compiled hook adds to an FP32 intermediate, then stores FP16.
-            // Its zero-injection capture is already rounded: do not equate
-            // half(h + delta) with half(half(h) + delta). Bound both conversions
-            // using adjacent representable values, as required by WGSL 15.7.
-            const lower = isFp16 && delta !== 0
-              ? halfBound(halfNeighbor(baselineCapture.values[index], false) + delta, false) : expected;
-            const upper = isFp16 && delta !== 0
-              ? halfBound(halfNeighbor(baselineCapture.values[index], true) + delta, true) : expected;
-            if (captured.values[index] < lower || captured.values[index] > upper) outsideQuantizationBounds++;
-          }
-          if (error > maxArithmeticError) maxArithmeticLocation = { layer: l, position: p, dimension: d,
-            baseline: baselineCapture.values[index], delta, unrounded: baselineCapture.values[index] + delta,
-            expected, actual: captured.values[index] };
-          maxArithmeticError = Math.max(maxArithmeticError, error);
+      const steered = await runtime.measurePreparedPositions(row, capturePositions, probeOn(2 * sign));
+      let preHook = 0;
+      let injection = 0;
+      let worstRatio = 0;
+      for (let p = 0; p < capturePositions.length; p++) {
+        for (let l = 0; l < layer; l++) {
+          preHook = Math.max(preHook, Math.abs(reading(steered.values, p, l) - reading(baseline.values, p, l)));
         }
+        const error = Math.abs(reading(steered.values, p, layer) - (reading(baseline.values, p, layer) + 2 * sign));
+        const bound = (isFp16 ? 2 ** -11 : 2 ** -20) * 2 * (hookNorm(p) + 2) + 1e-6;
+        injection = Math.max(injection, error);
+        worstRatio = Math.max(worstRatio, error / bound);
       }
-      if (offTargetMismatches !== 0 || outsideQuantizationBounds !== 0) throw new Error(`Position injection arithmetic mismatch: ${JSON.stringify({
-        sign, maxArithmeticError, maxArithmeticLocation, mismatchCount, offTargetMismatches,
-        outsideRoundingBounds, firstOutsideRoundingBounds, outsideQuantizationBounds,
-      })}`);
-      checks.push({ label: `rank-one ${sign > 0 ? "positive" : "negative"} injection ${isFp16 ? "within input/output quantization bounds" : "vs direct FP32 arithmetic"}`,
-        maxRoundedCaptureDifference: maxArithmeticError, roundedCaptureMismatches: mismatchCount,
-        offTargetMismatches, outsideQuantizationBounds,
+      if (preHook !== 0 || !(worstRatio <= 1)) {
+        throw new Error(`Injection arithmetic mismatch: ${JSON.stringify({ sign, preHook, injection, worstRatio })}`);
+      }
+      checks.push({ label: `structured ${sign > 0 ? "positive" : "negative"} injection on the probed direction`,
+        maxPreHookDifference: preHook, maxInjectionError: injection, worstErrorToBound: worstRatio,
         checkedLayers: layer + 1, positions: capturePositions.length,
-        residualPrecision: isFp16 ? "fp32 intermediate, fp16 capture" : "fp32" });
+        residualPrecision: isFp16 ? "fp32 intermediate, fp16 residual" : "fp32" });
     }
-    const sparsePositions = [0, 3, 8, capturePositions.length - 1];
-    const sparseCapture = await engine.captureDrowseRankOneResidualsV1(captureTokens, sparsePositions,
-      { ...rankOne, position_spans: captureSpans });
-    for (let l = 0; l < layers; l++) for (let p = 0; p < sparsePositions.length; p++) {
-      for (let d = 0; d < hidden; d++) {
-        const sparse = sparseCapture.values[(l * sparsePositions.length + p) * hidden + d];
-        const full = actualCapture.values[(l * capturePositions.length + sparsePositions[p]) * hidden + d];
-        if (sparse !== full) throw new Error(`Sparse capture changed residual at ${l}/${sparsePositions[p]}/${d}`);
-      }
-    }
-    checks.push({ label: "sparse captures preserve steering on uncaptured tokens", maxAbsResidualError: 0,
-      positions: sparsePositions, layers });
   } finally {
     pipeline.prefillChunkSize = originalChunkSize;
     pipeline.embedAndForward = originalForward;
-    await engine.clearDrowseRankOneProgram();
+    await engine.clearDrowseProgram();
   }
   return { passed: true, model: manifest.source, quantization: manifest.quantization, checks, batchingDiagnostics };
 }

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
+import { fixtureBlockSites } from "./catalog-fixture.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const server = await createServer({
@@ -74,7 +75,7 @@ function catalogDocument(overrides = {}) {
           {
             id: "smollm2-360m-q4f16",
             tier: "fastest",
-            structuredHookProfile: "standard-v1",
+            structuredHookProfile: "standard-v4",
             thinkingProfile: null,
             contextProfiles: [
               {
@@ -92,10 +93,12 @@ function catalogDocument(overrides = {}) {
             requirements: {
               features: ["shader-f16"],
               limits: {
-              maxBufferSize: 245_760,
-              maxStorageBufferBindingSize: 245_760,
+              maxBufferSize: 737_280,
+              maxStorageBufferBindingSize: 737_280,
               maxStorageBuffersPerShaderStage: 10,
               maxComputeWorkgroupStorageSize: 32_768,
+              maxComputeWorkgroupSizeX: 256,
+              maxComputeInvocationsPerWorkgroup: 256,
               },
             },
             runtimeIdentity,
@@ -219,6 +222,7 @@ function runtimeLockModelsFor(document) {
       convertedRepository: path.slice(0, resolveIndex).join("/"),
       convertedRevision: variant.files[0].revision,
       contextProfiles: variant.contextProfiles.map((profile) => profile.contextTokens),
+      ...fixtureBlockSites(variant.structuredHookProfile),
     };
   }));
 }
@@ -252,6 +256,8 @@ function capabilities(overrides = {}) {
         maxStorageBufferBindingSize: 1_048_576,
         maxStorageBuffersPerShaderStage: 10,
         maxComputeWorkgroupStorageSize: 65_536,
+        maxComputeWorkgroupSizeX: 256,
+        maxComputeInvocationsPerWorkgroup: 256,
       },
       adapterInfo: { vendor: "fixture" },
     },
@@ -2914,6 +2920,26 @@ try {
     );
     assert.equal(verifiedAlternateOwner.document.models[0].variants[0].files[0].url.includes("/stdlogits/"), true);
 
+    // A v5 variant's lock entry records what its library attests: a standard-v4 one its block
+    // spec (the load request's), a residual one its unit refusal; without it the catalog fails.
+    const lockedVariant = verified.document.models[0].variants[0];
+    assert.equal(lockedVariant.structuredHookProfile, "standard-v4");
+    assert.deepEqual(
+      catalog.lockedBlockSites(policy.runtimeLockModels, lockedVariant),
+      fixtureBlockSites("standard-v4"),
+    );
+    assert.deepEqual(
+      catalog.lockedBlockSites([], lockedVariant),
+      { blockSpec: null, unitRefusal: null },
+    );
+    await rejectsCode(
+      () => catalog.verifyCatalog(signed.exactBytes, signed.signature, verifier, {
+        ...policy,
+        runtimeLockModels: policy.runtimeLockModels.map((model) => ({ ...model, blockSpec: null })),
+      }),
+      "CATALOG_RUNTIME_IDENTITY_UNLOCKED",
+    );
+
     const tampered = signed.exactBytes.slice();
     tampered[tampered.length - 1] ^= 1;
     await rejectsCode(
@@ -3027,6 +3053,20 @@ try {
       "CATALOG_SCHEMA_INVALID",
     );
 
+    // A pre-v5 profile names a library this runtime cannot load.
+    const preBlockSitesProfile = catalogDocument();
+    preBlockSitesProfile.models[0].variants[0].structuredHookProfile = "standard-v3";
+    const signedPreBlockSitesProfile = await signedCatalog(preBlockSitesProfile, signed.pair);
+    await rejectsCode(
+      () => catalog.verifyCatalog(
+        signedPreBlockSitesProfile.exactBytes,
+        signedPreBlockSitesProfile.signature,
+        verifier,
+        policy,
+      ),
+      "CATALOG_SCHEMA_INVALID",
+    );
+
     const unknownStructuredProfile = catalogDocument();
     unknownStructuredProfile.models[0].variants[0].structuredHookProfile = "adapter-derived";
     const signedUnknownStructuredProfile = await signedCatalog(
@@ -3045,7 +3085,7 @@ try {
 
     const exactReadout = catalogDocument();
     const exactReadoutVariant = exactReadout.models[0].variants[0];
-    exactReadoutVariant.structuredHookProfile = "standard-v3";
+    exactReadoutVariant.structuredHookProfile = "standard-v4-residual";
     Object.assign(exactReadoutVariant.requirements.limits, {
       maxBufferSize: 134_217_728,
       maxStorageBufferBindingSize: 134_217_728,

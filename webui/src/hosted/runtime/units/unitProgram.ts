@@ -92,9 +92,11 @@ export function unitTap(source: BrowserUnitProgramSource, name: string, ref: Uni
 /** One forward's tap value over its scale (native `UnitTap.values_at`): a neuron's `act` over its
  *  pole's scale picked by sign, a head's write norm over its own. */
 export function tapValue(tap: StructuredUnitTap, raw: number): number {
+  // fp32 throughout, as native divides the tap by its scale on the device: a gate at a boundary
+  // opens as native's does.
   const scale = tap.scale.value;
-  if (Array.isArray(scale)) return raw / (raw >= 0 ? scale[0] : scale[1]);
-  return raw / (scale as number);
+  const by = Array.isArray(scale) ? (raw >= 0 ? scale[0] : scale[1]) : scale as number;
+  return Math.fround(Math.fround(raw) / Math.fround(by));
 }
 
 /** Every tap's exact gate scalar for one forward, keyed by the tap's name (an attached probe's,

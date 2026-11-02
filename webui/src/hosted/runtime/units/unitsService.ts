@@ -3,11 +3,13 @@
 // routes do it, the host ports over the loaded library's block-sites backend, B6's packs, and
 // the loom's node replays. A library without unit sites answers native's 422 refusal.
 import type { SerializedMahalanobisWhitener } from "../../fitting/workerContracts";
+import type { ScalarReadingJSON } from "../../../../../drowse/webui/src/lib/types";
 import {
   f32Tensor,
   u32Tensor,
   UnsupportedBlockError,
   type BlockSitesLensLayer,
+  type BlockSitesResident,
   type BrowserBlockSitesBackend,
   type LensSite,
 } from "../modelBackend";
@@ -21,8 +23,8 @@ import { readingScales, type UnitScales, type UnitStatistics } from "./scales";
 import { parseLayerSelector, parseSteeringExpression, resolveModelLayers, type LayerSelector } from "../steeringExpression";
 import { slensAtomDirections } from "./slens";
 import { centreDigest } from "./probeDigest";
-import { lensProbeReadings, UNIT_MEAN_FOOTPRINT_Z, type LensProbe } from "./replayProbes";
-import type { BrowserUnitProgramSource } from "./unitProgram";
+import { lensProbeReadings, slensReadings, UNIT_MEAN_FOOTPRINT_Z, type LensProbe } from "./replayProbes";
+import { unitGateScores, type BrowserUnitProgramSource } from "./unitProgram";
 import { layerRequest, NO_CATALOG, parseUnit, unitCatalogStatus, UnitReader, UnitRequestError, type UnitLayerArtifacts } from "./unitReader";
 
 export const UNITS_SERVICE_METHODS = Object.freeze([
@@ -75,8 +77,10 @@ export interface UnitsPackSource {
      *  (int64 LE) and `|{min_count}`, or `"tokenizer"` without counts. */
     maskDigest: string;
   }>;
-  layerArtifacts(layer: number): Promise<UnitLayerArtifacts>;
-  nullProjector(): Promise<Float32Array>;
+  /** One layer's `reads` or `contrast` artifacts (the contrast only `hide_hubs` reads). */
+  layerArtifacts(layer: number, part: "reads" | "contrast"): Promise<UnitLayerArtifacts>;
+  /** `‖Nᵀ w‖²` over the null basis. */
+  nullProjection(w: Float32Array): Promise<number>;
   headKeptIds(): Promise<Int32Array>;
   whitener(layer: number): Promise<SerializedMahalanobisWhitener | null>;
 }
@@ -103,13 +107,16 @@ export interface BrowserUnitsServiceOptions {
   readonly modelId: string;
   readonly blockSites: () => BrowserBlockSitesBackend;
   readonly packs: () => UnitsPackSource | null;
-  readonly decode: (tokenId: number) => string;
+  /** Each id's own text (native `tokenizer.decode([id])`). */
+  readonly tokenTexts: (tokenIds: readonly number[]) => Promise<string[]>;
   /** `slens/`-family token resolution (`resolve_token(word, family="S")`). */
-  readonly resolveToken: (word: string) => number;
+  readonly resolveToken: (word: string) => Promise<number>;
   /** A steerable selector to its per-layer directions (`find`'s selector). */
   readonly resolveSelector?: (selector: string) => Promise<ReadonlyMap<number, Float32Array>>;
   readonly replay: () => UnitsNodeReplayPort | null;
-  readonly gateScores?: ReplayGateScores;
+  /** A replayed forward's geometry gate scores from its `[L, maxGeometryProbes, stride]`
+   *  readout, as generation's measurement envelope scores them. */
+  readonly geometryGateScores?: (program: StructuredHookProgramBuffers, geometry: Float32Array) => Readonly<Record<string, number>>;
 }
 
 function badRequest(message: string): UnitRequestError {
@@ -147,8 +154,15 @@ export function routeLayerSelector(value: unknown): LayerSelector {
   return layerRequest(() => parseLayerSelector(value, true));
 }
 
-/** Resident lens matrices over a pack lens (each uploaded once, on first read). */
-export function residentLens(backend: BrowserBlockSitesBackend, family: LensFamilyName, lens: UnitsPackLens, d: number): UnitsLens {
+/** Resident lens matrices over a pack lens (each uploaded once, on first read); `track` sees
+ *  every upload, so the owner can release them. */
+export function residentLens(
+  backend: BrowserBlockSitesBackend,
+  family: LensFamilyName,
+  lens: UnitsPackLens,
+  d: number,
+  track: (upload: Promise<BlockSitesResident>) => void = () => undefined,
+): UnitsLens {
   const resident = new Map<string, Promise<BlockSitesLensLayer>>();
   return {
     family,
@@ -161,6 +175,7 @@ export function residentLens(backend: BrowserBlockSitesBackend, family: LensFami
         found = lens.fetch(site, layer).then((matrix) =>
           backend.uploadLensLayer(family === "R" ? "r" : "s", site, layer, f32Tensor(matrix, [d, d])));
         resident.set(key, found);
+        track(found);
         found.catch(() => resident.delete(key));
       }
       return found;
@@ -178,13 +193,23 @@ export class BrowserUnitsService {
     spec: BlockSpec;
     scales: UnitScales | null;
     sources: Record<LensFamilyName, string | null>;
+    /** Every resident this session uploaded (lens matrices, embedding statistics). */
+    residents: Set<Promise<BlockSitesResident>>;
   } | null = null;
 
   constructor(private readonly options: BrowserUnitsServiceOptions) {}
 
-  /** Drop every resident and cached read (a model or pack change). */
-  reset(): void {
+  /** Drop every cached read and release the session's residents (a model or pack change). */
+  async reset(): Promise<void> {
+    const session = this.session;
     this.session = null;
+    if (session === null) return;
+    const settled = await Promise.allSettled(session.residents);
+    for (const result of settled) {
+      if (result.status !== "fulfilled") continue;
+      // A release that fails (the model went with its residents) has nothing left to free.
+      await session.backend.release(result.value).catch(() => undefined);
+    }
   }
 
   /** Native's 422 for a library without unit sites, or the unavailable surface. */
@@ -214,9 +239,13 @@ export class BrowserUnitsService {
     const { statistics, absent } = await packs.statistics();
     const scales = statistics === null ? null : readingScales(statistics, spec, capabilities.layerCount);
     const means = await packs.means();
+    const residents = new Set<Promise<BlockSitesResident>>();
+    const track = (upload: Promise<BlockSitesResident>) => {
+      residents.add(upload);
+    };
     const lensOf = (family: LensFamilyName) => {
       const lens = packs.lens(family);
-      return lens === null ? null : residentLens(backend, family, lens, d);
+      return lens === null ? null : residentLens(backend, family, lens, d, track);
     };
     let embeddings: Promise<UnitsEmbeddings> | null = null;
     const context: UnitsReadContext = {
@@ -230,7 +259,7 @@ export class BrowserUnitsService {
       s: lensOf("S"),
       noLens: { R: noLensText("R", this.options.modelId), S: noLensText("S", this.options.modelId) },
       means,
-      decode: this.options.decode,
+      tokenTexts: this.options.tokenTexts,
       embeddings() {
         embeddings ??= (async () => {
           const value = await packs.embeddingStatistics();
@@ -242,8 +271,10 @@ export class BrowserUnitsService {
           const keep = new Uint8Array(capabilities.vocabSize);
           for (let v = 0; v < keep.length; v += 1) keep[v] = (value.mask[v >>> 5] >>> (v & 31)) & 1;
           const kept = Int32Array.from([...keep.keys()].filter((v) => keep[v]));
+          const upload = backend.uploadEmbeddingStatistics(statistics);
+          track(upload);
           return {
-            resident: await backend.uploadEmbeddingStatistics(statistics),
+            resident: await upload,
             statistics,
             kept,
             keep,
@@ -263,8 +294,8 @@ export class BrowserUnitsService {
         statistics,
         statisticsAbsent: absent,
         scales,
-        layer: (layer) => packs.layerArtifacts(layer),
-        nullProjector: () => packs.nullProjector(),
+        layer: (layer, part) => packs.layerArtifacts(layer, part),
+        nullProjection: (w) => packs.nullProjection(w),
         headKeptIds: () => packs.headKeptIds(),
         whitener: (layer) => packs.whitener(layer),
       },
@@ -279,8 +310,33 @@ export class BrowserUnitsService {
       spec,
       scales,
       sources: { R: packs.lens("R")?.source ?? null, S: packs.lens("S")?.source ?? null },
+      residents,
     };
     return this.session;
+  }
+
+  /** A replayed forward's name-scored gates, as generation scores them after a forward: unit
+   *  taps, the geometry readout and the `slens/` reads over the `[L, d]` capture. */
+  private readonly replayGateScores: ReplayGateScores = async (program, readback) => {
+    const scores: Record<string, number> = { ...unitGateScores(program, readback) };
+    if (readback.geometry !== null && this.options.geometryGateScores) {
+      Object.assign(scores, this.options.geometryGateScores(program, readback.geometry.data));
+    }
+    const slens = program.measurementSchema?.slensProbes ?? [];
+    if (slens.length > 0 && readback.hidden !== null) {
+      Object.assign(scores, (await this.slensReads(readback.hidden.data, slens)).values);
+    }
+    return scores;
+  };
+
+  /** A generation forward's `slens/` reads over its `[L, d]` capture (native
+   *  `_InputBlock.readings`) and the S source label the lens binding names. */
+  async slensReads(
+    hidden: Float32Array,
+    probes: readonly { readonly name: string; readonly tokenId: number }[],
+  ): Promise<{ readings: Record<string, ScalarReadingJSON>; values: Record<string, number>; source: string | null }> {
+    const session = await this.open();
+    return { ...await slensReadings(session.context, hidden, probes), source: session.sources.S };
   }
 
   /** The structured compiler's unit source (`BrowserFeasibilityCorePackCompiler.setUnitSource`)
@@ -312,7 +368,7 @@ export class BrowserUnitsService {
     const d = session.context.hiddenSize;
     const prepareSlens = async (word: string) => {
       if (!atoms.has(word)) {
-        const tokenId = this.options.resolveToken(word);
+        const tokenId = await this.options.resolveToken(word);
         atoms.set(word, { tokenId, directions: await slensAtomDirections(session.context, word, tokenId) });
       }
       if (identity === null) {
@@ -350,8 +406,6 @@ export class BrowserUnitsService {
             }
             if (atom.namespace === "slens") await prepareSlens(atom.concept);
           }
-          const gate = term.trigger?.gate?.probe;
-          if (gate?.startsWith("slens/")) await prepareSlens(gate.slice("slens/".length));
         }
       },
       prepareProbe: async (selector) => {
@@ -465,7 +519,7 @@ export class BrowserUnitsService {
     const { anatomy, out } = await tokenAnatomy(session.context, { spec: session.spec, scales: session.scales, backend: session.backend }, node.forward, node.program, knobs, {
       sources: session.sources,
       steering: node.steering,
-    }, { canThink: node.canThink, ...(this.options.gateScores ? { gateScores: this.options.gateScores } : {}) });
+    }, { canThink: node.canThink, gateScores: this.replayGateScores });
     // The attached lens probes read the residual each block wrote, after the steering, as the
     // live capture does (native `build_measurements(lens_readings=...)`).
     const readings = await lensProbeReadings(session.context, out, lensProbes);
@@ -517,7 +571,7 @@ export class BrowserUnitsService {
     }
     const result = await unitActivity(session.backend, { nLayers: session.context.nLayers, spec: session.spec }, session.scales, node.forward, node.program, {
       top, units, rawIndex, layers,
-    }, this.options.decode, { canThink: node.canThink, ...(this.options.gateScores ? { gateScores: this.options.gateScores } : {}) });
+    }, this.options.tokenTexts, { canThink: node.canThink, gateScores: this.replayGateScores });
     return { ...result, node_id: nodeId, steering: node.steering };
   }
 }

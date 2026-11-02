@@ -15,8 +15,6 @@ import type {
 import { rankCatalogModels } from "../../lib/runtime/recommendation";
 import { initialRuntimeSnapshot } from "../../lib/runtime/state";
 import { DeterministicFakeRuntime } from "./fakeRuntime";
-import { offeredRuntimeClient } from "./operationPolicy";
-import { UNITS_SERVICE_METHODS } from "./units/unitsService";
 import type { HostedRuntimeBundle } from "./hostedController";
 
 const SHA = "a".repeat(64);
@@ -48,7 +46,7 @@ const fixtureModel: CatalogModel = {
   variants: [{
     id: VARIANT_ID,
     tier: "fastest",
-    structuredHookProfile: "standard-v1",
+    structuredHookProfile: "standard-v4",
     thinkingProfile: null,
     contextProfiles: [{
       contextTokens: 2048,
@@ -64,10 +62,12 @@ const fixtureModel: CatalogModel = {
     requirements: {
       features: [],
       limits: {
-        maxBufferSize: 21_472,
-        maxStorageBufferBindingSize: 21_472,
+        maxBufferSize: 135_872,
+        maxStorageBufferBindingSize: 135_872,
         maxStorageBuffersPerShaderStage: 10,
         maxComputeWorkgroupStorageSize: 32_768,
+        maxComputeWorkgroupSizeX: 256,
+        maxComputeInvocationsPerWorkgroup: 256,
       },
     },
     runtimeIdentity,
@@ -127,10 +127,12 @@ const capabilities: RuntimeCapabilities = {
     fallback: "hardware",
     features: [],
     limits: {
-      maxBufferSize: 21_472,
-      maxStorageBufferBindingSize: 21_472,
+      maxBufferSize: 135_872,
+      maxStorageBufferBindingSize: 135_872,
       maxStorageBuffersPerShaderStage: 10,
       maxComputeWorkgroupStorageSize: 32_768,
+      maxComputeWorkgroupSizeX: 256,
+      maxComputeInvocationsPerWorkgroup: 256,
     },
     adapterInfo: { vendor: "deterministic fixture" },
   },
@@ -362,10 +364,6 @@ class FixtureHostedController implements HostedController {
   }
 }
 
-const FIXTURE_UNITS_MEMBERS: ReadonlySet<string> = new Set(
-  UNITS_SERVICE_METHODS.map((method) => `instruments.${method}`),
-);
-
 export function createFixtureHostedRuntime(withInstruments = false, baseModel = false): HostedRuntimeBundle {
   const controller = new FixtureHostedController(withInstruments);
   const runtime = new DeterministicFakeRuntime({
@@ -381,8 +379,8 @@ export function createFixtureHostedRuntime(withInstruments = false, baseModel = 
   return {
     controller,
     // The fake runtime serves the units members through the real host ports on the tiny
-    // fixture model (units/fixtureUnits.ts), ahead of the worker's routes.
-    runtime: offeredRuntimeClient(runtime, FIXTURE_UNITS_MEMBERS),
+    // fixture model (units/fixtureUnits.ts).
+    runtime,
     async dispose() {
       if (disposed) return;
       disposed = true;

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { ARCHES, archGolden, compareRecord, decode, viteServer } from "./support/units-goldens.mjs";
-import { unitsFixture } from "./support/units-fixture.mjs";
+import { projectorEnergy, unitsFixture } from "./support/units-fixture.mjs";
 
 const whiteners = JSON.parse(readFileSync(fileURLToPath(new URL("../../browser-runtime/fixtures/units-tiny-whitener-v1.json", import.meta.url)), "utf8"));
 const only = process.env.UNIT_READS_ONLY ?? null;
@@ -40,7 +40,7 @@ try {
         statisticsAbsent: null,
         scales: scalesModule.readingScales(statistics, fx.model.spec, 4),
         layer: async (layer) => tables.get(layer),
-        nullProjector: async () => Float32Array.from(decode(artifacts.null.projector)),
+        nullProjection: projectorEnergy(Float32Array.from(decode(artifacts.null.projector)), 64),
         headKeptIds: async () => Int32Array.from(artifacts.head_kept_ids),
         whitener: async (layer) => {
           const entry = whiteners.arches[arch].find((row) => row.layer === layer);
@@ -51,7 +51,7 @@ try {
           } : null;
         },
       },
-      resolveToken: (word) => (word.startsWith("#") ? Number(word.slice(1)) : fx.tokenizer.encode(word)[0]),
+      resolveToken: async (word) => (word.startsWith("#") ? Number(word.slice(1)) : fx.tokenizer.encode(word)[0]),
       resolveSelector: async (selector) => {
         // jlens/#<id>: native `token_direction`, `W_U[v] @ J_L` per R:out layer (raw W_U).
         const id = Number(selector.slice("jlens/#".length));

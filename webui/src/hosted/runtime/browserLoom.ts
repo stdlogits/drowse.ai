@@ -26,7 +26,6 @@ import type {
   WSSubmitRequest,
   WSTreeMutatedEvent,
 } from "../../../../drowse/webui/src/lib/types";
-import type { RankOneHookProgramBuffers } from "./rankOneHookProgram";
 import type { StructuredHookProgramBuffers } from "./structuredHookProgram";
 import type {
   BrowserInstrumentRuntime,
@@ -79,13 +78,6 @@ function holdsTokens(node: LoomNodeJSON): boolean {
     node.text !== "" || (node.thinking_text ?? "") !== "";
 }
 
-type BrowserHookProgram = RankOneHookProgramBuffers | StructuredHookProgramBuffers;
-
-/** A drowse-structured-v4 program: the only kind a block-sites replay runs. */
-function isStructuredHookProgram(program: BrowserHookProgram): program is StructuredHookProgramBuffers {
-  return (program as StructuredHookProgramBuffers).format === "drowse-structured-v4";
-}
-
 interface GenerationReservation {
   anchorId: string;
   rootId: string | null;
@@ -123,7 +115,7 @@ export interface BrowserLoomOptions {
   compileSteering?: (
     expression: string,
     probeRequests?: readonly ProbeRequest[],
-  ) => Promise<BrowserHookProgram> | BrowserHookProgram;
+  ) => Promise<StructuredHookProgramBuffers> | StructuredHookProgramBuffers;
   steeringDelta?: (parent: string | null, child: string | null) => string;
   /** The installed manifolds bare atoms resolve against (the compiler's), for the `inverted`
    *  regen; without them nothing resolves, as with an empty registry. */
@@ -513,8 +505,9 @@ export class BrowserLoomRuntime {
         };
       }
       validateWebLlmGenerationSettings(siblingSampling, effectiveThinking);
+      // The node keeps the canonical steering its envelopes bind (native's recipe steering).
       const nodeRecipe = recipe(
-        effectiveSteering,
+        boundSteering(hookProgram, effectiveSteering) ?? null,
         siblingSampling,
         effectiveThinking,
         this.session.probes,
@@ -624,9 +617,10 @@ export class BrowserLoomRuntime {
           thinking: effectiveThinking,
           generationSeat: rawCompletion ? null : role,
           generationRoleName: rawCompletion ? null : generationHeaderRoleLabel,
-          steeringExpression: effectiveSteering,
+          steeringExpression: boundSteering(hookProgram, effectiveSteering),
           position_spans: settings.positionSpans,
           hookProgram,
+          liveInstruments: this.instruments?.liveInstruments() ?? null,
           maxOutputTokens: this.maxOutputTokens,
           ...(fork === null ? {} : { measurementStartRawIndex: prefix!.length }),
           ...(fork !== null
@@ -1320,9 +1314,10 @@ export class BrowserLoomRuntime {
         thinking: settings.thinking,
         generationSeat: this.session.is_base_model || request.options.raw ? null : node.role as ChatRole,
         generationRoleName: this.session.is_base_model || request.options.raw ? null : node.role_label,
-        steeringExpression: settings.steering,
+        steeringExpression: boundSteering(hookProgram, settings.steering),
         position_spans: settings.positionSpans,
         hookProgram,
+        liveInstruments: this.instruments?.liveInstruments() ?? null,
         maxOutputTokens: this.maxOutputTokens,
         replay: { forcedPrefixTokenIds: forcedPrefix },
         measurementTargetRawIndex: request.rawIndex,
@@ -1493,9 +1488,10 @@ export class BrowserLoomRuntime {
       thinking: settings.thinking,
       generationSeat: this.session.is_base_model ? null : node.role as ChatRole,
       generationRoleName: this.session.is_base_model ? null : node.role_label,
-      steeringExpression: settings.steering,
+      steeringExpression: boundSteering(hookProgram, settings.steering),
       position_spans: settings.positionSpans,
       hookProgram,
+      liveInstruments: this.instruments?.liveInstruments() ?? null,
       maxOutputTokens: this.maxOutputTokens,
       replay: { forcedPrefixTokenIds: forcedPrefix, scoreTokenIds },
       onRawToken: (token) => {
@@ -1564,17 +1560,9 @@ export class BrowserLoomRuntime {
         throw loomError("INVALID_NODE_OPERATION", `Raw token index ${anchor} is outside node ${node.id}`);
       }
       const settings = replaySettings(this.session, node, anchor + 1, options.steered, this.maxOutputTokens);
-      let program: StructuredHookProgramBuffers | null = null;
-      if (settings.steering) {
-        const compiled = await this.compileRequiredSteering(settings.steering);
-        if (!isStructuredHookProgram(compiled)) {
-          throw loomError(
-            "TOKEN_REPLAY_UNAVAILABLE",
-            "The node's steering did not lower to a structured hook program the replay can run",
-          );
-        }
-        program = compiled;
-      }
+      const program = settings.steering
+        ? await this.compileRequiredSteering(settings.steering)
+        : null;
       const raw_ = this.session.is_base_model || options.raw;
       const promptIds = await this.generation.renderPromptTokenIds!({
         input: generationInput({ type: "generate", input: null, raw: raw_ }, this.tree, node.parent_id!, settings.systemPrompt),
@@ -1594,7 +1582,7 @@ export class BrowserLoomRuntime {
           positionSpans: program === null ? null : settings.positionSpans ?? null,
         },
         program,
-        steering: settings.steering ?? null,
+        steering: boundSteering(program, settings.steering) ?? null,
         canThink: settings.thinking === true,
       };
     });
@@ -1615,7 +1603,7 @@ export class BrowserLoomRuntime {
   private compileRequiredSteering(
     expression: string,
     probeRequests?: readonly ProbeRequest[],
-  ): Promise<BrowserHookProgram> {
+  ): Promise<StructuredHookProgramBuffers> {
     if (!this.compileSteering) {
       throw loomError(
         "STEERING_COMPILER_UNAVAILABLE",
@@ -1628,7 +1616,7 @@ export class BrowserLoomRuntime {
   private async preflightGenerationSteering(
     expression: string,
     probeRequests?: readonly ProbeRequest[],
-  ): Promise<BrowserHookProgram> {
+  ): Promise<StructuredHookProgramBuffers> {
     const program = await this.compileRequiredSteering(expression, probeRequests);
     const activeRole = activeAssistantRole(program);
     if (activeRole !== null && !this.session.role_substitution_supported) {
@@ -2551,7 +2539,7 @@ function roleLabel(role: ChatRole, sampling: WSSampling | null | undefined): str
   return sampling?.assistant_role?.trim() || null;
 }
 
-function activeAssistantRole(program: BrowserHookProgram | null): string | null {
+function activeAssistantRole(program: StructuredHookProgramBuffers | null): string | null {
   const role = program?.activeRole;
   return typeof role === "string" ? role.trim() || null : null;
 }
@@ -3550,4 +3538,14 @@ function loomError(code: string, message: string): Error & {
   recoverable: boolean;
 } {
   return Object.assign(new Error(message), { code, status: 409, recoverable: true });
+}
+
+/** The steering a generation's envelopes bind (native's recipe steering): the compiled
+ *  expression's canonical text (`formatSteering`), so `a @when:x > 0.2` binds as `a@when:x>0.2`. */
+function boundSteering(
+  program: StructuredHookProgramBuffers | null,
+  expression: string | null | undefined,
+): string | null | undefined {
+  if (!expression) return expression;
+  return (program as (StructuredHookProgramBuffers & { steeringExpression?: string }) | null)?.steeringExpression || expression;
 }

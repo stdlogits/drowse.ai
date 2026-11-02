@@ -170,6 +170,8 @@ try {
   // ------------------------------------------------- replay over a recording bridge ---
   const sent = [];
   let installed = null;
+  // Whether the mock's replay forwards carry a geometry readout and an [L, d] capture.
+  let replayGates = false;
   const L = 4;
   const H = spec.nHeads;
   const anatomyStride = 6 * qwen.hidden_size + spec.dFF + H * spec.headDim;
@@ -181,7 +183,12 @@ try {
         case "headGrams": return { id: "head_grams:1", kind: "head_grams", shape: [L, H, spec.headDim, spec.headDim], bytes: 4 };
         case "uploadUnitScales": return { id: "unit_scales:2", kind: "unit_scales", shape: [L, 2 * spec.dFF + H], bytes: 4 };
         case "openReplay": return null;
-        case "replayForward": return { measurements: new Float32Array(L * 8).fill(0.5), unitTaps: new Float32Array(64) };
+        case "replayForward": return {
+          measurements: new Float32Array(L * 8).fill(0.5),
+          unitTaps: new Float32Array(64),
+          geometry: replayGates ? new Float32Array(L * v4.maxGeometryProbes * v4.geometryOutputStride).fill(0.25) : null,
+          hidden: replayGates ? new Float32Array(L * qwen.hidden_size).fill(0.75) : null,
+        };
         case "finishReplay": return {
           anatomyTaps: new Float32Array(L * anatomyStride),
           activityState: new Float32Array(L * (3 * spec.dFF + 3 * H)),
@@ -226,8 +233,21 @@ try {
   const readback = await replay.forward({ tokenIds: Int32Array.of(1, 2, 3), controls });
   assert.deepEqual(readback.measurements.shape, [L, 8]);
   assert.deepEqual(readback.unitTaps.shape, [64]);
+  assert.equal(readback.geometry, null);
+  assert.equal(readback.hidden, null);
   assert.deepEqual(sent.at(-1).tokenIds, [1, 2, 3]);
   assert.deepEqual([...sent.at(-1).unitActive], [1, 0, 0, 0]);
+  // driveReplay's unsteered segments carry no controls: the bridge gets the program's zeros.
+  // A forward's geometry readout and [L, d] capture (what its next segment's gates read) keep
+  // their shapes.
+  replayGates = true;
+  const gated = await replay.forward({ tokenIds: Int32Array.of(4), controls: { affineActive: new Uint32Array(0), curveActive: new Uint32Array(0) } });
+  replayGates = false;
+  assert.deepEqual(gated.geometry.shape, [L, v4.maxGeometryProbes, v4.geometryOutputStride]);
+  assert.deepEqual(gated.hidden.shape, [L, qwen.hidden_size]);
+  assert.equal(sent.at(-1).affineActive.length, installed.affineActive.length);
+  assert.equal(sent.at(-1).curveActive.length, installed.curveActive.length);
+  assert.ok(sent.at(-1).affineActive.every((value) => value === 0));
   const result = await replay.finish();
   assert.deepEqual(result.anatomyTaps.shape, [L, anatomyStride]);
   assert.deepEqual(result.activity.traces.shape, [1, 3]);
@@ -257,20 +277,18 @@ try {
       scale: { source: "neutral", detail: "", top: 1, value: 7.324882 } },
     null,
   ];
-  const program = {
-    format: "drowse-structured-v4",
-    affineActive: new Uint32Array(16),
-    measurementSchema: { probes: [], unitTaps: tapSchema },
-  };
+  const unitTaps = await server.ssrLoadModule("/src/hosted/runtime/units/unitProgram.ts");
   // unit-probes-gemma3-v1.json, unsteered forward 0: raw −0.97013634 → −0.29285887 (− pole),
   // write norm 4.0678535 → 0.5553473; the ablated neuron's 0.21354148 → 0.04218963 (+ pole).
-  const scores = generation.unitTapReadings(program, Float32Array.of(-0.97013634, 4.0678535, 0));
+  const scores = unitTaps.unitTapGateScores(tapSchema, Float32Array.of(-0.97013634, 4.0678535, 0));
   assert.ok(Math.abs(scores["neuron/L1n5"] - -0.29285887) < 1e-6);
   assert.ok(Math.abs(scores["head/L2h1"] - 0.5553473) < 1e-6);
-  const positive = generation.unitTapReadings(program, Float32Array.of(0.21354148, 4.0678535, 0));
+  const positive = unitTaps.unitTapGateScores(tapSchema, Float32Array.of(0.21354148, 4.0678535, 0));
   assert.ok(Math.abs(positive["neuron/L1n5"] - 0.04218963) < 1e-6);
-  assert.equal(generation.unitTapReadings(program, undefined), undefined);
-  assert.throws(() => generation.unitTapReadings(program, Float32Array.of(Number.NaN, 1)), /finite tap/);
+  // fp32 as native divides on the device: a gate at `> 0.33333334` opens on 1 / 3.
+  const third = unitTaps.unitTapGateScores([{ ...tapSchema[1], scale: { ...tapSchema[1].scale, value: 3 } }], Float32Array.of(0, 1));
+  assert.equal(third["head/L2h1"], Math.fround(1 / 3));
+  assert.ok(third["head/L2h1"] > 0.33333334 - 1e-12 && third["head/L2h1"] > 1 / 3);
 
   // ------------------------------------------------- controls reach the bridge whole ---
   const runtime = new engine.DrowseWebLlmRuntime({});
@@ -404,6 +422,10 @@ async function staticReads(backendModule, modelBackend, programs, capabilities, 
   // An unbound tapped head (zero gram) fails closed at install and replay; a bound one passes.
   assert.throws(() => backendModule.replayProgram(capabilities, tapped), (error) => error.code === "TAP_GRAMS_UNBOUND");
   assert.equal(backendModule.replayProgram(capabilities, bound), bound);
+  // An unsteered replay runs the units superset with a whole, empty unit section.
+  const empty = backendModule.replayProgram(capabilities, null);
+  programs.validateStructuredHookProgram(empty);
+  assert.deepEqual(empty.unitShape, { dFF: spec.dFF, nHeads: spec.nHeads, headDim: spec.headDim });
   assert.throws(() => programs.assertStructuredTapGramsBound(tapped), TypeError, "no shape, no check");
   const gather = log.at(-1).steps[0];
   assert.equal(gather.fn, "drowse_gather_head_grams");

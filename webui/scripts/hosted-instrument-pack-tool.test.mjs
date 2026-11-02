@@ -62,7 +62,8 @@ try {
     runtimeWorker.code.includes("thinkingProfile: event.data.thinkingProfile"),
   );
   assert.ok(runtimeWorker.code.includes("setSaeDictionary"));
-  assert.ok(runtimeWorker.code.includes("standard-v3 exact-readout-v1"));
+  assert.ok(runtimeWorker.code.includes("standard-v4 or standard-v4-residual"));
+  assert.ok(!runtimeWorker.code.includes("standard-v3"));
   assert.ok(
     runtimeWorker.code.includes("exact full-vocabulary R-lens readout"),
   );

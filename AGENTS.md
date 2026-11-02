@@ -59,7 +59,7 @@ Site tests that read shared files exist to check how the hosted shell uses them.
 ## Parity goldens
 
 `drowse/tests/fixtures/browser/*` are the Python reference outputs the browser
-runtime replays (`rank-one-hook-program`, `structured-hook-parity`, the Rust
+runtime replays (`browser-core-pack`, `structured-hook-parity`, the Rust
 topology tests, `verify-mlc-hook.py`). drowse's own tests pin them against the
 engine; regenerate them there, then bump the pin and update the runtime here.
 Browser-only fixtures stay in `browser-runtime/fixtures/`.

@@ -9,24 +9,22 @@ import type {
   TokenAltJSON,
   WSSampling,
 } from "../../../../drowse/webui/src/lib/types";
-import type { RankOneHookProgramBuffers } from "./rankOneHookProgram";
 import { aggregateEnvelope, MEASUREMENTS_VERSION, roundReading } from "./measurementRows";
 import { BROWSER_RETURN_TOP_K_MAX, BROWSER_SAMPLING_TOP_K_MAX } from "../../../../drowse/webui/src/lib/runtime/samplingCapabilities";
 import { MAX_OUTPUT_TOKEN_COUNT } from "../../../../drowse/webui/src/lib/runtime/outputTokenPolicy";
 import {
   geometryCoordinateMean,
   createStructuredHookControlEvaluator,
-  STRUCTURED_HOOK_FORMAT,
   type StructuredGeometryMeasurementProbe,
   type StructuredHookControl,
   type StructuredHookProgramBuffers,
+  type StructuredSlensProbe,
 } from "./structuredHookProgram";
+import { unitTapReadings } from "./units/unitProgram";
 import { isRoleSlug } from "../../../../drowse/webui/src/lib/roleSlug";
 import { normalizeSteeringPositions, type SteeringPositionSelection } from "../../../../drowse/webui/src/lib/runtime/steeringPositions";
 
 export const BROWSER_EXACT_READOUT_TOP_K_CAPACITY = 8;
-
-export type WebLlmHookProgram = RankOneHookProgramBuffers | StructuredHookProgramBuffers;
 
 export type WebLlmChatRole = "system" | "user" | "assistant";
 
@@ -51,7 +49,10 @@ export interface WebLlmGenerationPlan extends SteeringPositionSelection {
   replay?: WebLlmReplayRequest | null;
   readoutTopK?: number;
   steeringExpression?: string | null;
-  hookProgram?: WebLlmHookProgram | null;
+  hookProgram?: StructuredHookProgramBuffers | null;
+  /** The units channel and the post-forward `slens/` reads, when the program has unit taps or
+   *  `slens/` probes. */
+  liveInstruments?: WebLlmLiveInstruments | null;
   measurementSpecialTokenIds?: readonly number[];
   measurementTargetRawIndex?: number;
   measurementStartRawIndex?: number;
@@ -59,6 +60,29 @@ export interface WebLlmGenerationPlan extends SteeringPositionSelection {
   onRawTokenStart?: (rawIndex: number) => void | Promise<void>;
   onRawToken?: (token: WebLlmRawToken) => void | Promise<void>;
   signal?: AbortSignal;
+}
+
+/** What fills envelope v2's units channel and the lens channel's `slens/` readings (B1 §2.2,
+ *  §5.1): which attached probes ride a token envelope, and the S read over a forward's capture. */
+export interface WebLlmLiveInstruments {
+  /** Attached unit probes (their names). Their readings ride a token envelope while
+   *  `unitsLive` and the reply's aggregate always (native `UnitsRun.step_readings`,
+   *  `aggregate_at`); a unit tapped only for a gate never reads out. */
+  readonly unitProbes: ReadonlySet<string>;
+  readonly unitsLive: boolean;
+  /** Attached `slens/` readings ride a token envelope while the lens family is live (native
+   *  reads attached lens probes in its live readout step) and the reply's aggregate always. */
+  readonly lensLive: boolean;
+  /** `probes` over one forward's `[L, d]` capture: the rounded readings, each probe's exact
+   *  score (what a gate reads) and the S source the lens binding names. */
+  slensReads(
+    hidden: Float32Array,
+    probes: readonly StructuredSlensProbe[],
+  ): Promise<{
+    readings: Record<string, ScalarReadingJSON>;
+    values: Record<string, number>;
+    source: string | null;
+  }>;
 }
 
 export interface WebLlmRawToken {
@@ -200,7 +224,7 @@ export interface WebLlmGenerationEngine {
 export interface WebLlmGenerationHooks {
   clear(): Promise<void>;
   interrupt(): Promise<void>;
-  install(program: WebLlmHookProgram): Promise<void>;
+  install(program: StructuredHookProgramBuffers): Promise<void>;
   updateControls?(
     affineActive: Uint32Array,
     curveActive: Uint32Array,
@@ -221,6 +245,8 @@ export interface WebLlmHookMeasurementBuffers {
   geometry: Float32Array | undefined;
   /** Raw unit taps (B1 §2.2), read in the same synchronization as `scalar`. */
   unitTaps?: Float32Array | undefined;
+  /** The forward's `[L, d]` capture (`hiddenCapture`), read in the same synchronization. */
+  hidden?: Float32Array | undefined;
   jlensTopTokens: WebLlmJlensTopTokenReadout | undefined;
   saeTopFeatures: WebLlmSaeTopFeatureReadout | undefined;
 }
@@ -239,6 +265,14 @@ interface CapturedGenerationRow {
   /** The live unit tap of this token's forward (`[maxUnitTaps]` raw values in slot order, B1
    *  §2.2), when the program has a unit section. */
   hookUnitTaps?: Float32Array;
+  /** The envelope this token offers the reply's aggregate (its token envelope plus the
+   *  readings that ride the aggregate only), and the capture its deferred `slens/` reads take. */
+  aggregateSource?: AggregateSource;
+}
+
+interface AggregateSource {
+  readonly envelope: MeasurementsEnvelopeJSON | undefined;
+  readonly hidden?: Float32Array;
 }
 
 interface ClassifiedGenerationRow extends CapturedGenerationRow {
@@ -275,7 +309,7 @@ export async function streamWebLlmGeneration(
       ...plan.hookProgram, position_spans: spans, position_indices: undefined,
     } };
   }
-  if (plan.hookProgram && isStructuredProgram(plan.hookProgram)) {
+  if (plan.hookProgram) {
     plan = { ...plan, hookProgram: {
       ...plan.hookProgram,
       affineActive: new Uint32Array(plan.hookProgram.affineActive),
@@ -324,27 +358,32 @@ export async function streamWebLlmGeneration(
     }
   }
   throwIfAborted(plan.signal);
-  const controlEvaluator = plan.hookProgram && isStructuredProgram(plan.hookProgram)
+  const controlEvaluator = plan.hookProgram
     ? createStructuredHookControlEvaluator(plan.hookProgram)
     : null;
   const perTokenControlUpdates = requiresPerTokenControlUpdates(plan.hookProgram);
   const needsGateReadings = hasProbeGates(plan.hookProgram);
+  const slensPerToken = slensReadsEveryForward(plan);
+  if (plan.hookProgram?.measurementSchema?.slensProbes?.length && !plan.liveInstruments) {
+    throw generationError(
+      "SLENS_READS_UNAVAILABLE",
+      "The browser runtime cannot read the program's slens/ probes",
+    );
+  }
   let observedUsage: WebLlmGenerationUsage | null = null;
 
   await hooks.clear();
   try {
     if (plan.hookProgram) {
-      if (isStructuredProgram(plan.hookProgram)) {
-        const controls = controlEvaluator!({
-          prefill: true,
-          thinking: thinking.active,
-          generatedTokens: 0,
-        });
-        plan.hookProgram.affineActive.set(controls.affineActive);
-        plan.hookProgram.curveActive.set(controls.curveActive);
-        if (controls.unitActive !== undefined) {
-          plan.hookProgram.unitActive?.set(controls.unitActive);
-        }
+      const controls = controlEvaluator!({
+        prefill: true,
+        thinking: thinking.active,
+        generatedTokens: 0,
+      });
+      plan.hookProgram.affineActive.set(controls.affineActive);
+      plan.hookProgram.curveActive.set(controls.curveActive);
+      if (controls.unitActive !== undefined) {
+        plan.hookProgram.unitActive?.set(controls.unitActive);
       }
       await hooks.install(plan.hookProgram);
     }
@@ -522,14 +561,24 @@ export async function streamWebLlmGeneration(
               readoutTopK,
               plan.sampling?.persist_subspace_coords === true,
             );
-            const unitScores = unitTapReadings(plan.hookProgram, measurement.unitTaps);
+            const channels = await liveChannelReads(
+              plan,
+              measurement,
+              slensPerToken,
+              !preservingPrefix && (plan.measurementTargetRawIndex === undefined ||
+                rawIndex === plan.measurementTargetRawIndex),
+            );
             const envelopeScores = capturedEnvelope === undefined
               ? undefined
               : measurementGateScores(capturedEnvelope);
-            const gateScores = unitScores === undefined
+            const gateScores = channels.gateScores === undefined
               ? envelopeScores
-              : { ...envelopeScores, ...unitScores };
-            const envelope = capturedEnvelope;
+              : { ...envelopeScores, ...channels.gateScores };
+            const envelope = withLiveChannels(capturedEnvelope, channels.token, plan.steeringExpression ?? null);
+            const aggregateSource: AggregateSource = {
+              envelope: withLiveChannels(capturedEnvelope, channels.aggregate, plan.steeringExpression ?? null),
+              ...(channels.deferredHidden === undefined ? {} : { hidden: channels.deferredHidden }),
+            };
             const captured: CapturedGenerationRow = {
               text: row.token,
               tokenId: row.tokenId,
@@ -548,6 +597,7 @@ export async function streamWebLlmGeneration(
               ...(measurement.unitTaps === undefined
                 ? {}
                 : { hookUnitTaps: new Float32Array(measurement.unitTaps) }),
+              aggregateSource,
             };
             if (plan.onRawToken) {
               await plan.onRawToken(captured);
@@ -582,7 +632,7 @@ export async function streamWebLlmGeneration(
                     logprob: piece.logprob,
                   });
                 }
-                aggregateMeasurements.observe(token.tokenId, token.measurements);
+                aggregateMeasurements.observe(token.tokenId, piece.aggregateSource);
                 await onToken(token);
               }
             }
@@ -647,7 +697,7 @@ export async function streamWebLlmGeneration(
             logprob: piece.logprob,
           });
         }
-        aggregateMeasurements.observe(token.tokenId, token.measurements);
+        aggregateMeasurements.observe(token.tokenId, piece.aggregateSource);
         await onToken(token);
       }
     }
@@ -672,7 +722,7 @@ export async function streamWebLlmGeneration(
       meanSurprise: meanLogprob === null ? null : -meanLogprob,
       prefillTokensPerSecond,
       decodeTokensPerSecond,
-      ...aggregateResult(aggregateMeasurements.value),
+      ...await aggregateResult(aggregateMeasurements.value, plan),
     };
   } catch (error) {
     rememberGenerationErrorUsage(error, observedUsage);
@@ -1033,7 +1083,7 @@ function validateMeasurementPlan(
     );
   }
   const program = plan.hookProgram;
-  if (!program || !isStructuredProgram(program) || program.measurementSchema === undefined) {
+  if (!program || program.measurementSchema === undefined) {
     return;
   }
   const schema = program.measurementSchema;
@@ -1217,8 +1267,8 @@ function emittedToken(
 
 class AggregateMeasurementSelector {
   private readonly specialTokenIds: ReadonlySet<number> | null | undefined;
-  private first: MeasurementsEnvelopeJSON | undefined;
-  private lastContent: MeasurementsEnvelopeJSON | undefined;
+  private first: AggregateSource | undefined;
+  private lastContent: AggregateSource | undefined;
 
   constructor(specialTokenIds: readonly number[] | null | undefined) {
     this.specialTokenIds = specialTokenIds === null
@@ -1230,9 +1280,12 @@ class AggregateMeasurementSelector {
 
   observe(
     tokenId: number | null,
-    envelope: MeasurementsEnvelopeJSON | undefined,
+    source: AggregateSource | undefined,
   ): void {
-    if (envelope === undefined || this.specialTokenIds === null) return;
+    if (
+      source === undefined || source.envelope === undefined && source.hidden === undefined ||
+      this.specialTokenIds === null
+    ) return;
     if (this.specialTokenIds === undefined) {
       throw generationError(
         "MEASUREMENT_SPECIAL_TOKEN_IDS_UNAVAILABLE",
@@ -1245,17 +1298,17 @@ class AggregateMeasurementSelector {
         "The browser model omitted a token ID required for exact aggregate measurement pooling",
       );
     }
-    this.first ??= envelope;
-    if (!this.specialTokenIds.has(tokenId)) this.lastContent = envelope;
+    this.first ??= source;
+    if (!this.specialTokenIds.has(tokenId)) this.lastContent = source;
   }
 
-  get value(): MeasurementsEnvelopeJSON | undefined {
+  get value(): AggregateSource | undefined {
     return this.lastContent ?? this.first;
   }
 }
 
 async function readHookMeasurements(
-  hookProgram: WebLlmHookProgram | null | undefined,
+  hookProgram: StructuredHookProgramBuffers | null | undefined,
   hooks: WebLlmGenerationHooks,
   readoutTopK: number,
   includeDiscoveryReadouts = true,
@@ -1268,18 +1321,17 @@ async function readHookMeasurements(
       saeTopFeatures: undefined,
     };
   }
-  const schema = isStructuredProgram(hookProgram)
-    ? hookProgram.measurementSchema
-    : undefined;
+  const schema = hookProgram.measurementSchema;
   const hasScalarMeasurements = schema?.probes.some((probe) => probe !== null) === true;
   const hasGeometryMeasurements = hasActiveGeometryMeasurements(hookProgram);
   const hasJlensReadout = includeDiscoveryReadouts && schema?.lensReadout === true;
   const hasSaeReadout = includeDiscoveryReadouts && schema?.saeReadout === true;
   const hasUnitTaps = schema?.unitTaps?.some((tap) => tap !== null) === true;
+  const hasHidden = hookProgram.hiddenCapture === true;
   const bundled = hooks.readBundle === undefined ||
-      (!includeDiscoveryReadouts && !hasUnitTaps) ||
+      (!includeDiscoveryReadouts && !hasUnitTaps && !hasHidden) ||
       (!hasScalarMeasurements && !hasGeometryMeasurements &&
-        !hasJlensReadout && !hasSaeReadout && !hasUnitTaps)
+        !hasJlensReadout && !hasSaeReadout && !hasUnitTaps && !hasHidden)
     ? undefined
     : await hooks.readBundle(readoutTopK);
   const unitTaps = bundled?.unitTaps;
@@ -1287,6 +1339,13 @@ async function readHookMeasurements(
     throw generationError(
       "UNIT_TAPS_UNAVAILABLE",
       "The loaded browser model did not return the live unit tap its program declares",
+    );
+  }
+  const hidden = bundled?.hidden;
+  if (hasHidden && (hidden === undefined || hidden.length !== hookProgram.layerCount * hookProgram.hiddenSize)) {
+    throw generationError(
+      "HIDDEN_CAPTURE_UNAVAILABLE",
+      "The loaded browser model did not return the [L, d] capture its slens/ probes read",
     );
   }
   const scalar = bundled?.scalar ??
@@ -1321,40 +1380,14 @@ async function readHookMeasurements(
     scalar: scalar === undefined ? undefined : new Float32Array(scalar),
     geometry: geometry === undefined ? undefined : new Float32Array(geometry),
     ...(unitTaps === undefined ? {} : { unitTaps: new Float32Array(unitTaps) }),
+    ...(hidden === undefined ? {} : { hidden }),
     jlensTopTokens,
     saeTopFeatures,
   };
 }
 
-/** Each tapped unit's reading (`v / S`, the pole of a neuron chosen by the sign of `act`, B1
- *  §2.2), keyed by the unit's name, for unit gates on the next forward. */
-export function unitTapReadings(
-  hookProgram: WebLlmHookProgram | null | undefined,
-  taps: Float32Array | undefined,
-): Record<string, number> | undefined {
-  if (!hookProgram || !isStructuredProgram(hookProgram) || taps === undefined) return undefined;
-  const schema = hookProgram.measurementSchema?.unitTaps;
-  if (schema === undefined) return undefined;
-  const readings: Record<string, number> = {};
-  for (const tap of schema) {
-    if (tap === null) continue;
-    const raw = taps[tap.slot];
-    if (raw === undefined || !Number.isFinite(raw)) {
-      throw generationError(
-        "INVALID_UNIT_TAP",
-        `The browser model returned no finite tap for ${tap.unit}`,
-      );
-    }
-    const scale = typeof tap.scale.value === "number"
-      ? tap.scale.value
-      : tap.scale.value[raw >= 0 ? 0 : 1];
-    readings[tap.unit] = Math.fround(Math.fround(raw) / Math.fround(scale));
-  }
-  return readings;
-}
-
 export function measurementEnvelope(
-  hookProgram: WebLlmHookProgram | null | undefined,
+  hookProgram: StructuredHookProgramBuffers | null | undefined,
   values: Float32Array | undefined,
   steering: string | null,
   geometryValues?: Float32Array,
@@ -1364,8 +1397,7 @@ export function measurementEnvelope(
   persistSubspaceCoords = false,
 ): MeasurementsEnvelopeJSON | undefined {
   if (
-    !hookProgram || !isStructuredProgram(hookProgram) ||
-    hookProgram.measurementSchema === undefined ||
+    !hookProgram || hookProgram.measurementSchema === undefined ||
     values === undefined && geometryValues === undefined &&
       jlensTopTokens === undefined && saeTopFeatures === undefined
   ) {
@@ -1522,6 +1554,9 @@ export function measurementEnvelope(
       ...(exactSae === null ? {} : { readout: { features: exactSae } }),
     };
   }
+  // Native `build_measurements`: no instrument read anything, no envelope (a forward read only
+  // for its unit taps or its [L, d] capture, with those families off).
+  if (Object.keys(instruments).length === 0 && Object.keys(scores).length === 0) return undefined;
   const envelope: MeasurementsEnvelopeJSON = {
     version: MEASUREMENTS_VERSION,
     scope: "token",
@@ -1531,6 +1566,16 @@ export function measurementEnvelope(
   };
   measurementGateScoreCache.set(envelope, Object.freeze({ ...gateScores }));
   return envelope;
+}
+
+/** A replayed forward's geometry gate scores from its `[L, maxGeometryProbes, stride]` readout:
+ *  the scores generation's measurement envelope hands its gates. */
+export function geometryGateScores(
+  program: StructuredHookProgramBuffers,
+  geometry: Float32Array,
+): Readonly<Record<string, number>> {
+  const envelope = measurementEnvelope(program, undefined, null, geometry);
+  return envelope === undefined ? {} : measurementGateScores(envelope);
 }
 
 const measurementGateScoreCache = new WeakMap<
@@ -2182,22 +2227,15 @@ function subspaceTrailError(
   );
 }
 
-function isStructuredProgram(
-  program: WebLlmHookProgram,
-): program is StructuredHookProgramBuffers {
-  return "format" in program && program.format === STRUCTURED_HOOK_FORMAT;
-}
-
 function hasActiveGeometryMeasurements(
-  program: WebLlmHookProgram,
-): program is StructuredHookProgramBuffers {
-  if (!isStructuredProgram(program)) return false;
+  program: StructuredHookProgramBuffers,
+): boolean {
   if (!program.measurementSchema?.geometryProbes?.some((probe) => probe !== null)) return false;
   return program.geometryActive?.some((active) => active === 1) ?? false;
 }
 
 function requiresPerTokenControlUpdates(
-  program: WebLlmHookProgram | null | undefined,
+  program: StructuredHookProgramBuffers | null | undefined,
 ): boolean {
   return structuredControls(program).some((control) =>
     control !== null && control.enabled &&
@@ -2205,7 +2243,7 @@ function requiresPerTokenControlUpdates(
   );
 }
 
-function hasProbeGates(program: WebLlmHookProgram | null | undefined): boolean {
+function hasProbeGates(program: StructuredHookProgramBuffers | null | undefined): boolean {
   return structuredControls(program).some((control) =>
     control !== null && control.enabled && control.gate !== null
   );
@@ -2213,9 +2251,9 @@ function hasProbeGates(program: WebLlmHookProgram | null | undefined): boolean {
 
 /** Every control of a structured program: affine, curve and unit groups alike. */
 function structuredControls(
-  program: WebLlmHookProgram | null | undefined,
+  program: StructuredHookProgramBuffers | null | undefined,
 ): readonly (StructuredHookControl | null)[] {
-  if (!program || !isStructuredProgram(program) || program.controls === undefined) return [];
+  if (!program || program.controls === undefined) return [];
   return [
     ...program.controls.affine,
     ...program.controls.curve,
@@ -2224,20 +2262,21 @@ function structuredControls(
 }
 
 function requiresPerTokenMeasurementReads(
-  program: WebLlmHookProgram | null | undefined,
+  program: StructuredHookProgramBuffers | null | undefined,
 ): boolean {
-  if (!program || !isStructuredProgram(program) || !program.measurementSchema) {
+  if (!program || !program.measurementSchema) {
     return false;
   }
   const schema = program.measurementSchema;
   return schema.probes.some((probe) => probe !== null) ||
     hasActiveGeometryMeasurements(program) ||
     schema.unitTaps?.some((tap) => tap !== null) === true ||
+    program.hiddenCapture === true ||
     schema.lensReadout === true || schema.saeReadout === true;
 }
 
 async function updateStructuredControls(
-  program: WebLlmHookProgram | null | undefined,
+  program: StructuredHookProgramBuffers | null | undefined,
   hooks: WebLlmGenerationHooks,
   evaluateControls: ReturnType<typeof createStructuredHookControlEvaluator>,
   generatedTokens: number,
@@ -2245,7 +2284,7 @@ async function updateStructuredControls(
   priorMeasurements: Float32Array | undefined,
   priorScores: Readonly<Record<string, number>> | undefined,
 ): Promise<void> {
-  if (!program || !isStructuredProgram(program) || program.controls === undefined) return;
+  if (!program || program.controls === undefined) return;
   if (!hooks.updateControls) {
     throw generationError(
       "STRUCTURED_CONTROL_UPDATE_UNAVAILABLE",
@@ -2781,11 +2820,140 @@ function terminalReasonMatchesFinishReason(
 
 /** The `done` frame's aggregate: the last content token's readings (drowse's
  *  aggregate envelope carries no readouts). */
-function aggregateResult(
-  lastContent: MeasurementsEnvelopeJSON | undefined,
-): { measurements?: MeasurementsEnvelopeJSON } {
-  const measurements = lastContent === undefined ? undefined : aggregateEnvelope(lastContent);
+/** The reply's aggregate from its last content token (its first token without one): that
+ *  token's envelope with the aggregate-only readings, and its deferred `slens/` reads, which a
+ *  reply reads once, here, when no gate and no live readout needed them per token. */
+async function aggregateResult(
+  selected: AggregateSource | undefined,
+  plan: WebLlmGenerationPlan,
+): Promise<{ measurements?: MeasurementsEnvelopeJSON }> {
+  if (selected === undefined) return {};
+  let envelope = selected.envelope;
+  if (selected.hidden !== undefined) {
+    const probes = plan.hookProgram?.measurementSchema?.slensProbes ?? [];
+    const read = await plan.liveInstruments!.slensReads(selected.hidden, probes);
+    envelope = withLiveChannels(envelope, {
+      slens: { readings: read.readings, source: read.source },
+    }, plan.steeringExpression ?? null);
+  }
+  const measurements = envelope === undefined ? undefined : aggregateEnvelope(envelope);
   return measurements === undefined ? {} : { measurements };
+}
+
+/** What one forward's live channels give its token envelope, the reply's aggregate and the
+ *  next forward's gates. */
+interface LiveChannelReads {
+  token: LiveChannelReadings;
+  aggregate: LiveChannelReadings;
+  gateScores: Record<string, number> | undefined;
+  /** The capture the aggregate reads its `slens/` probes from, when this forward did not. */
+  deferredHidden: Float32Array | undefined;
+}
+
+interface LiveChannelReadings {
+  units?: { readings: Record<string, ScalarReadingJSON>; scores: Record<string, number> };
+  slens?: { readings: Record<string, ScalarReadingJSON>; source: string | null };
+}
+
+/** Whether every forward reads its `slens/` probes: a gate reads one, or the lens family is
+ *  live. Otherwise the reply's aggregate reads them once from its last content token's capture. */
+function slensReadsEveryForward(plan: WebLlmGenerationPlan): boolean {
+  const probes = plan.hookProgram?.measurementSchema?.slensProbes ?? [];
+  if (probes.length === 0) return false;
+  const gated = new Set(structuredControls(plan.hookProgram).flatMap((control) =>
+    control?.gate?.scoreKey ? [control.gate.scoreKey] : []
+  ));
+  return probes.some((probe) => gated.has(probe.name)) || plan.liveInstruments?.lensLive === true;
+}
+
+/** The units channel (native `UnitsInstrument.readings` over the tap, its gate scalars for
+ *  every tap) and the `slens/` reads (`_InputBlock.readings` over the `[L, d]` capture, their
+ *  exact scores by name) of one forward. `display` is false on rows a token replay does not
+ *  measure: their reads feed gates only. */
+async function liveChannelReads(
+  plan: WebLlmGenerationPlan,
+  measurement: WebLlmHookMeasurementBuffers,
+  slensPerToken: boolean,
+  display: boolean,
+): Promise<LiveChannelReads> {
+  const program = plan.hookProgram;
+  const schema = program?.measurementSchema;
+  const live = plan.liveInstruments ?? null;
+  const out: LiveChannelReads = { token: {}, aggregate: {}, gateScores: undefined, deferredHidden: undefined };
+  if (!program || schema === undefined) return out;
+  const taps = schema.unitTaps ?? [];
+  if (measurement.unitTaps !== undefined && taps.some((tap) => tap !== null)) {
+    for (const tap of taps) {
+      if (tap !== null && !Number.isFinite(measurement.unitTaps[tap.slot])) {
+        throw generationError("INVALID_UNIT_TAP", `The browser model returned no finite tap for ${tap.unit}`);
+      }
+    }
+    const units = unitTapReadings(taps, measurement.unitTaps, schema.modelLayerCount, live?.unitProbes ?? new Set());
+    out.gateScores = { ...units.gateScores };
+    if (Object.keys(units.readings).length > 0) {
+      const channel = { readings: units.readings, scores: units.scores };
+      out.aggregate.units = channel;
+      if (display && live?.unitsLive === true) out.token.units = channel;
+    }
+  }
+  const probes = schema.slensProbes ?? [];
+  if (measurement.hidden !== undefined && probes.length > 0 && live !== null) {
+    if (slensPerToken) {
+      const read = await live.slensReads(measurement.hidden, probes);
+      out.gateScores = { ...out.gateScores, ...read.values };
+      const channel = { readings: read.readings, source: read.source };
+      out.aggregate.slens = channel;
+      if (display && live.lensLive) out.token.slens = channel;
+    } else {
+      out.deferredHidden = measurement.hidden;
+    }
+  }
+  return out;
+}
+
+/** `envelope` (or an empty token envelope) with a forward's units channel and `slens/`
+ *  readings: envelope v2's `instruments.units = {binding, readings}` and the lens channel's
+ *  readings, whose binding names the source of each lens family that produced data
+ *  (`sources.S` for `slens/`). Scores take each reading's rounded value. */
+function withLiveChannels(
+  envelope: MeasurementsEnvelopeJSON | undefined,
+  channels: LiveChannelReadings,
+  steering: string | null,
+): MeasurementsEnvelopeJSON | undefined {
+  if (channels.units === undefined && channels.slens === undefined) return envelope;
+  const out: MeasurementsEnvelopeJSON = envelope === undefined
+    ? { version: MEASUREMENTS_VERSION, scope: "token", provenance: "captured", instruments: {} }
+    : { ...envelope, instruments: { ...envelope.instruments } };
+  const scores: Record<string, number> = { ...out.scores };
+  if (channels.units !== undefined) {
+    out.instruments.units = {
+      binding: { source: null, steering },
+      readings: channels.units.readings,
+    };
+    Object.assign(scores, channels.units.scores);
+  }
+  if (channels.slens !== undefined) {
+    const lens = out.instruments.lens;
+    const producedR = lens !== undefined && (lens.readout !== undefined ||
+      Object.keys(lens.readings ?? {}).length > 0);
+    out.instruments.lens = {
+      ...lens,
+      binding: {
+        sources: {
+          ...(producedR ? { R: lens!.binding.sources.R ?? null } : {}),
+          S: channels.slens.source,
+        },
+        steering,
+      },
+      readings: { ...lens?.readings, ...channels.slens.readings },
+    };
+    for (const [name, reading] of Object.entries(channels.slens.readings)) scores[name] = reading.value;
+  }
+  if (Object.keys(scores).length > 0) out.scores = scores;
+  if (envelope !== undefined) {
+    measurementGateScoreCache.set(out, measurementGateScores(envelope));
+  }
+  return out;
 }
 
 /** drowse's closed `FinishReason` for a terminal reason (an external stop is `cancelled`). */

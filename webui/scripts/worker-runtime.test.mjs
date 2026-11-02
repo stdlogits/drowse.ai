@@ -6,6 +6,8 @@ import {
   FIXTURE_SIGNATURE,
   catalogBytes,
   catalogFixture,
+  catalogRuntimeLockModels,
+  fixtureBlockSites,
 } from "./catalog-fixture.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -195,6 +197,8 @@ try {
           maxStorageBufferBindingSize: 16 * 1024 * 1024,
           maxStorageBuffersPerShaderStage: 10,
           maxComputeWorkgroupStorageSize: 65_536,
+          maxComputeWorkgroupSizeX: 256,
+          maxComputeInvocationsPerWorkgroup: 256,
         },
         adapterInfo: { vendor: "fixture" },
       },
@@ -371,6 +375,7 @@ try {
         async clear() {},
       },
       modelBackend: overrides.modelBackend,
+      runtimeLockModels: overrides.runtimeLockModels ?? catalogRuntimeLockModels(),
       sessionPersistence: overrides.sessionPersistence ?? {
         async claim() { return { status: "missing" }; },
         async save(input, ownerEpoch) {
@@ -1358,66 +1363,52 @@ try {
     assert.equal(typeof client.instruments.startPreparation, "function");
     assert.equal(client.instruments.startPreparaton, undefined);
 
-    // The unit and anatomy reads are in the contract, routed and refused until the model load
-    // wires BrowserUnitsService (B4): the client the UI holds withholds them, so its capability
-    // checks see them absent.
+    // The unit and anatomy reads route to the loaded model (its load wires BrowserUnitsService),
+    // so the client the UI holds offers them and its capability checks see them.
     const unitMembers = ["tokenAnatomy", "unitActivity", "unitRead", "unitTop", "unitFind", "unitCatalog", "unitLabels"];
     for (const method of unitMembers) {
       assert.equal(
         operationPolicyModule.runtimeServiceRoute({ service: "instruments", method, args: [] }),
-        "unavailable",
+        "model",
       );
-      assert.equal(operationPolicyModule.isOfferedRuntimeMethod("instruments", method), false);
-      assert.equal(client.instruments[method], undefined, `the browser client withholds ${method}`);
+      assert.equal(typeof client.instruments[method], "function", `the browser client offers ${method}`);
     }
     assert.deepEqual(contracts.replayCapabilities(client.instruments), {
-      tokenAnatomy: false,
-      unitActivity: false,
+      tokenAnatomy: true,
+      unitActivity: true,
     });
-    assert.equal(contracts.unitReadsAvailable(client), false);
-    scope.send(request("withheld-method", "request", {
+    assert.equal(contracts.unitReadsAvailable(client), true);
+    scope.send(request("unloaded-units", "request", {
       service: "instruments",
       method: "unitRead",
       args: ["neuron/L8n344"],
     }));
-    const refused = await response(scope, "withheld-method");
+    const refused = await response(scope, "unloaded-units");
     assert.equal(refused.ok, false);
-    assert.equal(refused.error.code, "RUNTIME_METHOD_UNAVAILABLE");
-    assert.equal(refused.error.status, 501);
+    assert.equal(refused.error.code, "MODEL_RUNTIME_NOT_READY", "a unit read waits for a loaded model");
 
     // The fixture answers them through the real host ports on the tiny fixture model.
     const fixture = new fakeRuntimeModule.DeterministicFakeRuntime();
-    assert.equal(operationPolicyModule.offeredRuntimeClient(fixture).instruments.unitRead, undefined);
-    const offered = operationPolicyModule.offeredRuntimeClient(
-      fixture,
-      new Set(unitMembers.map((method) => `instruments.${method}`)),
-    );
     for (const method of unitMembers) {
-      assert.equal(typeof offered.instruments[method], "function", `the fixture view offers ${method}`);
+      assert.equal(typeof fixture.instruments[method], "function", `the fixture offers ${method}`);
     }
-    assert.equal(contracts.unitReadsAvailable(offered), true);
-    const neuron = await offered.instruments.unitRead("neuron/L1n5", { k: 4 });
+    assert.equal(contracts.unitReadsAvailable(fixture), true);
+    const neuron = await fixture.instruments.unitRead("neuron/L1n5", { k: 4 });
     assert.equal(neuron.unit, "neuron/L1n5");
     assert.equal(neuron.poles.length, 2);
     assert.equal(neuron.poles[0].writes.s.tokens.length, 4);
-    const head = await offered.instruments.unitRead("head/L1h3", { k: 3 });
+    const head = await fixture.instruments.unitRead("head/L1h3", { k: 3 });
     assert.equal(head.kind, "head");
     assert.equal(head.copies.r.unit, "own_token_z");
-    const top = await offered.instruments.unitTop("e", { by: "fires", k: 5 });
+    const top = await fixture.instruments.unitTop("e", { by: "fires", k: 5 });
     assert.equal(top.hits.length, 5);
-    const found = await offered.instruments.unitFind({ vector: Array.from({ length: 64 }, (_, i) => Math.sin(i)), layer: 2, k: 3 });
+    const found = await fixture.instruments.unitFind({ vector: Array.from({ length: 64 }, (_, i) => Math.sin(i)), layer: 2, k: 3 });
     assert.equal(found.layers["2"].neurons.length, 3);
-    assert.equal((await offered.instruments.unitCatalog()).available, false);
-    assert.deepEqual((await offered.instruments.unitLabels(["neuron/L1n5"])).labels, []);
-    await assert.rejects(offered.instruments.unitRead("neuron/L9n0"), { status: 400 });
-    assert.equal(offered.mode, "fake");
-    assert.equal(typeof offered.instruments.tokenReadout, "function");
-    assert.deepEqual(
-      await offered.instruments.sources("lens"),
-      await fixture.instruments.sources("lens"),
-    );
+    assert.equal((await fixture.instruments.unitCatalog()).available, false);
+    assert.deepEqual((await fixture.instruments.unitLabels(["neuron/L1n5"])).labels, []);
+    await assert.rejects(fixture.instruments.unitRead("neuron/L9n0"), { status: 400 });
     await assert.rejects(fixture.instruments.sources("units"), { code: "INSTRUMENT_FAMILY_UNAVAILABLE" });
-    await offered.dispose();
+    await fixture.dispose();
     await client.dispose();
     transport.dispose();
   });
@@ -2326,6 +2317,57 @@ try {
       args: [local.namespace, local.name],
     }));
     assert.deepEqual((await response(scope, "fixture-manifold-get-local")).result, local);
+  });
+
+  test("a load carries the runtime lock's block sites for its variant", async () => {
+    const loads = [];
+    const backend = new fakeModelBackendModule.DeterministicBrowserModelBackend();
+    const load = backend.load.bind(backend);
+    backend.load = async (loadRequest) => {
+      loads.push({ blockSpec: loadRequest.blockSpec, unitRefusal: loadRequest.unitRefusal });
+      return load(loadRequest);
+    };
+    const scope = harness({
+      async download() { return result; },
+      cancel() { return false; },
+    }, { modelBackend: backend });
+    await prepareDownload(scope);
+    scope.send(request("load-lock-block-sites", "load", downloadPayload()));
+    assert.equal((await response(scope, "load-lock-block-sites")).ok, true);
+    assert.deepEqual(loads, [fixtureBlockSites(variant.structuredHookProfile)]);
+  });
+
+  test("the worker fixture serves the units members through its loaded model", async () => {
+    const scope = harness({
+      async download() { return result; },
+      cancel() { return false; },
+    }, {
+      modelBackend: new fakeModelBackendModule.DeterministicBrowserModelBackend(),
+    });
+    await prepareDownload(scope);
+    scope.send(request("load-fixture-units", "load", downloadPayload()));
+    assert.equal((await response(scope, "load-fixture-units")).ok, true);
+    // The real host ports on the tiny fixture model (units/fixtureUnits.ts), routed to the model.
+    scope.send(request("fixture-unit-read", "request", {
+      service: "instruments",
+      method: "unitRead",
+      args: ["neuron/L1n5", { k: 4 }],
+    }));
+    const read = (await response(scope, "fixture-unit-read")).result;
+    assert.equal(read.unit, "neuron/L1n5");
+    assert.equal(read.poles[0].writes.s.tokens.length, 4);
+    scope.send(request("fixture-unit-top", "request", {
+      service: "instruments",
+      method: "unitTop",
+      args: ["e", { by: "fires", k: 3 }],
+    }));
+    assert.equal((await response(scope, "fixture-unit-top")).result.hits.length, 3);
+    scope.send(request("fixture-unit-catalog", "request", {
+      service: "instruments",
+      method: "unitCatalog",
+      args: [],
+    }));
+    assert.equal((await response(scope, "fixture-unit-catalog")).result.available, false);
   });
 
   test("clear-all waits for the artifact service clear commit", async () => {

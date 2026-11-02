@@ -33,9 +33,6 @@ try {
   const { BrowserFeasibilityCorePackCompiler } = await server.ssrLoadModule(
     "/src/hosted/runtime/browserCorePack.ts",
   );
-  const { runRankOneHookLayer } = await server.ssrLoadModule(
-    "/src/hosted/runtime/rankOneHookProgram.ts",
-  );
   const {
     initialStructuredHookState,
     runStructuredHookLayer,
@@ -436,7 +433,47 @@ try {
         file: new File([focusBytes], focusManifest.path),
       });
     }
-    if (options.withWhitener) {
+    if (options.isotropicWhitener) {
+      // Native's `isotropic_whitener`: zero means and the identity metric (λ + ridge = 1 on a
+      // full basis), the whitener drowse writes the affine lowering golden under.
+      const identityLayer = (layer) => ({
+        [`layer_${layer}.mean`]: { shape: [2], data: new Float32Array([0, 0]) },
+        [`layer_${layer}.basis`]: { shape: [2, 2], data: new Float32Array([1, 0, 0, 1]) },
+        [`layer_${layer}.eigenvalues`]: { shape: [2], data: new Float32Array([0.5, 0.5]) },
+        [`layer_${layer}.inverse_scales`]: { shape: [2], data: new Float32Array([1, 1]) },
+      });
+      const whitenerTensors = encodeFp32Safetensors({ ...identityLayer(0), ...identityLayer(1) });
+      const tensorManifest = {
+        path: "core/neutral-whitener.safetensors",
+        role: "core_pack",
+        url: "https://example.test/core/neutral-whitener.safetensors",
+        revision: "1".repeat(40),
+        bytes: whitenerTensors.length,
+        sha256: sha256(whitenerTensors),
+      };
+      const whitenerSidecar = jsonBytes({
+        format_version: 1,
+        runtime_identity_sha256: fingerprint,
+        context_binding_sha256: contextBindingSha256,
+        hidden_size: 2,
+        layer_map: [0, 1],
+        tensors_sha256: tensorManifest.sha256,
+        ridge_per_layer: { "0": 0.5, "1": 0.5 },
+      });
+      const sidecarManifest = {
+        path: "core/neutral-whitener.json",
+        role: "core_pack",
+        url: "https://example.test/core/neutral-whitener.json",
+        revision: "1".repeat(40),
+        bytes: whitenerSidecar.length,
+        sha256: sha256(whitenerSidecar),
+      };
+      manifests.push(tensorManifest, sidecarManifest);
+      artifacts.push(
+        { manifest: tensorManifest, file: new File([whitenerTensors], tensorManifest.path) },
+        { manifest: sidecarManifest, file: new File([whitenerSidecar], sidecarManifest.path) },
+      );
+    } else if (options.withWhitener) {
       const whitenerTensors = encodeFp32Safetensors({
         "layer_0.mean": { shape: [2], data: new Float32Array([0.5, -0.5]) },
         "layer_0.basis": { shape: [1, 2], data: new Float32Array([1, 0]) },
@@ -458,7 +495,7 @@ try {
       const whitenerSidecar = jsonBytes({
         format_version: 1,
         runtime_identity_sha256: fingerprint,
-        context_binding_sha256: contextBindingSha256,
+        context_binding_sha256: options.whitenerContextBindingSha256 ?? contextBindingSha256,
         hidden_size: 2,
         layer_map: [0, 1],
         tensors_sha256: tensorManifest.sha256,
@@ -690,7 +727,7 @@ try {
     const request = {
       model: { id: "fixture-model" },
       variant: {
-        structuredHookProfile: options.structuredHookProfile ?? "standard-v1",
+        structuredHookProfile: options.structuredHookProfile ?? "standard-v4",
         runtimeIdentity,
         runtimeIdentitySha256: fingerprint,
         contextProfiles: [
@@ -735,31 +772,36 @@ try {
     };
   }
 
-  test("compiles an exact-runtime fitted node into per-layer hook buffers", async () => {
-    const { request } = await fixture();
+  test("lowers a single fitted node to drowse's affine target and gain (one structured group)", async () => {
+    // drowse writes the golden under its isotropic whitener; a single push takes the same
+    // Mahalanobis lowering as a composed one, so it needs the neutral whitener too.
+    const { request } = await fixture({ isotropicWhitener: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const program = compiler.compile("0.5 alert");
+    assert.equal(program.format, "drowse-structured-v4");
     assert.equal(program.hiddenSize, 2);
     assert.equal(program.layerCount, 2);
-    assert.deepEqual([...program.enabled], [1, 1]);
-    assert.deepEqual([...program.basis], [1, 0, 0, 1]);
-    assertFloatArray(
-      program.target,
-      loweringGolden.layers.map((layer) => layer.expectedTarget),
+    const axis = affineAxis(program);
+    assert.deepEqual(axis.active, [1, 1]);
+    assert.deepEqual(axis.basis, [1, 0, 0, 1]);
+    assertFloatArray(axis.target, loweringGolden.layers.map((layer) => layer.expectedTarget));
+    assertFloatArray(axis.along, loweringGolden.layers.map((layer) => layer.expectedAlong), 1e-5);
+    assert.deepEqual(axis.collapse, [0, 0]);
+    assert.deepEqual([...program.affineActive].filter(Boolean).length, 2);
+    const { request: bare } = await fixture();
+    const unwhitened = await BrowserFeasibilityCorePackCompiler.load(bare);
+    assert.throws(
+      () => unwhitened.compile("0.5 alert"),
+      (error) => error.code === "CORE_PACK_WHITENER_UNAVAILABLE",
     );
-    assertFloatArray(
-      program.along,
-      loweringGolden.layers.map((layer) => layer.expectedAlong),
-    );
-    assert.deepEqual([...program.collapse], [0, 0]);
   });
 
   test("honors a layer clause and refuses one naming an unfitted layer", async () => {
     const { request } = await fixture({ withWhitener: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
-    assert.deepEqual([...compiler.compile("0.5 alert").enabled], [1, 1]);
+    assert.deepEqual(affineAxis(compiler.compile("0.5 alert")).active, [1, 1]);
     const scoped = compiler.compile("0.5 alert{1}");
-    assert.deepEqual([...scoped.enabled], [0, 1]);
+    assert.deepEqual(affineAxis(scoped).active, [0, 1]);
     assert.equal(scoped.steeringDepth, 2);
     assert.equal(scoped.steeringTerms.length, 1);
     assert.equal(scoped.steeringTerms[0].key, "local/demo%alert{1}");
@@ -767,7 +809,7 @@ try {
     assert.deepEqual(scoped.steeringTerms[0].layers, [1]);
     assert.equal(scoped.steeringTerms[0].share.length, 2);
     assert.ok(Math.abs(scoped.steeringTerms[0].share.reduce((a, b) => a + b, 0) - 2) < 1e-9);
-    assert.deepEqual([...compiler.compile("0.5 !alert{0}").enabled], [1, 0]);
+    assert.deepEqual(affineAxis(compiler.compile("0.5 !alert{0}")).active, [1, 0]);
     assert.throws(
       () => compiler.compile("0.5 alert{1,4-5}"),
       (error) => error.status === 422 && error.message ===
@@ -784,13 +826,13 @@ try {
   test("resolves a one-node concept through its label; the retired axis does not resolve", async () => {
     const { request } = await fixture({ withWhitener: true, oneNode: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
-    const toward = compiler.compile("0.5 deceptive");
-    assert.deepEqual([...toward.enabled], [1, 1]);
-    assert.equal(toward.steeringTerms[0].key, "local/demo%deceptive");
-    const away = compiler.compile("-0.5 deceptive");
-    assert.deepEqual([...away.enabled], [1, 1]);
-    assert.ok([...toward.target].every((value) => value > 0));
-    assertFloatArray(away.target, [...toward.target].map((value) => -value));
+    const toward = affineAxis(compiler.compile("0.5 deceptive"));
+    assert.deepEqual(toward.active, [1, 1]);
+    assert.equal(compiler.compile("0.5 deceptive").steeringTerms[0].key, "local/demo%deceptive");
+    const away = affineAxis(compiler.compile("-0.5 deceptive"));
+    assert.deepEqual(away.active, [1, 1]);
+    assert.ok(toward.target.every((value) => value > 0));
+    assertFloatArray(away.push, toward.push.map((value) => -value));
     assertFloatArray(away.along, toward.along);
     for (const retired of ["0.5 honest.deceptive", "0.5 honest", "0.5 demo"]) {
       assert.throws(
@@ -807,8 +849,10 @@ try {
     const borrowed = compiler.compileForGeneration("0.5 alert");
     assert.equal(compiler.compileForGeneration("0.5 alert"), borrowed);
     const publicProgram = compiler.compile("0.5 alert");
-    publicProgram.basis.fill(0);
-    assert.deepEqual([...borrowed.basis], [1, 0, 0, 1]);
+    const borrowedBasis = [...borrowed.affineBasis];
+    publicProgram.affineBasis.fill(0);
+    assert.deepEqual([...borrowed.affineBasis], borrowedBasis);
+    assert.ok(borrowedBasis.some((value) => value !== 0));
     assert.notEqual(compiler.compileForGeneration("0.3 alert"), borrowed);
     const plain = compiler.compileForGeneration("");
     compiler.attachProbe({ selector: "local/demo" });
@@ -820,7 +864,7 @@ try {
       const diagnostics = curved
         ? { eigenvalues: [0, 0.5], picked_k: 1, gap_index: 1, gap_magnitude: 0.5, bandwidth: 1, k_nn: 1, component_count: 1 }
         : { per_component_variance: [1], cumulative_variance: [1], picked_k: 1, threshold: 0.9 };
-      const { request } = await fixture({ auto: true, curved, diagnostics, withWhitener: true, structuredHookProfile: "standard-v3" });
+      const { request } = await fixture({ auto: true, curved, diagnostics, withWhitener: true });
       const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
       const [summary] = compiler.listManifolds();
       assert.equal(summary.fit_mode, "auto");
@@ -839,7 +883,7 @@ try {
   test("lowers unit ablations, neuron pushes, unit probes and unit gates (drowse-structured-v4)", async () => {
     const { decodeStructuredUnitTables } = await server.ssrLoadModule("/src/hosted/runtime/structuredHookProgram.ts");
     const { readingScales } = await server.ssrLoadModule("/src/hosted/runtime/units/scales.ts");
-    const { request } = await fixture({ withWhitener: true, structuredHookProfile: "standard-v4" });
+    const { request } = await fixture({ withWhitener: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     // Without the library's unit sites the compiler refuses in its own words.
     assert.throws(() => compiler.compile("!neuron/L1n2"), (error) => error.message === "neuron/ instrument atoms are not available in the browser runtime");
@@ -887,6 +931,7 @@ try {
     assert.deepEqual(taps[0].scale.top.length, 2, "a neuron's scale is a pole pair");
     assert.equal(gated.controls.units[0].gate.scoreKey, "head/L1h0");
     assert.equal(gated.controls.units[0].gate.threshold, 0.5);
+
     // slens/ atoms push their prepared footprints; an slens/ probe has no GPU slot and its gate
     // reads the post-forward score by name.
     const slensSource = {
@@ -903,6 +948,26 @@ try {
     const slensGated = compiler.compile("!neuron/L1n2@when:slens/e>1");
     assert.equal(slensGated.controls.units[0].gate.scoreKey, "slens/e");
     assert.equal(slensGated.measurementSchema.probes.filter((probe) => probe !== null).length, 0, "no GPU slot");
+    // Its reads run post-forward over the bridge's [L, d] capture, which the program asks for.
+    assert.equal(slensGated.hiddenCapture, true);
+    assert.deepEqual(slensGated.measurementSchema.slensProbes, [{ name: "slens/e", word: "e", tokenId: 72 }]);
+    // Native parse_gate_ref: `name[0]` is the same scalar; another axis of a one-axis family
+    // never fires; another channel is native's UnsupportedProbeChannelError. (A unit takes no
+    // suffix at all: the grammar refuses it.)
+    assert.equal(compiler.compile("!neuron/L1n2@when:slens/e[0]>1").controls.units[0].gate.scoreKey, "slens/e");
+    assert.deepEqual(compiler.compile("!neuron/L1n2@when:slens/e[1]>1").controls.units[0], { enabled: false, phase: slensGated.controls.units[0].phase, gate: null });
+    assert.throws(() => compiler.compile("!neuron/L1n2@when:slens/e:fraction>1"), (error) =>
+      error.code === "UnsupportedProbeChannelError" && error.status === 400 &&
+      error.message === "probe gate 'slens/e:fraction' references the subspace fraction channel, which a lens probe does not produce");
+    assert.throws(() => compiler.compile("!neuron/L1n2@when:head/L1h0[0]>1"), (error) => error.code === "SteeringExprError");
+    compiler.detachProbe("slens/e");
+    // Native resolve_gates: a gate naming no attached probe (and no unit) never fires, so it
+    // reads nothing and compiles as a control that stays off.
+    const unattached = compiler.compile("!neuron/L1n2@when:slens/e>1");
+    assert.deepEqual(unattached.controls.units[0], { enabled: false, phase: slensGated.controls.units[0].phase, gate: null });
+    assert.equal(unattached.measurementSchema.slensProbes, undefined);
+    assert.equal(unattached.hiddenCapture, undefined, "no slens/ read, no capture");
+    compiler.attachProbe({ selector: "slens/e" });
     // Unit and slens/ probes carry native's digests (units-readout-v2, slens-footprint-z-v3).
     const digests = await server.ssrLoadModule("/src/hosted/runtime/units/probeDigest.ts");
     const scales = readingScales(statistics, spec, 2);
@@ -913,6 +978,14 @@ try {
     compiler.setUnitSource({ ...slensSource, slensIdentity: () => null });
     assert.equal(compiler.probeHashes()["slens/e"], undefined, "a swapped source omits the digest, it never throws");
     compiler.setUnitSource(slensSource);
+    // Unit and slens/ probes take no device probe slot: past maxProbes of them, the GPU probe
+    // families still attach (unit probes count against maxUnitTaps instead).
+    const units = [0, 1].flatMap((layer) => [0, 1, 2, 3].map((index) => `neuron/L${layer}n${index}`))
+      .concat(["head/L0h0", "head/L0h1"])
+      .filter((selector) => selector !== "neuron/L0n1");
+    for (const selector of units) compiler.attachProbe({ selector });
+    assert.ok(compiler.listProbes().length > 8, "more probes than standard-v4's 8 device slots");
+    for (const selector of units) compiler.detachProbe(selector);
     // A unit outside the model is native's 400; a library without unit sites is native's 422.
     assert.throws(() => compiler.compile("!neuron/L1n9"), (error) => error.status === 400 && /neuron 9 is outside block 1/.test(error.message));
     compiler.setUnitSource({ ...source, spec: null, refusal: "layer 0: the attention projections are fused (qkv)" });
@@ -921,7 +994,7 @@ try {
 
   test("loads a verified legacy-named core archive", async () => {
     for (const extension of ["polythetic", "saklas", "saklaspack"]) {
-      const { request } = await fixture({ archiveName: `demo.${extension}` });
+      const { request } = await fixture({ archiveName: `demo.${extension}`, withWhitener: true });
       const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
       assert.equal(compiler.compile("0.5 alert").layerCount, 2);
     }
@@ -931,7 +1004,7 @@ try {
     const { request } = await fixture({ fittedContextBindingSha256: "e".repeat(64) });
     await assert.rejects(() => BrowserFeasibilityCorePackCompiler.load(request),
       /has no fit for this exact browser runtime/);
-    const unbound = await fixture({ fittedContextBindingSha256: null });
+    const unbound = await fixture({ fittedContextBindingSha256: null, withWhitener: true });
     assert.equal((await BrowserFeasibilityCorePackCompiler.load(unbound.request))
       .compile("0.5 alert").layerCount, 2);
   });
@@ -948,7 +1021,7 @@ try {
       request.contextTokens = contextTokens;
       const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
       assert.equal(compiler.listManifolds().length, 1);
-      assert.equal(compiler.compile("0.5 alert").layerCount, 2);
+      assert.equal(compiler.listManifolds()[0].fitted_for_session, true);
     }
     request.variant.contextProfiles.push({ contextTokens: 8192, bindingSha256: "f".repeat(64) });
     request.contextTokens = 8192;
@@ -969,8 +1042,9 @@ try {
         runtimeAbi: `${slug}-web-runtime-v1`,
       }));
       const { contextBindingSha256 } = await server.ssrLoadModule("/src/lib/runtime/catalog.ts");
-      const legacy = await fixture({ fingerprint: legacyFingerprint,
-        fittedContextBindingSha256: contextBindingSha256(legacyFingerprint, 2048) });
+      const legacyBinding = contextBindingSha256(legacyFingerprint, 2048);
+      const legacy = await fixture({ fingerprint: legacyFingerprint, withWhitener: true,
+        fittedContextBindingSha256: legacyBinding, whitenerContextBindingSha256: legacyBinding });
       legacy.request.variant.runtimeIdentity = currentIdentity;
       legacy.request.variant.runtimeIdentitySha256 = currentFingerprint;
 
@@ -980,7 +1054,7 @@ try {
   });
 
   test("requires explicit role selectors and stamps the active generation role", async () => {
-    const { request } = await fixture({ role: "scholar" });
+    const { request } = await fixture({ role: "scholar", withWhitener: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const [profile] = compiler.listProfiles().profiles;
     assert.equal(profile.name, "local/demo:role-scholar");
@@ -1034,7 +1108,6 @@ try {
       sphere: true,
       nodeRoles: ["prime", "quarter"],
       withWhitener: true,
-      structuredHookProfile: "standard-v3",
     });
     const sphereCompiler = await BrowserFeasibilityCorePackCompiler.load(sphere.request);
     assert.equal(
@@ -1114,25 +1187,31 @@ try {
     );
   });
 
-  test("matches Python rank-one mean-replacement ablation", async () => {
+  test("matches Python mean-replacement ablation", async () => {
     const { request } = await fixture({ withWhitener: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const program = compiler.compile(ablationGolden.expression);
-    assert.deepEqual([...program.enabled], [1, 1]);
-    assert.deepEqual([...program.target], [0, 0]);
-    assert.deepEqual([...program.along], [1, 1]);
-    assert.deepEqual([...program.collapse], [
-      ablationGolden.coefficient,
-      ablationGolden.coefficient,
-    ]);
+    assert.equal(program.format, "drowse-structured-v4");
+    const axis = affineAxis(program);
+    assert.deepEqual(axis.active, [1, 1]);
+    assert.deepEqual(axis.target, [0, 0]);
+    assertFloatArray(axis.collapse, [ablationGolden.coefficient, ablationGolden.coefficient]);
+    assert.deepEqual(axis.basis, ablationGolden.layers.flatMap((layer) => layer.basis));
+    assert.deepEqual(axis.neutral, ablationGolden.layers.flatMap((layer) => layer.neutral));
     for (const layer of ablationGolden.layers) {
-      assert.deepEqual(
-        [...runRankOneHookLayer(program, layer.layer, new Float32Array(layer.input)).residual],
+      assertFloatArray(
+        runStructuredHookLayer(
+          program,
+          initialStructuredHookState(program),
+          layer.layer,
+          new Float32Array(layer.input),
+        ).residual,
         layer.expected,
+        1e-6,
       );
     }
     const mixed = compiler.compile("0.5 !alert + 0.25 calm");
-    assert.equal(mixed.format, "drowse-structured-v2");
+    assert.equal(mixed.format, "drowse-structured-v4");
     assert.deepEqual([...mixed.affineActive.slice(0, 2)], [1, 0]);
   });
 
@@ -1142,7 +1221,7 @@ try {
     const input = new Float32Array([0.4, -0.2]);
     const execute = (expression) => {
       const program = compiler.compile(expression);
-      assert.equal(program.format, "drowse-structured-v2");
+      assert.equal(program.format, "drowse-structured-v4");
       return runStructuredHookLayer(
         program,
         initialStructuredHookState(program),
@@ -1164,10 +1243,10 @@ try {
     const bare = bareCompiler.compile("0.1 alert");
     const both = bareCompiler.compile("0.1 alert@both");
     assert.equal(both.format, bare.format);
-    assertFloatArray(both.target, bare.target);
-    assertFloatArray(both.along, bare.along);
-    // A probe forces the structured path without changing the steering: the same push as an
-    // explicitly phased term (the layer runner applies the compiled active flags).
+    assertFloatArray(both.affineTarget, bare.affineTarget);
+    assertFloatArray(both.affineAlong, bare.affineAlong);
+    // A probe does not change the steering: the same push as an explicitly phased term (the
+    // layer runner applies the compiled active flags).
     const explicitStructured = bareCompiler.compile("0.1 alert@response");
     compiler.attachProbe({ selector: "demo", name: "demo" });
     const probeForcedStructured = compiler.compile("0.1 alert");
@@ -1209,7 +1288,6 @@ try {
     const { request } = await fixture({
       curved: true,
       withWhitener: true,
-      structuredHookProfile: "standard-v2",
     });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const combined = compiler.compile("0.2,0.1 demo%alert + 0.3,0.2 demo%alert");
@@ -1301,8 +1379,8 @@ try {
     const raw = await BrowserFeasibilityCorePackCompiler.load(rawFixture.request);
     const canonical = raw.compile("0.5 demo");
     const mixedCase = raw.compile("0.5 Demo");
-    assertFloatArray(mixedCase.basis, canonical.basis);
-    assertFloatArray(mixedCase.target, canonical.target);
+    assertFloatArray(mixedCase.affineBasis, canonical.affineBasis);
+    assertFloatArray(mixedCase.affineTarget, canonical.affineTarget);
     assert.throws(
       () => raw.compile("0.5 local/alert"),
       (error) => error.code === "CORE_PACK_SELECTOR_NOT_FOUND",
@@ -1321,7 +1399,7 @@ try {
     const { request } = await fixture({ withWhitener: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const phased = compiler.compile("0.5 alert@response");
-    assert.equal(phased.format, "drowse-structured-v2");
+    assert.equal(phased.format, "drowse-structured-v4");
     assert.equal(structuredHookControlsFor(phased, {
       prefill: true,
       thinking: false,
@@ -1333,22 +1411,34 @@ try {
       generatedTokens: 1,
     }).affineActive[0], 1);
 
+    // A gate naming no attached probe never fires (native resolve_gates): its control is off
+    // and nothing is read for it.
+    const unattached = compiler.compile("0.5 alert@when:demo>0");
+    assert.equal(unattached.controls.affine[0].enabled, false);
+    assert.equal(unattached.controls.affine[0].gate, null);
+    assert.equal(unattached.geometryActive?.[0] ?? 0, 0);
+    assert.equal(structuredHookControlsFor(unattached, {
+      prefill: false, thinking: false, generatedTokens: 1, priorScores: { demo: 0.25 },
+    }).affineActive[0], 0);
+    // A gate on an attached manifold probe is its geometry readout, read back by its verbatim
+    // key (`scoreKey`).
+    compiler.attachProbe({ selector: "demo", name: "demo" });
     const gated = compiler.compile("0.5 alert@when:demo>0");
-    assert.equal(gated.probeKind[0], 1);
-    const highProbe = new Float32Array(16);
-    highProbe[0] = 0.25;
-    highProbe[8] = 0.25;
+    assert.equal(gated.probeKind[0], 0);
+    assert.equal(gated.geometryActive[0], 1);
+    assert.equal(gated.controls.affine[0].gate.scoreKey, "demo");
+    assert.deepEqual(gated.controls.affine[0].gate.slots, []);
     assert.equal(structuredHookControlsFor(gated, {
       prefill: false,
       thinking: false,
       generatedTokens: 1,
-      priorMeasurements: highProbe,
+      priorScores: { demo: 0.25 },
     }).affineActive[0], 1);
     assert.equal(structuredHookControlsFor(gated, {
       prefill: false,
       thinking: false,
       generatedTokens: 1,
-      priorMeasurements: new Float32Array(16),
+      priorScores: { demo: 0 },
     }).affineActive[0], 0);
   });
 
@@ -1360,7 +1450,7 @@ try {
     const byCoordinates = compiler.compile("0.5 demo%1@response&when:demo>0");
 
     for (const program of [byLabel, byCoordinates]) {
-      assert.equal(program.format, "drowse-structured-v2");
+      assert.equal(program.format, "drowse-structured-v4");
       assert.deepEqual([...program.curveActive], new Array(program.curveActive.length).fill(0));
       assert.deepEqual([...program.affineActive], [...direct.affineActive]);
       assertFloatArray(program.affineBasis, direct.affineBasis);
@@ -1385,7 +1475,7 @@ try {
     const bare = compiler.compile("0.5 east");
     const explicit = compiler.compile("0.5 demo%east");
 
-    assert.equal(bare.format, "drowse-structured-v2");
+    assert.equal(bare.format, "drowse-structured-v4");
     assert.deepEqual([...bare.curveActive], new Array(bare.curveActive.length).fill(0));
     assertFloatArray(bare.affineBasis, explicit.affineBasis);
     assertFloatArray(bare.affineTarget, explicit.affineTarget);
@@ -1432,10 +1522,11 @@ try {
     const { request } = await fixture({ curved: true, withWhitener: true, withSae: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const bareLabel = compiler.compile("calm");
-    assert.equal(bareLabel.format, "drowse-structured-v2");
+    assert.equal(bareLabel.format, "drowse-structured-v4");
     assert.equal(bareLabel.curveActive.some(Boolean), true);
+    compiler.attachProbe({ selector: "sae/0" });
     const program = compiler.compile("0.5,1 demo%alert@response&when:sae/0>0.2");
-    assert.equal(program.format, "drowse-structured-v2");
+    assert.equal(program.format, "drowse-structured-v4");
     assert.deepEqual([...program.curveRank.filter(Boolean)], [2, 2]);
     assert.deepEqual([...program.curveNodeCount.filter(Boolean)], [2, 2]);
     assert.deepEqual([...program.curveSigmaPresent.filter(Boolean)], [1, 1]);
@@ -1514,8 +1605,9 @@ try {
   test("loads a local v1 SAE and lowers decoder steering plus an exact ReLU gate", async () => {
     const { request } = await fixture({ withWhitener: true, withSae: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+    compiler.attachProbe({ selector: "sae/0" });
     const program = compiler.compile("0.5 sae/0@when:sae/0>0.2");
-    assert.equal(program.format, "drowse-structured-v2");
+    assert.equal(program.format, "drowse-structured-v4");
     assert.equal(structuredHookControlsFor(program, {
       prefill: true,
       thinking: false,
@@ -1558,6 +1650,8 @@ try {
         assert.equal(result.probes[0], 1.5);
         const atThreshold = runStructuredHookLayer(program, initialStructuredHookState(program), 1, [0.75, 1.75]);
         assert.equal(atThreshold.probes[0], 0, "JumpReLU is inactive at its threshold");
+        // A gate names the attached probe it reads (native resolve_gates).
+        compiler.attachProbe({ selector: "sae/0" });
         const gated = compiler.compile("0.5 alert@when:sae/0>1.4");
         const prior = new Float32Array(gated.layerCount * gated.profile.maxProbes);
         prior[gated.profile.maxProbes] = result.probes[0];
@@ -1729,6 +1823,8 @@ try {
       "activation_over_max",
     );
     assert.equal(envelope.instruments.sae.readout, undefined);
+    // A gate names the attached probe it reads (native resolve_gates).
+    compiler.attachProbe({ selector: "sae/0" });
     const gated = compiler.compile("0.5 alert@when:sae/0>0.4");
     const prior = new Float32Array(gated.layerCount * gated.profile.maxProbes);
     prior[gated.profile.maxProbes] = 0.5;
@@ -1907,7 +2003,7 @@ try {
     const { request } = await fixture({ withWhitener: true, withJlens: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const program = compiler.compile("0.5 jlens/hello");
-    assert.equal(program.format, "drowse-structured-v2");
+    assert.equal(program.format, "drowse-structured-v4");
     assert.deepEqual([...program.affineActive.filter(Boolean)], [1, 1]);
     const layer0 = program.affineBasis.slice(0, 2);
     const layer1 = program.affineBasis.slice(4 * 8 * 2, 4 * 8 * 2 + 2);
@@ -1994,6 +2090,7 @@ try {
       "0.5 jlens/novel@when:jlens/novel>0.01",
       resolver,
     );
+    compiler.attachProbe({ selector: "jlens/novel" });
     const program = compiler.compile("0.5 jlens/novel@when:jlens/novel>0.01");
     assertFloatArray(program.affineBasis.slice(0, 2), [7 / Math.sqrt(113), 8 / Math.sqrt(113)]);
     assertFloatArray(
@@ -2006,13 +2103,16 @@ try {
     const tokenize = resolver.tokenizeText;
     resolver.tokenizeText = async () => assert.fail("a #<id> atom names its token without tokenizing");
     await compiler.prepareJlensSelectors("0.5 jlens/#7@when:jlens/#7>0.01", resolver);
+    compiler.attachProbe({ selector: "jlens/#7" });
     const exact = compiler.compile("0.5 jlens/#7@when:jlens/#7>0.01");
     assert.equal(exact.jLensTokenIds[0], 7);
     assertFloatArray(exact.affineBasis.slice(0, 2), [7 / Math.sqrt(113), 8 / Math.sqrt(113)]);
     assert.deepEqual(batches, [[7]], "the exact id reuses the resolved directions");
     // An id past the vocabulary fails as drowse's InvalidTokenIdError does,
     // before any direction lookup reaches the runtime.
-    for (const expression of ["0.5 jlens/#128", "0.5 x@when:jlens/#4096>0.01"]) {
+    // A gate naming no attached probe reads nothing, so its word is never resolved.
+    await compiler.prepareJlensSelectors("0.5 x@when:jlens/#4096>0.01", resolver);
+    for (const expression of ["0.5 jlens/#128"]) {
       await assert.rejects(
         compiler.prepareJlensSelectors(expression, resolver),
         (error) =>
@@ -2110,6 +2210,7 @@ try {
     };
 
     await compiler.prepareJlensSelectors("0.5 jlens/novel", resolver);
+    compiler.attachProbe({ selector: "jlens/novel" });
     const program = compiler.compile("0.5 jlens/novel@when:jlens/novel>0.01");
     assert.equal(program.affineActive.filter(Boolean).length, 1);
     assert.equal(program.affineActive[0], 0);
@@ -2128,7 +2229,7 @@ try {
     const { request } = await fixture({ withWhitener: true, withSae: true, withJlens: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const program = compiler.compile("0.25 alert + 0.1 sae/1 + 0.2 jlens/world + 0.5 !calm");
-    assert.equal(program.format, "drowse-structured-v2");
+    assert.equal(program.format, "drowse-structured-v4");
     assert.equal(program.affineActive.filter(Boolean).length, 2);
   });
 
@@ -2137,14 +2238,13 @@ try {
       withWhitener: true,
       withSae: true,
       withJlens: true,
-      structuredHookProfile: "standard-v3",
     });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     compiler.setInstrumentLive("lens", true);
     compiler.setInstrumentLive("sae", true);
     const program = compiler.compile("");
 
-    assert.equal(program.format, "drowse-structured-v3");
+    assert.equal(program.format, "drowse-structured-v4");
     assert.equal(program.measurementSchema.probes.some((probe) => probe?.family === "lens"), false);
     assert.equal(program.measurementSchema.probes.some((probe) => probe?.family === "sae"), false);
     assert.equal(program.measurementSchema.lensReadout, true);
@@ -2157,9 +2257,11 @@ try {
   });
 
   test("keeps lens gate and pinned means independent of live display layers", async () => {
-    const { request } = await fixture({ withWhitener: true, withJlens: true, structuredHookProfile: "standard-v3" });
+    const { request } = await fixture({ withWhitener: true, withJlens: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
-    for (const pinned of [false, true]) {
+    // Unattached, the gate reads nothing and never fires (native resolve_gates).
+    assert.equal(compiler.compile("0.5 alert@when:jlens/hello>0.6").controls.affine[0].enabled, false);
+    for (const pinned of [true]) {
       if (pinned) compiler.attachProbe({ selector: "jlens/hello", name: "jlens/hello" });
       for (const [enabled, layers] of [[false, undefined], [true, undefined], [true, [1]], [true, [0]]]) {
         compiler.setInstrumentLive("lens", enabled, layers);
@@ -2185,7 +2287,6 @@ try {
     const { request } = await fixture({
       withWhitener: true,
       withJlens: true,
-      structuredHookProfile: "standard-v3",
     });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     compiler.setInstrumentLive("lens", true, [1]);
@@ -2260,7 +2361,6 @@ try {
       withWhitener: true,
       withJlens: true,
       withSecondJlens: true,
-      structuredHookProfile: "standard-v3",
     });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const installedDictionaries = [];
@@ -2323,12 +2423,32 @@ try {
     });
     assert.deepEqual(Object.keys(listed.sources[1].split_half.out), ["0", "1"]);
 
+    // A units service the model load configured: an R source change drops its resident reads and
+    // re-sources the compiler's unit programs over the new packs.
+    let unitResets = 0;
+    let unitSources = 0;
+    await runtime.configureUnits({
+      reset() { unitResets += 1; },
+      async programSource() {
+        unitSources += 1;
+        return {
+          spec: null, refusal: "fixture refusal", layerCount: 2, statistics: null, scales: null,
+          neuronWrite: () => null, slensAtom: () => null, slensIdentity: () => null,
+          prepare: async () => undefined, prepareProbe: async () => undefined,
+        };
+      },
+      async request() { throw new Error("not called"); },
+    });
+    assert.deepEqual([unitResets, unitSources], [0, 1]);
     const switched = await runtime.request({
       service: "instruments",
       method: "setLensSource",
       args: ["fixture-rlens"],
     }, () => null);
     assert.deepEqual(switched, { source: "fixture-rlens", live_layers: [0, 1] });
+    assert.deepEqual([unitResets, unitSources], [1, 2], "the R switch resets the units service");
+    await runtime.request({ service: "instruments", method: "setLensSource", args: ["fixture-rlens"] }, () => null);
+    assert.deepEqual([unitResets, unitSources], [1, 2], "the same source keeps it");
     assert.equal(installedDictionaries.length, 1);
     assert.equal(installedDictionaries[0].bindingId, compiler.jlensGpuDictionary().bindingId);
     assert.equal(compiler.listProbes()[0].token_id, 0);
@@ -2357,7 +2477,6 @@ try {
     const { request } = await fixture({
       withWhitener: true,
       withJlens: true,
-      structuredHookProfile: "standard-v3",
     });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const resolver = {
@@ -2389,7 +2508,6 @@ try {
       withWhitener: true,
       withJlens: true,
       withSae: true,
-      structuredHookProfile: "standard-v3",
     });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const resolver = {
@@ -2421,7 +2539,6 @@ try {
       withWhitener: true,
       withSae: true,
       withJlens: true,
-      structuredHookProfile: "standard-v3",
     });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     for (let index = 0; index < 8; index += 1) {
@@ -2443,6 +2560,7 @@ try {
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const thinking = compiler.compile("0.5 alert@thinking");
     assert.equal(thinking.controls.affine[0].phase.kind, "thinking_only");
+    compiler.attachProbe({ selector: "jlens/hello" });
     const jlensGate = compiler.compile("0.5 alert@when:jlens/hello>0.1");
     assert.equal(jlensGate.probeKind[0], 3);
     assert.equal(jlensGate.probeKind[8], 3);
@@ -2451,6 +2569,7 @@ try {
     assert.deepEqual([...jlensGate.jLensTokenIds], [0, 0, 0, 0, 0, 0, 0, 0]);
     // A gate reads the attached probe it names, whatever the alias: an R-lens probe attached as
     // `slens/watch` installs as a lens gate (drowse attaches under any as_name).
+    compiler.detachProbe("jlens/hello");
     compiler.attachProbe({ selector: "jlens/hello", name: "slens/watch" });
     const aliased = compiler.compile("0.5 alert@when:slens/watch>0.1");
     assert.equal(aliased.probeKind[0], 3);
@@ -2458,11 +2577,11 @@ try {
   });
 
   test("resolves a two-node PCA manifold name to its first pole", async () => {
-    const { request } = await fixture();
+    const { request } = await fixture({ isotropicWhitener: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
-    const program = compiler.compile("0.25 local/demo");
-    assertFloatArray(program.target, [-0.25, -0.25]);
-    assertFloatArray(program.along, [32 / 3, 64 / 3]);
+    const axis = affineAxis(compiler.compile("0.25 local/demo"));
+    assertFloatArray(axis.push, [-0.25, 0, 0, -0.25]);
+    assertFloatArray(axis.along, [32 / 3, 64 / 3], 1e-5);
   });
 
   test("canonicalizes steering deltas through installed manifold identities", async () => {
@@ -2510,16 +2629,20 @@ try {
     assert.equal(compiler.hasAttachedProbes(), true);
 
     const program = compiler.compile("");
-    assert.equal(program.format, "drowse-structured-v2");
-    assert.equal(program.measurementSchema.probes[0].name, "calm scale");
-    assert.equal(program.measurementSchema.probes[0].family, "geometry");
+    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.measurementSchema.probes[0], null);
+    assert.equal(program.measurementSchema.geometryProbes[0].name, "calm scale");
+    assert.deepEqual(program.measurementSchema.geometryProbes[0].scoreKeys, ["calm scale"]);
     const layer0 = runStructuredHookLayer(
       program,
       initialStructuredHookState(program),
       0,
       [0.85, 0.2],
+      { decode: false },
     );
-    assert.ok(Math.abs(layer0.probes[0] - 0.75) <= 1e-6);
+    // Valid, then the fitted coordinate (Mahalanobis projection onto the basis, from the mean).
+    assert.equal(layer0.geometry[0], 1);
+    assert.ok(Math.abs(layer0.geometry[4] - 0.75) <= 1e-6);
 
     const geometry = compiler.probeGeometry("calm scale");
     assert.equal(geometry.manifold, "local/demo");
@@ -2541,13 +2664,12 @@ try {
       curved: true,
       mixedRank: true,
       withWhitener: true,
-      structuredHookProfile: "standard-v2",
     });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const attached = compiler.attachProbe({ selector: "local/demo", top_n: 3 });
     assert.equal(attached.intrinsic_dim, 1);
     const program = compiler.compile("");
-    assert.equal(program.format, "drowse-structured-v3");
+    assert.equal(program.format, "drowse-structured-v4");
     assert.equal(program.profile.geometryOutputStride, 41);
     assert.deepEqual([...program.whitenerRank], [1, 1]);
     assert.deepEqual([...program.geometryKind.filter(Boolean)], [2, 2]);
@@ -2598,7 +2720,6 @@ try {
       curved: true,
       mixedRank: true,
       withWhitener: true,
-      structuredHookProfile: "standard-v2",
       curveOrigin,
     });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
@@ -2635,12 +2756,11 @@ try {
     const { request } = await fixture({
       sphere: true,
       withWhitener: true,
-      structuredHookProfile: "standard-v2",
     });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     compiler.attachProbe({ selector: "local/demo" });
     const program = compiler.compile("0.5 local/demo%alert");
-    assert.equal(program.format, "drowse-structured-v3");
+    assert.equal(program.format, "drowse-structured-v4");
     assert.deepEqual([...program.curveDomainKind.filter(Boolean)], [2, 2]);
     assert.deepEqual([...program.geometryDomainKind.filter(Boolean)], [2, 2]);
     const result = runStructuredHookLayer(
@@ -2801,23 +2921,12 @@ try {
     const { request } = await fixture({
       curved: true,
       withWhitener: true,
-      structuredHookProfile: "standard-v2",
     });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     compiler.attachProbe({ selector: "local/demo", name: "curved identity" });
     assert.deepEqual(compiler.probeHashes(), {
       "curved identity": "cd50e11ceaaef63c1603be13a7a31c99f3ed3c50cc06bcd1a45ed0905e3c91ca",
     });
-  });
-
-  test("rejects curved geometry attachment before generation", async () => {
-    const { request } = await fixture({ curved: true, withWhitener: true });
-    const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
-    assert.throws(
-      () => compiler.attachProbe({ selector: "local/demo" }),
-      (error) => error.code === "CORE_PACK_CURVED_GATE_UNAVAILABLE",
-    );
-    assert.deepEqual(compiler.listProbes(), []);
   });
 
   test("selects the neutral whitener bound to the active context", async () => {
@@ -2829,7 +2938,7 @@ try {
   });
 
   test("activates exact-runtime fitted manifolds from the local artifact repository", async () => {
-    const fixtureWithLocal = await fixture({ withSecondManifold: true });
+    const fixtureWithLocal = await fixture({ withSecondManifold: true, withWhitener: true });
     const focus = fixtureWithLocal.artifacts.find((artifact) =>
       artifact.manifest.path.endsWith("/focus.drowse")
     );
@@ -2854,7 +2963,6 @@ try {
       withSecondManifold: true,
       withSae: true,
       withJlens: true,
-      structuredHookProfile: "standard-v3",
     });
     const focus = artifacts.find((artifact) => artifact.manifest.path.endsWith("/focus.drowse"));
     request.artifacts = request.artifacts.filter((artifact) => artifact !== focus);
@@ -2895,7 +3003,7 @@ try {
   });
 
   test("keeps incompatible local fitted manifolds installed but inactive", async () => {
-    const compatible = await fixture();
+    const compatible = await fixture({ withWhitener: true });
     const incompatible = await fixture({
       fingerprint: "b".repeat(64),
       withSecondManifold: true,
@@ -2919,7 +3027,7 @@ try {
   });
 
   test("keeps a local fit for another context installed but inactive", async () => {
-    const compatible = await fixture();
+    const compatible = await fixture({ withWhitener: true });
     const otherContext = await fixture({
       withSecondManifold: true,
       fittedContextBindingSha256: "e".repeat(64),
@@ -2957,28 +3065,33 @@ try {
       const { request } = await fixture({ withWhitener: true, withSecondManifold: true });
       const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
       const program = compiler.compile(golden.expression);
-      assert.deepEqual([...program.enabled], [1, 1]);
+      assert.deepEqual(affineAxis(program).active, [1, 1]);
+      // drowse records the push as one world target (its direction and length); the group
+      // holds it in the span of the fragments' bases, so compare the world target it sums to.
+      const { maxAffineGroups, maxRank } = program.profile;
+      const d = program.hiddenSize;
       golden.expectedLayers.forEach((expected, programIndex) => {
-        const offset = programIndex * program.hiddenSize;
-        assertFloatArray(
-          program.basis.slice(offset, offset + program.hiddenSize),
-          expected.basis,
-          2e-6,
-        );
-        assertFloatArray(
-          program.neutral.slice(offset, offset + program.hiddenSize),
-          expected.neutral,
-        );
-        assert.ok(Math.abs(program.target[programIndex] - expected.target) <= 2e-6);
-        assert.ok(Math.abs(program.along[programIndex] - expected.along) <= 2e-5);
-        const delta = program.basis.slice(offset, offset + program.hiddenSize)
-          .map((value) => value * program.target[programIndex] * program.along[programIndex]);
-        assertFloatArray(delta, expected.delta, 3e-5);
+        const slot = programIndex * maxAffineGroups;
+        const world = new Float64Array(d);
+        for (let axis = 0; axis < maxRank; axis += 1) {
+          const row = (slot * maxRank + axis) * d;
+          for (let column = 0; column < d; column += 1) {
+            world[column] += program.affineTarget[slot * maxRank + axis] *
+              program.affineBasis[row + column];
+          }
+        }
+        const target = Math.hypot(...world);
+        assertFloatArray([...world].map((value) => value / target), expected.basis, 2e-6);
+        assertFloatArray(program.affineNeutral.slice(slot * d, (slot + 1) * d), expected.neutral);
+        assert.ok(Math.abs(target - expected.target) <= 2e-6);
+        assert.ok(Math.abs(program.affineAlong[slot] - expected.along) <= 2e-5);
+        assert.ok([...program.affineKappa.slice(slot * maxRank, (slot + 1) * maxRank)].every((value) => value === 0));
+        assertFloatArray([...world].map((value) => value * program.affineAlong[slot]), expected.delta, 3e-5);
       });
 
       compiler.attachProbe({ selector: "demo", name: "structured parity" });
       const structured = compiler.compile(golden.expression);
-      assert.equal(structured.format, "drowse-structured-v2");
+      assert.equal(structured.format, "drowse-structured-v4");
       golden.expectedLayers.forEach((expected, programIndex) => {
         const residual = runStructuredHookLayer(
           structured,
@@ -3046,10 +3159,12 @@ try {
     for (const [expression, namespace] of [
       ["0.5 alert@when:neuron/L8n344>2", "neuron"],
       ["0.5 alert@after&when:head/L3h2<=0.5", "head"],
-      ["0.5 alert@when:slens/Owl>3", "slens"],
     ]) {
       assert.throws(() => whitened.compile(expression), unavailable(namespace), expression);
     }
+    // A gate on an slens/ probe nothing attached reads nothing (native): it compiles and never
+    // fires, with or without an S lens.
+    assert.equal(whitened.compile("0.5 alert@when:slens/Owl>3").controls.affine[0].enabled, false);
     for (const [expression, namespace] of [
       ["0.3 slens/#12", "slens"],
       ["0.3 slens/Owl", "slens"],
@@ -3094,6 +3209,26 @@ function canonicalJson(value) {
     )).join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+/** One affine group's first axis at every program layer (a single push or ablation is rank 1). */
+function affineAxis(program, group = 0) {
+  const { maxAffineGroups, maxRank } = program.profile;
+  const d = program.hiddenSize;
+  const slots = Array.from({ length: program.layerCount }, (_, layer) => layer * maxAffineGroups + group);
+  return {
+    active: slots.map((slot) => program.affineActive[slot]),
+    basis: slots.flatMap((slot) => [...program.affineBasis.slice(slot * maxRank * d, slot * maxRank * d + d)]),
+    neutral: slots.flatMap((slot) => [...program.affineNeutral.slice(slot * d, (slot + 1) * d)]),
+    target: slots.map((slot) => program.affineTarget[slot * maxRank]),
+    along: slots.map((slot) => program.affineAlong[slot]),
+    collapse: slots.map((slot) => program.affineAlong[slot] * program.affineKappa[slot * maxRank]),
+    // The axis's world target (target · basis), independent of the basis sign.
+    push: slots.flatMap((slot) => Array.from(
+      program.affineBasis.slice(slot * maxRank * d, slot * maxRank * d + d),
+      (value) => value * program.affineTarget[slot * maxRank],
+    )),
+  };
 }
 
 function assertFloatArray(actual, expected, tolerance = 1e-6) {

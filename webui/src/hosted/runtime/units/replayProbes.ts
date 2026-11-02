@@ -52,17 +52,34 @@ export async function lensProbeReadings(
   }
   const slens = probes.filter((probe) => probe.namespace === "slens" && probe.token_id !== null);
   if (slens.length > 0 && context.s !== null && context.means.out !== null) {
-    const { layers, rows } = await slensProbeRows(context, out, Int32Array.from(slens, (probe) => probe.token_id!));
-    slens.forEach((probe, i) => {
-      // `[3 + c]`: the w_S-weighted mean z, depth center, depth spread, then z per S:out layer.
-      const row = rows[i];
-      readings[probe.name] = {
-        value: roundReading(row[0]),
-        unit: UNIT_MEAN_FOOTPRINT_Z,
-        per_layer: Object.fromEntries(layers.map((layer, l) => [String(layer), roundReading(row[3 + l])])),
-        depth: { center: [roundReading(row[1])], spread: [roundReading(row[2])], basis: "footprint_z" },
-      };
-    });
+    const scored = await slensReadings(context, out, slens.map((probe) => ({ name: probe.name, tokenId: probe.token_id! })));
+    Object.assign(readings, scored.readings);
   }
   return readings;
+}
+
+/** `slens/` readings over `out` (`[L, d]`): per probe the footprint z through the S lens
+ *  (native `_InputBlock.readings`, rounded as the wire rounds them) and its exact w_S-weighted
+ *  mean z, the scalar a gate reads (`gate_scalars`). */
+export async function slensReadings(
+  context: UnitsReadContext,
+  out: Float32Array,
+  probes: readonly { readonly name: string; readonly tokenId: number }[],
+): Promise<{ readings: Record<string, ScalarReadingJSON>; values: Record<string, number> }> {
+  const readings: Record<string, ScalarReadingJSON> = {};
+  const values: Record<string, number> = {};
+  if (probes.length === 0) return { readings, values };
+  const { layers, rows } = await slensProbeRows(context, out, Int32Array.from(probes, (probe) => probe.tokenId));
+  probes.forEach((probe, i) => {
+    // `[3 + c]`: the w_S-weighted mean z, depth center, depth spread, then z per S:out layer.
+    const row = rows[i];
+    values[probe.name] = row[0];
+    readings[probe.name] = {
+      value: roundReading(row[0]),
+      unit: UNIT_MEAN_FOOTPRINT_Z,
+      per_layer: Object.fromEntries(layers.map((layer, l) => [String(layer), roundReading(row[3 + l])])),
+      depth: { center: [roundReading(row[1])], spread: [roundReading(row[2])], basis: "footprint_z" },
+    };
+  });
+  return { readings, values };
 }

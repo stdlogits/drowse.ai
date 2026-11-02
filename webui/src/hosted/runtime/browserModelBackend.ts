@@ -266,7 +266,10 @@ export function createDrowseBrowserModelBackend(
     },
     async compileSteering({ expression, loadRequest, probeRequests }) {
       const compiler = await compilerFor(loadRequest);
+      // What the synchronous compile reads off the device first: `jlens/` words, and through the
+      // unit source each `neuron/` push's write and each `slens/` atom (and probe) direction.
       await compiler.prepareJlensSelectors(expression, runtime);
+      await compiler.prepareUnitSelectors(expression);
       if (probeRequests !== undefined) {
         const words = probeRequests.flatMap((request) => {
           const selector = request.selector.trim();
@@ -275,6 +278,7 @@ export function createDrowseBrowserModelBackend(
             : [];
         });
         await compiler.prepareJlensWords(words, runtime);
+        for (const request of probeRequests) await compiler.prepareUnitProbe(request.selector);
       }
       return compiler.compileForGeneration(expression, probeRequests);
     },

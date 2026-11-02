@@ -237,6 +237,9 @@ export interface BrowserEmbeddingStatistics {
   readonly vocabRows: number;
   readonly embeddingScale: number;
   readonly maskDescription: { readonly source: string; readonly detail: string; readonly kept: number };
+  /** Native `LensInstrument._mask_digest()` of the counts the mask was built from (or
+   *  `"tokenizer"` without counts): what an `slens/` probe's digest binds. */
+  readonly maskDigest: string;
   readonly tokenizerFingerprint: string;
 }
 
@@ -537,6 +540,11 @@ export class BrowserInstrumentRegistry {
     return lens?.sites.get(site)?.layers ?? [];
   }
 
+  /** The active `family` source's pack id (the label a units binding names), or null. */
+  lensSource(family: BrowserLensFamily): string | null {
+    return (family === "R" ? this.jlens : this.slens)?.source ?? null;
+  }
+
   /** `family`'s lens identity (`lens_identity` of the pack manifest), or null. */
   lensIdentity(family: BrowserLensFamily): string | null {
     return (family === "R" ? this.jlens : this.slens)?.identity ?? null;
@@ -789,16 +797,12 @@ export class BrowserInstrumentRegistry {
     ]));
   }
 
+  /** The probe digest of a `jlens/` or `sae/` probe (the compiler hashes geometry, unit and
+   *  `slens/` probes itself). */
   probeHash(
     modelId: string,
-    probe: Exclude<ProbeInfo, { family: "geometry" }>,
+    probe: Extract<ProbeInfo, { family: "lens" | "sae" }>,
   ): string {
-    if (probe.family === "units") {
-      throw instrumentError(
-        "INSTRUMENT_PACK_UNAVAILABLE",
-        `Unit probe ${probe.name} needs unit reads, which this browser runtime does not have`,
-      );
-    }
     if (probe.family === "lens") {
       if (probe.token_id === null) {
         throw instrumentError(
@@ -806,10 +810,10 @@ export class BrowserInstrumentRegistry {
           `Lens probe ${probe.name} has no resolved token identity`,
         );
       }
-      if (probe.namespace === "slens" || this.jlens === null) {
+      if (this.jlens === null) {
         throw instrumentError(
           "JLENS_PACK_UNAVAILABLE",
-          `Lens probe ${probe.name} needs ${probe.namespace === "slens" ? "an S" : "an R"} lens, which is not loaded`,
+          `Lens probe ${probe.name} needs an R lens, which is not loaded`,
         );
       }
       // drowse's `LensInstrument.probe_hash`: the readout channel binds the
@@ -1669,7 +1673,8 @@ async function loadSlens(
     typeof record.tensor_file !== "string" || !safeBasename(record.tensor_file) ||
     typeof record.mask_file !== "string" || !safeBasename(record.mask_file) ||
     record.mask_words !== Math.ceil((record.vocab_rows as number) / 32) ||
-    typeof record.tensor_sha256 !== "string" || typeof record.mask_file_sha256 !== "string"
+    typeof record.tensor_sha256 !== "string" || typeof record.mask_file_sha256 !== "string" ||
+    typeof record.mask_digest !== "string" || !/^(?:tokenizer|[0-9a-f]{16})$/u.test(record.mask_digest)
   ) {
     throw instrumentError("SLENS_PACK_INVALID", "The S embedding statistics record is invalid for this runtime");
   }
@@ -1750,6 +1755,7 @@ async function readEmbeddingStatistics(
     vocabRows,
     embeddingScale: record.embedding_scale as number,
     maskDescription: { source: description.source, detail: description.detail, kept: description.kept },
+    maskDigest: record.mask_digest as string,
     tokenizerFingerprint: record.tokenizer_fingerprint as string,
   };
 }

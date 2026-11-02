@@ -14,10 +14,11 @@ import type {
 } from "../../../../drowse/webui/src/lib/types";
 import type { BrowserFeasibilityCorePackCompiler } from "./browserCorePack";
 import type { BrowserJlensRuntimeResolver } from "./browserInstrumentPacks";
-import { BROWSER_EXACT_READOUT_TOP_K_CAPACITY } from "./webLlmGeneration";
+import { BROWSER_EXACT_READOUT_TOP_K_CAPACITY, type WebLlmLiveInstruments } from "./webLlmGeneration";
 import { loadSaeDescription } from "../../../../drowse/webui/src/lib/saeDescriptions";
 import { UnsupportedBlockError } from "./modelBackend";
-import { isUnitsServiceMethod, type BrowserUnitsService } from "./units/unitsService";
+import { isUnitsServiceMethod, type BrowserUnitsService, type UnitsPackSource } from "./units/unitsService";
+import { compilerUnitsPackSource } from "./units/packSource";
 
 type TokenLookup = (
   nodeId: string,
@@ -89,10 +90,38 @@ export class BrowserInstrumentRuntime {
   }
 
   /** The units members (`tokenAnatomy`, `unitActivity`, `unitRead`, `unitTop`, `unitFind`,
-   *  `unitCatalog`, `unitLabels`) over the loaded library's block sites; without a service every
-   *  one answers native's 422 for a library that has none. */
-  configureUnits(service: BrowserUnitsService | null): void {
+   *  `unitCatalog`, `unitLabels`) over the loaded library's block sites, and the compiler's unit
+   *  source (`neuron/`, `head/` and `slens/` atoms, unit probes and gates) from the same service;
+   *  without a service every member answers native's 422 for a library that has none. */
+  async configureUnits(service: BrowserUnitsService | null): Promise<void> {
     this.units = service;
+    this.compiler.setUnitSource(service === null ? null : await service.programSource());
+  }
+
+  /** The units members' packs over the session's compiler (the current one, as a manifold
+   *  refresh replaces it): core statistics and whitener, the lens packs, the units pack. */
+  unitsPackSource(modelId: string, signal: AbortSignal): UnitsPackSource {
+    return compilerUnitsPackSource(() => this.compiler, modelId, signal);
+  }
+
+  /** `find`'s selector: its instrument atoms prepared on the device, then its per-layer
+   *  directions (`compiler.selectorDirections`). */
+  async selectorDirections(selector: string): Promise<ReadonlyMap<number, Float32Array>> {
+    if (this.jlensResolver !== null) await this.compiler.prepareJlensSelectors(selector, this.jlensResolver);
+    await this.compiler.prepareUnitSelectors(selector);
+    return this.compiler.selectorDirections(selector);
+  }
+
+  /** A pack change under a configured service (the R source): its resident reads go, the
+   *  compiler takes a unit source over the new packs, and the attached `slens/` probes are
+   *  prepared again over it (their directions and identity, which their probe hash reads). */
+  private async resetUnits(): Promise<void> {
+    if (this.units === null) return;
+    await this.units.reset();
+    this.compiler.setUnitSource(await this.units.programSource());
+    for (const probe of this.compiler.listProbes()) {
+      if (probe.family === "lens" && probe.namespace === "slens") await this.compiler.prepareUnitProbe(`slens/${probe.word}`);
+    }
   }
 
   hasLiveReadout(): boolean {
@@ -118,6 +147,23 @@ export class BrowserInstrumentRuntime {
    *  family live. */
   unitsLiveEnabled(): boolean {
     return this.units !== null && this.unitsLive;
+  }
+
+  /** What a generation's units channel and `slens/` reads take (B1 §2.2, §5.1): the attached
+   *  unit probes, whether the units and lens families are live, and the S read over a
+   *  forward's `[L, d]` capture through the units service. Null without a service (a program
+   *  then has neither unit taps nor `slens/` probes). */
+  liveInstruments(): WebLlmLiveInstruments | null {
+    const units = this.units;
+    if (units === null) return null;
+    return {
+      unitProbes: new Set(this.compiler.listProbes().flatMap((probe) =>
+        probe.family === "units" ? [probe.name] : []
+      )),
+      unitsLive: this.unitsLiveEnabled(),
+      lensLive: this.compiler.instrumentLiveState().lens,
+      slensReads: (hidden, probes) => units.slensReads(hidden, probes),
+    };
   }
 
   blocks(): InstrumentFamilyBlock[] {
@@ -392,6 +438,7 @@ export class BrowserInstrumentRuntime {
         throw error;
       }
     }
+    if (previousSource !== source) await this.resetUnits();
     const descriptor = this.compiler.instrumentDescriptor().jlens!;
     this.compiler.setInstrumentLive("lens", true);
     return { source, live_layers: [...descriptor.layers] };

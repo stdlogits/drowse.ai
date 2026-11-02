@@ -162,6 +162,8 @@ export function lockedCatalogModels(runtime) {
       convertedRepository: model.convertedRepository,
       convertedRevision: model.convertedRevision,
       contextProfiles: model.contextProfiles,
+      blockSpec: model.blockSpec ?? null,
+      unitRefusal: model.unitRefusal ?? null,
     };
   });
 }

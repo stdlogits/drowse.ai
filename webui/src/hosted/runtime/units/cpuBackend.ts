@@ -260,6 +260,9 @@ export function cpuBlockSitesBackend(
       const T = segment.tokenIds.length;
       const probes = new Float32Array(L * (program?.profile.maxProbes ?? 1));
       const taps = program && hasStructuredUnitSection(program) ? new Float32Array(options.profile.maxUnitTaps) : null;
+      const geometryWidth = program ? program.profile.maxGeometryProbes * program.profile.geometryOutputStride : 0;
+      const geometry = program?.geometryActive !== undefined ? new Float32Array(L * geometryWidth) : null;
+      const hidden = program?.hiddenCapture === true ? new Float32Array(L * d) : null;
       const prefill = first === 0 || T > 1;
       sequence.forward(segment.tokenIds, {
         head: active && hasStructuredUnitSection(active)
@@ -274,7 +277,11 @@ export function cpuBlockSitesBackend(
               for (let t = 0; t < T; t += 1) {
                 const result = runStructuredHookLayer(active, hookState!, layer, outPre.subarray(t * d, (t + 1) * d), { decode: !prefill });
                 out.set(result.residual, t * d);
-                if (t === T - 1) probes.set(result.probes, layer * active.profile.maxProbes);
+                if (t === T - 1) {
+                  probes.set(result.probes, layer * active.profile.maxProbes);
+                  if (geometry !== null && result.geometry !== undefined) geometry.set(result.geometry, layer * geometryWidth);
+                  hidden?.set(result.residual, layer * d);
+                }
               }
               return out;
             }
@@ -349,15 +356,28 @@ export function cpuBlockSitesBackend(
           }
         },
       });
+      // The oracle has no J-lens dictionary: a kind-3 slot reads NaN, so a gate on it refuses.
+      if (program) {
+        for (let slot = 0; slot < probes.length; slot += 1) {
+          if (program.probeKind[slot] === 3) probes[slot] = Number.NaN;
+        }
+      }
       return {
         measurements: f32Tensor(probes, [L, program?.profile.maxProbes ?? 1]),
         unitTaps: taps ? f32Tensor(taps, [taps.length]) : null,
+        geometry: geometry === null ? null : f32Tensor(geometry, [L, program!.profile.maxGeometryProbes, program!.profile.geometryOutputStride]),
+        hidden: hidden === null ? null : f32Tensor(hidden, [L, d]),
       };
     };
     return {
       forward,
       async finish(): Promise<BlockSitesReplayResult> {
         open = false;
+        // The bridge's rule: a replay finishes having fed every position it was sized to.
+        const tokenCount = request.tokenCount ?? options.contextTokens;
+        if (sequence.length !== tokenCount) {
+          throw new Error(`REPLAY_INCOMPLETE: ${sequence.length} of ${tokenCount} positions were fed`);
+        }
         let patterns: BlockSitesResident<"pattern_capture"> | null = null;
         if (patternLayers.length && request.anatomyPosition !== null) {
           patterns = resident("pattern_capture", [patternLayers.length, KV, request.anatomyPosition + 1, hd], {

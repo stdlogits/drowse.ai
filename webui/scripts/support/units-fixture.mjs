@@ -42,6 +42,19 @@ export async function unitsFixture(server, arch, options = {}) {
   return { file, record, model, tokenizer, backend, keep, means, lenses, context: readContext, stats };
 }
 
+/** `wᵀ P w` over a `[d, d]` projector (the golden stores the null basis's projector). */
+export function projectorEnergy(projector, d) {
+  return async (w) => {
+    let quad = 0;
+    for (let i = 0; i < d; i += 1) {
+      let row = 0;
+      for (let j = 0; j < d; j += 1) row += projector[i * d + j] * w[j];
+      quad += w[i] * row;
+    }
+    return quad;
+  };
+}
+
 /** The fixture as B6's packs would serve it (`UnitsPackSource`): unit-stats, unit-artifacts,
  *  slens statistics, the hand-built lenses and the exported fixture whitener. */
 export function unitsPackSource(fx, arch, whiteners, options = {}) {
@@ -88,7 +101,7 @@ export function unitsPackSource(fx, arch, whiteners, options = {}) {
       maskDigest: "tokenizer",
     }),
     layerArtifacts: async (layer) => tables.get(layer),
-    nullProjector: async () => Float32Array.from(decode(artifacts.null.projector)),
+    nullProjection: projectorEnergy(Float32Array.from(decode(artifacts.null.projector)), fx.model.hiddenSize),
     headKeptIds: async () => Int32Array.from(artifacts.head_kept_ids),
     whitener: async (layer) => {
       const entry = whiteners?.arches[arch].find((row) => row.layer === layer);

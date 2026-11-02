@@ -1741,6 +1741,21 @@ try {
     "0.6,0.3 emotions%0.2,0.8",
     "-0.6,-0.3 emotions%0.2,0.8",
   ]);
+  // The plan, its envelopes and the node's recipe carry the compiled program's canonical text, as
+  // native's recipe steering does.
+  const canonicalEngine = generation();
+  const canonicalRuntime = new BrowserLoomRuntime({
+    session: session(),
+    generation: canonicalEngine,
+    createId: ids("canonical"),
+    compileSteering: () => ({ ...hookProgram, steeringExpression: "0.5 calm@response" }),
+  });
+  await canonicalRuntime.generate({
+    type: "submit", text: "Prompt", authored_role: "user", generated_role: "assistant",
+    steering: "0.5 calm @response",
+  }, () => {});
+  assert.equal(canonicalEngine.plans.at(-1).steeringExpression, "0.5 calm@response");
+  assert.equal(canonicalRuntime.snapshot().tree.nodes.at(-1).recipe.steering, "0.5 calm@response");
   // With the compiler's manifolds the `inverted` regen resolves and folds as drowse's
   // Recipe.invert_steering does (steering-expression pins the Python outcomes).
   const resolvingEngine = generation();

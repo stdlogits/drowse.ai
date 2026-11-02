@@ -211,7 +211,7 @@ export async function tokenAnatomy(
       contribution: round6(entry.value),
       weights: Array.from(rows[i], round6),
     }));
-    contextTokens = Array.from(forward.ids, (id) => context.decode(id));
+    contextTokens = await context.tokenTexts(Array.from(forward.ids));
   }
 
   const layers = Array.from({ length: n }, (_, layer) => {
@@ -233,7 +233,7 @@ export async function tokenAnatomy(
     token: {
       raw_index: forward.rawIndex,
       token_id: tokenId,
-      token: context.decode(tokenId),
+      token: (await context.tokenTexts([tokenId]))[0],
       position,
       prompt_length: forward.promptLength,
       probability: round6(probability),
@@ -249,8 +249,9 @@ export async function tokenAnatomy(
   return { anatomy, out };
 }
 
-/** The pattern pass: replay again capturing keys at the chosen heads' layers (at most the
- *  profile's `maxPatternLayers` per replay) and read their attention rows. */
+/** The pattern pass: one replay capturing keys at the chosen heads' layers, then their attention
+ *  rows. The profile's `maxPatternLayers` (16 under standard-v4, attested by the descriptor)
+ *  holds native's bound of 16 patterns in one pass; a residual library captures none. */
 async function patternRows(
   backend: BrowserBlockSitesBackend,
   program: StructuredHookProgramBuffers | null,
@@ -262,20 +263,15 @@ async function patternRows(
   if (capacity < 1) throw new Error("this model library captures no attention patterns");
   const position = forward.ids.length - 1;
   const layers = [...new Set(heads.map((entry) => entry.layer))].sort((a, b) => a - b);
-  const out = new Array<Float32Array>(heads.length);
-  for (let start = 0; start < layers.length; start += capacity) {
-    const batch = layers.slice(start, start + capacity);
-    const replay = await driveReplay(backend, { program, anatomyPosition: position, activity: null, patternLayers: batch }, forward, replayOptions);
-    const capture = replay.patterns!;
-    try {
-      const wanted = heads.map((entry, i) => ({ entry, i })).filter(({ entry }) => batch.includes(entry.layer));
-      const rows = await backend.attentionRows(capture, wanted.map(({ entry }) => entry));
-      wanted.forEach(({ i }, j) => {
-        out[i] = rows.data.slice(j * (position + 1), (j + 1) * (position + 1));
-      });
-    } finally {
-      await backend.release(capture);
-    }
+  if (layers.length > capacity) {
+    throw new Error(`the chosen heads span ${layers.length} layers; this library's pattern pass holds ${capacity}`);
   }
-  return out;
+  const replay = await driveReplay(backend, { program, anatomyPosition: position, activity: null, patternLayers: layers }, forward, replayOptions);
+  const capture = replay.patterns!;
+  try {
+    const rows = await backend.attentionRows(capture, heads);
+    return heads.map((_entry, j) => rows.data.slice(j * (position + 1), (j + 1) * (position + 1)));
+  } finally {
+    await backend.release(capture);
+  }
 }

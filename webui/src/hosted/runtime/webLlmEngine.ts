@@ -15,7 +15,6 @@ import {
   outputTokenLimitForRuntime,
 } from "../../../../drowse/webui/src/lib/runtime/outputTokenPolicy";
 import type { GpuAdapterLike } from "./capabilities";
-import type { RankOneHookProgramBuffers } from "./rankOneHookProgram";
 import {
   assertStructuredTapGramsBound,
   STRUCTURED_HOOK_FORMAT,
@@ -37,11 +36,12 @@ import {
   structuredGeometryPayloadLayout,
   WEB_LLM_RUNTIME_MIN_STORAGE_BUFFERS_PER_SHADER_STAGE,
 } from "./structuredHookProfile";
-import { prepareVerifiedWebLlmArtifacts } from "./verifiedArtifactCache";
+import { prepareVerifiedWebLlmArtifacts, type WebLlmPromptRendering } from "./verifiedArtifactCache";
 import type { WebLlmBlockSitesDevice, WebLlmBlockSitesRequest } from "./webLlmBlockSites";
 import {
   assertHookFeaturesSupported,
   AFFINE_FEASIBILITY_CAPABILITIES,
+  blockSitesHookCapabilities,
   type DrowseHookCapabilities,
 } from "./hookCapabilities";
 import {
@@ -100,6 +100,8 @@ interface DrowseMeasurementBundle {
   geometry?: Float32Array;
   /** Hook ABI v5's live unit tap (`[maxUnitTaps]`), when the program has a unit section. */
   unitTaps?: Float32Array;
+  /** The forward's `[L, d]` capture, when the program asks for it (`hiddenCapture`). */
+  hidden?: Float32Array;
   jlensTopTokens?: DrowseJlensTopTokenReadout;
   saeTopFeatures?: DrowseSaeTopFeatureReadout;
 }
@@ -109,6 +111,8 @@ export interface DrowseWebLlmEngineInstance extends WebLlmGenerationEngine {
   unload(): Promise<void>;
   interruptGenerate(): Promise<void> | void;
   resetChat(): Promise<void>;
+  /** Prefill `inputIds` (chunked) under the installed program and sample the next token. */
+  forwardTokensAndSample(inputIds: number[], isPrefill: boolean, modelId?: string): Promise<number>;
   supportsDrowseStructuredHooks(modelId?: string): Promise<boolean>;
   supportsDrowseCurvedHooks(modelId?: string): Promise<boolean>;
   supportsDrowseResidualCapture(modelId?: string): Promise<boolean>;
@@ -208,6 +212,14 @@ export interface DrowseResidualCapture {
   values: Float32Array;
 }
 
+/** `values[position][layer][probe]`, row-major. */
+export interface DrowseStructuredMeasurementCapture {
+  layerCount: number;
+  probeCount: number;
+  positions: number[];
+  values: Float32Array;
+}
+
 
 function validatePreparedCaptureRequest(
   row: DrowsePreparedCaptureRow,
@@ -280,10 +292,14 @@ typeof STRUCTURED_HOOK_FORMAT;
   descriptor?: Int32Array;
 }
 
+/** WebLLM's reply header for a generation with thinking off (`appendEmptyThinkingReplyHeader`). */
+const EMPTY_THINKING_BLOCK = "<think>\n\n</think>\n\n";
+
 export class DrowseWebLlmRuntime {
   private engine: DrowseWebLlmEngineInstance | null = null;
   private blockSites: BlockSitesCapabilities | null = null;
   private captureSpecialTokenIds: number[] | null = null;
+  private promptRendering: WebLlmPromptRendering | null = null;
   private vocabSize: number | null = null;
   private generating = false;
   private reusablePlainChatPrefix = false;
@@ -520,6 +536,7 @@ export class DrowseWebLlmRuntime {
         );
       }
       this.captureSpecialTokenIds = [...prepared.captureSpecialTokenIds];
+      this.promptRendering = prepared.promptRendering;
       this.vocabSize = prepared.vocabSize;
       this.blockSites = blockSitesCapabilitiesFor(
         this.structuredHookProfile,
@@ -530,6 +547,7 @@ export class DrowseWebLlmRuntime {
       return { prefillTokensPerSecond: null, decodeTokensPerSecond: null };
     } catch (error) {
       this.captureSpecialTokenIds = null;
+      this.promptRendering = null;
       this.vocabSize = null;
       this.structuredHooks = false;
       this.curvedHooks = false;
@@ -566,6 +584,7 @@ export class DrowseWebLlmRuntime {
     this.engine = null;
     this.reusablePlainChatPrefix = false;
     this.captureSpecialTokenIds = null;
+    this.promptRendering = null;
     this.vocabSize = null;
     this.structuredHooks = false;
     this.curvedHooks = false;
@@ -708,79 +727,131 @@ export class DrowseWebLlmRuntime {
     return engine.decodeDrowseTokens(tokenIds);
   }
 
+  /** Each id's own text (`decode([id])`), through the per-token cache. */
+  async tokenTexts(tokenIds: readonly number[]): Promise<string[]> {
+    this.requireEngine();
+    if (!this.runtimeCapabilities().tokenizer) {
+      throw runtimeError(
+        "DROWSE_TOKENIZER_UNAVAILABLE",
+        "The loaded browser model does not expose its tokenizer",
+      );
+    }
+    return Promise.all(tokenIds.map((tokenId) => this.decodeSingleToken(tokenId)));
+  }
+
+  /**
+   * The token ids WebLLM prefills for a generation plan's input, so a loom node replays on the
+   * block sites exactly as it ran. A raw prompt is the completion prefix and the prompt's ids. A
+   * chat prompt goes through WebLLM's own conversation renderer (the capture rows) with the reply
+   * header as an empty assistant turn, its separator cut: exact when the template renders the
+   * header that way (`replyHeaderIsEmptyTurn`), as every units template does. A user-seat
+   * generation's header is a user turn, which that renderer does not end on; it is refused.
+   */
+  async renderPromptTokenIds(
+    plan: Pick<WebLlmGenerationPlan, "input" | "thinking" | "generationSeat" | "generationRoleName">,
+  ): Promise<number[]> {
+    const engine = this.requireEngine();
+    const rendering = this.promptRendering;
+    if (rendering === null) throw runtimeError("MODEL_NOT_LOADED", "No browser model runtime is loaded");
+    if (plan.input.kind === "raw") {
+      return [...rendering.completionPrefixTokenIds, ...await this.tokenizeText(plan.input.prompt)];
+    }
+    const refuse = (message: string) =>
+      Object.assign(runtimeError("TOKEN_REPLAY_UNAVAILABLE", message), { status: 409, recoverable: true });
+    if ((plan.generationSeat ?? "assistant") !== "assistant") {
+      throw refuse("The browser cannot render a user-seat generation's prompt for a replay");
+    }
+    if (!rendering.replyHeaderIsEmptyTurn) {
+      throw refuse("This model's chat template renders its reply header unlike an empty turn, so the browser cannot name its prompt tokens");
+    }
+    const [first, ...rest] = plan.input.messages;
+    const leading = first?.role === "system";
+    const messages = leading ? rest : plan.input.messages;
+    if (messages.some((message) => message.role === "system")) {
+      throw refuse("A system message after the first turn has no prompt tokens to replay");
+    }
+    const header = this.thinkingProfile !== null && plan.thinking === false ? EMPTY_THINKING_BLOCK : "";
+    const [row] = await engine.prepareDrowseCaptureRows([{
+      system: leading ? first.content : rendering.systemMessage,
+      messages: [
+        ...messages.map((message) => ({
+          role: message.role as "user" | "assistant",
+          content: message.content,
+          ...(message.name === undefined ? {} : { roleName: message.name }),
+        })),
+        {
+          role: "assistant",
+          content: header,
+          ...(plan.generationRoleName ? { roleName: plan.generationRoleName } : {}),
+        },
+      ],
+    }], []);
+    return row.inputIds.slice(0, row.position + 1);
+  }
+
   hookCapabilities(): DrowseHookCapabilities {
     this.requireEngine();
-    return {
+    // `units` and `slens` follow the library's v5 profile (a standard-v4 library has unit sites).
+    return blockSitesHookCapabilities({
       ...AFFINE_FEASIBILITY_CAPABILITIES,
       curved_manifold: this.curvedHooks,
       phase_trigger: this.structuredHooks,
       probe_gate: this.structuredHooks,
       sae: this.saeHooks,
       jlens: this.jlensHooks,
-    };
+    }, this.blockSites);
   }
 
   assertSteeringSupported(expression: string): void {
     assertHookFeaturesSupported(expression, this.hookCapabilities());
   }
 
-  async installHookProgram(
-    program: RankOneHookProgramBuffers | StructuredHookProgramBuffers,
-  ): Promise<void> {
-    if ("affineActive" in program) {
-      if (this.structuredHookProfile === null) {
-        throw runtimeError(
-          "STRUCTURED_HOOK_PROFILE_UNAVAILABLE",
-          "The loaded model library has no attested Drowse buffer profile",
-        );
-      }
-      if (program.format !== this.structuredHookProfile.format) {
-        throw runtimeError(
-          "HOOK_FORMAT_MISMATCH",
-          "The structured steering program format does not match the loaded model library",
-        );
-      }
-      if (program.hookAbi !== this.module.DROWSE_HOOK_ABI) {
-        throw runtimeError(
-          "HOOK_ABI_MISMATCH",
-          "The steering program does not match the loaded Drowse hook ABI",
-        );
-      }
-      if (program.unitMeta !== undefined && this.structuredHookProfile.unitSites !== 1) {
-        throw runtimeError(
-          "UNIT_SITES_UNAVAILABLE",
-          "The loaded model library does not compile Drowse unit sites",
-        );
-      }
-      assertStructuredTapGramsBound(program);
-      const hasCurve = program.curveRank.some((rank) => rank > 0);
-      if (hasCurve && !this.curvedHooks) {
-        throw runtimeError(
-          "CURVED_HOOKS_UNAVAILABLE",
-          "The loaded model library does not expose curved Drowse hooks",
-        );
-      }
-      if (!hasCurve && !this.structuredHooks) {
-        throw runtimeError(
-          "STRUCTURED_HOOKS_UNAVAILABLE",
-          "The loaded model library does not expose structured Drowse hooks",
-        );
-      }
-      if (program.jLensBindingId !== undefined) {
-        await this.ensureJlensDictionaryResident(program.jLensBindingId);
-      }
-      if (program.saeBindingId !== undefined) {
-        await this.ensureSaeDictionaryResident(program.saeBindingId);
-      }
-      await this.requireEngine().setDrowseStructuredProgram(program);
-      return;
+  async installHookProgram(program: StructuredHookProgramBuffers): Promise<void> {
+    if (this.structuredHookProfile === null) {
+      throw runtimeError(
+        "STRUCTURED_HOOK_PROFILE_UNAVAILABLE",
+        "The loaded model library has no attested Drowse buffer profile",
+      );
     }
-    // B5's single-term compile still returns rank-one programs; hook ABI v5 runs
-    // drowse-structured-v4 only.
-    throw runtimeError(
-      "HOOK_FORMAT_MISMATCH",
-      "Hook ABI block-sites-v5 runs drowse-structured-v4 programs only (rank-one programs are gone)",
-    );
+    if (program.format !== this.structuredHookProfile.format) {
+      throw runtimeError(
+        "HOOK_FORMAT_MISMATCH",
+        "The structured steering program format does not match the loaded model library",
+      );
+    }
+    if (program.hookAbi !== this.module.DROWSE_HOOK_ABI) {
+      throw runtimeError(
+        "HOOK_ABI_MISMATCH",
+        "The steering program does not match the loaded Drowse hook ABI",
+      );
+    }
+    if (program.unitMeta !== undefined && this.structuredHookProfile.unitSites !== 1) {
+      throw runtimeError(
+        "UNIT_SITES_UNAVAILABLE",
+        "The loaded model library does not compile Drowse unit sites",
+      );
+    }
+    assertStructuredTapGramsBound(program);
+    const hasCurve = program.curveRank.some((rank) => rank > 0);
+    if (hasCurve && !this.curvedHooks) {
+      throw runtimeError(
+        "CURVED_HOOKS_UNAVAILABLE",
+        "The loaded model library does not expose curved Drowse hooks",
+      );
+    }
+    if (!hasCurve && !this.structuredHooks) {
+      throw runtimeError(
+        "STRUCTURED_HOOKS_UNAVAILABLE",
+        "The loaded model library does not expose structured Drowse hooks",
+      );
+    }
+    if (program.jLensBindingId !== undefined) {
+      await this.ensureJlensDictionaryResident(program.jLensBindingId);
+    }
+    if (program.saeBindingId !== undefined) {
+      await this.ensureSaeDictionaryResident(program.saeBindingId);
+    }
+    await this.requireEngine().setDrowseStructuredProgram(program);
   }
 
   /** Hook ABI v5's attested surface (B1 §3.5), or null when the library predates it. */
@@ -1017,6 +1088,7 @@ export class DrowseWebLlmRuntime {
     scalar: Float32Array | undefined;
     geometry: Float32Array | undefined;
     unitTaps?: Float32Array;
+    hidden?: Float32Array;
     jlensTopTokens: WebLlmJlensTopTokenReadout | undefined;
     saeTopFeatures: WebLlmSaeTopFeatureReadout | undefined;
   }> {
@@ -1038,6 +1110,7 @@ export class DrowseWebLlmRuntime {
         ? undefined
         : new Float32Array(value.geometry),
       ...(value.unitTaps === undefined ? {} : { unitTaps: new Float32Array(value.unitTaps) }),
+      ...(value.hidden === undefined ? {} : { hidden: new Float32Array(value.hidden) }),
       jlensTopTokens,
       saeTopFeatures,
     };
@@ -1088,27 +1161,7 @@ export class DrowseWebLlmRuntime {
     row: DrowsePreparedCaptureRow,
     positions: number[],
   ): Promise<DrowseResidualCapture> {
-    if (
-      !Number.isSafeInteger(row.position) || row.position < 0 ||
-      row.position >= row.inputIds.length
-    ) {
-      throw runtimeError(
-        "INVALID_CAPTURE_ROW",
-        "The prepared Drowse capture row has an invalid pooling position",
-      );
-    }
-    if (
-      positions.length === 0 || positions.some((position, index) =>
-        !Number.isSafeInteger(position) || position < 0 ||
-        position >= row.inputIds.length ||
-        (index > 0 && position <= positions[index - 1])
-      )
-    ) {
-      throw runtimeError(
-        "INVALID_CAPTURE_POSITIONS",
-        "Drowse capture positions must be sorted unique token positions in the prepared row",
-      );
-    }
+    validatePreparedCaptureRequest(row, positions);
     this.reusablePlainChatPrefix = false;
     const capture = await this.requireEngine().captureDrowseResiduals(
       row.inputIds,
@@ -1129,6 +1182,53 @@ export class DrowseWebLlmRuntime {
       ...capture,
       positions: [...capture.positions],
       values: new Float32Array(capture.values),
+    };
+  }
+
+  /** The structured program's probe slots at each position (`[positions, L, maxProbes]`): the
+   *  program's last-row measurement of a fresh prefill of the row's tokens through that
+   *  position, so a probe reads the residual after the hook at every layer. The release
+   *  tools' steered capture on hook ABI v5 (a block-sites library has no other steered read
+   *  of a position on every profile). */
+  async measurePreparedPositions(
+    row: DrowsePreparedCaptureRow,
+    positions: number[],
+    program: StructuredHookProgramBuffers,
+  ): Promise<DrowseStructuredMeasurementCapture> {
+    validatePreparedCaptureRequest(row, positions);
+    if (program.position_spans != null || program.position_indices != null) {
+      throw runtimeError(
+        "INVALID_CAPTURE_PROGRAM",
+        "A measured capture runs its program at every position",
+      );
+    }
+    const engine = this.requireEngine();
+    const slots = program.layerCount * program.profile.maxProbes;
+    const values = new Float32Array(positions.length * slots);
+    this.reusablePlainChatPrefix = false;
+    await this.installHookProgram(program);
+    try {
+      for (const [index, position] of positions.entries()) {
+        await engine.resetChat();
+        await engine.forwardTokensAndSample(row.inputIds.slice(0, position + 1), true);
+        const measured = await engine.readDrowseMeasurements();
+        if (measured === undefined || measured.length !== slots || !measured.every(Number.isFinite)) {
+          throw runtimeError(
+            "INVALID_CAPTURE_RESULT",
+            "The Drowse WebLLM runtime returned malformed structured measurements",
+          );
+        }
+        values.set(measured, index * slots);
+      }
+    } finally {
+      await engine.clearDrowseProgram();
+      await engine.resetChat();
+    }
+    return {
+      layerCount: program.layerCount,
+      probeCount: program.profile.maxProbes,
+      positions: [...positions],
+      values,
     };
   }
 

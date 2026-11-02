@@ -10,16 +10,18 @@ and chat-template identities are bound by digest. The public signed catalog
 contains only immutable packages that match those identities.
 
 The browser core-pack compiler produces the required neutral whitener and seed
-manifold pack for each release model. Its raw rank-one path shares Python
-goldens for Mahalanobis normalization, mean-normalized per-layer share, and
-uncapped affine gain. The structured path lowers independent
-push/ablation groups, prior-step gates, response phases, SAE and R-lens
-programs, box/custom/sphere curved manifolds, and exact v3 geometry reads.
+manifold pack for each release model. Every steering expression lowers to one
+drowse-structured-v4 program (native's `synthesize_subspace` lowering, which
+needs the neutral whitener); it shares Python goldens for Mahalanobis
+normalization, mean-normalized per-layer share, and uncapped affine gain, and
+lowers independent push/ablation groups, prior-step gates, response phases,
+SAE and R-lens programs, box/custom/sphere curved manifolds, in-block unit
+ablation, and exact geometry reads.
 Curved steering retains its separate safety cap. Every published pack passes the
 semantic validator and a physical WebGPU runtime check before catalog inclusion.
 
 The checked-in TypeScript parser accepts the full Python steering grammar. The
-current compiler supports rank-one and composed affine pushes, mixed or
+current compiler supports single and composed affine pushes, mixed or
 multiaxis mean-replacement ablation, Mahalanobis `~`/`|` projections,
 response/prompt/count/thinking phases, prior-step scalar gates, and up to four
 curved terms per layer. Curves may use bounded, unbounded, periodic, or spherical
@@ -186,14 +188,24 @@ npm run publish:hosted:model -- MODEL_ID PUBLISH_DIR
 npm run publish:hosted:pack -- MODEL_ID core|sae|jlens|slens|units PACK_DIR
 ```
 
-The production-q4 comparator reports probe error against the activation scale:
-for each layer it divides the absolute scalar-projection difference by the
-larger residual norm times the probe-direction norm. This keeps the 1% gate
-well-defined when a valid probe projection is near zero. It separately requires
-the browser probe readback to reproduce the projection of its own captured
-residual and reports the cancellation-sensitive whole-trace ratio as a
-diagnostic only. Schema-v3 captures also run a disabled and enabled program
-through the same rank-one VM function and reject any pre-enabled-layer delta.
+The production-q4 comparator checks the unsteered residuals of every layer and
+position against the dequantized Transformers model, then the steered read on
+hook ABI v5 (capture schema 4): one drowse-structured-v4 program with linear
+probes on a fixed orthonormal sketch at every layer (the first direction the
+push of a rank-1 affine group at the middle layer), measured at every captured
+position with and without the group (`measurePreparedPositions`). Probe error
+is reported against the activation scale: the absolute projection difference
+over the larger residual norm times the probe-direction norm, so the 1% gate
+stays well-defined when a projection is near zero. It separately requires the
+control probes to reproduce the projection of the plain capture, rejects any
+pre-enabled-layer delta between the control and steered probes, and compares
+the steering delta's direction in the sketch.
+
+`webui/scripts/browser-core-build.mjs` runs the core builder (the unchanged
+`hosted-whitener.worker.ts`), the plain and measured captures and the
+injection-arithmetic oracle on B4's tiny v5 fixture libraries:
+`node scripts/browser-core-build.mjs --webllm WEB_LLM.js --fixtures DIR
+--arch qwen3|gemma3 --quantization q0f32|q4f32_1 --work SCRATCH`.
 
 Candidate libraries that do not yet match the checked-in production lock can be
 captured against an explicit engineering lock without editing repository state:
