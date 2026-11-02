@@ -152,6 +152,11 @@ export function saeDecoderDirection(
 interface BrowserJlens {
   readonly source: string;
   readonly displayName: string;
+  /** The lens kind: the RelP R or the standard J, both of the R family. */
+  readonly kind: "J" | "R";
+  readonly nPrompts: number;
+  /** The fit's split-half difference per out-site layer, when recorded. */
+  readonly splitHalf: Readonly<Record<string, number>> | null;
   readonly hiddenSize: number;
   readonly layerMap: readonly number[];
   readonly runtimeLayerMap: readonly number[];
@@ -236,7 +241,10 @@ export class BrowserInstrumentRegistry {
     jlens: {
       source: string;
       displayName: string;
+      kind: "J" | "R";
       layers: number[];
+      nPrompts: number;
+      splitHalf: Record<string, number> | null;
       words: Array<{ word: string; tokenId: number }>;
     } | null;
   } {
@@ -256,7 +264,10 @@ export class BrowserInstrumentRegistry {
         : {
             source: this.jlens.source,
             displayName: this.jlens.displayName,
+            kind: this.jlens.kind,
             layers: [...this.jlens.layerMap],
+            nPrompts: this.jlens.nPrompts,
+            splitHalf: this.jlens.splitHalf === null ? null : { ...this.jlens.splitHalf },
             words: [...this.jlens.words].map(([word, value]) => ({
               word,
               tokenId: value.tokenId,
@@ -928,6 +939,7 @@ async function loadJlens(
     manifest.format_version !== 7 || !BROWSER_LENS_KINDS.has(manifest.kind as string) ||
     manifest.checkpoint !== false || manifest.consumed_prefix_sha256 !== null ||
     manifest.dtype !== "float32" || manifest.d_model !== hiddenSize ||
+    !nonnegativeInteger(manifest.n_prompts) ||
     !matchesRuntimeFingerprint(manifest.model_fingerprint, request) ||
     manifest.model_source_fingerprint !== request.variant.runtimeIdentity.sourceRevision ||
     manifest.model_layer_count !== request.variant.runtimeIdentity.layerMap.length
@@ -999,6 +1011,9 @@ async function loadJlens(
   return {
     source: pack.pack.id,
     displayName: pack.pack.displayName,
+    kind: manifest.kind as "J" | "R",
+    nPrompts: manifest.n_prompts,
+    splitHalf: site.splitHalf,
     hiddenSize,
     layerMap,
     runtimeLayerMap: [...request.variant.runtimeIdentity.layerMap],
