@@ -344,6 +344,38 @@ export class BrowserFeasibilityCorePackCompiler {
     ]));
   }
 
+  /** The core pack's neutral whitener at `layer` (eigen form), or null: the metric the units
+   *  `find` decomposes in (native `_whitener()`, the same fit). */
+  neutralWhitener(layer: number): SerializedMahalanobisWhitener | null {
+    return this.whiteners.get(layer) ?? null;
+  }
+
+  /** `find`'s selector as native resolves it (`ensure_profile_registered`): one steerable atom's
+   *  per-layer direction, an instrument atom's directions (prepared before this call: `jlens/`
+   *  words, `neuron/` writes, `slens/` atoms) or a 2-node manifold folded to its direction. */
+  selectorDirections(selector: string): ReadonlyMap<number, Float32Array> {
+    const notOne = () => coreError(
+      "PROFILE_NOT_FOUND",
+      `No profile registered for vector '${selector}' (find takes one steerable selector)`,
+    );
+    const parsed = parseSteeringExpression(selector);
+    const term = parsed.terms[0];
+    if (
+      parsed.terms.length !== 1 || term.ablation || term.trigger !== null || term.layers !== null ||
+      term.selector.onto !== null || term.selector.manifoldPosition !== null
+    ) throw notOne();
+    const atom = this.resolveAtom(term.selector.base);
+    if (atom.kind === "instrument") return atom.directions;
+    const profile = this.analyticsProfile(atom.manifold, atom.key);
+    if (profile === null) {
+      throw coreError(
+        "PROFILE_NOT_FOUND",
+        `'${selector}' is a manifold that does not fold to a single steering direction (not a 2-node affine subspace)`,
+      );
+    }
+    return profile.directions;
+  }
+
   /** The loaded packs (lens layers, S statistics, units), read on first use (B5's members). */
   instrumentRegistry(): BrowserInstrumentRegistry {
     return this.instruments;
@@ -3080,7 +3112,7 @@ function mergedManifoldInfo(variants: readonly CoreManifold[]): ManifoldInfo {
   return info;
 }
 
-async function loadCoreWhiteners(
+export async function loadCoreWhiteners(
   tensorArtifact: BrowserModelArtifact,
   sidecarArtifact: BrowserModelArtifact,
   request: BrowserModelLoadRequest,

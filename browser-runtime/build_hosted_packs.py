@@ -376,6 +376,9 @@ def build_embedding_statistics(model: NativeModel, pack: Path, runtime: Mapping[
         "mask_file": mask_file.name,
         "mask_words": int(words.numel()),
         "mask_file_sha256": sha256_file(mask_file),
+        # Native `LensInstrument._mask_digest()` (the counts and their threshold, or "tokenizer"),
+        # which an `slens/` probe's digest binds; the browser has the mask, not the counts.
+        "mask_digest": model.session.lens._mask_digest(),
         "tokenizer_fingerprint": tokenizer_fingerprint(model.session.tokenizer),
         # The tokenizer file the fingerprint was taken on (check_weights: the runtime's), which
         # the browser compares with the loaded runtime's before reading the mask.
