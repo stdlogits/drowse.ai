@@ -659,6 +659,20 @@ try {
     }),
   );
   assert.deepEqual(transcriptRuntime.snapshot().tree, beforeInvalidTranscript);
+  // drowse's strict reader: turns and each turn's role/text are required, and a
+  // probe is exactly {name, sha256}.
+  for (const [document, message] of [
+    ["drowse_transcript: 3\n", /transcript is missing: turns/],
+    ["drowse_transcript: 3\nturns:\n  - role: user\n", /turns\[0\] is missing: text/],
+    ["drowse_transcript: 3\nprobes:\n  - name: calm\nturns: []\n", /probes\[0\] is missing: sha256/],
+    ["drowse_transcript: 3\nprobes:\n  - name: calm\n    sha256: ab\n    layer: 3\nturns: []\n", /probes\[0\] has unknown fields: layer/],
+  ]) {
+    await assert.rejects(
+      transcriptRuntime.request({ service: "tree", method: "transcriptLoad", args: [document, "default", false] }),
+      (error) => error.code === "INVALID_TRANSCRIPT" && message.test(error.message),
+    );
+  }
+  assert.deepEqual(transcriptRuntime.snapshot().tree, beforeInvalidTranscript);
   const mismatchedTranscript = exportedTranscript.yaml.replace(
     "model_id: fixture/drowse-tiny",
     "model_id: fixture/other-model",

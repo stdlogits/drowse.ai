@@ -102,15 +102,21 @@ export function parseBrowserTranscript(source: string): BrowserTranscript {
   }
   const modelId = nullableString(root.model_id, "model_id", 1024);
   const systemPrompt = nullableString(root.system_prompt, "system_prompt", 4 * 1024 * 1024);
+  requireKeys(root, ["turns"], "transcript");
   const rawProbes = array(root.probes ?? [], "probes", 16_384);
   const probes = rawProbes.map((item, index) => {
     const probe = record(item, `probes[${index}]`);
+    requireKeys(probe, ["name", "sha256"], `probes[${index}]`);
+    const unknown = Object.keys(probe).filter((key) => key !== "name" && key !== "sha256");
+    if (unknown.length > 0) {
+      throw transcriptError("INVALID_TRANSCRIPT", `probes[${index}] has unknown fields: ${unknown.sort().join(", ")}`);
+    }
     return {
       name: requiredString(probe.name, `probes[${index}].name`, 1024),
-      sha256: requiredString(probe.sha256 ?? "", `probes[${index}].sha256`, 128),
+      sha256: requiredString(probe.sha256, `probes[${index}].sha256`, 128),
     };
   });
-  const rawTurns = array(root.turns ?? [], "turns", MAX_TURNS);
+  const rawTurns = array(root.turns, "turns", MAX_TURNS);
   const turns = rawTurns.map((item, index) => parseTurn(item, index));
   const cast = parseCast(root.cast ?? {});
   return { modelId, systemPrompt, probes, turns, cast };
@@ -122,6 +128,7 @@ function parseTurn(value: unknown, index: number): BrowserTranscriptTurn {
   if (unknown.length > 0) {
     throw transcriptError("INVALID_TRANSCRIPT", `turns[${index}] has unknown fields: ${unknown.sort().join(", ")}`);
   }
+  requireKeys(turn, ["role", "text"], `turns[${index}]`);
   const role = turn.role;
   if (role !== "user" && role !== "assistant" && role !== "system") {
     throw transcriptError("INVALID_TRANSCRIPT", `turns[${index}].role is invalid`);
@@ -158,7 +165,7 @@ function parseTurn(value: unknown, index: number): BrowserTranscriptTurn {
   }
   return {
     role,
-    text: requiredString(turn.text ?? "", `turns[${index}].text`, 4 * 1024 * 1024),
+    text: requiredString(turn.text, `turns[${index}].text`, 4 * 1024 * 1024),
     speaker,
     thinking: nullableString(turn.thinking, `turns[${index}].thinking`, 4 * 1024 * 1024),
     recipe,
@@ -210,6 +217,14 @@ function record(value: unknown, label: string): Record<string, unknown> {
     throw transcriptError("INVALID_TRANSCRIPT", `${label} must be a mapping`);
   }
   return value as Record<string, unknown>;
+}
+
+/** drowse's `_check_keys` required half: every listed key is present. */
+function requireKeys(value: Record<string, unknown>, keys: readonly string[], label: string): void {
+  const missing = keys.filter((key) => !(key in value)).sort();
+  if (missing.length > 0) {
+    throw transcriptError("INVALID_TRANSCRIPT", `${label} is missing: ${missing.join(", ")}`);
+  }
 }
 
 function array(value: unknown, label: string, maximum: number): unknown[] {
