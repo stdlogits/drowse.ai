@@ -63,10 +63,10 @@ for (const marker of [
 }
 for (const marker of [
   "SAE training tokens",
-  "J-lens corpus prompts",
   "Blocks generation; uses FineWeb-Edu",
-  "generation paused during model fitting",
   "Create on this device",
+  "Lens fit progress",
+  "Generation pauses while documents are fitted",
   "drowse lens fit",
   "train_hosted_sae.py",
   "fit_hosted_jlens.py",

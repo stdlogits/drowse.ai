@@ -10,7 +10,7 @@ import { parse as parseYaml } from "yaml";
 import { contributeLinks, guidePages, homeSummary, htmlGuidePaths, sitePages } from "./site-content.mjs";
 import { discoveryLinks, discoveryTags, guideMarkdown, hiddenPaths, markdownPath, publicationAssets, publicPaths, sitemapPaths, sitePublication } from "./site-publication.mjs";
 import { prefersMarkdown } from "./discovery-worker.mjs";
-import { agentCatalogPaths, contentSignals } from "./agent-discovery.mjs";
+import { agentCatalogPaths, agentResources, contentSignals } from "./agent-discovery.mjs";
 import { prerenderLanding } from "./prerender-hosted.mjs";
 
 const origin = "https://drowse.example";
@@ -392,8 +392,8 @@ test("every source link in the guides names a file at the pin or in this reposit
   assert.ok(checked > 20, `checked ${checked} source links`);
 });
 
-test("the guides describe drowse 6.0, not 5.x", () => {
-  const text = JSON.stringify([homeSummary, guidePages, sitePages]);
+test("the guides and the agent skill describe drowse 6.0, not 5.x", () => {
+  const text = JSON.stringify([homeSummary, guidePages, sitePages, [...agentResources("https://drowse.ai").values()]]);
   assert.doesNotMatch(text, /J-lens|Jacobian-lens|honest\.deceptive|\bhonest\b/u, "5.x vocabulary");
   assert.ok(guidePages.some(page => page.sections.some(section => section.code === "-0.5 deceptive + 0.3 warm")), "drowse's example expression");
   for (const phrase of ["R lens", "S lens", "neurons and heads", "Gemma 3 and Qwen3"]) assert.ok(text.includes(phrase), `the guides mention ${phrase}`);

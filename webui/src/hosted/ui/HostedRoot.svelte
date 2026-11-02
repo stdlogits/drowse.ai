@@ -65,6 +65,7 @@
   let viewNonce = $state(0);
   let installedModelIds: Set<string> | null = null;
   const initialUrl = new URL(window.location.href);
+  let shownEntry = `${initialUrl.pathname}${initialUrl.search}`;
   const requestedModelPicker = initialUrl.searchParams.get("choose") === "1";
   const requestedWorkbenchReopen = initialUrl.searchParams.get("reopen") === "1";
   const takeoverPhase = $derived(shellSnapshot?.takeover?.phase ?? "idle");
@@ -87,7 +88,10 @@
   const routeKey = $derived(`${route}:${viewNonce}`);
   let routeMounted = $state(false);
   $effect(() => {
+    // The shell's views name themselves; the workbench is the app, as the dashboard's own
+    // index.html titles it (in the site's casing).
     if (route === "resolving") document.title = "Opening workspace · Drowse";
+    else if (route === "workbench") document.title = "Drowse";
   });
 
   const FOCUSABLE = [
@@ -158,6 +162,15 @@
     url.searchParams.delete("reopen-after-unload");
     url.searchParams.set("reopen", "1");
     window.history.replaceState(window.history.state, "", url);
+    shownEntry = entryKey();
+  }
+
+  // The path and query of the history entry on screen. The workbench's rooms are hash routes
+  // (drowse's rooms store pushes #/lens, #/artifacts/build, ...), so a history step that keeps
+  // the path and query is a room move the dashboard's router follows, not a shell move.
+  function entryKey(href: string = window.location.href): string {
+    const url = new URL(href);
+    return `${url.pathname}${url.search}`;
   }
 
   // User-initiated Chats/Models moves add a history entry so Back returns to
@@ -169,6 +182,7 @@
     } else {
       window.history.replaceState(state ?? window.history.state, "", url);
     }
+    shownEntry = entryKey();
   }
 
   function showModels(
@@ -212,7 +226,10 @@
     if (disposed || reloading || entryView === "resolving") return;
     const url = new URL(window.location.href);
     const target: EntryView = url.searchParams.get("choose") === "1" ? "models" : "home";
+    const sameEntry = entryKey(url.href) === shownEntry;
+    shownEntry = entryKey(url.href);
     if (Workbench) {
+      if (sameEntry) return;
       if (!returningHome) void returnToChats(target === "models" ? "models" : "chats");
       return;
     }
@@ -385,6 +402,8 @@
         const component = (await import("../../../../drowse/webui/src/App.svelte")).default;
         if (!disposed) {
           if (appController.current().runtime.phase === "ready") {
+            // The models view clears its choice from the query as it opens the workbench.
+            shownEntry = entryKey();
             Workbench = component;
             completeChunkRecovery("workbench");
           } else {

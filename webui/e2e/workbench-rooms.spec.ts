@@ -77,9 +77,7 @@ test("the landing and workbench mirror without clipping in RTL", async ({ page }
 });
 
 test("the workbench's tab title names the app, not the last shell view", async ({ page }) => {
-  // Product bug (lanes/A5.md, "workbench tab title"): the title stays "Models · Drowse" after the
-  // chooser opens the workbench, and "Opening your chat… · Drowse" after Continue.
-  test.fixme(true, "the workbench keeps the hosted shell's last title; see lanes/A5.md");
+  // The chooser's "Models · Drowse" and Continue's "Opening your chat… · Drowse" give way to the app.
   await openFixtureWorkbench(page);
   await expect(page).toHaveTitle("Drowse");
   await page.reload();
@@ -88,9 +86,7 @@ test("the workbench's tab title names the app, not the last shell view", async (
 });
 
 test("Back and Forward move between rooms without leaving the workbench", async ({ page }) => {
-  // Product bug (lanes/A5.md, "Back leaves the workbench"): HostedRoot's popstate handler returns
-  // to Your chats on any history step while the workbench is open, including a room's hash step.
-  test.fixme(true, "HostedRoot treats a room's hash popstate as leaving the app; see lanes/A5.md");
+  // Rooms are hash routes: a history step that keeps the path and query stays in the workbench.
   await openFixtureWorkbench(page);
   await selectRoom(page, "Lens");
   await page.goBack();
