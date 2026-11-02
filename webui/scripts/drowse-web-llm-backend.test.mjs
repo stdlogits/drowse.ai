@@ -358,7 +358,8 @@ try {
   assert.equal(session.scene_mode, true);
   assert.equal(session.default_user_role, "user");
   assert.equal(session.default_assistant_role, "model");
-  assert.equal(session.instruments.length, 3);
+  // geometry, lens, sae and the units family the load configured.
+  assert.deepEqual(session.instruments.map((item) => item.family).sort(), ["geometry", "lens", "sae", "units"]);
   assert.equal(session.jlens_fitted, true);
   assert.deepEqual(
     session.instruments.find((item) => item.family === "lens").capabilities.preparations,
@@ -388,7 +389,11 @@ try {
     () => {},
     new AbortController().signal,
   )).model, "fixture-model");
-  assert.equal(session.instruments.every((item) => item.capabilities.token_readout === true), true);
+  // Every family reads a token but units, whose reads are the anatomy replay (native's block).
+  assert.deepEqual(
+    session.instruments.map((item) => [item.family, item.capabilities.token_readout]).sort(),
+    [["geometry", true], ["lens", true], ["sae", true], ["units", false]],
+  );
   const capturedLens = {
     version: 2,
     scope: "token",

@@ -171,7 +171,11 @@ export class DrowseWebLlmBackend implements BrowserModelBackend {
       });
       this.loom = loom;
       this.loadRequest = request;
-      if (instruments) await this.configureUnits(request, instruments, loom);
+      if (instruments) {
+        await this.configureUnits(request, instruments, loom);
+        // The session names the units family once its members are configured.
+        loom.refreshInstrumentSession();
+      }
       return result;
     } catch (error) {
       try {
