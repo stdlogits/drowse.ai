@@ -677,10 +677,9 @@ export class BrowserLoomRuntime {
           }
           (token.thinking ? node.thinking_tokens! : node.tokens!).push(row);
           // A stopped reply pools the last token's aggregate view (its readings of families whose
-          // live readout is off ride no token envelope).
-          if (token.aggregateMeasurements ?? token.measurements) {
-            lastEnvelope = token.aggregateMeasurements ?? token.measurements;
-          }
+          // live readout is off ride no token envelope). A token offers none when the request
+          // returns no probe readings, and then the stopped reply has no aggregate either.
+          if (token.aggregateMeasurements) lastEnvelope = token.aggregateMeasurements;
           await emit({
             type: "token",
             text: token.text,

@@ -1647,6 +1647,32 @@ try {
   assert.equal(scopedResult.measurements.instruments.sae.readings["sae/3"].value, 0.25);
   assert.equal(scopedResult.measurements.instruments.lens.readings["jlens/calm"].value, 0.5);
 
+  // With return_probe_readings off, native reads no aggregate (read_plane.py want_readouts): the
+  // reply has none, and no token offers one for a stopped reply to pool.
+  const unreadTokens = [];
+  const unreadResult = await streamWebLlmGeneration(
+    engine,
+    {
+      async clear() {},
+      async interrupt() {},
+      async install() {},
+      async read() { return Float32Array.of(0.25, 0.5, 0, 0, 0, 0, 0, 0); },
+      async readGeometry() { return new Float32Array(); },
+      async updateControls() {},
+      assertSteeringSupported() {},
+    },
+    {
+      input: { kind: "chat", messages: [{ role: "user", content: "Hi" }] },
+      hookProgram: scopedProgram,
+      measurementSpecialTokenIds: [99],
+      sampling: { return_probe_readings: false },
+    },
+    (token) => unreadTokens.push(token),
+  );
+  assert.equal(unreadTokens.length, 2);
+  assert.equal(unreadTokens.some((token) => "aggregateMeasurements" in token), false);
+  assert.equal(unreadResult.measurements, undefined);
+
   const staticProgram = compileStructuredHookProgram(1, [{
     affineGroups: [{
       active: true,

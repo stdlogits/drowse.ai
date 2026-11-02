@@ -117,7 +117,8 @@ export interface WebLlmGeneratedToken {
    *  §2.2), when the program has a unit section. */
   hookUnitTaps?: Float32Array;
   /** What this token offers a reply's aggregate: `measurements` plus the readings of families
-   *  whose live readout is off (they ride the aggregate only). A stopped reply pools from it. */
+   *  whose live readout is off (they ride the aggregate only). A stopped reply pools from it.
+   *  Absent when the plan's `return_probe_readings` is off: the reply then has no aggregate. */
   aggregateMeasurements?: MeasurementsEnvelopeJSON;
 }
 
@@ -410,10 +411,11 @@ export async function streamWebLlmGeneration(
     let localStopRequested = false;
     let prefillTokensPerSecond: number | null = null;
     let decodeTokensPerSecond: number | null = null;
+    // Native reads no aggregate when `return_probe_readings` is off (read_plane.py's
+    // `want_readouts`), so the reply has none and no token offers one to a stopped reply.
+    const returnsAggregate = plan.sampling?.return_probe_readings !== false;
     const aggregateMeasurements = new AggregateMeasurementSelector(
-      plan.sampling?.return_probe_readings !== false
-        ? plan.measurementSpecialTokenIds
-        : null,
+      returnsAggregate ? plan.measurementSpecialTokenIds : null,
     );
     let processingError: unknown = null;
     for await (const value of stream) {
@@ -629,7 +631,7 @@ export async function streamWebLlmGeneration(
                 piece.hookMeasurements,
                 piece.replayScore,
                 piece.hookUnitTaps,
-                piece.aggregateSource?.envelope,
+                returnsAggregate ? piece.aggregateSource?.envelope : undefined,
               );
               (token.thinking ? thinkingText : text).push(token.text);
               if (token.text !== "") {
@@ -695,7 +697,7 @@ export async function streamWebLlmGeneration(
         piece.hookMeasurements,
         piece.replayScore,
         piece.hookUnitTaps,
-        piece.aggregateSource?.envelope,
+        returnsAggregate ? piece.aggregateSource?.envelope : undefined,
       );
       (token.thinking ? thinkingText : text).push(token.text);
       if (token.text !== "") {
