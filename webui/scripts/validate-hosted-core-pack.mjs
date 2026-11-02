@@ -9,6 +9,7 @@ import { readRuntimeLock } from "./runtime-lock-document.mjs";
 import { collectPackArtifacts } from "./assemble-hosted-pack.mjs";
 import { readCoreManifoldSource } from "./hosted-core-manifold-source.mjs";
 import { nativeFitModel } from "./hosted-native-models.mjs";
+import { fitNativeNeutralWhitener } from "./neutral-whitener-node.mjs";
 
 const options = parseArguments(process.argv.slice(2));
 if (!options) {
@@ -67,18 +68,6 @@ try {
     vite.ssrLoadModule("/src/hosted/runtime/browserCorePack.ts"),
   ]);
   const identitySha256 = runtimeIdentitySha256(runtimeIdentity);
-  /** The whitener the kernel fits from the native rows, as the core builder fitted it. */
-  async function refitWhitener(rowsBytes) {
-    const [{ decodeNeutralRows, fitNeutralWhitener }, kernel] = await Promise.all([
-      vite.ssrLoadModule("/src/hosted/fitting/neutralWhitener.ts"),
-      import("../public-hosted/wasm/drowse_fitting_wasm.js"),
-    ]);
-    await kernel.default({
-      module_or_path: await readFile(resolve(webuiRoot, "public-hosted/wasm/drowse_fitting_wasm_bg.wasm")),
-    });
-    const native = decodeNeutralRows(rowsBytes, lock.layerMap, lock.hiddenSize);
-    return sha256(fitNeutralWhitener(kernel, native.matrices, native.rows, lock.hiddenSize, lock.layerMap).tensorBytes);
-  }
   const tensorSha256ByContext = {};
   const coreArtifacts = [];
   for (const contextTokens of lock.contextProfiles) {
@@ -202,7 +191,7 @@ try {
     if (options.neutralRows !== null) {
       const rowsBytes = await readFile(resolve(options.neutralRows));
       assert.equal(sha256(rowsBytes), record.neutral.rows_sha256, "--neutral-rows are not this pass's rows");
-      const refit = await refitWhitener(new Uint8Array(rowsBytes));
+      const refit = sha256(await fitNativeNeutralWhitener(vite, rowsBytes, lock));
       for (const contextTokens of lock.contextProfiles) {
         assert.equal(tensorSha256ByContext[contextTokens], refit,
           `context ${contextTokens}'s whitener is not the one the neutral rows give`);

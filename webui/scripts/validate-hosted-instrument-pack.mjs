@@ -8,6 +8,7 @@ import { createServer } from "vite";
 import { validatePackDirectory } from "./build-hosted-catalog.mjs";
 import { validateReleaseInstrumentPack } from "./hosted-instrument-release-policy.mjs";
 import { lockedRuntimeIdentity } from "./hosted-runtime-identity.mjs";
+import { fitNativeNeutralWhitener } from "./neutral-whitener-node.mjs";
 
 const KINDS = ["sae", "jlens", "slens", "units"];
 
@@ -56,7 +57,7 @@ if (!modelId || !KINDS.includes(kind) || !input || values.length !== 3) {
     "usage: validate-hosted-instrument-pack.mjs MODEL_ID sae|jlens|slens|units PACK_DIR " +
     "[--with PACK_DIR]... [--core-statistics DIR] [--release] [--runtime-lock PATH]\n" +
     "  --with loads another pack beside it (a units pack is read through the R and S packs it binds)\n" +
-    "  --core-statistics names the directory holding the core pack's neutral-statistics.* (units bind it)",
+    "  --core-statistics names the core pack, or build_hosted_packs.py's staged core/ (units bind its neutral pass and whitener)",
   );
 }
 
@@ -95,6 +96,37 @@ async function packEntry(packDirectory, packKind) {
     file: new File([await readFile(resolve(packDirectory, entry.path))], entry.path),
   })));
   return { files: packFiles, artifacts: packArtifacts };
+}
+
+/** The core files a units pack binds: a core pack's neutral statistics and every context's
+ *  whitener, or, from `build_hosted_packs.py`'s staged `core/` before the core pack exists, the
+ *  statistics with the whitener the core builder will fit from its native rows. */
+async function coreStatisticsFiles(directory) {
+  const record = JSON.parse(await readFile(resolve(directory, "neutral-statistics.json"), "utf8"));
+  const files = new Map([[record.tensor_file, await readFile(resolve(directory, record.tensor_file))]]);
+  const whitenerPath = (contextTokens) => `${contextTokens}/neutral-whitener.safetensors`;
+  if (record.whitener !== undefined) {
+    files.set("neutral-statistics.json", await readFile(resolve(directory, "neutral-statistics.json")));
+    for (const contextTokens of lock.contextProfiles) {
+      files.set(whitenerPath(contextTokens), await readFile(resolve(directory, whitenerPath(contextTokens))));
+    }
+    return files;
+  }
+  const rows = await readFile(resolve(directory, record.neutral_rows?.file ?? "neutral-rows.safetensors"));
+  if (createHash("sha256").update(rows).digest("hex") !== record.neutral?.rows_sha256) {
+    throw new Error("the staged neutral rows are not the ones their statistics name");
+  }
+  const whitener = await fitNativeNeutralWhitener(vite, rows, lock);
+  const digest = createHash("sha256").update(whitener).digest("hex");
+  for (const contextTokens of lock.contextProfiles) files.set(whitenerPath(contextTokens), whitener);
+  files.set("neutral-statistics.json", new TextEncoder().encode(JSON.stringify({
+    ...record,
+    whitener: {
+      rows_sha256: record.neutral.rows_sha256,
+      tensors_sha256: Object.fromEntries(lock.contextProfiles.map((contextTokens) => [String(contextTokens), digest])),
+    },
+  })));
+  return files;
 }
 
 async function companionKind(packDirectory) {
@@ -136,7 +168,7 @@ const vite = await createServer({
   server: { middlewareMode: true, watch: null },
 });
 try {
-  const [{ BrowserInstrumentRegistry }, { runtimeIdentitySha256 }] = await Promise.all([
+  const [{ BrowserInstrumentRegistry }, { runtimeIdentitySha256, contextBindingSha256 }] = await Promise.all([
     vite.ssrLoadModule("/src/hosted/runtime/browserInstrumentPacks.ts"),
     vite.ssrLoadModule("/src/lib/runtime/catalog.ts"),
   ]);
@@ -147,23 +179,22 @@ try {
       id: `${modelId}-${lock.quantization}`,
       runtimeIdentity,
       runtimeIdentitySha256: fingerprint,
+      contextProfiles: lock.contextProfiles.map((contextTokens) => ({
+        contextTokens,
+        bindingSha256: contextBindingSha256(fingerprint, contextTokens),
+      })),
     },
     requiredCorePack: { files: [] },
     contextTokens: lock.contextProfiles[0],
     adapter: {},
-    artifacts: coreStatistics === null ? [] : await Promise.all(
-      ["neutral-statistics.json", "neutral-statistics.safetensors"].map(async (path) => {
-        const bytes = await readFile(resolve(coreStatistics, path));
-        return {
-          manifest: {
-            path, role: "core_pack", revision, bytes: bytes.byteLength,
-            sha256: createHash("sha256").update(bytes).digest("hex"),
-            url: `https://huggingface.co/drowse/local/resolve/${revision}/${path}`,
-          },
-          file: new File([bytes], path),
-        };
-      }),
-    ),
+    artifacts: coreStatistics === null ? [] : [...await coreStatisticsFiles(coreStatistics)].map(([path, bytes]) => ({
+      manifest: {
+        path, role: "core_pack", revision, bytes: bytes.byteLength,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        url: `https://huggingface.co/drowse/local/resolve/${revision}/${path}`,
+      },
+      file: new File([bytes], path),
+    })),
     optionalPacks: [
       {
         pack: {
