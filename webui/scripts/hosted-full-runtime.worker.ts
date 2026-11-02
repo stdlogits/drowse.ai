@@ -2066,10 +2066,20 @@ async function verifyInstrumentRejections(
   rejectedRuntimeBindings: string[];
   fp32TensorValidationPassed: boolean | null;
 }> {
+  // The core pack's manifolds bind the runtime they were fitted on: under another runtime
+  // identity (and its context bindings) none of them loads.
+  const foreign = "f".repeat(64);
   await requireCorePackRejection(
     {
       ...request,
-      requiredCorePack: { ...request.requiredCorePack, runtimeIdentitySha256: "f".repeat(64) },
+      variant: {
+        ...request.variant,
+        runtimeIdentitySha256: foreign,
+        contextProfiles: request.variant.contextProfiles.map((profile) => ({
+          ...profile,
+          bindingSha256: contextBindingSha256(foreign, profile.contextTokens),
+        })),
+      },
     },
     "CORE_PACK_RUNTIME_MISMATCH",
   );

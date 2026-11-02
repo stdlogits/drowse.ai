@@ -146,14 +146,6 @@ const localMeasurements = {
 let offlineArmed = false;
 const offlineServerRequests = [];
 const artifactRequestLifecycle = [];
-const vite = await createViteServer({
-  root: webuiRoot,
-  configFile: false,
-  appType: "custom",
-  logLevel: "silent",
-  publicDir: resolve(webuiRoot, "public-hosted"),
-  server: { middlewareMode: true, hmr: false, watch: null },
-});
 const server = createHttpServer(async (request, response) => {
   for (const [name, value] of Object.entries({
     "Cross-Origin-Opener-Policy": "same-origin",
@@ -252,6 +244,16 @@ const server = createHttpServer(async (request, response) => {
       );
     }
   }
+});
+// The worker's dynamic bridge import pulls in Vite's client (`injectQuery`), which opens the HMR
+// socket: it attaches to this server, or the client logs a console error the audit refuses.
+const vite = await createViteServer({
+  root: webuiRoot,
+  configFile: false,
+  appType: "custom",
+  logLevel: "silent",
+  publicDir: resolve(webuiRoot, "public-hosted"),
+  server: { middlewareMode: true, watch: null, hmr: { server } },
 });
 let browser = null;
 try {
