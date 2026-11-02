@@ -23,7 +23,12 @@ import {
 } from "../src/lib/runtime/eta";
 import { measuredDecodeTokensPerSecond } from "../src/lib/runtime/recommendation";
 import { formatBytes } from "../src/lib/format/bytes";
-import { optionalPackHardwareBlock } from "../src/hosted/runtime/optionalPackCompatibility";
+import {
+  optionalPackHardwareBlock,
+  packInstallFiles,
+} from "../src/hosted/runtime/optionalPackCompatibility";
+
+type FirstRunPack = HostedModelOption["firstRunPacks"][number];
 import { hostedNetworkIsOffline } from "../src/hosted/runtime/networkState";
 import { userFacingError } from "../../drowse/webui/src/lib/runtime/userFacingError";
 
@@ -548,6 +553,7 @@ export function createShellController(
           candidate.id === pack.id ? { ...candidate, selected: false } : candidate
         );
       }
+      nextPacks = withUnitsCompanions(nextPacks, pack, selected);
       const nextModel = finalizeModelSetup({ ...model, firstRunPacks: nextPacks });
       // Another model's paused or failed download keeps its state and kept files.
       const ownsDownloadState = snapshot.download.modelVariantId === undefined ||
@@ -1107,9 +1113,12 @@ function modelFromRecommendation(
     if (selected) selectedPackManifests.push(pack);
     return [{
       id: pack.id,
-      kind: pack.kind as "jlens" | "sae",
+      // The shared shell type names jlens and sae only until drowse's `HostedModelOption`
+      // carries 6.0's slens and units kinds (lanes/B6.md, needs).
+      kind: pack.kind as FirstRunPack["kind"],
       name: pack.displayName,
-      bytes: pack.bytes,
+      // What installs now: a lens or units pack's other layers are fetched as reads need them.
+      bytes: packInstallFiles(pack, variant).reduce((total, file) => total + file.bytes, 0),
       requiredForSetup,
       selected,
       installed,
@@ -1231,6 +1240,26 @@ function modelFamily(name: string): string {
 function isPreviewDesktopRuntime(capabilities: RuntimeCapabilities): boolean {
   return capabilities.signals.runtimeClass === "desktop-webkit" ||
     capabilities.signals.runtimeClass === "desktop-gecko";
+}
+
+/** A units pack reads through the S lens (and the R lens, which a chat model always installs):
+ *  choosing units chooses the S pack too, and dropping the S pack drops units. Installed packs
+ *  stay as they are. */
+function withUnitsCompanions(
+  packs: HostedModelOption["firstRunPacks"],
+  changed: FirstRunPack,
+  selected: boolean,
+): HostedModelOption["firstRunPacks"] {
+  const kind = changed.kind as string;
+  if (selected && kind === "units") {
+    return packs.map((candidate) =>
+      (candidate.kind as string) === "slens" && !candidate.selected ? { ...candidate, selected: true } : candidate);
+  }
+  if (!selected && kind === "slens") {
+    return packs.map((candidate) =>
+      (candidate.kind as string) === "units" && !candidate.installed ? { ...candidate, selected: false } : candidate);
+  }
+  return packs;
 }
 
 function refreshModelInstallState(

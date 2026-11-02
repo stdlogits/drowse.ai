@@ -8,9 +8,9 @@
     type CatalogInstrumentAvailability,
   } from "../../../../drowse/webui/src/lib/runtime/instrumentAvailability";
 
-  let { kind }: { kind: "jlens" | "sae" } = $props();
+  let { kind }: { kind: "jlens" | "slens" | "units" | "sae" } = $props();
   let availability = $state<CatalogInstrumentAvailability>("unknown");
-  const name = $derived(kind === "jlens" ? "R lens" : "SAE");
+  const name = $derived({ jlens: "R lens", slens: "S lens", units: "units", sae: "SAE" }[kind]);
   const message = $derived(
     availability === "unavailable"
       ? `No compatible ${name} pack is published for this model.`
@@ -21,7 +21,9 @@
 
   onMount(() => {
     let mounted = true;
-    void currentCatalogInstrumentAvailability(kind).then((value) => {
+    // The shared helper filters packs by kind; its type names jlens and sae only until drowse's
+    // carries 6.0's slens and units (lanes/B6.md, needs).
+    void currentCatalogInstrumentAvailability(kind as "jlens" | "sae").then((value) => {
       if (mounted) availability = value;
     });
     return () => { mounted = false; };
