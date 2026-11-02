@@ -934,9 +934,14 @@ export function blockSitesBufferElements(
  *  `[rows, V]` output stays within the binding the catalog declares (`libraryBindingBytes`). */
 export const VOCAB_READ_ROWS = 64;
 
+/** Vocabulary rows per `vocabRowsTimes` call in the unit reads (`unitReader.ts`): each call's
+ *  `[rows, d]` embedding rows and `[rows, m ≤ H·hd]` product stay within the library's binding. */
+export const UNIT_VOCAB_ROWS = 8192;
+
 /** The largest buffer a units library's v5 machinery allocates at its largest context and prefill
  *  chunk (HOOK_ABI.md §10): `pattern_keys` whole (every pattern slot, a full-context pattern
- *  replay), the head grams, the chunk's MLP gate/up activation `[prefill, 2·d_ff]`, and every other
+ *  replay), the head grams, the chunk's MLP gate/up activation `[prefill, 2·d_ff]`, a layer's head
+ *  rows (`drowse_head_rows` over every head, `[H, 4, hd, d]`), and every other
  *  `blockSitesBufferElements` buffer. The catalog's binding must cover it (`catalog.ts`). */
 export function blockSitesBindingBytes(
   input: StructuredHookCapacityProfile,
@@ -951,6 +956,9 @@ export function blockSitesBindingBytes(
         : count
     ),
     checkedStructuredHookProduct("chunk gate and up", model.prefillChunkSize, 2, model.blockSpec.dFF),
+    checkedStructuredHookProduct(
+      "layer head rows", model.blockSpec.nHeads, 4, model.blockSpec.headDim, model.hiddenSize,
+    ),
   );
   return checkedStructuredHookProduct("block-sites binding bytes", largest, 4);
 }
@@ -989,8 +997,8 @@ export function largestWeightTensorBytes(cache: unknown): number {
 
 /** The `maxStorageBufferBindingSize` (and `maxBufferSize`) a v5 library needs on any adapter
  *  (HOOK_ABI.md §10): its largest weight tensor, its units machinery at the largest context
- *  (`blockSitesBindingBytes`, units libraries), the structured program's buffers, a static read's
- *  `[VOCAB_READ_ROWS, V]` output and a resident lens layer `[d, d]`. The bridge asks the device for
+ *  (`blockSitesBindingBytes`, units libraries) and a unit read's vocabulary chunk, the structured
+ *  program's buffers, a static read's `[VOCAB_READ_ROWS, V]` output and a resident lens layer. The bridge asks the device for
  *  exactly this, so the catalog admits an adapter if and only if it can load and run the model. */
 export function libraryBindingBytes(
   input: StructuredHookCapacityProfile,
@@ -1016,6 +1024,13 @@ export function libraryBindingBytes(
   return Math.max(
     model.largestWeightBytes,
     model.blockSpec === null ? 0 : blockSitesBindingBytes(profile, { ...model, blockSpec: model.blockSpec }),
+    // A unit read's vocabulary chunk: `[UNIT_VOCAB_ROWS, d]` rows times a `[d, m ≤ max(d, H·hd)]` factor.
+    model.blockSpec === null ? 0 : checkedStructuredHookProduct(
+      "unit vocabulary chunk",
+      UNIT_VOCAB_ROWS,
+      Math.max(model.hiddenSize, model.blockSpec.nHeads * model.blockSpec.headDim),
+      4,
+    ),
     structuredHookMemoryRequirements(profile, model.layerCount, model.hiddenSize).maxStorageBufferBindingSize,
     checkedStructuredHookProduct("vocabulary read", VOCAB_READ_ROWS, model.vocabSize, 4),
     checkedStructuredHookProduct("lens layer", model.hiddenSize, model.hiddenSize, 4),

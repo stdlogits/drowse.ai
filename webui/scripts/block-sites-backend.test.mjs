@@ -215,8 +215,9 @@ try {
   // 4096 tokens: 256 MiB), else the head grams or a chunk's [prefill, 2·d_ff] gate/up activation.
   const qwen4bModel = { layerCount: 36, hiddenSize: 2560, contextTokens: 4096, prefillChunkSize: 2048, blockSpec: spec };
   assert.equal(backend.blockSitesBindingBytes(v4, qwen4bModel), 256 * MiB);
-  assert.equal(backend.blockSitesBindingBytes(v4, { ...qwen4bModel, contextTokens: 2048 }), 152 * MiB,
-    "at 2048 tokens the chunk's gate/up (2048 × 2 × 9728) outgrows pattern_keys (128 MiB)");
+  assert.equal(backend.blockSitesBindingBytes(v4, { ...qwen4bModel, contextTokens: 2048 }), 160 * MiB,
+    "at 2048 tokens a layer's head rows (32 × 4 × 128 × 2560) outgrow the chunk's gate/up " +
+    "(2048 × 2 × 9728, 152 MiB) and pattern_keys (128 MiB)");
   // The catalog's binding: the largest of that, the largest weight, a 64-row vocabulary read and a
   // resident lens layer. gemma3-4b's q4 embedding (320 MiB) wins; qwen3-4b's pattern_keys win.
   const library = (overrides) => backend.libraryBindingBytes(v4, {
