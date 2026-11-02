@@ -26,6 +26,7 @@ The TypeScript side of this contract, pinned by script tests:
 | `webui/src/hosted/runtime/modelBackend.ts` | `BrowserBlockSitesBackend` (the device surface), typed tensors, replay layouts | `block-sites-backend.test.mjs` |
 | `webui/src/hosted/runtime/webLlmBlockSites.ts`, `webLlmStaticReads.ts` | the surface over the bridge (replay, residents, static reads) | `web-llm-block-sites.test.mjs`; WebGPU `browser-units-goldens.mjs --suite all` |
 | `browser-runtime/forks/units_goldens.py`, `static_reads.py` | the C TVM VM checks against the goldens | `verify-mlc-hook.py --units-fixtures` |
+| `browser-runtime/forks/verify-production-library.py` | a production library on the CPU: export and shader checks, its descriptor, and (`--parity`) its block sites, greedy tokens and static reads on the C TVM VM against PyTorch on the dequantized MLC tensors (B1 §4.3) | run per library before release |
 
 ## 1. Names (§8.1)
 

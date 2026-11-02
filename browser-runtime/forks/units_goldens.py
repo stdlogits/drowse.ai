@@ -196,13 +196,16 @@ def parse_trigger(text: str | None) -> dict | None:
 
 
 class FixtureVM:
-    """One fixture model compiled for llvm, its parameters, and a paged KV cache."""
+    """One units model (a build-units-fixtures.py fixture or a converted production model)
+    compiled for llvm, its parameters, and a paged KV cache."""
 
     def __init__(self, env, model_dir: Path):
         self.env = env
         tvm, relax, nn = env.tvm, env.relax, env.nn
         chat = json.loads((model_dir / "mlc-chat-config.json").read_text())
-        fixture = json.loads((model_dir / "drowse-units-fixture.json").read_text())
+        fixture_path = model_dir / "drowse-units-fixture.json"
+        fixture = (json.loads(fixture_path.read_text()) if fixture_path.is_file()
+                   else {"arch": chat["model_type"], "quantization": chat["quantization"]})
         self.arch, self.quantization = fixture["arch"], fixture["quantization"]
         config_class, model_class = env.models[chat["model_type"]]
         config = config_class.from_dict(chat["model_config"])
@@ -471,14 +474,23 @@ def install_block_sites_forward(model_class, env) -> None:
 
 
 def load_tensor_cache(directory: Path) -> dict[str, np.ndarray]:
+    """Every tensor as the runtime decodes it: `f32-to-bf16` records (production q4f32_1 scales
+    and norms) widen their stored bf16 bits to float32."""
     cache = json.loads((directory / "tensor-cache.json").read_text())
     tensors = {}
     for shard in cache["records"]:
         data = (directory / shard["dataPath"]).read_bytes()
         for record in shard["records"]:
             chunk = data[record["byteOffset"]: record["byteOffset"] + record["nbytes"]]
-            tensors[record["name"]] = np.frombuffer(chunk, dtype=record["dtype"]).reshape(
-                record["shape"]).copy()
+            encoding = record.get("format", "raw")
+            if encoding == "f32-to-bf16" and record["dtype"] == "float32":
+                bits = np.frombuffer(chunk, dtype="<u2").astype(np.uint32) << 16
+                value = bits.view(np.float32)
+            elif encoding == "raw":
+                value = np.frombuffer(chunk, dtype=record["dtype"]).copy()
+            else:
+                raise SystemExit(f"{record['name']}: unsupported tensor encoding {encoding}")
+            tensors[record["name"]] = value.reshape(record["shape"])
     return tensors
 
 
