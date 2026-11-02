@@ -325,7 +325,9 @@ class PackFiles {
   }
 }
 
-/** Least-recently-read decoded files, bounded by bytes, one decode per key at a time. */
+/** Least-recently-read decoded files, bounded by bytes, one decode per key at a time. A load
+ *  runs under the model load's lifetime, not one reader's: a reader that gives up stops waiting,
+ *  and the layer still lands in the cache for the next. */
 class DecodedCache<T> {
   private readonly entries = new Map<string, { value: T; bytes: number }>();
   private readonly pending = new Map<string, Promise<T>>();
@@ -333,15 +335,27 @@ class DecodedCache<T> {
 
   constructor(private readonly maxBytes: number) {}
 
-  async get(key: string, load: () => Promise<{ value: T; bytes: number }>): Promise<T> {
+  async get(
+    key: string,
+    signal: AbortSignal,
+    load: () => Promise<{ value: T; bytes: number }>,
+  ): Promise<T> {
+    signal.throwIfAborted();
     const hit = this.entries.get(key);
     if (hit !== undefined) {
       this.entries.delete(key);
       this.entries.set(key, hit);
       return hit.value;
     }
-    const running = this.pending.get(key);
-    if (running !== undefined) return running;
+    const running = this.pending.get(key) ?? this.start(key, load);
+    return new Promise<T>((resolve, reject) => {
+      const abort = () => reject(signal.reason);
+      signal.addEventListener("abort", abort, { once: true });
+      running.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+    });
+  }
+
+  private start(key: string, load: () => Promise<{ value: T; bytes: number }>): Promise<T> {
     const promise = load().then(({ value, bytes }) => {
       this.entries.set(key, { value, bytes });
       this.bytes += bytes;
@@ -353,6 +367,7 @@ class DecodedCache<T> {
       return value;
     }).finally(() => this.pending.delete(key));
     this.pending.set(key, promise);
+    promise.catch(() => undefined);
     return promise;
   }
 
@@ -513,8 +528,9 @@ export class BrowserInstrumentRegistry {
       if (resident !== undefined) return resident;
     }
     const hiddenSize = this.loadRequest.variant.runtimeIdentity.hiddenSize;
-    return this.lensLayers.get(`${family}:${lens.bindingId}:${site}:${layer}`, async () => {
-      const data = await readLensShard(lens.files, lens.manifestPath, entry, layer, hiddenSize, signal);
+    const lifetime = this.loadRequest.signal;
+    return this.lensLayers.get(`${family}:${lens.bindingId}:${site}:${layer}`, signal, async () => {
+      const data = await readLensShard(lens.files, lens.manifestPath, entry, layer, hiddenSize, lifetime);
       return { value: data, bytes: data.byteLength };
     });
   }
@@ -578,11 +594,12 @@ export class BrowserInstrumentRegistry {
     if (entry === undefined) {
       throw instrumentError("UNITS_LAYER_UNAVAILABLE", `The units pack has no layer ${layer}`);
     }
-    return this.unitsLayers.get(`${part}:${layer}`, async () => {
+    const lifetime = this.loadRequest.signal;
+    return this.unitsLayers.get(`${part}:${layer}`, signal, async () => {
       if (units.files.sha256(entry.path) !== entry.sha256) {
         throw instrumentError("UNITS_PACK_INVALID", `units ${part} layer ${layer} has a mismatched digest`);
       }
-      const reader = await tensorArtifactReader(await units.files.file(entry.path, signal), signal);
+      const reader = await tensorArtifactReader(await units.files.file(entry.path, lifetime), lifetime);
       if (!sameStrings(reader.keys, Object.keys(entry.shapes).sort())) {
         throw instrumentError("UNITS_PACK_INVALID", `units ${part} layer ${layer} has unexpected tensors`);
       }
