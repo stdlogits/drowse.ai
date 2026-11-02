@@ -13,7 +13,7 @@ const server = await createServer({
 });
 
 try {
-  const { BrowserLoomRuntime, deriveSeedSchedule } = await server.ssrLoadModule(
+  const { BrowserLoomRuntime, composeCall, deriveSeedSchedule, recipeModifier } = await server.ssrLoadModule(
     "/src/hosted/runtime/browserLoom.ts",
   );
   const { streamWebLlmGeneration } = await server.ssrLoadModule(
@@ -620,7 +620,8 @@ try {
     service: "tree", method: "transcriptExport", args: [null],
   });
   assert.equal(exportedTranscript.node_id, chat.tree.active_node_id);
-  assert.match(exportedTranscript.yaml, /^drowse_transcript: 2/m);
+  assert.match(exportedTranscript.yaml, /^drowse_transcript: 3/m);
+  assert.match(exportedTranscript.yaml, /^    finish_reason: stop$/m);
   assert.match(exportedTranscript.yaml, /model_id: fixture\/drowse-tiny/);
   assert.match(exportedTranscript.yaml, /text: Question/);
   const transcriptRuntime = new BrowserLoomRuntime({
@@ -974,14 +975,14 @@ try {
       };
       const readoutWidth = plan.readoutTopK ?? 2;
       const measurements = () => ({
-        version: 1,
+        version: 2,
         scope: "token",
         provenance: "captured",
         instruments: {
           ...(replayLive.geometry ? { geometry: { readings: {} } } : {}),
           ...(replayLive.lens ? {
             lens: {
-              binding: { source: "fixture-jlens", steering: plan.steeringExpression ?? null },
+              binding: { sources: { R: "fixture-jlens" }, steering: plan.steeringExpression ?? null },
               readings: {
                 "jlens/yes": {
                   value: 0.8,
@@ -999,8 +1000,8 @@ try {
                   ].slice(0, readoutWidth),
                 })),
                 aggregate: [
-                  { token: "aggregate-only", strength: 0.9, com: 0.5, spread: 0.2 },
-                  { token: "yes", strength: 0.8, com: 0.45, spread: 0.15 },
+                  { token: "aggregate-only", id: 99, strength: 0.9, com: 0.5, spread: 0.2 },
+                  { token: "yes", id: 10, strength: 0.8, com: 0.45, spread: 0.15 },
                 ].slice(0, readoutWidth),
               },
             },
@@ -1026,10 +1027,6 @@ try {
         scores: {
           ...(replayLive.lens ? { "jlens/yes": 0.8 } : {}),
           ...(replayLive.sae ? { "sae/1": 2 } : {}),
-        },
-        per_layer_scores: {
-          ...(replayLive.lens ? { "0": { "jlens/yes": 0.8 } } : {}),
-          ...(replayLive.sae ? { "1": { "sae/1": 2 } } : {}),
         },
       });
       for (const [rawIndex, tokenId] of emitted.entries()) {
@@ -1106,9 +1103,7 @@ try {
   assert.equal(lensReplay.measurements.instruments.lens.binding.steering, null);
   assert.deepEqual(Object.keys(lensReplay.measurements.instruments), ["lens"]);
   assert.deepEqual(lensReplay.measurements.scores, { "jlens/yes": 0.8 });
-  assert.deepEqual(lensReplay.measurements.per_layer_scores, {
-    "0": { "jlens/yes": 0.8 },
-  });
+  assert.equal("per_layer_scores" in lensReplay.measurements, false);
   const unsteeredReplayPlan = exactReplayEngine.plans[0];
   assert.deepEqual(unsteeredReplayPlan.input, {
     kind: "chat",
@@ -1567,7 +1562,7 @@ try {
       };
     },
   });
-  const roleSteering = "0.5 honest.deceptive:role-pirate";
+  const roleSteering = "0.5 deceptive:role-pirate";
   await activeRoleRuntime.generate({
     type: "submit",
     text: "Tell me a story",
@@ -2093,13 +2088,46 @@ try {
   await internalAbortEngine.started;
   await internalAbortRuntime.stop(false);
   await assert.rejects(internalAbort, (error) => error.name === "AbortError");
+  // A reply an engine error cut after a token keeps it, with no finish reason
+  // (drowse's `_discard_unanswered`).
   assert.deepEqual(
     internalAbortEvents
       .filter((event) => event.type === "tree_mutated")
       .map((event) => event.op),
+    ["add_user", "begin_assistant", "finalize_assistant"],
+  );
+  const keptReply = internalAbortRuntime.snapshot().tree.nodes.at(-1);
+  assert.equal(internalAbortRuntime.snapshot().tree.nodes.length, 3);
+  assert.equal(keptReply.text, "Partial");
+  assert.equal(keptReply.tokens.length, 1);
+  assert.equal(keptReply.finish_reason, null);
+
+  // An engine error before the first token leaves no empty assistant node.
+  const silentFailure = new BrowserLoomRuntime({
+    session: session(),
+    generation: {
+      async streamGeneration() {
+        throw Object.assign(new Error("device lost"), { code: "WEBGPU_DEVICE_LOST" });
+      },
+      async stop() {},
+    },
+    createId: ids("silent-failure"),
+  });
+  const silentEvents = [];
+  await assert.rejects(silentFailure.generate({
+    type: "submit",
+    text: "No reply comes",
+    authored_role: "user",
+    generated_role: "assistant",
+  }, (event) => silentEvents.push(event)), (error) => error.code === "WEBGPU_DEVICE_LOST");
+  assert.deepEqual(
+    silentEvents.filter((event) => event.type === "tree_mutated").map((event) => event.op),
     ["add_user", "begin_assistant", "delete"],
   );
-  assert.equal(internalAbortRuntime.snapshot().tree.nodes.length, 2);
+  assert.deepEqual(
+    silentFailure.snapshot().tree.nodes.map((node) => node.role),
+    ["system", "user"],
+  );
 
   const concurrencyEngine = cancellableGeneration("resolve");
   const concurrencyRuntime = new BrowserLoomRuntime({
@@ -2289,7 +2317,7 @@ try {
   restored.session_id = "portable-session";
   restored.nodes[2].aggregate_readings = { confidence: 0.8 };
   const scoredRow = (scores) => ({
-    version: 1, scope: "token", provenance: "captured", instruments: {}, scores,
+    version: 2, scope: "token", provenance: "captured", instruments: {}, scores,
   });
   restored.nodes[2].tokens[0].measurements = scoredRow({ confidence: 0.2 });
   restored.nodes[2].tokens[1].measurements = scoredRow({ confidence: 0.9 });
@@ -2571,6 +2599,52 @@ try {
   assert.equal(resetMutation.active_node_id, resetTree.root_id);
   assert.equal(resetTree.nodes.length, 1);
   assert.notEqual(resetTree.root_id, beforeReset.root_id);
+
+  // drowse's `compose_call`, case by case: sampling ranks cast < anchor < call <
+  // modifier; steering, thinking and the system prompt cast < call < anchor <
+  // modifier; the seed modifier > call > anchor > cast; observation knobs the call's.
+  const composeFixture = JSON.parse(await readFile(
+    new URL("../../drowse/tests/fixtures/browser/recipe-compose-v1.json", import.meta.url),
+    "utf8",
+  ));
+  const samplingDefaults = {
+    presence_penalty: 0,
+    frequency_penalty: 0,
+    return_top_k: 0,
+    persist_per_layer_scores: false,
+    persist_subspace_coords: false,
+    return_probe_readings: true,
+  };
+  const setSamplingFields = (sampling) => sampling === null ? null : Object.fromEntries(
+    Object.entries(sampling).filter(([key, value]) =>
+      value !== null && value !== undefined && samplingDefaults[key] !== value),
+  );
+  const composeTier = (tier) => tier === undefined ? null : {
+    steering: tier.steering ?? null,
+    thinking: tier.thinking ?? null,
+    ...(Object.hasOwn(tier, "system_prompt") ? { system_prompt: tier.system_prompt } : {}),
+    sampling: tier.sampling ?? null,
+    seed: null,
+  };
+  assert.equal(composeFixture.schemaVersion, 1);
+  for (const fixtureCase of composeFixture.cases) {
+    const anchor = composeTier(fixtureCase.anchor);
+    const composed = composeCall({
+      steering: fixtureCase.call.steering,
+      thinking: fixtureCase.call.thinking,
+      sampling: fixtureCase.call.sampling,
+      cast: composeTier(fixtureCase.cast),
+      anchor,
+      modifier: fixtureCase.modifier === undefined
+        ? null
+        : recipeModifier(fixtureCase.modifier, anchor),
+    });
+    const expected = fixtureCase.expected;
+    assert.equal(composed.steering, expected.steering, fixtureCase.name);
+    assert.equal(composed.thinking, expected.thinking, fixtureCase.name);
+    assert.equal(composed.systemPrompt, expected.system_prompt, fixtureCase.name);
+    assert.deepEqual(setSamplingFields(composed.sampling), expected.sampling, fixtureCase.name);
+  }
 
   const sharedLoomFixture = JSON.parse(await readFile(
     new URL("../../drowse/tests/fixtures/browser/loom-operation-transcript-v1.json", import.meta.url),

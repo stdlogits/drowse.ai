@@ -1,12 +1,17 @@
 import { parseDocument, stringify } from "yaml";
 import type {
+  FinishReason,
   LoomNodeJSON,
   LoomTreeJSON,
   RecipeJSON,
   SessionInfo,
 } from "../../../../drowse/webui/src/lib/types";
+import { FINISH_REASONS } from "../../../../drowse/webui/src/lib/types";
 
-const TRANSCRIPT_VERSION = 2;
+// drowse's `loom/transcript.py` v3: the cast model plus each generated turn's finish reason.
+const TRANSCRIPT_VERSION = 3;
+const ROOT_KEYS = new Set(["drowse_transcript", "turns", "model_id", "system_prompt", "cast", "probes"]);
+const TURN_KEYS = new Set(["role", "text", "speaker", "thinking", "recipe", "readings", "finish_reason"]);
 const MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
 const MAX_TURNS = 100_000;
 
@@ -17,6 +22,8 @@ export interface BrowserTranscriptTurn {
   thinking: string | null;
   recipe: RecipeJSON | null;
   readings: Record<string, number>;
+  /** A generated turn's finish reason (`cancelled`: cut short by a Stop or a disconnect). */
+  finishReason: FinishReason | null;
 }
 
 export interface BrowserTranscript {
@@ -43,6 +50,7 @@ export function exportBrowserTranscript(
       if (Object.keys(node.aggregate_readings).length > 0) {
         turn.readings = structuredClone(node.aggregate_readings);
       }
+      if (node.recipe !== null && node.finish_reason !== null) turn.finish_reason = node.finish_reason;
       return turn;
     });
   const document: Record<string, unknown> = {
@@ -82,6 +90,10 @@ export function parseBrowserTranscript(source: string): BrowserTranscript {
     );
   }
   const root = record(value, "transcript root");
+  const unknownRoot = Object.keys(root).filter((key) => !ROOT_KEYS.has(key));
+  if (unknownRoot.length > 0) {
+    throw transcriptError("INVALID_TRANSCRIPT", `Transcript has unknown fields: ${unknownRoot.sort().join(", ")}`);
+  }
   if (root.drowse_transcript !== TRANSCRIPT_VERSION) {
     throw transcriptError(
       "INVALID_TRANSCRIPT",
@@ -106,6 +118,10 @@ export function parseBrowserTranscript(source: string): BrowserTranscript {
 
 function parseTurn(value: unknown, index: number): BrowserTranscriptTurn {
   const turn = record(value, `turns[${index}]`);
+  const unknown = Object.keys(turn).filter((key) => !TURN_KEYS.has(key));
+  if (unknown.length > 0) {
+    throw transcriptError("INVALID_TRANSCRIPT", `turns[${index}] has unknown fields: ${unknown.sort().join(", ")}`);
+  }
   const role = turn.role;
   if (role !== "user" && role !== "assistant" && role !== "system") {
     throw transcriptError("INVALID_TRANSCRIPT", `turns[${index}].role is invalid`);
@@ -122,15 +138,32 @@ function parseTurn(value: unknown, index: number): BrowserTranscriptTurn {
     }
     readings[name] = reading;
   }
+  const recipe = turn.recipe === null || turn.recipe === undefined
+    ? null
+    : structuredClone(record(turn.recipe, `turns[${index}].recipe`)) as unknown as RecipeJSON;
+  const finishReason = turn.finish_reason ?? null;
+  if (finishReason !== null) {
+    if (!(FINISH_REASONS as readonly unknown[]).includes(finishReason)) {
+      throw transcriptError(
+        "INVALID_TRANSCRIPT",
+        `turns[${index}].finish_reason must be one of ${[...FINISH_REASONS].sort().join(", ")}`,
+      );
+    }
+    if (recipe === null) {
+      throw transcriptError(
+        "INVALID_TRANSCRIPT",
+        `turns[${index}].finish_reason needs a recipe: only a generated turn has one`,
+      );
+    }
+  }
   return {
     role,
     text: requiredString(turn.text ?? "", `turns[${index}].text`, 4 * 1024 * 1024),
     speaker,
     thinking: nullableString(turn.thinking, `turns[${index}].thinking`, 4 * 1024 * 1024),
-    recipe: turn.recipe === null || turn.recipe === undefined
-      ? null
-      : structuredClone(record(turn.recipe, `turns[${index}].recipe`)) as unknown as RecipeJSON,
+    recipe,
     readings,
+    finishReason: finishReason as FinishReason | null,
   };
 }
 

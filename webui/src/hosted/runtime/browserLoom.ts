@@ -1598,6 +1598,7 @@ export class BrowserLoomRuntime {
           recipe: clone(turn.recipe),
         });
         node.aggregate_readings = clone(turn.readings);
+        node.finish_reason = turn.finishReason;
         node.tokens = null;
         node.thinking_tokens = null;
         if (firstImportedId === null && guards.length > 0) {
@@ -2469,13 +2470,94 @@ interface PartialRecipe {
   seed: number | null;
 }
 
-/** drowse/loom/recipe.py `compose_call`: the one composition rule. Tiers,
- *  weakest first: the cast member's standing recipe, the call, the regen
- *  anchor, and the regen modifier. At each tier a set field wins (steering
- *  and thinking when not null, the system prompt when not inherited), and
- *  sampling merges field by field, so a tier cannot reset a field to its
- *  default. Observation knobs always come from the call, and the seed
- *  resolves modifier > call > anchor > cast. */
+/** One tier of `composeCall` below the call: a cast member's standing recipe,
+ *  a regen anchor's, or a regen modifier. */
+export interface ComposeTier {
+  steering: string | null;
+  thinking: boolean | null;
+  /** Absent: inherit. */
+  system_prompt?: string | null;
+  sampling: RecipeSamplingJSON | null;
+  seed?: number | null;
+}
+
+export interface ComposedCall {
+  steering: string | null;
+  thinking: boolean | null;
+  /** Absent: inherit the session's. */
+  systemPrompt?: string | null;
+  /** The merged sampling with the call's observation knobs and the resolved seed, or null when
+   *  no tier set any. */
+  sampling: WSSampling | null;
+}
+
+/** drowse/loom/recipe.py `compose_call`: the one composition rule (golden:
+ *  `recipe-compose-v1.json`). Steering, thinking and the system prompt rank
+ *  cast < call < anchor < modifier: a set field wins (steering and thinking
+ *  when not null, the system prompt when not inherited). Sampling ranks cast <
+ *  anchor < call < modifier and merges field by field, so a tier cannot reset
+ *  a field to its default: a field the call sets is what this generation
+ *  asked for, and a regenerate that sends no sampling reproduces its anchor.
+ *  Observation knobs always come from the call, and the seed resolves
+ *  modifier > call > anchor > cast. */
+export function composeCall(input: {
+  steering: string | null;
+  thinking: boolean | null;
+  systemPrompt?: string | null;
+  sampling: WSSampling | null;
+  cast: ComposeTier | null;
+  anchor: ComposeTier | null;
+  modifier: ComposeTier | null;
+}): ComposedCall {
+  const { cast, anchor, modifier } = input;
+  const call = input.sampling;
+  let steering = input.steering;
+  let thinking = input.thinking;
+  let systemPrompt = input.systemPrompt;
+  let promptSet = Object.hasOwn(input, "systemPrompt") && input.systemPrompt !== undefined;
+  if (cast !== null) {
+    steering ??= cast.steering;
+    thinking ??= cast.thinking;
+    if (!promptSet && cast.system_prompt !== undefined) {
+      systemPrompt = cast.system_prompt;
+      promptSet = true;
+    }
+  }
+  for (const layer of [anchor, modifier]) {
+    if (layer === null) continue;
+    if (layer.steering !== null) steering = layer.steering;
+    if (layer.thinking !== null) thinking = layer.thinking;
+    if (layer.system_prompt !== undefined) {
+      systemPrompt = layer.system_prompt;
+      promptSet = true;
+    }
+  }
+  const tierSampling = (tier: ComposeTier | null): WSSampling | null =>
+    tier === null || tier.sampling === null ? null : recipeSampling(tier.sampling);
+  let sampling: WSSampling | null = null;
+  for (const tier of [tierSampling(cast), tierSampling(anchor), call, tierSampling(modifier)]) {
+    sampling = mergeSampling(sampling, tier);
+  }
+  if (sampling !== null) {
+    const seed = [seedOf(modifier), call?.seed ?? null, seedOf(anchor), seedOf(cast)]
+      .find((value) => value !== null) ?? null;
+    sampling = {
+      ...sampling,
+      return_top_k: call?.return_top_k ?? 0,
+      return_probe_readings: call?.return_probe_readings ?? true,
+      persist_per_layer_scores: call?.persist_per_layer_scores ?? false,
+      persist_subspace_coords: call?.persist_subspace_coords ?? false,
+      seed,
+    };
+  }
+  return {
+    steering,
+    thinking,
+    ...(promptSet ? { systemPrompt: systemPrompt ?? null } : {}),
+    sampling,
+  };
+}
+
 function resolveGenerationSettings(
   request: WSSubmitRequest | WSGenerateRequest,
   session: SessionInfo,
@@ -2488,32 +2570,17 @@ function resolveGenerationSettings(
   const override = request.recipe_override;
   const anchor = override === null || override === undefined ? null : anchorRecipe(tree, parentId);
   const modifier = anchor === null ? null : recipeModifier(override!, anchor);
-
-  let steering: string | null = request.steering ?? null;
-  let thinking: boolean | null = request.thinking ?? null;
-  let systemPrompt: string | null | undefined = request.system_prompt;
-  let sampling: WSSampling | null = call;
-  if (cast !== null) {
-    steering ??= cast.steering;
-    thinking ??= cast.thinking;
-    if (systemPrompt === undefined) systemPrompt = cast.system_prompt;
-    sampling = mergeSampling(cast.sampling === null ? null : recipeSampling(cast.sampling), sampling);
-  }
-  for (const layer of [anchor, modifier]) {
-    if (layer === null) continue;
-    if (layer.steering !== null) steering = layer.steering;
-    if (layer.thinking !== null) thinking = layer.thinking;
-    if (layer.system_prompt !== undefined) systemPrompt = layer.system_prompt;
-    sampling = mergeSampling(sampling, layer.sampling === null ? null : recipeSampling(layer.sampling));
-  }
-  const seed = [seedOf(modifier), call?.seed ?? null, seedOf(anchor), seedOf(cast)]
-    .find((value) => value !== null) ?? null;
-  const observation: WSSampling = {
-    return_top_k: call?.return_top_k ?? 0,
-    return_probe_readings: call?.return_probe_readings ?? true,
-    persist_per_layer_scores: call?.persist_per_layer_scores ?? false,
-    persist_subspace_coords: call?.persist_subspace_coords ?? false,
-  };
+  const composed = composeCall({
+    steering: request.steering ?? null,
+    thinking: request.thinking ?? null,
+    ...(request.system_prompt === undefined ? {} : { systemPrompt: request.system_prompt }),
+    // A call always samples (drowse's engine passes its `SamplingConfig`): an absent block is
+    // one with every field unset, so the seed and the observation knobs always resolve.
+    sampling: call ?? {},
+    cast,
+    anchor,
+    modifier,
+  });
 
   const positionSpans = modifier !== null
     ? normalizeSteeringPositions(modifier.position_spans !== undefined ? modifier : anchor!)
@@ -2522,10 +2589,12 @@ function resolveGenerationSettings(
         ? request : cast ?? {},
     );
   return {
-    steering: resolveSteering(steering, session.default_steering),
-    sampling: effectiveSampling(session, { ...sampling, ...observation, seed }, maxOutputTokens),
-    thinking: thinking ?? session.config.thinking ?? session.supports_thinking,
-    systemPrompt: systemPrompt === undefined ? session.config.system_prompt : systemPrompt,
+    steering: resolveSteering(composed.steering, session.default_steering),
+    sampling: effectiveSampling(session, composed.sampling!, maxOutputTokens),
+    thinking: composed.thinking ?? session.config.thinking ?? session.supports_thinking,
+    systemPrompt: composed.systemPrompt === undefined
+      ? session.config.system_prompt
+      : composed.systemPrompt,
     positionSpans,
   };
 }
@@ -2603,7 +2672,7 @@ function anchorRecipe(tree: LoomTreeJSON, parentId: string): PartialRecipe {
   return { steering: null, sampling: null, thinking: null, seed: null };
 }
 
-function recipeModifier(
+export function recipeModifier(
   value: NonNullable<
     WSGenerateRequest["recipe_override"] | WSSubmitRequest["recipe_override"]
   >,
