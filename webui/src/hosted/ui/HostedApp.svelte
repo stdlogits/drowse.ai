@@ -257,8 +257,8 @@
 
   const toolChips = (model: HostedModelOption) => [
     ...(model.firstRunPacks.some((pack) => pack.kind === "jlens") ? ["Word insights (R lens)"] : []),
-    ...(model.firstRunPacks.some((pack) => packKind(pack) === "slens") ? ["Early-layer reads (S lens)"] : []),
-    ...(model.firstRunPacks.some((pack) => packKind(pack) === "units") ? ["Neurons and heads (units)"] : []),
+    ...(model.firstRunPacks.some((pack) => pack.kind === "slens") ? ["Early-layer reads (S lens)"] : []),
+    ...(model.firstRunPacks.some((pack) => pack.kind === "units") ? ["Neurons and heads (units)"] : []),
     ...(model.firstRunPacks.some((pack) => pack.kind === "sae") ? ["Feature insights (SAE)"] : []),
   ];
 
@@ -280,16 +280,12 @@
   const packName = (pack: HostedModelOption["firstRunPacks"][number]) =>
     pack.name;
 
-  // 6.0's pack kinds (jlens, slens, units, sae); the shared shell type names jlens and sae only
-  // until drowse's `HostedModelOption` carries the other two.
-  const packKind = (pack: HostedModelOption["firstRunPacks"][number]) => pack.kind as string;
-
   const packTitle = (pack: HostedModelOption["firstRunPacks"][number]) =>
     pack.kind === "jlens"
       ? "Word insights"
-      : packKind(pack) === "slens"
+      : pack.kind === "slens"
         ? "Early-layer reads"
-        : packKind(pack) === "units"
+        : pack.kind === "units"
           ? "Neurons and heads"
           : /gemma scope/i.test(pack.name)
             ? "Gemma Scope features"
@@ -298,18 +294,18 @@
   const packTag = (pack: HostedModelOption["firstRunPacks"][number]) =>
     pack.kind === "jlens"
       ? "optional readout"
-      : packKind(pack) === "slens"
+      : pack.kind === "slens"
         ? "S lens"
-        : packKind(pack) === "units"
+        : pack.kind === "units"
           ? "units"
           : "optional SAE";
 
   const packDescription = (pack: HostedModelOption["firstRunPacks"][number]) =>
     pack.kind === "jlens"
       ? `${pack.name}. Read word predictions across layers. This lens is already fitted; your browser doesn't train it.`
-      : packKind(pack) === "slens"
+      : pack.kind === "slens"
         ? `${pack.name}. Read early layers as input tokens. Already fitted; each layer downloads the first time it is read.`
-        : packKind(pack) === "units"
+        : pack.kind === "units"
           ? `${pack.name}. Read, rank and ablate neurons and heads. Already computed; each layer's statistics download the first time they are read.`
           : `${pack.name}. Inspect and steer learned features. This SAE is already trained; your browser doesn't train it.`;
   const appleStorageHelp =

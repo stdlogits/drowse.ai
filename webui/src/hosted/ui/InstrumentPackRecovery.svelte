@@ -21,9 +21,7 @@
 
   onMount(() => {
     let mounted = true;
-    // The shared helper filters packs by kind; its type names jlens and sae only until drowse's
-    // carries 6.0's slens and units (lanes/B6.md, needs).
-    void currentCatalogInstrumentAvailability(kind as "jlens" | "sae").then((value) => {
+    void currentCatalogInstrumentAvailability(kind).then((value) => {
       if (mounted) availability = value;
     });
     return () => { mounted = false; };
