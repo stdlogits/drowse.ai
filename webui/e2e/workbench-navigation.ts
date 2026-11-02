@@ -81,11 +81,14 @@ export async function returnToChats(page: Page): Promise<void> {
 export const toolDialog = (page: Page, name: string): Locator =>
   page.getByRole("dialog", { name, exact: true });
 
+/** The Inspector: a column beside the page, or a sheet (a region) on a phone. */
+export const inspector = (page: Page): Locator => page.getByRole("complementary", { name: "Inspector", exact: true })
+  .or(page.getByRole("region", { name: "Inspector", exact: true }));
+
 /** Selects a generated token and returns the Inspector's Token region. */
 export async function inspectToken(page: Page, text: string): Promise<Locator> {
   await page.getByRole("button", { name: `Inspect token ${text}`, exact: true }).first().click();
-  const token = page.getByRole("complementary", { name: "Inspector", exact: true })
-    .getByRole("region", { name: "Token", exact: true });
+  const token = inspector(page).getByRole("region", { name: "Token", exact: true });
   await expect(token).toBeVisible();
   return token;
 }
