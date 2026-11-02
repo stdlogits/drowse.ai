@@ -1499,18 +1499,19 @@ export class BrowserFeasibilityCorePackCompiler {
       );
     }
     const domain = structuredCurveDomain(manifold.domain, this.structuredHookProfile);
-    const fitted = fittedLayerNumbers(manifold.tensors);
-    const rawShares = fitted.map((layer) => manifold.mahalanobisShares.get(layer) ?? 0);
+    // The mean-1 share normalizes over the layers the term acts at (a layer
+    // clause's selection, else every fitted layer), as _manifold_layer_shares.
+    const active = fittedLayerNumbers(manifold.tensors).filter((layer) => termActsAt(term, layer));
+    const rawShares = active.map((layer) => manifold.mahalanobisShares.get(layer) ?? 0);
     const shareMean = rawShares.reduce((sum, value) => sum + value, 0) / rawShares.length;
-    if (!(shareMean > 0)) {
+    if (!(shareMean > 0) || rawShares.some((value) => !(Number.isFinite(value) && value > 0))) {
       throw coreError("CORE_PACK_METRIC_INVALID", "Curved manifold shares are invalid");
     }
     const target = resolveCurvePosition(manifold, term.manifoldPosition, domain.axes);
     const onto = term.coefficients[1] ?? 0;
     const periodic = domain.axes.some((axis) => axis.periodic);
     const curves = new Map<number, StructuredCurve>();
-    for (const layer of fitted) {
-      if (!termActsAt(term, layer)) continue;
+    for (const layer of active) {
       const programIndex = this.layerMap.indexOf(layer);
       if (programIndex < 0) {
         throw coreError(

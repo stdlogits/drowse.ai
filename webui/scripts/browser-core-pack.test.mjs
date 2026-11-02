@@ -1316,6 +1316,23 @@ try {
     assert.notEqual(first.residual[0], Math.fround(0.2));
   });
 
+  test("normalizes a layer-scoped curved term's share over its selected layers", async () => {
+    const { request } = await fixture({ curved: true, withWhitener: true });
+    const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+    const gains = (program) => [0, 1].map((layer) => {
+      const slot = layer * program.profile.maxCurves;
+      return [program.curveActive[slot], program.curveAlong[slot], program.curveOnto[slot]];
+    });
+    // Shares sqrt(2) and 2 sqrt(2): mean-1 over both layers is 2/3 and 4/3.
+    const full = gains(compiler.compile("0.3,0.5 demo%alert"));
+    assertFloatArray(full.map((row) => row[1]), [0.8, 1.6]);
+    assertFloatArray(full.map((row) => row[2]), [1 / 6, 1 / 3]);
+    // drowse's _manifold_layer_shares normalizes over the clause's layers only.
+    const scoped = gains(compiler.compile("0.3,0.5 demo%alert{0}"));
+    assert.equal(scoped[1][0], 0);
+    assertFloatArray([scoped[0][1], scoped[0][2]], [1.2, 0.25]);
+  });
+
   test("rejects overlapping curved terms before generation", async () => {
     const { request } = await fixture({ curved: true, withWhitener: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
