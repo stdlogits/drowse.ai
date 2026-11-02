@@ -1,4 +1,4 @@
-import { runtimeIdentitySha256 } from "../src/lib/runtime/catalog";
+import { contextBindingSha256, runtimeIdentitySha256 } from "../src/lib/runtime/catalog";
 import type { BlockSpec } from "../src/hosted/runtime/structuredHookProfile";
 import type { ModelVariant, RuntimeIdentity } from "../../drowse/webui/src/lib/runtime/contracts";
 import {
@@ -45,6 +45,8 @@ interface CaptureRequest {
     };
   };
   contextTokens: number;
+  /** The lock's context profiles: the adapter attests the library's prefill chunk against them. */
+  contextProfiles: number[];
   dumpShaders: boolean;
 }
 
@@ -90,7 +92,10 @@ self.onmessage = async (event: MessageEvent<CaptureRequest>) => {
         thinkingProfile: event.data.thinkingProfile,
         runtimeIdentity: event.data.runtimeIdentity,
         runtimeIdentitySha256: fingerprint,
-        contextProfiles: [{ contextTokens: event.data.contextTokens, bindingSha256: "0".repeat(64) }],
+        contextProfiles: event.data.contextProfiles.map((contextTokens) => ({
+          contextTokens,
+          bindingSha256: contextBindingSha256(fingerprint, contextTokens),
+        })),
         requirements: {
           features: event.data.requiredFeatures,
           limits: {

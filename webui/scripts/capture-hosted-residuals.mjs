@@ -247,6 +247,7 @@ try {
         ? {}
         : { namedRoleCheck: { row: input.namedRoleCheck.row } }),
       contextTokens: Math.max(...lock.contextProfiles),
+      contextProfiles: [...lock.contextProfiles],
       dumpShaders: shaderDumpDirectory !== null,
     },
   });
