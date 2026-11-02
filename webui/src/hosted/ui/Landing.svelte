@@ -97,7 +97,7 @@
     },
     {
       title: "Add an influence",
-      body: "An influence nudges the model's internal activity toward a concept, word, or feature while it writes, or pushes or silences a single neuron or head. Strength sets how hard it pushes. The model's weights never change.",
+      body: "An influence nudges the model's internal activity toward a concept, word, or feature while it writes, or pushes a single neuron or silences a neuron or head. Strength sets how hard it pushes. The model's weights never change.",
     },
     {
       title: "Compare what changes",
@@ -160,7 +160,7 @@
     { term: "Strength (α)", definition: "How hard an influence pushes. 0 leaves the model unsteered; negative values push the other way." },
     { term: "Word insights (R lens)", definition: "A lens that shows which words each layer is leaning toward saying, before the model makes its final prediction." },
     { term: "S lens", definition: "A lens that shows which words each layer looks like it has read. It is the faithful read early in the model, the R lens late." },
-    { term: "Neurons and heads", definition: "The model's own units. On Gemma 3 and Qwen3 models you can see which ones pushed a token, read what one writes, and push or silence it." },
+    { term: "Neurons and heads", definition: "The model's own units. On Gemma 3 and Qwen3 models you can see which ones pushed a token, read what one writes, and push a neuron or silence either." },
     { term: "Feature insights (SAE)", definition: "A sparse autoencoder splits the model's activity into features: learned patterns that often match a recognizable idea." },
     { term: "Loom", definition: "A tree of continuations. Branch from any token, try another path, and compare the results." },
     { term: "Base model", definition: "A model trained only to continue text, without chat tuning. It predicts what comes next instead of following requests." },
@@ -312,8 +312,8 @@
 </div>
 
 <style>
-  /* The landing in Ledger: paper, the hero's copy beside its orb, then the parts of the page as
-     captions over rows of wash. */
+  /* The landing in Ledger: paper, the hero's copy beside one recorded reading, then the parts of
+     the page as captions over rows of wash. */
   .skip-link { position: fixed; z-index: 60; top: var(--s2); inset-inline-start: var(--s2); padding: var(--s2) var(--s4); border-radius: var(--r-pill); background: var(--ink); color: var(--paper); font: var(--type-control); translate: 0 calc(-100% - var(--s4)); transition: translate var(--fast) var(--ease); }
   .skip-link:focus { translate: 0 0; }
   .landing-shell { display: flex; flex-direction: column; min-height: 100svh; overflow-x: clip; }

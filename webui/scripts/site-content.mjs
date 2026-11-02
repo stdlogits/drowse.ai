@@ -34,12 +34,12 @@ export const htmlGuides = [
       },
       {
         heading: "Choose an experiment",
-        bullets: ["Inspect a token's alternatives, its probe and feature readings, and what each layer reads and says through the S and R lenses.", "On Gemma 3 and Qwen3 models, find the neurons and heads that pushed a token, read what one writes, and push or silence it.", "Steer with a concept, a manifold position, a lens word, an SAE feature, or a single neuron, during the whole reply or only part of it.", "Branch from a turn or token and compare continuations under controlled settings.", "Score named completion choices to inspect a distribution rather than only the sampled answer."],
+        bullets: ["Inspect a token's alternatives, its probe and feature readings, and what each layer reads and says through the S and R lenses.", "On Gemma 3 and Qwen3 models, find the neurons and heads that pushed a token, read what one writes, and push a neuron or silence a neuron or head.", "Steer with a concept, a manifold position, a lens word, an SAE feature, or a single neuron, during the whole reply or only part of it.", "Branch from a turn or token and compare continuations under controlled settings.", "Score named completion choices to inspect a distribution rather than only the sampled answer."],
         links: [{ label: "Token and representation inspection", href: "/learn/interpretability" }, { label: "Activation steering guide", href: "/learn/activation-steering" }, { label: "Branching and comparison guide", href: "/learn/experiments" }],
       },
       {
         heading: "Find your way around",
-        paragraphs: ["The workbench is where you talk to the model, with the Inspector beside the conversation. Five rooms read the same conversation token by token: Units (neurons and heads), Lens (each layer through both lenses), Probes (concepts, manifolds and SAE features), Artifacts (where packs, probes, templates and roles are prepared) and Model. A token chosen in one room is the token in the others."],
+        paragraphs: ["The header holds six rooms. The Workbench is where you talk to the model, with the Inspector beside the conversation. Three more read the same conversation token by token: Units (neurons and heads), Lens (each layer through both lenses) and Probes (concepts, manifolds and SAE features), and a token chosen in one is the token in the others. Artifacts is where you fit, fetch and build what they read with: packs, probes, templates and roles. Model holds the model's layers, units, device and what is prepared for it."],
         links: [{ label: "The dashboard", href: source("README.md#the-dashboard") }],
       },
       {
@@ -103,7 +103,7 @@ export const htmlGuides = [
       },
       {
         heading: "Neurons and heads",
-        paragraphs: ["On Gemma 3 and Qwen3 models, every MLP neuron and attention head is something you can read, probe and steer. A token's anatomy lists the units that pushed it, each one push or silence away. The Units room shows the strongest units at a token or over the reply, a whole layer at once, and a chosen unit's activity, what it writes through the lenses, and what it reads. GPT-2, Pythia and Qwen 3.5 2B Base are built differently and don't offer units.", "A unit's reading comes from its weights and its activity on your text. A label is a summary of that evidence, not proof of what the unit does in every context."],
+        paragraphs: ["On Gemma 3 and Qwen3 models, every MLP neuron and attention head is something you can read, probe and steer. A token's anatomy lists the units that pushed it; a neuron is one push or silence away, a head one silence. The Units room shows the strongest units at a token or over the reply, a whole layer at once, and a chosen unit's activity, what it writes through the lenses, and what it reads. GPT-2, Pythia and Qwen 3.5 2B Base are built differently and don't offer units.", "A unit's reading comes from its weights and its activity on your text. A label is a summary of that evidence, not proof of what the unit does in every context."],
         links: [{ label: "Neurons and heads", href: source("README.md#neurons-and-heads") }, { label: "Neuron Lens", href: "https://neuron-lens.com" }],
       },
       {
