@@ -26,7 +26,7 @@ function closure(model, { library = "b".repeat(64), converted = "c".repeat(64), 
     ...(model.modelType ? { modelType: model.modelType } : {}),
     quantization: model.quantization,
     contextWindowSize: Math.max(...model.contextProfiles),
-    prefillChunkSize: Math.min(...model.contextProfiles),
+    prefillChunkSize: model.prefillChunkSize,
     hiddenSize: model.hiddenSize,
     layerMap: model.layerMap,
     files: [
@@ -42,15 +42,18 @@ function closure(model, { library = "b".repeat(64), converted = "c".repeat(64), 
 // The mlc-chat-config.json the overlay reads the descriptor's block constants from.
 function chatConfig(model) {
   const spec = model.blockSpec;
-  if (!spec) return { model_config: {} };
+  const prefill = { prefill_chunk_size: model.prefillChunkSize };
+  if (!spec) return { ...prefill, model_config: { ...prefill } };
   if (model.architecture === "qwen3") {
-    return { model_config: {
+    return { ...prefill, model_config: {
+      ...prefill,
       intermediate_size: spec.dFF, num_attention_heads: spec.nHeads,
       num_key_value_heads: spec.nKvHeads, head_dim: spec.headDim, rms_norm_eps: spec.rmsEps,
       rope_theta: spec.ropeTheta,
     } };
   }
-  return { model_config: { text_config: {
+  return { ...prefill, model_config: { text_config: {
+    ...prefill,
     hidden_size: Math.round(spec.embedScale ** 2), intermediate_size: spec.dFF,
     num_attention_heads: spec.nHeads, num_key_value_heads: spec.nKvHeads, head_dim: spec.headDim,
     rms_norm_eps: spec.rmsEps, query_pre_attn_scalar: Math.round(spec.attnScaling ** -2),
@@ -75,11 +78,15 @@ assert.equal(filled.librarySha256, "b".repeat(64));
 assert.equal(filled.manifestSha256, "c".repeat(64));
 assert.equal(filled.convertedRevision, null);
 assert.equal(candidate.status, "feasibility-required");
+// A new library clears the model's converted revision and the lock's verified status, whether or
+// not the repository lock is adopted yet; everything else is the lock's.
 const normalized = structuredClone(candidate);
 Object.assign(normalized.models.find((entry) => entry.id === qwen), {
   librarySha256: model(qwen).librarySha256,
   manifestSha256: model(qwen).manifestSha256,
+  convertedRevision: model(qwen).convertedRevision,
 });
+normalized.status = runtimeLock.status;
 assert.deepEqual(normalized, runtimeLock);
 
 // Every refusal: ABI, profile, architecture, tokenizer drift, a block spec the converted
@@ -91,14 +98,48 @@ const refusals = [
   [{ closure: { contextWindowSize: 2048 } }, /contextWindowSize differs/],
   [{ closure: { layerMap: [0, 1] } }, /layerMap differs/],
   [{ closure: { prefillChunkSize: 4096 } }, /prefillChunkSize differs/],
+  [{ chatConfig: { ...chatConfig(model(qwen)), prefill_chunk_size: 4096 } }, /mlc-chat-config prefill_chunk_size differs/],
+  [{ chatConfig: { ...chatConfig(model(qwen)), model_config: { ...chatConfig(model(qwen)).model_config, prefill_chunk_size: 1024 } } }, /model_config prefill_chunk_size differs/],
   [{ closure: { files: closure(model(qwen)).files.map((file) => file.role === "tokenizer" ? { ...file, sha256: "d".repeat(64) } : file) } }, /tokenizer digest differs/],
   [{ closure: { files: closure(model(qwen)).files.filter((file) => file.role !== "model_library") } }, /no unique model\.wasm/],
-  [{ chatConfig: { model_config: { ...chatConfig(model(qwen)).model_config, rope_theta: 10_000 } } }, /block spec differs from its converted configuration/],
-  [{ chatConfig: { model_config: { ...chatConfig(model(qwen)).model_config, rope_scaling: { factor: 2 } } } }, /without scaling or a window/],
+  [{ chatConfig: { ...chatConfig(model(qwen)), model_config: { ...chatConfig(model(qwen)).model_config, rope_theta: 10_000 } } }, /block spec differs from its converted configuration/],
+  [{ chatConfig: { ...chatConfig(model(qwen)), model_config: { ...chatConfig(model(qwen)).model_config, rope_scaling: { factor: 2 } } } }, /without scaling or a window/],
 ];
 for (const [options, pattern] of refusals) {
   assert.throws(() => derive(runtimeLock, qwen, options), pattern);
 }
+// A base library compiled with a prefill chunk below its one context (1024 against 2048) is the
+// lock's value, not the smallest context: the closure and chat config agree with it, and a
+// publish directory whose chat config still says 2048 is refused.
+const basePt = "gemma3-1b-pt";
+assert.equal(model(basePt).prefillChunkSize, 1024);
+assert.deepEqual(model(basePt).contextProfiles, [2048]);
+assert.doesNotThrow(() => derive(runtimeLock, basePt));
+assert.throws(
+  () => derive(runtimeLock, basePt, { chatConfig: { ...chatConfig(model(basePt)), prefill_chunk_size: 2048 } }),
+  /mlc-chat-config prefill_chunk_size differs/,
+);
+assert.throws(() => derive(runtimeLock, basePt, { closure: { prefillChunkSize: 2048 } }), /prefillChunkSize differs/);
+// MLC compiles model_config's own prefill when it is positive, else its text_config's: a converted
+// Gemma config keeps the source's 8192 in text_config under the compiled 1024.
+const nested = (own, text) => {
+  const config = chatConfig(model(basePt));
+  config.model_config = { ...config.model_config, ...(own === undefined ? {} : { prefill_chunk_size: own }) };
+  config.model_config.text_config = { ...(config.model_config.text_config ?? {}), prefill_chunk_size: text };
+  return { chatConfig: config };
+};
+assert.doesNotThrow(() => derive(runtimeLock, basePt, nested(1024, 8192)));
+assert.throws(() => derive(runtimeLock, basePt, nested(2048, 1024)), /model_config prefill_chunk_size differs/);
+assert.throws(() => derive(runtimeLock, basePt, nested(undefined, 8192)), /model_config prefill_chunk_size differs/);
+assert.throws(() => derive(runtimeLock, basePt, nested(-1, 2048)), /model_config prefill_chunk_size differs/);
+// The lock refuses a prefill chunk above its smallest context, or none.
+const overPrefill = structuredClone(runtimeLock);
+overPrefill.models.find((entry) => entry.id === qwen).prefillChunkSize = 4096;
+assert.throws(() => validateRuntimeLock(overPrefill), /qwen3-1\.7b prefill chunk size is invalid/);
+const noPrefill = structuredClone(runtimeLock);
+delete noPrefill.models.find((entry) => entry.id === qwen).prefillChunkSize;
+assert.throws(() => validateRuntimeLock(noPrefill), /unknown or missing fields/);
+
 // A Gemma 3 block spec differs in float32 only when the configuration does.
 const gemma = "gemma3-4b-instruct";
 assert.doesNotThrow(() => derive(runtimeLock, gemma));

@@ -68,8 +68,12 @@ export function parseBrowserFullRuntimeArguments(args) {
     runtimeLock: null,
     saeDirectory: null,
     saeFeature: 0,
+    slensDirectory: null,
+    slensWord: "ocean",
     stopMaxTokens: 64,
     timeoutMs: 900_000,
+    unitsDirectory: null,
+    verbose: false,
     webLlm: null,
     coreDirectory: null,
     jlensDirectory: null,
@@ -90,8 +94,11 @@ export function parseBrowserFullRuntimeArguments(args) {
     ["--runtime-lock", "runtimeLock"],
     ["--sae-directory", "saeDirectory"],
     ["--sae-feature", "saeFeature"],
+    ["--slens-directory", "slensDirectory"],
+    ["--slens-word", "slensWord"],
     ["--stop-max-tokens", "stopMaxTokens"],
     ["--timeout-ms", "timeoutMs"],
+    ["--units-directory", "unitsDirectory"],
     ["--webllm", "webLlm"],
   ]);
   const numeric = new Set([
@@ -105,11 +112,13 @@ export function parseBrowserFullRuntimeArguments(args) {
   const seen = new Set();
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
-    if (argument === "--headed") {
+    // `--verbose` echoes the page's console to stderr; without it the run writes only its report
+    // (stdout), as the release evidence producer requires of an observer.
+    if (argument === "--headed" || argument === "--verbose") {
       if (seen.has(argument))
         throw new Error(`${argument} may be supplied only once`);
       seen.add(argument);
-      result.headed = true;
+      result[argument.slice(2)] = true;
       continue;
     }
     const field = fields.get(argument);
@@ -122,23 +131,21 @@ export function parseBrowserFullRuntimeArguments(args) {
       throw new Error(`${argument} requires a value`);
     result[field] = numeric.has(field) ? Number(value) : value;
   }
+  // The instrument packs past the core are optional here; which ones a library must (or may not)
+  // carry follows its profile (`validateBrowserFullRuntimePackSets`, once the lock is read).
   for (const field of [
     "modelId",
     "modelDirectory",
     "modelLibrary",
     "webLlm",
     "coreDirectory",
-    "jlensDirectory",
-    "saeDirectory",
   ]) {
     if (result[field] === null)
       throw new Error(`${flagFor(field)} is required`);
   }
-  if (
-    result.browserChannel !== "chrome" &&
-    result.browserChannel !== "msedge"
-  ) {
-    throw new Error("--browser-channel must be chrome or msedge");
+  // Chrome's release channels and Edge (a machine may carry only one, such as Chrome Beta).
+  if (!["chrome", "chrome-beta", "msedge"].includes(result.browserChannel)) {
+    throw new Error("--browser-channel must be chrome, chrome-beta or msedge");
   }
   if (
     result.browserFlags !== "compatibility" &&
@@ -159,14 +166,39 @@ export function parseBrowserFullRuntimeArguments(args) {
   if (!Number.isSafeInteger(result.timeoutMs) || result.timeoutMs < 60_000) {
     throw new Error("--timeout-ms must be an integer of at least 60000");
   }
-  if (
-    typeof result.jlensWord !== "string" ||
-    !result.jlensWord.trim() ||
-    result.jlensWord.length > 128
-  ) {
-    throw new Error("--jlens-word must be a non-empty single-token candidate");
+  for (const [flag, field] of [["--jlens-word", "jlensWord"], ["--slens-word", "slensWord"]]) {
+    if (
+      typeof result[field] !== "string" ||
+      !result[field].trim() ||
+      result[field].length > 128
+    ) {
+      throw new Error(`${flag} must be a non-empty single-token candidate`);
+    }
   }
-  return Object.freeze({ ...result, jlensWord: result.jlensWord.trim() });
+  return Object.freeze({ ...result, jlensWord: result.jlensWord.trim(), slensWord: result.slensWord.trim() });
+}
+
+/** The instrument packs a hook ABI v5 library runs with, as the catalog admits them
+ *  (`build-hosted-catalog.mjs`): a `standard-v4` library carries its R, S and units packs, a
+ *  `standard-v4-residual` one no S or units pack (an R pack is optional: a provider lens). An SAE
+ *  pack is optional on both. Returns the pack kinds present, in staging order. */
+export function validateBrowserFullRuntimePackSets(structuredHookProfile, directories) {
+  requiredBrowserFullRuntimeChecks(structuredHookProfile);
+  const present = (kind) => directories[kind] !== null && directories[kind] !== undefined;
+  if (structuredHookProfile === "standard-v4") {
+    for (const [kind, flag] of [["jlens", "--jlens-directory"], ["slens", "--slens-directory"], ["units", "--units-directory"]]) {
+      if (!present(kind)) {
+        throw new Error(`${flag} is required: a standard-v4 library ships its R, S and units packs`);
+      }
+    }
+  } else {
+    for (const [kind, flag] of [["slens", "--slens-directory"], ["units", "--units-directory"]]) {
+      if (present(kind)) {
+        throw new Error(`${flag} is refused: a standard-v4-residual library has no S lens or units`);
+      }
+    }
+  }
+  return Object.freeze(["jlens", "slens", "units", "sae"].filter(present));
 }
 
 export function validateBrowserFullRuntimeModelClosure({

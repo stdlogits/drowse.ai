@@ -1029,7 +1029,7 @@ try {
       /has no fit for this exact browser runtime/);
   });
 
-  test("accepts only the deterministic legacy runtime identity alias", async () => {
+  test("refuses a pack fit for a former product's runtime identity alias", async () => {
     const baseline = await fixture();
     const currentIdentity = {
       ...baseline.request.variant.runtimeIdentity,
@@ -1048,8 +1048,9 @@ try {
       legacy.request.variant.runtimeIdentity = currentIdentity;
       legacy.request.variant.runtimeIdentitySha256 = currentFingerprint;
 
-      const compiler = await BrowserFeasibilityCorePackCompiler.load(legacy.request);
-      assert.equal(compiler.compile("0.5 alert").layerCount, 2);
+      // Only the variant's own runtime identity binds a pack (the v1 aliases went with v1).
+      await assert.rejects(() => BrowserFeasibilityCorePackCompiler.load(legacy.request),
+        /has no fit for this exact browser runtime/);
     }
   });
 
@@ -2015,24 +2016,25 @@ try {
     );
   });
 
-  test("loads the deterministic legacy J-lens identity and vocabulary alias", async () => {
+  test("binds J-lens packs to the variant's own runtime identity; the vocabulary alias loads", async () => {
     const baseline = await fixture();
-    const currentIdentity = {
-      ...baseline.request.variant.runtimeIdentity,
-      runtimeAbi: "drowse-web-runtime-v1",
-    };
-    const currentFingerprint = sha256(canonicalJson(currentIdentity));
+    const currentFingerprint = sha256(canonicalJson(baseline.request.variant.runtimeIdentity));
     for (const slug of ["polythetic", "saklas"]) {
       const legacyFingerprint = sha256(canonicalJson({
-        ...currentIdentity,
+        ...baseline.request.variant.runtimeIdentity,
         runtimeAbi: `${slug}-web-runtime-v1`,
       }));
+      const legacy = await fixture({
+        withWhitener: true,
+        withJlens: true,
+        fingerprint: currentFingerprint,
+        instrumentModelFingerprint: legacyFingerprint,
+      });
+      await assert.rejects(() => BrowserFeasibilityCorePackCompiler.load(legacy.request));
       const { request } = await fixture({
         withWhitener: true,
         withJlens: true,
         fingerprint: currentFingerprint,
-        runtimeAbi: currentIdentity.runtimeAbi,
-        instrumentModelFingerprint: legacyFingerprint,
         jlensVocabularyFormat: `${slug}-jlens-vocabulary-v2`,
       });
       const compiler = await BrowserFeasibilityCorePackCompiler.load(request);

@@ -3,7 +3,7 @@
 // vocabulary work runs on the block-sites backend; everything averaged over the vocabulary or
 // the neutral corpus comes from the offline artifacts (`population_artifacts`' keys).
 import type { SerializedMahalanobisWhitener } from "../../fitting/workerContracts";
-import { f32Tensor, i32Tensor, type BlockSitesLensLayer } from "../modelBackend";
+import { f32Tensor, i32Tensor, UNIT_VOCAB_ROWS, type BlockSitesLensLayer } from "../modelBackend";
 import type { BlockSpec } from "../structuredHookProfile";
 import { LayerSelectorError, resolveLayerSelector, type LayerSelector } from "../steeringExpression";
 import { copyScore, solve } from "./linalg";
@@ -26,7 +26,6 @@ export const MAX_UNIT_K = 256;
 const R_STD_FLOOR = 1e-4;
 const S_STD_FLOOR = 1e-6;
 const HEAD_STD_FLOOR = 1e-6;
-const VOCAB_CHUNK = 8192;
 const HEAD_ROLES = ["query", "key", "value"] as const;
 
 /** The neuron-lens catalogs native knows; no hosted model has one (PLAN, scope facts). */
@@ -293,8 +292,8 @@ export class UnitReader {
   private async rowsTimes(kind: "embed" | "unembed", ids: Int32Array, factor: Float32Array, m: number): Promise<Float32Array> {
     const out = new Float32Array(ids.length * m);
     const statistics = kind === "embed" ? (await this.context.embeddings()).resident : undefined;
-    for (let start = 0; start < ids.length; start += VOCAB_CHUNK) {
-      const chunk = ids.subarray(start, Math.min(ids.length, start + VOCAB_CHUNK));
+    for (let start = 0; start < ids.length; start += UNIT_VOCAB_ROWS) {
+      const chunk = ids.subarray(start, Math.min(ids.length, start + UNIT_VOCAB_ROWS));
       const part = await this.context.backend.vocabRowsTimes({ kind, ids: chunk, factor: f32Tensor(factor, [this.d, m]), ...(statistics ? { statistics } : {}) });
       out.set(part.data, start * m);
     }
@@ -305,8 +304,8 @@ export class UnitReader {
   private async rowsThrough(kind: "embed" | "unembed", ids: Int32Array, lens: BlockSitesLensLayer, transpose: boolean): Promise<Float32Array> {
     const out = new Float32Array(ids.length * this.d);
     const statistics = kind === "embed" ? (await this.context.embeddings()).resident : undefined;
-    for (let start = 0; start < ids.length; start += VOCAB_CHUNK) {
-      const chunk = ids.subarray(start, Math.min(ids.length, start + VOCAB_CHUNK));
+    for (let start = 0; start < ids.length; start += UNIT_VOCAB_ROWS) {
+      const chunk = ids.subarray(start, Math.min(ids.length, start + UNIT_VOCAB_ROWS));
       const part = await this.context.backend.vocabRowsTimes({ kind, ids: chunk, factor: { lens, transpose }, ...(statistics ? { statistics } : {}) });
       out.set(part.data, start * this.d);
     }

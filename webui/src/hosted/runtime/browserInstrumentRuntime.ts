@@ -19,6 +19,7 @@ import { loadSaeDescription } from "../../../../drowse/webui/src/lib/saeDescript
 import { UnsupportedBlockError } from "./modelBackend";
 import { isUnitsServiceMethod, type BrowserUnitsService, type UnitsPackSource } from "./units/unitsService";
 import { compilerUnitsPackSource } from "./units/packSource";
+import { DEFAULT_LENS_BAND, type LensBand } from "./units/lensReads";
 
 type TokenLookup = (
   nodeId: string,
@@ -49,6 +50,9 @@ export class BrowserInstrumentRuntime {
     private readonly jlensResolver: BrowserJlensRuntimeResolver | null = null,
     private readonly contextBindingSha256: string | null = null,
     enableLiveReadout = true,
+    /** The S→R crossover band the units reads weigh by (native `session.lens.band`): the
+     *  default, unless a harness sets another the way drowse's goldens set theirs. */
+    private readonly lensBand: LensBand = DEFAULT_LENS_BAND,
   ) {
     const descriptor = this.compiler.instrumentDescriptor();
     if (
@@ -101,7 +105,7 @@ export class BrowserInstrumentRuntime {
   /** The units members' packs over the session's compiler (the current one, as a manifold
    *  refresh replaces it): core statistics and whitener, the lens packs, the units pack. */
   unitsPackSource(modelId: string, signal: AbortSignal): UnitsPackSource {
-    return compilerUnitsPackSource(() => this.compiler, modelId, signal);
+    return compilerUnitsPackSource(() => this.compiler, modelId, signal, this.lensBand);
   }
 
   /** `find`'s selector: its instrument atoms prepared on the device, then its per-layer

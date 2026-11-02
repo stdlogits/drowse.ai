@@ -26,6 +26,8 @@ export const BROWSER_RUNTIME_LOCK = Object.freeze({
     layerMap: model.layerMap,
     quantization: model.quantization,
     contextProfiles: model.contextProfiles,
+    // The library's compiled prefill chunk, which its descriptor attests (HOOK_ABI.md §6).
+    prefillChunkSize: model.prefillChunkSize,
     structuredHookProfile: model.structuredHookProfile as StructuredHookProfileId,
     thinkingProfile: model.thinkingProfile as ModelThinkingProfile | null,
     // Hook ABI v5 (lock schema 2): the block constants a `standard-v4` library's descriptor

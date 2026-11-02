@@ -13,6 +13,7 @@ self.onmessage = async ({ data }: MessageEvent<{
   structuredHookProfile: ModelVariant["structuredHookProfile"];
   blockSpec: BlockSpec | null;
   unitRefusal: string | null;
+  prefillChunkSize: number;
   modelFiles: CatalogFile[];
   seeds: number[];
 }>) => {
@@ -40,6 +41,7 @@ self.onmessage = async ({ data }: MessageEvent<{
         } },
       } as ModelVariant,
       contextTokens, blockSpec: data.blockSpec, unitRefusal: data.unitRefusal,
+      prefillChunkSize: data.prefillChunkSize,
       adapter: await checker.adapterForLoad(), artifacts: modelArtifacts,
       optionalPacks: [], activationSpool: new BrowserActivationSpool(), signal: new AbortController().signal,
       onDeviceLost(failure: { message: string }) { throw new Error(failure.message); },

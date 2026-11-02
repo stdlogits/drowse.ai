@@ -125,8 +125,20 @@ export function deriveCandidateRuntimeLock(runtimeLock, modelId, {
   differs("quantization", manifest.quantization, model.quantization);
   differs("modelType", manifest.modelType ?? "chat", model.modelType ?? "chat");
   differs("contextWindowSize", manifest.contextWindowSize, Math.max(...model.contextProfiles));
-  // The descriptor attests the prefill chunk the browser expects: the smallest context profile.
-  differs("prefillChunkSize", manifest.prefillChunkSize, Math.min(...model.contextProfiles));
+  // The descriptor attests the library's compiled prefill chunk, which the lock records
+  // (HOOK_ABI.md §6); the chat config WebLLM runs the library with must carry the same value.
+  differs("prefillChunkSize", manifest.prefillChunkSize, model.prefillChunkSize);
+  differs("mlc-chat-config prefill_chunk_size", chatConfig?.prefill_chunk_size, model.prefillChunkSize);
+  // The prefill the library was compiled with: MLC takes model_config's own value when it is
+  // positive and only otherwise its text_config's (Gemma3Config.__post_init__), so a converted
+  // Gemma config may keep the source's text_config value (8192) under a compiled 1024.
+  const compiledConfig = chatConfig?.model_config;
+  const compiledPrefill = compiledConfig?.prefill_chunk_size > 0
+    ? compiledConfig.prefill_chunk_size
+    : compiledConfig?.text_config?.prefill_chunk_size;
+  if (compiledPrefill !== undefined) {
+    differs("mlc-chat-config model_config prefill_chunk_size", compiledPrefill, model.prefillChunkSize);
+  }
   if (model.hiddenSize !== null) differs("hiddenSize", manifest.hiddenSize, model.hiddenSize);
   if (model.layerMap !== null) differs("layerMap", manifest.layerMap, model.layerMap);
   const tokenizer = unique(manifest, "tokenizer", "tokenizer.json");

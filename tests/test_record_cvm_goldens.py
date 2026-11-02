@@ -69,3 +69,28 @@ def test_the_toolchain_environment_is_the_exact_source_roots(tmp_path) -> None:
     environment = observer.toolchain_environment(tmp_path / "mlc", tmp_path / "tvm")
     assert environment["PYTHONPATH"].split(":") == [str(tmp_path / "tvm" / "python"), str(tmp_path / "mlc" / "python")]
     assert environment["TVM_DEVICE_BACKEND_AUTOLOAD"] == "0" and environment["SKIP_LOADING_MLCLLM_SO"] == "1"
+
+
+def test_the_toolchain_libraries_are_found_in_build_lib(tmp_path) -> None:
+    (tmp_path / "tvm" / "build" / "lib").mkdir(parents=True)
+    environment = observer.toolchain_environment(tmp_path / "mlc", tmp_path / "tvm")
+    assert environment["TVM_LIBRARY_PATH"] == str(tmp_path / "tvm" / "build" / "lib")
+
+
+def test_a_virtual_environment_python_keeps_its_path(tmp_path) -> None:
+    base = tmp_path / "base" / "python3"
+    base.parent.mkdir()
+    base.write_text("")
+    venv = tmp_path / "venv" / "bin"
+    venv.mkdir(parents=True)
+    (venv / "python").symlink_to(base)
+    for name in ("mlc", "tvm", "fixtures"):
+        (tmp_path / name).mkdir()
+    args = observer.parse_args([
+        "--python", str(venv / "python"),
+        "--mlc-repository", str(tmp_path / "mlc"),
+        "--tvm-repository", str(tmp_path / "tvm"),
+        "--units-fixtures", str(tmp_path / "fixtures"),
+    ])
+    assert args.python == venv / "python"
+

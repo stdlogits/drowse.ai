@@ -116,6 +116,10 @@ export interface WebLlmGeneratedToken {
   /** The live unit tap of this token's forward (`[maxUnitTaps]` raw values in slot order, B1
    *  §2.2), when the program has a unit section. */
   hookUnitTaps?: Float32Array;
+  /** What this token offers a reply's aggregate: `measurements` plus the readings of families
+   *  whose live readout is off (they ride the aggregate only). A stopped reply pools from it.
+   *  Absent when the plan's `return_probe_readings` is off: the reply then has no aggregate. */
+  aggregateMeasurements?: MeasurementsEnvelopeJSON;
 }
 
 export interface WebLlmGenerationUsage {
@@ -407,10 +411,11 @@ export async function streamWebLlmGeneration(
     let localStopRequested = false;
     let prefillTokensPerSecond: number | null = null;
     let decodeTokensPerSecond: number | null = null;
+    // Native reads no aggregate when `return_probe_readings` is off (read_plane.py's
+    // `want_readouts`), so the reply has none and no token offers one to a stopped reply.
+    const returnsAggregate = plan.sampling?.return_probe_readings !== false;
     const aggregateMeasurements = new AggregateMeasurementSelector(
-      plan.sampling?.return_probe_readings !== false
-        ? plan.measurementSpecialTokenIds
-        : null,
+      returnsAggregate ? plan.measurementSpecialTokenIds : null,
     );
     let processingError: unknown = null;
     for await (const value of stream) {
@@ -574,7 +579,11 @@ export async function streamWebLlmGeneration(
             const gateScores = channels.gateScores === undefined
               ? envelopeScores
               : { ...envelopeScores, ...channels.gateScores };
-            const envelope = withLiveChannels(capturedEnvelope, channels.token, plan.steeringExpression ?? null);
+            const envelope = withLiveChannels(
+              tokenMeasurementEnvelope(capturedEnvelope, plan.hookProgram),
+              channels.token,
+              plan.steeringExpression ?? null,
+            );
             const aggregateSource: AggregateSource = {
               envelope: withLiveChannels(capturedEnvelope, channels.aggregate, plan.steeringExpression ?? null),
               ...(channels.deferredHidden === undefined ? {} : { hidden: channels.deferredHidden }),
@@ -622,6 +631,7 @@ export async function streamWebLlmGeneration(
                 piece.hookMeasurements,
                 piece.replayScore,
                 piece.hookUnitTaps,
+                returnsAggregate ? piece.aggregateSource?.envelope : undefined,
               );
               (token.thinking ? thinkingText : text).push(token.text);
               if (token.text !== "") {
@@ -687,6 +697,7 @@ export async function streamWebLlmGeneration(
         piece.hookMeasurements,
         piece.replayScore,
         piece.hookUnitTaps,
+        returnsAggregate ? piece.aggregateSource?.envelope : undefined,
       );
       (token.thinking ? thinkingText : text).push(token.text);
       if (token.text !== "") {
@@ -874,10 +885,52 @@ async function assertWebLlmGenerationCapabilities(
   if (missing) throw generationError(missing.code, missing.message);
 }
 
-function buildRequest(plan: WebLlmGenerationPlan): Record<string, unknown> {
+/** What a generation plan prefills from: a chat's messages with the generated seat, its role
+ *  and thinking switch (WebLLM renders the reply header from them), or a completion's prompt.
+ *  Generation's request carries exactly this; a node replay asks the bridge for the ids it
+ *  renders (`prepareDrowseGenerationInputIds`). */
+export type WebLlmPromptPlan = Pick<
+  WebLlmGenerationPlan,
+  "input" | "generationSeat" | "generationRoleName" | "thinking" | "thinkingProfile"
+>;
+
+/** Whether the bridge renders a chat plan's turn order: its request check opens the generated seat
+ *  only after the other seat's turn (a user seat after an assistant turn, an assistant seat after
+ *  a user turn) and takes a system message only first. drowse stitches any order; a browser
+ *  generation never records another, so only a node from elsewhere can need one. */
+export function bridgeRendersTurnOrder(plan: Pick<WebLlmPromptPlan, "input" | "generationSeat">): boolean {
+  if (plan.input.kind !== "chat") return true;
+  const messages = plan.input.messages;
+  const last = messages.at(-1);
+  const opposite = (plan.generationSeat ?? "assistant") === "user" ? "assistant" : "user";
+  return last?.role === opposite &&
+    messages.every((message, index) => message.role !== "system" || index === 0);
+}
+
+export function webLlmPromptRequest(plan: WebLlmPromptPlan): Record<string, unknown> {
   validateInput(plan.input);
   validateGenerationRole(plan);
   validateGenerationSeat(plan);
+  if (plan.input.kind !== "chat") return { prompt: plan.input.prompt };
+  const extraBody = {
+    ...(plan.generationSeat === null || plan.generationSeat === undefined
+      ? {}
+      : { drowse_generation_seat: plan.generationSeat }),
+    ...(plan.thinkingProfile == null || plan.thinking === null || plan.thinking === undefined
+      ? {}
+      : { enable_thinking: plan.thinking }),
+    ...(plan.generationRoleName === null || plan.generationRoleName === undefined
+      ? {}
+      : { drowse_generation_role: plan.generationRoleName }),
+  };
+  return {
+    messages: plan.input.messages.map((message) => ({ ...message })),
+    ...(Object.keys(extraBody).length > 0 ? { extra_body: extraBody } : {}),
+  };
+}
+
+function buildRequest(plan: WebLlmGenerationPlan): Record<string, unknown> {
+  const prompt = webLlmPromptRequest(plan);
   validateReplay(plan.replay);
   const sampling = applyOutputTokenLimit(
     plan,
@@ -896,28 +949,11 @@ function buildRequest(plan: WebLlmGenerationPlan): Record<string, unknown> {
     ...(plan.measurementStartRawIndex === undefined ? {} : { drowse_readout_start_index: plan.measurementStartRawIndex }),
     ...(plan.measurementTargetRawIndex === undefined ? {} : { drowse_readout_target_index: plan.measurementTargetRawIndex }),
   };
-  if (plan.input.kind === "chat") {
-    request.messages = plan.input.messages.map((message) => ({ ...message }));
-    const extraBody = {
-      ...replayExtraBody,
-      ...(plan.generationSeat === null || plan.generationSeat === undefined
-        ? {}
-        : { drowse_generation_seat: plan.generationSeat }),
-      ...(plan.thinkingProfile == null || plan.thinking === null || plan.thinking === undefined
-        ? {}
-        : { enable_thinking: plan.thinking }),
-      ...(plan.generationRoleName === null || plan.generationRoleName === undefined
-        ? {}
-        : { drowse_generation_role: plan.generationRoleName }),
-    };
-    if (Object.keys(extraBody).length > 0) {
-      request.extra_body = extraBody;
-    }
-  } else {
-    request.prompt = plan.input.prompt;
-    if (Object.keys(replayExtraBody).length > 0) {
-      request.extra_body = replayExtraBody;
-    }
+  const { extra_body: promptExtraBody, ...promptFields } = prompt as { extra_body?: Record<string, unknown> };
+  Object.assign(request, promptFields);
+  const extraBody = { ...replayExtraBody, ...promptExtraBody };
+  if (Object.keys(extraBody).length > 0) {
+    request.extra_body = extraBody;
   }
   return request;
 }
@@ -1187,8 +1223,9 @@ function validateSampling(value: WSSampling | null | undefined): WSSampling {
     0,
     BROWSER_RETURN_TOP_K_MAX,
   );
-  optionalFiniteRange(sampling.presence_penalty, "presence_penalty", -2, 2);
-  optionalFiniteRange(sampling.frequency_penalty, "frequency_penalty", -2, 2);
+  // Any finite penalty, as native's sampling params take (`FiniteFloat`).
+  optionalFinite(sampling.presence_penalty, "presence_penalty");
+  optionalFinite(sampling.frequency_penalty, "frequency_penalty");
   optionalBoolean(sampling.return_probe_readings, "return_probe_readings");
   optionalBoolean(sampling.persist_per_layer_scores, "persist_per_layer_scores");
   optionalBoolean(sampling.persist_subspace_coords, "persist_subspace_coords");
@@ -1241,6 +1278,7 @@ function emittedToken(
   hookMeasurements: Float32Array | undefined,
   replayScore: WebLlmReplayScore | undefined,
   hookUnitTaps?: Float32Array,
+  aggregateMeasurements?: MeasurementsEnvelopeJSON,
 ): WebLlmGeneratedToken {
   return {
     text,
@@ -1262,6 +1300,7 @@ function emittedToken(
     ...(hookUnitTaps === undefined
       ? {}
       : { hookUnitTaps: new Float32Array(hookUnitTaps) }),
+    ...(aggregateMeasurements === undefined ? {} : { aggregateMeasurements }),
   };
 }
 
@@ -1566,6 +1605,42 @@ export function measurementEnvelope(
   };
   measurementGateScoreCache.set(envelope, Object.freeze({ ...gateScores }));
   return envelope;
+}
+
+/** A forward's token envelope from its captured measurements (native's per-token payload,
+ *  `session/engine.py`): attached R-lens and SAE probe readings ride a token only while their
+ *  family is live (native merges the live readout step's `last_step_readings`), so with the lens
+ *  or SAE family off they reach the reply's aggregate only. The captured envelope keeps every
+ *  reading: gates read it (`measurementGateScores`) and the aggregate pools it. */
+export function tokenMeasurementEnvelope(
+  captured: MeasurementsEnvelopeJSON | undefined,
+  hookProgram: StructuredHookProgramBuffers | null | undefined,
+): MeasurementsEnvelopeJSON | undefined {
+  if (captured === undefined) return undefined;
+  const schema = hookProgram?.measurementSchema;
+  const instruments = { ...captured.instruments };
+  const offFamilyProbes = new Set<string>();
+  for (const [family, live] of [
+    ["lens", schema?.lensReadout === true],
+    ["sae", schema?.saeReadout === true],
+  ] as const) {
+    const block = instruments[family];
+    if (live || block?.readings === undefined) continue;
+    for (const name of Object.keys(block.readings)) offFamilyProbes.add(name);
+    const { readings: _readings, ...rest } = block;
+    if ("readout" in rest && rest.readout !== undefined) {
+      (instruments as Record<string, unknown>)[family] = rest;
+    } else {
+      delete instruments[family];
+    }
+  }
+  if (offFamilyProbes.size === 0) return captured;
+  const scores = Object.fromEntries(
+    Object.entries(captured.scores ?? {}).filter(([name]) => !offFamilyProbes.has(name)),
+  );
+  if (Object.keys(instruments).length === 0 && Object.keys(scores).length === 0) return undefined;
+  const { scores: _scores, ...envelope } = captured;
+  return { ...envelope, instruments, ...(Object.keys(scores).length > 0 ? { scores } : {}) };
 }
 
 /** A replayed forward's geometry gate scores from its `[L, maxGeometryProbes, stride]` readout:

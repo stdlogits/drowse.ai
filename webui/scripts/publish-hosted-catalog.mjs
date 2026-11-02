@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createServer } from "vite";
 import { uploadCommitRevision } from "./hugging-face-upload.mjs";
+import { catalogLocation, previousCatalogDirectory } from "./hosted-catalog-location.mjs";
 
 export { uploadCommitRevision } from "./hugging-face-upload.mjs";
 
@@ -47,17 +48,6 @@ export function parseArguments(args) {
     previousLockPath,
     upload,
   };
-}
-
-export function catalogRepository(distribution) {
-  const catalog = repositoryFromUrl(distribution.catalogUrl, "catalogUrl", "catalog.json");
-  const signature = repositoryFromUrl(
-    distribution.signatureUrl,
-    "signatureUrl",
-    "catalog.sig.json",
-  );
-  if (catalog !== signature) throw new Error("catalog and signature must publish to one repository");
-  return catalog;
 }
 
 export async function validateCatalogBundle(
@@ -162,10 +152,34 @@ export function lockedCatalogModels(runtime) {
       convertedRepository: model.convertedRepository,
       convertedRevision: model.convertedRevision,
       contextProfiles: model.contextProfiles,
+      prefillChunkSize: model.prefillChunkSize,
       blockSpec: model.blockSpec ?? null,
       unitRefusal: model.unitRefusal ?? null,
     };
   });
+}
+
+/** The sequence `nextSequence` must advance. The catalog published at the lock's directory, or,
+ *  for the first catalog at a new directory, the previous directory's (which deployed builds still
+ *  read), each verified with `publicKeys` before its sequence counts. Only the root directory may
+ *  start with nothing published before it. `fetchPair(directory)` returns
+ *  `[catalogBytes, signatureBytes]`, null where nothing is published. */
+export async function validatePublishedAdvance(nextSequence, directory, fetchPair, publicKeys) {
+  const previous = previousCatalogDirectory(directory);
+  for (const candidate of previous === null ? [directory] : [directory, previous]) {
+    const [catalog, signature] = await fetchPair(candidate);
+    if (catalog === null && signature === null) continue;
+    return {
+      directory: candidate,
+      previousSequence: validateCatalogAdvance(nextSequence, catalog, signature, publicKeys),
+    };
+  }
+  if (previous !== null) {
+    throw new Error(
+      `the first catalog at ${directory} must advance a published catalog at ${previous || "the root"}, and none is published there`,
+    );
+  }
+  return { directory: null, previousSequence: null };
 }
 
 export function validateCatalogAdvance(nextSequence, currentBytes, signatureBytes, publicKeys) {
@@ -205,7 +219,7 @@ async function main() {
     readFile(runtimeLockUrl, "utf8").then(JSON.parse),
     readFile(distributionLockUrl, "utf8").then(JSON.parse),
   ]);
-  const repository = catalogRepository(distribution);
+  const { repository, directory } = catalogLocation(distribution);
   const bundle = await validateCatalogBundle(
     options.catalogPath,
     options.signaturePath,
@@ -220,22 +234,27 @@ async function main() {
     throw new Error("catalog repository has no immutable revision");
   }
   const currentBase = `https://huggingface.co/${repository}/resolve/${info.sha}/`;
-  const [currentCatalog, currentSignature] = await Promise.all([
-    fetchExact(`${currentBase}catalog.json`, true),
-    fetchExact(`${currentBase}catalog.sig.json`, true),
-  ]);
   const publishedKeys = options.previousLockPath === null
     ? distribution.publicKeys
     : JSON.parse(await readFile(options.previousLockPath, "utf8")).publicKeys;
   if (!Array.isArray(publishedKeys) || publishedKeys.length === 0) {
     throw new Error("the previous distribution lock has no public keys");
   }
-  const previousSequence = validateCatalogAdvance(
-    bundle.sequence, currentCatalog, currentSignature, publishedKeys,
+  const advanced = await validatePublishedAdvance(
+    bundle.sequence,
+    directory,
+    (candidate) => Promise.all([
+      fetchExact(`${currentBase}${candidate}catalog.json`, true),
+      fetchExact(`${currentBase}${candidate}catalog.sig.json`, true),
+    ]),
+    publishedKeys,
   );
+  const previousSequence = advanced.previousSequence;
   if (!options.upload) {
     console.log(JSON.stringify({
       checked: repository,
+      directory,
+      previousDirectory: advanced.directory,
       sequence: bundle.sequence,
       models: bundle.models,
       keyId: bundle.keyId,
@@ -260,7 +279,7 @@ async function main() {
       "upload",
       repository,
       stage,
-      ".",
+      directory === "" ? "." : directory.slice(0, -1),
       "--type",
       "model",
       "--commit-message",
@@ -271,8 +290,8 @@ async function main() {
     const publishedRevision = uploadCommitRevision(uploaded.stdout, repository);
     const base = `https://huggingface.co/${repository}/resolve/${publishedRevision}/`;
     const [publishedCatalog, publishedSignature] = await Promise.all([
-      fetchExact(`${base}catalog.json`),
-      fetchExact(`${base}catalog.sig.json`),
+      fetchExact(`${base}${directory}catalog.json`),
+      fetchExact(`${base}${directory}catalog.sig.json`),
     ]);
     if (
       !publishedCatalog.equals(bundle.exactBytes) ||
@@ -280,31 +299,15 @@ async function main() {
     ) throw new Error("published catalog transaction differs from the signed local pair");
     console.log(JSON.stringify({
       repository,
+      directory,
       revision: publishedRevision,
       sequence: bundle.sequence,
+      previousDirectory: advanced.directory,
       previousSequence,
     }));
   } finally {
     await rm(stage, { recursive: true, force: true });
   }
-}
-
-function repositoryFromUrl(value, label, filename) {
-  let url;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new Error(`${label} is invalid`);
-  }
-  const parts = url.pathname.split("/").filter(Boolean);
-  if (
-    url.origin !== "https://huggingface.co" || url.username || url.password ||
-    parts.length !== 5 || parts[2] !== "resolve" || parts[3] !== "main" ||
-    parts[4] !== filename
-  ) {
-    throw new Error(`${label} is not a supported Hugging Face main-branch URL`);
-  }
-  return `${parts[0]}/${parts[1]}`;
 }
 
 async function modelInfo(repository) {

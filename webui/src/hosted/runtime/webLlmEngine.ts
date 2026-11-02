@@ -1,4 +1,5 @@
 import {
+  libraryBindingBytes,
   validateBlockSitesCapabilities,
   type BlockSitesCapabilities,
 } from "./modelBackend";
@@ -28,7 +29,6 @@ import {
   EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
   expectedHookProfileDescriptor,
   hookProfileDescriptorMismatches,
-  isBlockSitesProfile,
   type BlockSpec,
   type HookProfileDescriptorModel,
   resolveStructuredHookProfile,
@@ -36,7 +36,7 @@ import {
   structuredGeometryPayloadLayout,
   WEB_LLM_RUNTIME_MIN_STORAGE_BUFFERS_PER_SHADER_STAGE,
 } from "./structuredHookProfile";
-import { prepareVerifiedWebLlmArtifacts, type WebLlmPromptRendering } from "./verifiedArtifactCache";
+import { prepareVerifiedWebLlmArtifacts } from "./verifiedArtifactCache";
 import type { WebLlmBlockSitesDevice, WebLlmBlockSitesRequest } from "./webLlmBlockSites";
 import {
   assertHookFeaturesSupported,
@@ -46,14 +46,17 @@ import {
 } from "./hookCapabilities";
 import {
   BROWSER_EXACT_READOUT_TOP_K_CAPACITY,
+  bridgeRendersTurnOrder,
   streamWebLlmGeneration,
   readWebLlmRuntimeCapabilities,
   tokenizeWebLlmText,
+  webLlmPromptRequest,
   type WebLlmJlensTopTokenReadout,
   type WebLlmGeneratedToken,
   type WebLlmGenerationEngine,
   type WebLlmGenerationPlan,
   type WebLlmGenerationResult,
+  type WebLlmPromptPlan,
   type WebLlmSaeTopFeatureReadout,
   type WebLlmThinkingProfile,
   type WebLlmRuntimeCapabilities,
@@ -121,6 +124,8 @@ export interface DrowseWebLlmEngineInstance extends WebLlmGenerationEngine {
     specialTokenIds: number[],
     modelId?: string,
   ): Promise<DrowsePreparedCaptureRow[]>;
+  /** The ids a generation of `request` prefills (bridge .48), rendered as its prefill renders them. */
+  prepareDrowseGenerationInputIds(request: any): Promise<number[]>;
   captureDrowseResiduals(
     inputIds: number[],
     positions: number[],
@@ -292,14 +297,10 @@ typeof STRUCTURED_HOOK_FORMAT;
   descriptor?: Int32Array;
 }
 
-/** WebLLM's reply header for a generation with thinking off (`appendEmptyThinkingReplyHeader`). */
-const EMPTY_THINKING_BLOCK = "<think>\n\n</think>\n\n";
-
 export class DrowseWebLlmRuntime {
   private engine: DrowseWebLlmEngineInstance | null = null;
   private blockSites: BlockSitesCapabilities | null = null;
   private captureSpecialTokenIds: number[] | null = null;
-  private promptRendering: WebLlmPromptRendering | null = null;
   private vocabSize: number | null = null;
   private generating = false;
   private reusablePlainChatPrefix = false;
@@ -358,6 +359,10 @@ export class DrowseWebLlmRuntime {
       );
     }
     const prepared = await prepareVerifiedWebLlmArtifacts(request.artifacts, request.signal);
+    // The device gets exactly the library's binding (HOOK_ABI.md §10), derived from the verified
+    // files and the lock (its prefill chunk and block spec) as the catalog builder derives the
+    // variant's limits; the bridge refuses an adapter below it before a weight is read.
+    const bindingBytes = lockedLibraryBindingBytes(request, prepared);
     if (request.model.modelType === "base" && !prepared.isBaseModel) {
       throw runtimeError("BASE_MODEL_TEMPLATE_MISMATCH", "This base-model download contains a chat template and cannot be opened as a completion model");
     }
@@ -406,8 +411,7 @@ export class DrowseWebLlmRuntime {
             model_lib: prepared.modelLibraryUrl,
             overrides: { context_window_size: request.contextTokens },
             required_features: [...request.variant.requirements.features],
-            buffer_size_required_bytes:
-              request.variant.requirements.limits.maxStorageBufferBindingSize,
+            buffer_size_required_bytes: bindingBytes,
           },
         ],
       },
@@ -536,7 +540,6 @@ export class DrowseWebLlmRuntime {
         );
       }
       this.captureSpecialTokenIds = [...prepared.captureSpecialTokenIds];
-      this.promptRendering = prepared.promptRendering;
       this.vocabSize = prepared.vocabSize;
       this.blockSites = blockSitesCapabilitiesFor(
         this.structuredHookProfile,
@@ -547,7 +550,6 @@ export class DrowseWebLlmRuntime {
       return { prefillTokensPerSecond: null, decodeTokensPerSecond: null };
     } catch (error) {
       this.captureSpecialTokenIds = null;
-      this.promptRendering = null;
       this.vocabSize = null;
       this.structuredHooks = false;
       this.curvedHooks = false;
@@ -584,7 +586,6 @@ export class DrowseWebLlmRuntime {
     this.engine = null;
     this.reusablePlainChatPrefix = false;
     this.captureSpecialTokenIds = null;
-    this.promptRendering = null;
     this.vocabSize = null;
     this.structuredHooks = false;
     this.curvedHooks = false;
@@ -741,52 +742,29 @@ export class DrowseWebLlmRuntime {
 
   /**
    * The token ids WebLLM prefills for a generation plan's input, so a loom node replays on the
-   * block sites exactly as it ran. A raw prompt is the completion prefix and the prompt's ids. A
-   * chat prompt goes through WebLLM's own conversation renderer (the capture rows) with the reply
-   * header as an empty assistant turn, its separator cut: exact when the template renders the
-   * header that way (`replyHeaderIsEmptyTurn`), as every units template does. A user-seat
-   * generation's header is a user turn, which that renderer does not end on; it is refused.
+   * block sites exactly as it ran: the bridge renders the plan's prompt request (the messages,
+   * the generated seat and its role, the thinking switch; or a completion's prompt) through the
+   * conversation, reply header and encoding its prefill uses, for either seat.
    */
   async renderPromptTokenIds(
-    plan: Pick<WebLlmGenerationPlan, "input" | "thinking" | "generationSeat" | "generationRoleName">,
+    plan: Pick<WebLlmPromptPlan, "input" | "thinking" | "generationSeat" | "generationRoleName">,
   ): Promise<number[]> {
     const engine = this.requireEngine();
-    const rendering = this.promptRendering;
-    if (rendering === null) throw runtimeError("MODEL_NOT_LOADED", "No browser model runtime is loaded");
-    if (plan.input.kind === "raw") {
-      return [...rendering.completionPrefixTokenIds, ...await this.tokenizeText(plan.input.prompt)];
+    if (this.runtimeCapabilities().baseModel && plan.input.kind !== "raw") {
+      throw runtimeError("BASE_MODEL_RAW_INPUT_REQUIRED", "This base model requires a plain text completion prompt");
     }
-    const refuse = (message: string) =>
-      Object.assign(runtimeError("TOKEN_REPLAY_UNAVAILABLE", message), { status: 409, recoverable: true });
-    if ((plan.generationSeat ?? "assistant") !== "assistant") {
-      throw refuse("The browser cannot render a user-seat generation's prompt for a replay");
+    if (!bridgeRendersTurnOrder(plan)) {
+      throw Object.assign(
+        runtimeError(
+          "TOKEN_REPLAY_UNAVAILABLE",
+          "The browser renders a turn only after the other seat's turn, and a system message only first, so it cannot name this node's prompt tokens",
+        ),
+        { status: 409, recoverable: true },
+      );
     }
-    if (!rendering.replyHeaderIsEmptyTurn) {
-      throw refuse("This model's chat template renders its reply header unlike an empty turn, so the browser cannot name its prompt tokens");
-    }
-    const [first, ...rest] = plan.input.messages;
-    const leading = first?.role === "system";
-    const messages = leading ? rest : plan.input.messages;
-    if (messages.some((message) => message.role === "system")) {
-      throw refuse("A system message after the first turn has no prompt tokens to replay");
-    }
-    const header = this.thinkingProfile !== null && plan.thinking === false ? EMPTY_THINKING_BLOCK : "";
-    const [row] = await engine.prepareDrowseCaptureRows([{
-      system: leading ? first.content : rendering.systemMessage,
-      messages: [
-        ...messages.map((message) => ({
-          role: message.role as "user" | "assistant",
-          content: message.content,
-          ...(message.name === undefined ? {} : { roleName: message.name }),
-        })),
-        {
-          role: "assistant",
-          content: header,
-          ...(plan.generationRoleName ? { roleName: plan.generationRoleName } : {}),
-        },
-      ],
-    }], []);
-    return row.inputIds.slice(0, row.position + 1);
+    return engine.prepareDrowseGenerationInputIds(
+      webLlmPromptRequest({ ...plan, thinkingProfile: this.thinkingProfile }),
+    );
   }
 
   hookCapabilities(): DrowseHookCapabilities {
@@ -1443,35 +1421,83 @@ function sameTokenIds(actual: readonly number[], expected: readonly number[]): b
     actual.every((tokenId, index) => tokenId === expected[index]);
 }
 
-/** The descriptor model a variant's library must attest (B1 §3.5): the lock's context profiles
- *  (largest compiled window, smallest prefill chunk, the adoption rule) and its block spec. */
+/** The model half of a library's descriptor (HOOK_ABI.md §6): CONTEXT_TOKENS is the largest of
+ *  the variant's context profiles, PREFILL_CHUNK_SIZE the lock's `prefillChunkSize` (the chunk the
+ *  library was compiled with, no larger than the smallest context it is offered at). */
 export function hookProfileDescriptorModel(
-  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec">,
+  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec" | "prefillChunkSize">,
 ): HookProfileDescriptorModel {
   const contexts = request.variant.contextProfiles.map((profile) => profile.contextTokens);
   if (contexts.length === 0) {
     throw runtimeError("HOOK_ABI_MISMATCH", "The model variant names no compiled context window");
   }
+  const prefillChunkSize = request.prefillChunkSize ?? null;
+  if (prefillChunkSize === null) {
+    throw runtimeError(
+      "HOOK_ABI_MISMATCH",
+      "The runtime lock does not record this model's prefill chunk, so its library cannot be attested",
+    );
+  }
+  if (
+    !Number.isSafeInteger(prefillChunkSize) || prefillChunkSize < 1 ||
+    prefillChunkSize > Math.min(...contexts)
+  ) {
+    throw runtimeError(
+      "HOOK_ABI_MISMATCH",
+      `The runtime lock's prefill chunk ${prefillChunkSize} exceeds the variant's smallest context`,
+    );
+  }
   return {
     layerCount: request.variant.runtimeIdentity.layerMap.length,
     hiddenSize: request.variant.runtimeIdentity.hiddenSize,
     contextTokens: Math.max(...contexts),
-    prefillChunkSize: Math.min(...contexts),
+    prefillChunkSize,
     blockSpec: request.blockSpec ?? null,
   };
+}
+
+/** The binding the device asks for (HOOK_ABI.md §10): the library's, from its verified files and
+ *  the lock's model half. A variant on another profile, a units library whose lock entry records no
+ *  block spec, and a lock entry without a prefill chunk fail here, before the engine starts. */
+function lockedLibraryBindingBytes(
+  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec" | "prefillChunkSize">,
+  prepared: { readonly vocabSize: number; readonly largestWeightBytes: number },
+): number {
+  let profile: ReturnType<typeof resolveStructuredHookProfile>;
+  try {
+    profile = resolveStructuredHookProfile(request.variant.structuredHookProfile);
+  } catch {
+    throw runtimeError(
+      "STRUCTURED_HOOK_PROFILE_MISMATCH",
+      `Hook ABI block-sites-v5 libraries attest standard-v4 or standard-v4-residual, not ${String(request.variant.structuredHookProfile)}`,
+    );
+  }
+  const model = hookProfileDescriptorModel(request);
+  if (profile.unitSites === 1 && model.blockSpec === null) {
+    throw runtimeError(
+      "HOOK_ABI_MISMATCH",
+      "The runtime lock does not record this model's block spec, so its unit sites cannot be attested",
+    );
+  }
+  return libraryBindingBytes(profile, {
+    layerCount: model.layerCount,
+    hiddenSize: model.hiddenSize,
+    vocabSize: prepared.vocabSize,
+    contextTokens: model.contextTokens,
+    prefillChunkSize: model.prefillChunkSize,
+    blockSpec: profile.unitSites === 1 ? model.blockSpec : null,
+    largestWeightBytes: prepared.largestWeightBytes,
+  });
 }
 
 /** Hook ABI v5: the library's schema-4 descriptor, element by element, against the lock (B1
  *  §3.5 attestation); every mismatch fails the load with `HOOK_ABI_MISMATCH`. */
 function attestBlockSitesHookProfile(
   record: Record<string, unknown>,
-  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec">,
+  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec" | "prefillChunkSize">,
   moduleHookAbi: string,
 ): CompiledDrowseStructuredHookProfile {
   const profile = resolveStructuredHookProfile(request.variant.structuredHookProfile);
-  if (!isBlockSitesProfile(profile)) {
-    throw new TypeError("attestBlockSitesHookProfile requires a block-sites profile");
-  }
   const model = hookProfileDescriptorModel(request);
   if (profile.unitSites === 1 && model.blockSpec === null) {
     throw runtimeError(
@@ -1548,12 +1574,11 @@ function attestBlockSitesHookProfile(
  *  records no refusal text. */
 export function blockSitesCapabilitiesFor(
   profile: CompiledDrowseStructuredHookProfile | null,
-  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec" | "unitRefusal">,
+  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec" | "unitRefusal" | "prefillChunkSize">,
   vocabSize: number,
 ): BlockSitesCapabilities | null {
   if (profile === null || profile.schemaVersion !== 4) return null;
   const capacity = resolveStructuredHookProfile(request.variant.structuredHookProfile);
-  if (!isBlockSitesProfile(capacity)) return null;
   const units = capacity.unitSites === 1;
   const refusal = units ? null : request.unitRefusal ?? null;
   if (!units && (refusal === null || refusal.length === 0)) return null;
@@ -1575,7 +1600,7 @@ export function blockSitesCapabilitiesFor(
 
 export function attestCompiledStructuredHookProfile(
   value: unknown,
-  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec">,
+  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec" | "prefillChunkSize">,
   moduleHookAbi: string,
 ): CompiledDrowseStructuredHookProfile {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -1585,11 +1610,12 @@ export function attestCompiledStructuredHookProfile(
     );
   }
   const record = value as Record<string, unknown>;
-  const profile = resolveStructuredHookProfile(request.variant.structuredHookProfile);
-  if (!isBlockSitesProfile(profile)) {
+  try {
+    resolveStructuredHookProfile(request.variant.structuredHookProfile);
+  } catch {
     throw runtimeError(
       "STRUCTURED_HOOK_PROFILE_MISMATCH",
-      `Hook ABI block-sites-v5 libraries attest standard-v4 or standard-v4-residual, not ${profile.id}`,
+      `Hook ABI block-sites-v5 libraries attest standard-v4 or standard-v4-residual, not ${String(request.variant.structuredHookProfile)}`,
     );
   }
   return attestBlockSitesHookProfile(record, request, moduleHookAbi);

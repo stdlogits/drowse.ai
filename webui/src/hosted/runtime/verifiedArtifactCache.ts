@@ -1,4 +1,4 @@
-import type { BrowserModelArtifact } from "./modelBackend";
+import { largestWeightTensorBytes, type BrowserModelArtifact } from "./modelBackend";
 
 export interface ReadOnlyArtifactCache {
   fetchWithCache(url: string, storeType?: string, signal?: AbortSignal): Promise<unknown>;
@@ -14,39 +14,11 @@ export interface VerifiedWebLlmArtifacts {
   captureSpecialTokenIds: number[];
   /** The model's vocabulary size (unembedding rows), from mlc-chat-config.json. */
   vocabSize: number;
+  /** Its largest weight tensor's bytes, from tensor-cache.json (the floor of its binding). */
+  largestWeightBytes: number;
   isBaseModel: boolean;
   defaultUserRole: string | null;
   defaultAssistantRole: string | null;
-  promptRendering: WebLlmPromptRendering;
-}
-
-/** What the host needs to name the token ids WebLLM prefills for a generation's input
- *  (`DrowseWebLlmRuntime.renderPromptTokenIds`), from the verified chat config. */
-export interface WebLlmPromptRendering {
-  /** The chat template's own system message (a request without one prefills it). */
-  readonly systemMessage: string;
-  /** Whether the reply header a generation appends renders exactly as an empty assistant turn
-   *  without its separator (equal content and empty role separators, the identity assistant
-   *  template): then the capture renderer names a chat prompt's ids. */
-  readonly replyHeaderIsEmptyTurn: boolean;
-  /** The ids a raw completion prefills before its prompt (`completion_prefix_token_ids`). */
-  readonly completionPrefixTokenIds: readonly number[];
-}
-
-function promptRenderingOf(config: Record<string, unknown>): WebLlmPromptRendering {
-  const conversation = isRecord(config.conv_template) ? config.conv_template : {};
-  // WebLLM's rule: a separator that is not a string (absent) renders as ": ".
-  const separator = (value: unknown) => (typeof value === "string" ? value : ": ");
-  const templates = isRecord(conversation.role_templates) ? conversation.role_templates : null;
-  const assistantTemplate = templates?.assistant;
-  const prefix = brandedConfigField(config, "completion_prefix_token_ids", "MLC_COMPLETION_PREFIX_INVALID");
-  return {
-    systemMessage: typeof conversation.system_message === "string" ? conversation.system_message : "",
-    replyHeaderIsEmptyTurn:
-      separator(conversation.role_content_sep) === separator(conversation.role_empty_sep) &&
-      (assistantTemplate === undefined || assistantTemplate === "{assistant_message}"),
-    completionPrefixTokenIds: Array.isArray(prefix) ? prefix.map(Number) : [],
-  };
 }
 
 export async function prepareVerifiedWebLlmArtifacts(
@@ -180,6 +152,7 @@ export async function prepareVerifiedWebLlmArtifacts(
   if (!records || records.length === 0) {
     throw invalid("MLC_TENSOR_CACHE_INVALID", "tensor-cache.json has no weight shards");
   }
+
   const referencedWeights = new Set<string>();
   for (const record of records) {
     if (!isRecord(record) || typeof record.dataPath !== "string") {
@@ -209,6 +182,12 @@ export async function prepareVerifiedWebLlmArtifacts(
       "The installed weight set does not exactly match tensor-cache.json",
     );
   }
+  let largestWeightBytes: number;
+  try {
+    largestWeightBytes = largestWeightTensorBytes(tensorDocument);
+  } catch (error) {
+    throw invalid("MLC_TENSOR_CACHE_INVALID", (error as Error).message);
+  }
 
   return {
     artifactCache: new VerifiedArtifactCache(files),
@@ -216,10 +195,10 @@ export async function prepareVerifiedWebLlmArtifacts(
     modelLibraryUrl: modelLibrary.manifest.url,
     captureSpecialTokenIds,
     vocabSize: vocabSize as number,
+    largestWeightBytes,
     isBaseModel,
     defaultUserRole: defaultRoles.user,
     defaultAssistantRole: defaultRoles.assistant,
-    promptRendering: promptRenderingOf(config),
   };
 }
 

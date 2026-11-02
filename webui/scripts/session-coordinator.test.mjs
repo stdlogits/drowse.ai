@@ -721,9 +721,9 @@ function memoryStore(initial = new Map()) {
 function persistencePort(persistence) {
   return {
     claimModes: [],
-    async claim(binding, mode = "restore", compatibleRuntimeIdentitySha256s = []) {
+    async claim(binding, mode = "restore") {
       this.claimModes.push(mode);
-      return persistence.claim(binding, mode, compatibleRuntimeIdentitySha256s);
+      return persistence.claim(binding, mode);
     },
     async save(input, ownerEpoch) {
       return persistence.save(input, ownerEpoch);

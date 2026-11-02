@@ -14,6 +14,7 @@ self.onmessage = async ({ data }: MessageEvent<{
   structuredHookProfile: ModelVariant["structuredHookProfile"];
   blockSpec: BlockSpec | null;
   unitRefusal: string | null;
+  prefillChunkSize: number;
   modelFiles: CatalogFile[];
   coreFiles: CatalogFile[];
 }>) => {
@@ -43,6 +44,7 @@ self.onmessage = async ({ data }: MessageEvent<{
       } as ModelVariant,
       requiredCorePack: { id: `${data.modelId}-recording-core`, kind: "core", displayName: "Recorded example core", runtimeIdentitySha256: fingerprint, files: data.coreFiles },
       contextTokens, blockSpec: data.blockSpec, unitRefusal: data.unitRefusal,
+      prefillChunkSize: data.prefillChunkSize,
       adapter: await checker.adapterForLoad(), artifacts: [...modelArtifacts, ...coreArtifacts],
       optionalPacks: [], activationSpool: new BrowserActivationSpool(), signal: new AbortController().signal,
       onDeviceLost(failure: { message: string }) { throw new Error(failure.message); },

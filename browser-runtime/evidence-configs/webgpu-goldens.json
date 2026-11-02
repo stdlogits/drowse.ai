@@ -1,0 +1,52 @@
+{
+  "$schema": "../evidence-config.schema.json",
+  "schemaVersion": 1,
+  "evidenceType": "webGpuGoldens",
+  "observer": "webui/scripts/browser-units-goldens.mjs",
+  "arguments": [
+    [
+      "--webllm",
+      "node_modules/@drowse/web-llm/lib/index.js",
+      "--fixtures",
+      "/Users/a9lim/.drowse-parity/units-webgpu-p16",
+      "--arch",
+      "gemma3",
+      "--quantization",
+      "q0f32",
+      "--report"
+    ],
+    [
+      "--webllm",
+      "node_modules/@drowse/web-llm/lib/index.js",
+      "--fixtures",
+      "/Users/a9lim/.drowse-parity/units-webgpu-p16",
+      "--arch",
+      "gemma3",
+      "--quantization",
+      "q4f32_1",
+      "--report"
+    ],
+    [
+      "--webllm",
+      "node_modules/@drowse/web-llm/lib/index.js",
+      "--fixtures",
+      "/Users/a9lim/.drowse-parity/units-webgpu-p16",
+      "--arch",
+      "qwen3",
+      "--quantization",
+      "q0f32",
+      "--report"
+    ],
+    [
+      "--webllm",
+      "node_modules/@drowse/web-llm/lib/index.js",
+      "--fixtures",
+      "/Users/a9lim/.drowse-parity/units-webgpu-p16",
+      "--arch",
+      "qwen3",
+      "--quantization",
+      "q4f32_1",
+      "--report"
+    ]
+  ]
+}

@@ -60,7 +60,7 @@ try {
     },
   });
   const tensorCache = JSON.stringify({
-    records: [{ dataPath: "params_shard_0.bin", nbytes: 1, records: [] }],
+    records: [{ dataPath: "params_shard_0.bin", nbytes: 1, records: [{ name: "w", dtype: "float32", shape: [1], format: "raw", nbytes: 4, byteOffset: 0 }] }],
   });
   const artifact = (path, role, content) => ({
     manifest: {
@@ -130,13 +130,15 @@ try {
     unitSites: 0,
     descriptor: Array.from(expectedHookProfileDescriptor(
       STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL,
-      hookProfileDescriptorModel({ variant: forVariant }),
+      hookProfileDescriptorModel({ variant: forVariant, prefillChunkSize: 1024 }),
     )),
     ...overrides,
   });
+  // The lock's prefill chunk (1024, below the variant's one 2048 context, as on the base models).
   const loadRequest = (overrides = {}) => ({
     model: { id: "smollm2-360m-instruct" },
     variant,
+    prefillChunkSize: 1024,
     contextTokens: 2048,
     adapter,
     artifacts,
@@ -197,11 +199,11 @@ try {
     }
     async supportsDrowseResidualCapture() { return this.capture; }
     async prepareDrowseCaptureRows(rows, specialTokenIds) {
-      (this.captureRowCalls ??= []).push({ rows: structuredClone(rows), specialTokenIds: [...specialTokenIds] });
-      // A row ending in an empty assistant turn renders its separator (4) after the header.
-      return rows.map((row, index) => (row.messages.at(-1).content === ""
-        ? { inputIds: [index, 9, 4], position: 1 }
-        : { inputIds: [index, 9], position: 1 }));
+      return rows.map((_row, index) => ({ inputIds: [index, 9], position: 1 }));
+    }
+    async prepareDrowseGenerationInputIds(request) {
+      (this.promptRequests ??= []).push(structuredClone(request));
+      return "prompt" in request ? [...request.prompt].map((c) => c.codePointAt(0)) : [request.messages.length, 9];
     }
     async captureDrowseResiduals(inputIds, positions) {
       if (positions.length > 1) {
@@ -318,32 +320,37 @@ try {
   assert.equal(runtime.vocabularySize(), 16);
   assert.equal(await runtime.decodeTokens([115, 117, 98]), "sub");
   assert.deepEqual(await runtime.tokenTexts([115, 117, 115]), ["s", "u", "s"]);
-  // The ids a plan prefills: a raw prompt's own ids (this chat model has no completion prefix);
-  // a chat prompt through WebLLM's capture renderer, the reply header an empty assistant turn
-  // whose separator the renderer cuts (`position`).
+  // The ids a plan prefills come from the bridge, which renders the same prompt request a
+  // generation sends (its messages, seat, role and thinking switch; a completion's prompt).
   assert.deepEqual(await runtime.renderPromptTokenIds({ input: { kind: "raw", prompt: "hi" } }), [104, 105]);
+  assert.deepEqual(runtime.requireEngine().promptRequests.at(-1), { prompt: "hi" });
   assert.deepEqual(await runtime.renderPromptTokenIds({
-    input: { kind: "chat", messages: [{ role: "system", content: "S" }, { role: "user", content: "u", name: "Ann" }] },
+    input: { kind: "chat", messages: [{ role: "system", content: "S" }, { role: "user", content: "u", name: "ann" }] },
     thinking: null,
-    generationRoleName: "Bot",
-  }), [0, 9]);
-  assert.deepEqual(runtime.requireEngine().captureRowCalls.at(-1), {
-    rows: [{
-      system: "S",
-      messages: [{ role: "user", content: "u", roleName: "Ann" }, { role: "assistant", content: "", roleName: "Bot" }],
-    }],
-    specialTokenIds: [],
+    generationRoleName: "bot",
+  }), [2, 9]);
+  assert.deepEqual(runtime.requireEngine().promptRequests.at(-1), {
+    messages: [{ role: "system", content: "S" }, { role: "user", content: "u", name: "ann" }],
+    extra_body: { drowse_generation_role: "bot" },
   });
-  await runtime.renderPromptTokenIds({ input: { kind: "chat", messages: [{ role: "user", content: "u" }] } });
-  assert.equal(runtime.requireEngine().captureRowCalls.at(-1).rows[0].system, "", "the template's own system message");
-  await assert.rejects(
-    runtime.renderPromptTokenIds({ input: { kind: "chat", messages: [{ role: "assistant", content: "a" }] }, generationSeat: "user" }),
-    { code: "TOKEN_REPLAY_UNAVAILABLE", status: 409 },
-  );
-  await assert.rejects(
-    runtime.renderPromptTokenIds({ input: { kind: "chat", messages: [{ role: "user", content: "u" }, { role: "system", content: "late" }] } }),
-    { code: "TOKEN_REPLAY_UNAVAILABLE" },
-  );
+  // A user-seat generation's prompt renders like any other (native renders either seat).
+  assert.deepEqual(await runtime.renderPromptTokenIds({
+    input: { kind: "chat", messages: [{ role: "user", content: "u" }, { role: "assistant", content: "a" }] },
+    generationSeat: "user",
+  }), [2, 9]);
+  assert.deepEqual(runtime.requireEngine().promptRequests.at(-1).extra_body, { drowse_generation_seat: "user" });
+  // The bridge opens a seat only after the other seat's turn and takes a system message only
+  // first: a node needing another order is refused as a recoverable replay gap, before the bridge.
+  const asked = runtime.requireEngine().promptRequests.length;
+  for (const plan of [
+    { input: { kind: "chat", messages: [{ role: "user", content: "u" }, { role: "user", content: "v" }] }, generationSeat: "user" },
+    { input: { kind: "chat", messages: [{ role: "user", content: "u" }, { role: "assistant", content: "a" }] } },
+    { input: { kind: "chat", messages: [{ role: "user", content: "u" }, { role: "system", content: "S" }, { role: "user", content: "v" }] } },
+  ]) {
+    await assert.rejects(runtime.renderPromptTokenIds(plan),
+      (error) => error.code === "TOKEN_REPLAY_UNAVAILABLE" && error.status === 409 && error.recoverable === true);
+  }
+  assert.equal(runtime.requireEngine().promptRequests.length, asked);
   assert.deepEqual(runtime.hookCapabilities(), {
     multi_term: true,
     projection: true,
@@ -390,6 +397,15 @@ try {
   assert.equal(appConfig.model_list[0].model_lib, `${base}model-lib.wasm`);
   assert.equal(appConfig.model_list[0].overrides.context_window_size, 2048);
   assert.deepEqual(appConfig.model_list[0].required_features, ["shader-f16"]);
+  // The device's binding is the library's, derived from the verified files and the lock (one
+  // 4-byte weight, 16 vocabulary rows, d = 2), not the variant's declared 128 MiB.
+  const { libraryBindingBytes } = await server.ssrLoadModule("/src/hosted/runtime/modelBackend.ts");
+  const derivedBinding = libraryBindingBytes(STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL, {
+    layerCount: 2, hiddenSize: 2, vocabSize: 16, contextTokens: 2048, prefillChunkSize: 1024,
+    blockSpec: null, largestWeightBytes: 4,
+  });
+  assert.equal(appConfig.model_list[0].buffer_size_required_bytes, derivedBinding);
+  assert.notEqual(derivedBinding, variant.requirements.limits.maxStorageBufferBindingSize);
   const hookProgram = compileStructuredHookProgram(2, [{
     affineGroups: [{ active: true, basis: [[1, 0]], neutral: [0, 0], target: [1], along: 0.5, kappa: [0] }],
     probes: [{ kind: "linear", direction: [1, 0], bias: 0 }],
@@ -765,7 +781,7 @@ try {
   );
 
   // Schema-4 attestation: any descriptor element, the profile id or the unit-site flag that
-  // differs from the lock fails the load (and unloads the engine); a variant on a pre-v5 profile
+  // differs from the lock fails the load (and unloads the engine); a variant on any other profile
   // is refused before attestation.
   const changedDescriptor = compiledProfile().descriptor;
   changedDescriptor[5] += 1;
@@ -785,9 +801,31 @@ try {
     await assert.rejects(mismatchedProfile.load(loadRequest()), (error) => error.code === code);
     assert.equal(MismatchedProfileEngine.instances.at(-1).unloaded, 1);
   }
+  // The descriptor's PREFILL_CHUNK_SIZE is the lock's: a load whose lock entry records none, or a
+  // library compiled at the context (2048) under a lock recording 1024, fails attestation.
   await assert.rejects(
     new DrowseWebLlmRuntime({ DROWSE_HOOK_ABI: "block-sites-v5", MLCEngine: FixtureEngine })
-      .load(loadRequest({ variant: { ...variant, structuredHookProfile: "standard-v3" } })),
+      .load(loadRequest({ prefillChunkSize: null })),
+    (error) => error.code === "HOOK_ABI_MISMATCH" && /prefill chunk/u.test(error.message),
+  );
+  class ContextPrefillEngine extends FixtureEngine {
+    async getDrowseStructuredHookProfile() {
+      return compiledProfile({
+        descriptor: Array.from(expectedHookProfileDescriptor(
+          STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL,
+          hookProfileDescriptorModel({ variant, prefillChunkSize: 2048 }),
+        )),
+      });
+    }
+  }
+  await assert.rejects(
+    new DrowseWebLlmRuntime({ DROWSE_HOOK_ABI: "block-sites-v5", MLCEngine: ContextPrefillEngine })
+      .load(loadRequest()),
+    (error) => error.code === "HOOK_ABI_MISMATCH" && /PREFILL_CHUNK_SIZE/u.test(error.message),
+  );
+  await assert.rejects(
+    new DrowseWebLlmRuntime({ DROWSE_HOOK_ABI: "block-sites-v5", MLCEngine: FixtureEngine })
+      .load(loadRequest({ variant: { ...variant, structuredHookProfile: "unknown-profile" } })),
     (error) => error.code === "STRUCTURED_HOOK_PROFILE_MISMATCH",
   );
 
@@ -810,7 +848,7 @@ try {
         unitSites: 1,
         descriptor: Array.from(expectedHookProfileDescriptor(
           STANDARD_STRUCTURED_HOOK_PROFILE_V4,
-          hookProfileDescriptorModel({ variant: unitsVariant, blockSpec }),
+          hookProfileDescriptorModel({ variant: unitsVariant, blockSpec, prefillChunkSize: 1024 }),
         )),
       };
     }

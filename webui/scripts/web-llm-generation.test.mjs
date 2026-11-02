@@ -56,6 +56,7 @@ try {
   }
   const {
     measurementEnvelope,
+    tokenMeasurementEnvelope,
     measurementGateScores,
     readWebLlmRuntimeCapabilities,
     streamWebLlmGeneration,
@@ -111,6 +112,10 @@ try {
   }
   assert.throws(() => validateWebLlmGenerationSettings({ top_k: Number.MAX_SAFE_INTEGER + 1 }, false), /top_k/);
   assert.throws(() => validateWebLlmGenerationSettings({ seed: -1 }, false), /seed/);
+  // Any finite penalty, as native's sampling params take (the goldens decode with 1e4).
+  assert.equal(validateWebLlmGenerationSettings({ presence_penalty: 1e4 }, false).presence_penalty, 1e4);
+  assert.equal(validateWebLlmGenerationSettings({ frequency_penalty: -3 }, false).frequency_penalty, -3);
+  assert.throws(() => validateWebLlmGenerationSettings({ presence_penalty: Infinity }, false), /presence_penalty/);
   assert.equal(validateWebLlmGenerationSettings({ seed: Number.MAX_SAFE_INTEGER }, false).seed, Number.MAX_SAFE_INTEGER);
   const drowseEngineMethods = {
     async getDrowseRuntimeCapabilities() {
@@ -1022,8 +1027,11 @@ try {
   assert.equal(controlUpdates.length, 1);
   assert.equal(controlUpdates[0][0][0], 1);
   assert.equal(gatedProgram.affineActive[0], 1);
-  assert.equal(measuredTokens[0].measurements.instruments.sae.readout, undefined);
-  assert.deepEqual(measuredTokens[0].measurements.instruments.sae.readings, {
+  // The gate read the SAE probe on every forward, but with the SAE family's live readout off
+  // its reading rides no token (native's per-token payload); the aggregate carries it.
+  assert.equal(measuredTokens[0].measurements, undefined);
+  assert.equal(measuredResult.measurements.instruments.sae.readout, undefined);
+  assert.deepEqual(measuredResult.measurements.instruments.sae.readings, {
     "sae/3": {
       value: 0.75,
       unit: "raw_activation",
@@ -1032,11 +1040,9 @@ try {
     },
   });
   // Envelope v2: a reading carries its own trace; there is no layer-major copy.
-  assert.equal(Object.hasOwn(measuredTokens[0].measurements, "per_layer_scores"), false);
-  assert.equal(measuredTokens[0].measurements.version, 2);
-  assert.equal(measuredTokens[0].measurements.scope, "token");
+  assert.equal(Object.hasOwn(measuredResult.measurements, "per_layer_scores"), false);
+  assert.equal(measuredResult.measurements.version, 2);
   assert.equal(measuredResult.measurements.scope, "aggregate");
-  assert.equal(measuredTokens[0].measurements.scope, "token");
 
   // A unit-only program (no affine or curve term) with phased groups: prompt-only ablation
   // turns off at the first decode step, a response-only one turns on there, and the caller's
@@ -1252,6 +1258,14 @@ try {
   }, () => {}), /HIDDEN_CAPTURE_UNAVAILABLE|\[L, d\] capture/);
 
   const measurementOnlyProgram = { ...gatedProgram, controls: undefined };
+  // A monitor probe rides every token (an SAE probe would ride none with its live readout off).
+  const monitorOnlyProgram = {
+    ...measurementOnlyProgram,
+    measurementSchema: {
+      ...gatedProgram.measurementSchema,
+      probes: [{ name: "deceptive", family: "geometry" }, null, null, null, null, null, null, null],
+    },
+  };
   const tokenOnlyMeasurements = [];
   const tokenOnlyResult = await streamWebLlmGeneration(
     engine,
@@ -1264,7 +1278,7 @@ try {
     },
     {
       input: { kind: "chat", messages: [{ role: "user", content: "Hi" }] },
-      hookProgram: measurementOnlyProgram,
+      hookProgram: monitorOnlyProgram,
       sampling: {
         persist_per_layer_scores: false,
         return_probe_readings: false,
@@ -1273,7 +1287,7 @@ try {
     (token) => tokenOnlyMeasurements.push(token),
   );
   assert.equal(tokenOnlyMeasurements.length, 2);
-  assert.equal(tokenOnlyMeasurements[0].measurements.scores["sae/3"], 0.5);
+  assert.equal(tokenOnlyMeasurements[0].measurements.scores.deceptive, 0.5);
   assert.equal(
     Object.hasOwn(tokenOnlyMeasurements[0].measurements, "per_layer_scores"),
     false,
@@ -1590,7 +1604,7 @@ try {
   const scopedReads = [];
   const scopedTokens = [];
   let scalarReadActive = false;
-  await streamWebLlmGeneration(
+  const scopedResult = await streamWebLlmGeneration(
     engine,
     {
       async clear() {},
@@ -1625,9 +1639,43 @@ try {
     "scalar:start", "scalar:end",
   ]);
   assert.equal(scopedTokens.length, 2);
-  assert.equal(scopedTokens[0].measurements.instruments.geometry, undefined);
-  assert.equal(scopedTokens[0].measurements.instruments.sae.readings["sae/3"].value, 0.25);
-  assert.equal(scopedTokens[0].measurements.instruments.lens.readings["jlens/calm"].value, 0.5);
+  // Native's per-token payload (session/engine.py): attached R-lens and SAE readings ride a
+  // token only while their family's live readout is on. Both are off here, so the tokens carry
+  // no envelope at all, and the reply's aggregate still reads both probes.
+  assert.equal(scopedTokens[0].measurements, undefined);
+  assert.equal(scopedTokens[1].measurements, undefined);
+  // Each token still offers its readings to the reply's aggregate (a stopped reply pools them).
+  assert.equal(scopedTokens[0].aggregateMeasurements.instruments.lens.readings["jlens/calm"].value, 0.5);
+  assert.equal(scopedTokens[0].aggregateMeasurements.instruments.sae.readings["sae/3"].value, 0.25);
+  assert.equal(scopedResult.measurements.scope, "aggregate");
+  assert.equal(scopedResult.measurements.instruments.sae.readings["sae/3"].value, 0.25);
+  assert.equal(scopedResult.measurements.instruments.lens.readings["jlens/calm"].value, 0.5);
+
+  // With return_probe_readings off, native reads no aggregate (read_plane.py want_readouts): the
+  // reply has none, and no token offers one for a stopped reply to pool.
+  const unreadTokens = [];
+  const unreadResult = await streamWebLlmGeneration(
+    engine,
+    {
+      async clear() {},
+      async interrupt() {},
+      async install() {},
+      async read() { return Float32Array.of(0.25, 0.5, 0, 0, 0, 0, 0, 0); },
+      async readGeometry() { return new Float32Array(); },
+      async updateControls() {},
+      assertSteeringSupported() {},
+    },
+    {
+      input: { kind: "chat", messages: [{ role: "user", content: "Hi" }] },
+      hookProgram: scopedProgram,
+      measurementSpecialTokenIds: [99],
+      sampling: { return_probe_readings: false },
+    },
+    (token) => unreadTokens.push(token),
+  );
+  assert.equal(unreadTokens.length, 2);
+  assert.equal(unreadTokens.some((token) => "aggregateMeasurements" in token), false);
+  assert.equal(unreadResult.measurements, undefined);
 
   const staticProgram = compileStructuredHookProgram(1, [{
     affineGroups: [{
@@ -1715,6 +1763,30 @@ try {
   });
   assert.equal(oriented.instruments.lens.readout, undefined);
   assert.equal(oriented.instruments.sae.readout, undefined);
+  // The token view of that capture: a family's readings (and their scores) ride only while it is
+  // live; the capture keeps them for gates and the aggregate.
+  const orientedSchema = {
+    layerMap: [4, 9], modelLayerCount: 12, lensSource: "fixture-lens", saeSource: "fixture-sae",
+    probes: [
+      { name: "calm.focused", family: "geometry" },
+      { name: "jlens/calm", family: "lens", tokenId: 17 },
+      { name: "sae/8", family: "sae", featureId: 8 },
+    ],
+  };
+  const tokenView = (live) => tokenMeasurementEnvelope(oriented, {
+    format: "drowse-structured-v4", layerCount: 2, measurementSchema: { ...orientedSchema, ...live },
+  });
+  const familiesOff = tokenView({});
+  assert.equal(familiesOff.instruments.lens, undefined);
+  assert.equal(familiesOff.instruments.sae, undefined);
+  assert.deepEqual(Object.keys(familiesOff.scores), ["calm.focused"]);
+  assert.equal(measurementGateScores(oriented)["jlens/calm"], 0.4375);
+  const lensLive = tokenView({ lensReadout: true, saeReadout: false });
+  assert.deepEqual(lensLive.instruments.lens, oriented.instruments.lens);
+  assert.equal(lensLive.instruments.sae, undefined);
+  assert.deepEqual(Object.keys(lensLive.scores).sort(), ["calm.focused", "jlens/calm"]);
+  assert.equal(tokenView({ lensReadout: true, saeReadout: true }), oriented);
+  assert.equal(tokenMeasurementEnvelope(undefined, null), undefined);
 
   const preciseProgram = {
     format: "drowse-structured-v4", layerCount: 2,

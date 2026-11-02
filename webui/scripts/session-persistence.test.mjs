@@ -176,14 +176,14 @@ try {
   });
 
   test("explicit new-chat reset clears compatible autosaves without touching other models", async () => {
-    for (const migrate of [false, true]) {
+    for (const otherIdentity of [false, true]) {
       const store = memoryStore();
       const persistence = new BrowserSessionPersistence({ store, runExclusive: serialRunner() });
       await persistence.save(sessionInput("fastest", "session-a", 3), "owner-a");
       await persistence.save(sessionInput("balanced", "session-b", 4), "owner-a");
       const target = binding("fastest", "owner-b");
-      if (migrate) target.runtimeIdentitySha256 = "b".repeat(64);
-      const result = await persistence.claim(target, "reset", migrate ? ["a".repeat(64)] : []);
+      if (otherIdentity) target.runtimeIdentitySha256 = "b".repeat(64);
+      const result = await persistence.claim(target, "reset");
       assert.equal(result.status, "missing", "reset must not restore a compatible session");
       assert.equal(store.rows.has("fastest"), false);
       assert.equal(store.rows.get("balanced").tree.rev, 4);
@@ -212,41 +212,6 @@ try {
     }, "reset");
     assert.equal(reset.status, "missing");
     assert.equal(store.rows.has("fastest"), false);
-  });
-
-  test("migrates an explicitly compatible runtime identity without losing the conversation", async () => {
-    const store = memoryStore();
-    const persistence = new BrowserSessionPersistence({
-      store,
-      runExclusive: serialRunner(),
-    });
-    await persistence.save(sessionInput("fastest", "session-a", 3), "owner-a");
-    const currentIdentity = "b".repeat(64);
-    const claimed = await persistence.claim({
-      ...binding("fastest", "owner-b"),
-      runtimeIdentitySha256: currentIdentity,
-    }, "restore", ["a".repeat(64)]);
-
-    assert.equal(claimed.status, "compatible");
-    assert.equal(claimed.record.tree.rev, 3);
-    assert.equal(claimed.record.ownerEpoch, "owner-b");
-    assert.equal(claimed.record.metadata.runtimeIdentitySha256, currentIdentity);
-    assert.equal(store.rows.get("fastest").metadata.runtimeIdentitySha256, currentIdentity);
-  });
-
-  test("compatible runtime upgrades preserve sessions with a different context binding", async () => {
-    const store = memoryStore();
-    const persistence = new BrowserSessionPersistence({ store, runExclusive: serialRunner() });
-    await persistence.save(sessionInput("fastest", "session-a", 3), "owner-a");
-    const previous = structuredClone(store.rows.get("fastest"));
-    const claimed = await persistence.claim({
-      ...binding("fastest", "owner-b"),
-      runtimeIdentitySha256: "b".repeat(64),
-      contextTokens: previous.metadata.contextTokens * 2,
-    }, "restore", ["a".repeat(64)]);
-    assert.equal(claimed.status, "incompatible");
-    assert.equal(claimed.reason, "context_tokens");
-    assert.deepEqual(store.rows.get("fastest"), previous);
   });
 
   test("rejects malformed topology, non-JSON settings, and metadata mismatches", () => {

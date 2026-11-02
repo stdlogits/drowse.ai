@@ -32,8 +32,18 @@ assert.deepEqual(executionProfiles, {
   requiredFeatures: [],
   blockSpec: qwen4b.blockSpec,
   unitRefusal: null,
+  prefillChunkSize: 2048,
 });
 assert.ok(qwen4b.blockSpec, "the lock records qwen3-4b's block spec");
+// The lock's prefill chunk travels with the profiles; a closure that says otherwise is refused.
+assert.throws(
+  () => lockedModelExecutionProfiles({ ...qwen4b, prefillChunkSize: undefined }, executionProfiles),
+  /prefill chunk does not match/,
+);
+assert.throws(
+  () => lockedModelExecutionProfiles(qwen4b, { ...executionProfiles, prefillChunkSize: 1024 }),
+  /prefill chunk does not match/,
+);
 // A v5 library: the block spec travels with standard-v4, the refusal with -residual.
 const blockSpec = { dFF: 9728, nHeads: 32 };
 const { blockSpec: _lockedSpec, unitRefusal: _lockedRefusal, ...bareQwen4b } = qwen4b;
@@ -51,8 +61,8 @@ for (const [profile, extra] of [
 ]) {
   assert.throws(() => v5(profile, extra), /blockSpec and unitRefusal/, `${profile} ${JSON.stringify(extra)}`);
 }
-// Hook ABI v5 only: a v1-v3 profile is not a hosted profile any more.
-assert.throws(() => v5("standard-v3", { blockSpec }), /structuredHookProfile is not allow-listed/);
+// Hook ABI v5 only: no other profile is a hosted profile.
+assert.throws(() => v5("unknown-profile", { blockSpec }), /structuredHookProfile is not allow-listed/);
 assert.throws(
   () => lockedModelExecutionProfiles(qwen4b, {
     structuredHookProfile: "standard-v4-residual",
@@ -351,7 +361,6 @@ const validatorSource = await readFile(resolve(import.meta.dirname, "validate-ho
 assert.match(validatorSource, /structuredHookProfile: lock\.structuredHookProfile/);
 assert.match(validatorSource, /id: `\$\{modelId\}-\$\{lock\.quantization\}`/);
 assert.match(validatorSource, /readRuntimeLock\(runtimeLockPath\)/);
-assert.doesNotMatch(validatorSource, /structuredHookProfile: "standard-v1"/);
 
 // drowse 6.0's default concepts, as core sources: the checked-in copies equal the pinned drowse's
 // bundled corpora, and every one reads as a core source (three of them one-node).

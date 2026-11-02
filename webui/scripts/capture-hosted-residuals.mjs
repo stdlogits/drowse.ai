@@ -27,6 +27,11 @@ import {
 } from "./release-tool-storage-quota.mjs";
 import { readRuntimeLock } from "./runtime-lock-document.mjs";
 import { validateBrowserFullRuntimeModelClosure } from "./browser-full-runtime-contract.mjs";
+import {
+  CAPTURE_SCHEMA_VERSION,
+  captureUnitsMember,
+  unitsCaptureFailures,
+} from "./hosted-residual-capture-units.mjs";
 
 const options = parseArguments(process.argv.slice(2));
 if (options.help) {
@@ -167,7 +172,7 @@ const server = createHttpServer(async (request, response) => {
     }
     if (request.method === "POST" && url.pathname === "/capture") {
       const kind = url.searchParams.get("kind");
-      if (kind !== "unsteered" && kind !== "control-probes" && kind !== "steered-probes") {
+      if (kind !== "unsteered" && kind !== "control-probes" && kind !== "steered-probes" && kind !== "sites") {
         return send(response, "unknown capture kind", "text/plain", 400);
       }
       if (captureBodies.has(kind)) {
@@ -242,6 +247,7 @@ try {
         ? {}
         : { namedRoleCheck: { row: input.namedRoleCheck.row } }),
       contextTokens: Math.max(...lock.contextProfiles),
+      contextProfiles: [...lock.contextProfiles],
       dumpShaders: shaderDumpDirectory !== null,
     },
   });
@@ -253,15 +259,25 @@ try {
 const residualBytes = captureBodies.get("unsteered");
 const controlProbeBytes = captureBodies.get("control-probes");
 const steeredProbeBytes = captureBodies.get("steered-probes");
-const envelopeFailures = captureEnvelopeFailures({
-  result,
-  residualBytes,
-  controlProbeBytes,
-  steeredProbeBytes,
-  lock,
-  input,
-  expectedRuntimeIdentitySha256,
-});
+const sitesBytes = captureBodies.get("sites");
+const envelopeFailures = [
+  ...captureEnvelopeFailures({
+    result,
+    residualBytes,
+    controlProbeBytes,
+    steeredProbeBytes,
+    lock,
+    input,
+    expectedRuntimeIdentitySha256,
+  }),
+  ...unitsCaptureFailures({
+    structuredHookProfile: executionProfiles.structuredHookProfile,
+    units: result.units,
+    sitesBytes,
+    lock,
+    positions: input.positions,
+  }),
+];
 if (envelopeFailures.length > 0) {
   throw new Error(
     `browser residual capture returned an incompatible envelope:\n- ${envelopeFailures.join("\n- ")}`,
@@ -280,8 +296,9 @@ try {
   await writeFile(resolve(stage, "residuals.f32"), residualBytes);
   await writeFile(resolve(stage, "control-probes.f32"), controlProbeBytes);
   await writeFile(resolve(stage, "steered-probes.f32"), steeredProbeBytes);
+  if (sitesBytes !== undefined) await writeFile(resolve(stage, "sites.f32"), sitesBytes);
   await writeFile(resolve(stage, "capture.json"), `${JSON.stringify({
-    schema_version: 4,
+    schema_version: CAPTURE_SCHEMA_VERSION,
     produced_at: new Date().toISOString(),
     model_id: options.modelId,
     runtime_identity_sha256: result.runtimeIdentitySha256,
@@ -308,6 +325,7 @@ try {
             position: result.namedRolePrepared.position,
           },
         }),
+    ...(result.units === undefined ? {} : { units: captureUnitsMember(result.units) }),
   }, null, 2)}\n`);
   await rename(stage, outputDirectory);
 } catch (error) {
@@ -324,6 +342,8 @@ process.stdout.write(`${JSON.stringify({
   controlProbeSha256: result.controlProbeSha256,
   steeredProbeSha256: result.steeredProbeSha256,
   greedyTokenIds: result.greedyTokenIds,
+  sitesSha256: result.units?.sitesSha256 ?? null,
+  staticReads: result.units?.staticReads.length ?? 0,
   runtimeLock: runtimeLockProvenance,
 }, null, 2)}\n`);
 

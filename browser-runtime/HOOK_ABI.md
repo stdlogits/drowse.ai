@@ -240,7 +240,24 @@ divides by the soft floored reading scale (neuron pole by `sign(act)`); scales n
 on the live path. 64 slots, at most 16 heads; more is `UNIT_TAP_CAPACITY` before generation.
 
 `slens/` probes and gates run post-forward over the existing `[L, d]` capture
-(`drowse_slens_probes`, §8). There is no live `mid` read: native 6.0 has none.
+(`drowse_slens_probes`, §8). There is no live `mid` read: native 6.0 has none. The capture reaches
+the host only when the installed program sets `hiddenCapture` (a units program with attached
+`slens/` probes): the bridge then returns it as the measurement bundle's `hidden` in the same sync
+as the probe slots and unit taps. `slens/` reads cover attached probes only; a gate naming a probe
+nothing attached never fires (native `resolve_gates`), so there are no gate-only S reads.
+
+**Stream window.** Between a generation's tokens the stream holds the model lock. Block-sites
+`read`, `uploadResident`, `release`, `headGrams`, `uploadUnitScales` and `attentionRows` requests
+that arrive then run inside the stream's token window, through one serialized queue per model (each
+may hold TVM scopes across a device sync; the queue drains before the stream resumes), so a
+forward's `slens/` probes read its capture before the next token. Replays (`openReplay`,
+`replayForward`, `finishReplay`, `cancelReplay`) own the KV cache and wait for the model lock.
+
+**Envelope.** Per token, attached R-lens and SAE probe readings ride the token's measurement
+envelope only while their family's live readout is on (native's token payload merges the live
+readout step's readings), as do `slens/` readings (lens family) and unit readings (units family);
+gates read every attached probe on every forward, and the reply's aggregate carries every reading
+(`tokenMeasurementEnvelope` in `webLlmGeneration.ts`).
 
 ## 6. Descriptor schema 4 and attestation (§3.5)
 
@@ -283,7 +300,14 @@ meaning:
   fields 32-50, every unit capacity (52-60), `ANATOMY_STRIDE`, `UNIT_POSITIONS_FROM` and
   `MAX_ANATOMY_UNITS`; it keeps `MAX_LENS_READ_TOP_K = 256` (lens reads at `out` run everywhere).
 - `ANATOMY_STRIDE = 6·d + d_ff + H·hd`. `CONTEXT_TOKENS` is the compiled context window, the
-  largest of the lock's `contextProfiles`; `PREFILL_CHUNK_SIZE` the smallest (the adoption rule).
+  largest of the lock's `contextProfiles`. `PREFILL_CHUNK_SIZE` is the chunk the library was
+  compiled with, which the lock records per model (`models[].prefillChunkSize`, its
+  `mlc-chat-config.json`'s `prefill_chunk_size`): a positive integer no larger than the smallest
+  context profile. The five instruct libraries use 2048 against [2048, 4096]; gpt2-base 1024
+  against 1024; pythia-70m-base, gemma3-1b-pt and qwen35-2b-base 1024 against their one 2048
+  context (every published build of them). The adapter attests the lock's value, never one derived
+  from the contexts, so a library compiled with another chunk fails with `HOOK_ABI_MISMATCH` at
+  `PREFILL_CHUNK_SIZE`, and so does a load whose lock entry records none.
 
 **Attestation.** Before any upload the bridge compares the descriptor element by element with the
 expected vector built from the TypeScript profile and the runtime lock's model entry: the profile
@@ -303,7 +327,11 @@ the tiny libraries and the production q4 parity gate's per-layer `act`/`z`/`mid`
 rmsEps, qkNorm, attnScaling, attnLogitSoftcap, finalLogitSoftcap, ropeTheta, ropeLocalTheta,
 ropeGlobalScale, ropeInGraph, slidingWindow, slidingPattern`; booleans for the flags,
 `"silu" | "gelu_tanh"`, `null` for none) required with `standard-v4` and forbidden with
-`-residual`; `models[].unitRefusal` (native's full message) required with `-residual`.
+`-residual`; `models[].unitRefusal` (native's full message) required with `-residual`;
+`models[].prefillChunkSize` required everywhere (`validateRuntimeLock` bounds it by the smallest
+context). `prepare-hosted-candidate-lock.mjs` refuses a publish directory whose
+`hosted-artifacts.json` or `mlc-chat-config.json` (top level or `model_config`) names another
+prefill chunk, and `publish-hosted-model.mjs` refuses the closure likewise.
 
 ## 7. Replay (§2.3)
 
@@ -364,6 +392,37 @@ the captures and drops the sequence (`cancel()` drops it unread).
   KV cache. Generation and capture refuse (`REPLAY_BUSY`) while a replay is open. The adapter is
   `webui/src/hosted/runtime/webLlmBlockSites.ts`; `BlockSitesReplayRequest.tokenCount` (optional,
   default the context) sizes the pattern keys.
+- **Replay readback (bridge .46).** A replay forward is generation's forward: curve feet thread
+  through its chunks, and the geometry readout runs on every chunk (the prefill solve on a chunk,
+  the warm solve on one row) with its feet threaded. The segment's last chunk returns, in the one
+  sync that reads its probe slots and unit taps, the `geometry` readout, the `[L, d]` `hidden`
+  capture when the program sets `hiddenCapture`, and the J-lens probabilities of kind-3 probe
+  slots (the full-vocabulary readout of `jLensTokenIds`). Node replays score every gate generation
+  scores from that readback (unit taps, geometry, attached `slens/` over `hidden`, J-lens and SAE
+  slots); a gate the readback cannot score refuses with native's 422 instead of staying shut.
+- **Prompt ids (bridge .49).** A node replay feeds the ids its generation prefilled:
+  `prepareDrowseGenerationInputIds(request)` takes the chat-completion or completion request a
+  generation sends (`webLlmPromptRequest`: messages, `drowse_generation_seat`,
+  `drowse_generation_role`, `enable_thinking`; or `prompt`) and returns the prefix ids
+  (`system_prefix_token_ids`, or a completion's `drowse_completion_prefix_token_ids`) then each
+  prompt segment encoded on its own, through the conversation, last turn and generated-seat header
+  `prefillStep` appends (`appendDrowseGenerationTurn`, shared), without touching the KV cache or
+  the loaded conversation. Either seat renders (`DrowseWebLlmRuntime.renderPromptTokenIds`); with
+  thinking off only the assistant seat opens with the empty thinking block (native appends
+  `gen_extra` to the assistant seat only). The bridge opens a seat only after the other seat's turn
+  and takes a system message only first; the host refuses a replay needing another order as a
+  recoverable 409 `TOKEN_REPLAY_UNAVAILABLE` (`bridgeRendersTurnOrder`).
+- **Conversation templates.** An empty effective system message renders no system block.
+  `conv_template.drowse_system_fold_sep` folds a non-empty system message into the first turn's
+  text (Gemma: `"\n\n"`); `conv_template.drowse_content_trim` trims each turn's text before the
+  fold with Python's `str.strip()` set (Gemma 3's `| trim`; the folded system text stays as given),
+  as drowse's scene grammar does. Production chat configs carry them
+  (`build-production-webgpu.py` `DROWSE_CONVERSATION_RULES`: qwen3 `system_message ""`, gemma3_instruction
+  fold and trim; `verify_build_manifest` refuses a chat config without them).
+- **Sampling.** Presence and frequency penalties take any finite value (native `FiniteFloat`). A
+  request seed is mixed (`drowseSamplerSeed`: both 32-bit halves through murmur3's finalizer, into
+  `[1, 2^31 - 2]`) before it seeds TVM's Lehmer sampler, which takes its seed as its state: unmixed,
+  a seed below 1000 drew under 0.0225 first and so sampled the top token at any temperature.
 
 ## 8. Static reads and `exact-readout-v2` (§4)
 
@@ -490,15 +549,55 @@ that depends on the workgroup id (WGSL uniformity), and the ablations are in pla
 whose position is below `UNIT_POSITIONS_FROM` is untouched. The upstream graph is otherwise
 unchanged: every v4 kernel is byte-identical in a v5 library (binding names aside).
 
-Largest buffers (`blockSitesBufferElements`): `head_grams` 72 MiB and a pattern key slot 16 MiB
-(qwen3-4b, 4096 tokens: `pattern_keys` whole is 256 MiB, one buffer as built; it is sized to
-the positions a replay feeds, so only a full-context pattern replay reaches it). The bridge asks
-for a 1 GiB binding when the adapter offers it and the WebGPU default of 128 MiB otherwise, and
-every units model's largest weight tensor already exceeds 128 MiB, so a device that loads a units
-library binds 1 GiB; the largest `pattern_keys` (256 MiB: qwen3-1.7b, qwen3-4b and gemma3-4b at
-4096 tokens; 128 MiB for qwen3-1.7b at the 2,048 tokens iPhone and iPad run) fits it; `tap_grams` 4 MiB at
-`hd = 256`; the unit tables under 100 KiB. A replay chunk's transient `act` is
-`prefill_chunk_size × d_ff`, never larger than ordinary prefill's.
+**The library's binding.** `libraryBindingBytes` (`modelBackend.ts`) is the largest buffer a v5
+library allocates at its largest context and prefill chunk, the larger of:
+
+- its largest weight tensor as the GPU holds it (`float32` for a bf16-encoded record);
+- its units machinery (`blockSitesBindingBytes`, units libraries): `pattern_keys` whole, all 16
+  slots at the full context (one buffer as built, sized to the positions a replay feeds, so only a
+  full-context pattern replay reaches it), the head grams, the chunk's MLP gate/up activation
+  `[prefill_chunk_size, 2·d_ff]` (MLC's static memory plan allocates it at the chunk bound; a
+  replay chunk's `act` is half of it), a layer's head rows (`drowse_head_rows` over every head,
+  `[H, 4, hd, d]`; the adapter splits a longer `unitWeightRows` request into calls of at most `H`
+  heads or `⌊4·H·hd/3⌋` neurons, `unitRowsPerCall`) and every other `blockSitesBufferElements`
+  buffer;
+- a unit read's vocabulary chunk (`UNIT_VOCAB_ROWS` = 8192 rows times a factor of at most
+  `max(d, H·hd)` columns), the structured program's buffers, one full-vocabulary static read of
+  `VOCAB_READ_ROWS` (64) rows (`[64, V]`; the adapter splits longer
+  `drowse_vocab_logits`/`drowse_footprint_scores` reads into calls of 64 rows) and one resident
+  lens layer `[d, d]`. J-lens and SAE dictionaries upload in chunks of at most 32 MiB, and a
+  residual capture of many positions ends each chunk before the first position whose
+  `[L, positions, d]` output would outgrow the device's binding (bridge .47,
+  `drowseCapturePositionsPerForward`; qwen3-4b takes 728 positions per forward at 256 MiB).
+
+| library (MiB) | largest weight | `pattern_keys` | head grams | gate/up | binding |
+|---|---|---|---|---|---|
+| gemma3-270m-instruct (q0f32) | 640 (embedding) | 64 | 18 | 32 | 640 |
+| gemma3-1b-instruct, gemma3-1b-pt | 144 | 64, 32 | 26 | 108, 54 | 144 |
+| gemma3-4b-instruct | 320.1 | 256 | 68 | 160 | 320.1 |
+| qwen3-1.7b | 148.4 | 256 | 28 | 96 | 256 |
+| qwen3-4b | 185.5 | 256 | 72 | 152 | 256 |
+| gpt2-base (q0f32), pythia-70m-base (q0f32), qwen35-2b-base | 147.2, 98.3, 242.5 | | | (48 on qwen35) | 147.2, 98.3, 242.5 |
+
+The catalog builder derives every variant's `maxStorageBufferBindingSize` and `maxBufferSize` as
+this binding (a release spec cannot declare them); capability admission compares the adapter's
+reported limits with the variant's. So admission implies loadability for a catalog the builder
+made, which is what the release signs. The browser's own catalog check is a narrower floor: it
+refuses a units variant whose limits fall below its lock entry's `blockSitesBindingBytes`, the
+part of the binding the lock alone determines (the weight and vocabulary terms need the
+library's `tensor-cache.json` and chat config, which the lock does not record). At load the adapter derives the same
+binding from the verified `tensor-cache.json` and `mlc-chat-config.json` and the lock entry
+(`webLlmEngine.ts`; the variant's declared limits only gate admission), and the bridge
+(since 0.2.84-drowse.47) asks the device for exactly it (`buffer_size_required_bytes`; WebGPU's defaults
+of 128 MiB binding and 256 MiB buffer when they are larger) and refuses an adapter that reports
+less before any weight is read, so every admitted adapter runs the model under the same limits and
+an adapter the catalog admits can load it. (The bridge used to request 1 GiB when offered and
+128 MiB otherwise, so an adapter between the catalog's 256 or 512 MiB and 1 GiB was admitted and
+then could not bind the embedding.) On the M5's Chrome (adapter `maxStorageBufferBindingSize`
+4294967292), all nine libraries load, prefill a full chunk and generate at exactly their binding,
+and the largest buffer each page creates is the weight above (the next is the gate/up activation).
+The binding is per variant, at its largest context: qwen3-1.7b at the 2,048 tokens iPhone and iPad
+run needs 148.4 MiB, but its variant declares 256 MiB.
 
 ## 11. Carried from v4 unchanged
 

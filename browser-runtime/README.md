@@ -8,7 +8,7 @@ The runtime lock is hook ABI v5 (`runtime-lock.json` schema 2): `drowse-web-runt
 `block-sites-v5`, `exact-readout-v2`, each model's capacity profile by architecture
 (`standard-v4` for Gemma 3 and Qwen3, with the `blockSpec` its library's schema-4 descriptor
 attests; `standard-v4-residual` for GPT-2, Pythia and Qwen3.5 base, with the `unitRefusal` its
-unit calls answer), the WebLLM archive `0.2.84-drowse.46`, the fork manifest, compiler recipe
+unit calls answer), the WebLLM archive `0.2.84-drowse.49`, the fork manifest, compiler recipe
 and LLVM identities. It stays `feasibility-required` until every v5 library's converted revision,
 converted-manifest digest and library digest are filled (`prepare-hosted-candidate-lock.mjs`,
 below); `check-runtime-lock.mjs --release` lists what is still pending. Exact converted-model
@@ -450,22 +450,37 @@ npm run test:browser-runtime:full -- \
   --model-id qwen3-1.7b \
   --model-directory MODEL_DIR --model-library MODEL.wasm --webllm WEBLLM.js \
   --core-directory CORE_DIR --jlens-directory JLENS_DIR \
-  --sae-directory SAE_DIR --context-tokens 2048 \
+  --slens-directory SLENS_DIR --units-directory UNITS_DIR \
+  [--sae-directory SAE_DIR] --context-tokens 2048 \
   --output /tmp/drowse-real-browser-e2e.json
 ```
 
+The packs follow the library's profile, as the catalog admits them: a `standard-v4` model
+runs with its R (`--jlens-directory`), S and units packs, a `standard-v4-residual` one with no
+S or units pack (an R pack is optional); SAE is optional on both. The harness stages every
+pack file and hands the runtime what the app's worker does: the install files, and each
+on-demand lens or units layer through `fetchFile` on its first read. `--runtime-lock CANDIDATE`
+runs against an engineering lock (the report is then marked `override`); `--verbose` echoes the
+page console to stderr, which an evidence observer must not write.
+
 The command rehashes every local manifest object before opening Chrome, requires
 a confirmed hardware adapter with at least 10 storage buffers per shader stage,
-then measures ordinary generation, selective
+then measures the load (the library's descriptor attested against the lock's profile and
+block spec, its block sites recorded), ordinary generation, selective
 post-block capture, exact forced-token replay and compact cross-token scoring,
-an alternate-token fork, flat steering gated independently by geometry, R-lens
-probability, and SAE activation signals, R-lens and SAE steering/readout,
+an alternate-token fork, flat steering gated independently by geometry and, with their packs,
+R-lens probability and SAE activation signals, R-lens and SAE steering/readout,
 a small spectral fit backed by the OPFS activation spool, nearest-node role
-selection and named-role generation, curved steering,
-streamed stop, unload/reload, and a final reload from reopened OPFS files while
-all HTTP(S) fetches are blocked. It fails when any phase is absent, reordered,
-unsupported, unmeasured, or emits a WebGPU/device-loss error. There is no
-`--skip-fitting` or missing-instrument mode.
+selection and named-role generation, curved steering, then on `standard-v4` the units
+check (a token-anatomy replay of the first generated token; a mean-ablation of its largest
+contributor that moves that token's logprob by at least 1e-4; a static read of a contributing
+neuron; a generation with a unit tap and an `slens/` S readout, both finite) or on
+`standard-v4-residual` the refusal check (six unit members answer 422 with the lock's
+`unitRefusal`, the unit catalog answers unbound, a unit ablation and a unit probe refuse, and
+the bridge's unit surface answers `UNIT_SITES_UNAVAILABLE`), streamed stop, unload/reload,
+and a final reload from reopened OPFS files while all HTTP(S) fetches are blocked. It fails
+when any phase is absent, reordered, unsupported, unmeasured, or emits a WebGPU/device-loss
+error. There is no `--skip-fitting` mode.
 
 Its JSON is deliberately marked `releaseEvidence: false`: one local desktop
 run is useful physical integration evidence, but it cannot claim Android,
@@ -478,7 +493,10 @@ an immutable revision. Model directories contain `hosted-artifacts.json`; each
 core or optional-instrument directory contains `hosted-pack-artifacts.json`
 with exact relative paths, byte sizes, and SHA-256 digests. The builder rehashes
 every file, closes all runtime-lock context profiles, derives runtime/context
-identity digests, and validates the completed catalog with the browser parser:
+identity digests, derives each variant's `maxBufferSize` and
+`maxStorageBufferBindingSize` from its library (`libraryBindingBytes`,
+HOOK_ABI.md §10; the spec's `requirements` name only features and the other
+limits), and validates the completed catalog with the browser parser:
 
 ```bash
 npm run build:hosted:catalog -- RELEASE_SPEC.json catalog.json
@@ -552,9 +570,18 @@ configured BOS, EOS, and padding ID before capture can run. This prevents
 last-content pooling from silently depending on tokenizer heuristics.
 
 `distribution-lock.json` independently gates the signed catalog and download
-origins. It embeds the current and next Ed25519 public keys, the minimum catalog
-sequence, and the exact Hugging Face artifact redirect origin exercised by the
-full distribution preflight. Its verified state authorizes catalog downloads.
+origins. It embeds the catalog and signature URLs, the current and next Ed25519
+public keys, the minimum catalog sequence, and the exact Hugging Face artifact
+redirect origin exercised by the full distribution preflight. Its verified state
+authorizes catalog downloads.
+
+Each browser runtime generation reads its catalog at its own path of
+`stdlogits/drowse-web-catalog` (`webui/scripts/hosted-catalog-location.mjs`): runtime v1
+builds read the root `catalog.json` (sequences up to 10), runtime v2 builds (hook ABI v5)
+`v2/catalog.json` and `v2/catalog.sig.json` (from 11), which the lock names and
+`check-runtime-lock.mjs` requires. Publishing a catalog for the new runtime therefore never
+changes what the deployed site reads, and builds of the previous runtime keep working until
+the new one is deployed.
 
 ## Release evidence
 
@@ -571,8 +598,8 @@ Runtime evidence (`runtime-evidence.json`, `runtime-evidence.schema.json` schema
 |---|---|---|---|
 | `cVmGoldens` | every units, replay and read golden (block sites, unit ablation incl. `mixed`, unit probes, attention patterns, token anatomy, unit activity, unit/lens/S reads, unit artifacts, neuron push) within its file's tolerance, plus the structured, geometry and readout goldens, on the C TVM VM | `browser-runtime/record-cvm-goldens.py` (runs `verify-mlc-hook.py` twice with the exact toolchain) | the four fixture libraries, one record |
 | `webGpuGoldens` | the same goldens through the vendored bridge on WebGPU (the record's bridge digest must be the lock archive's `package/lib/index.js`, so run it with `--webllm node_modules/@drowse/web-llm/lib/index.js`), and each library's schema-4 descriptor attested by the adapter (`attestCompiledStructuredHookProfile`, unit sites 1); each fixture library and model is recorded by digest | `webui/scripts/browser-units-goldens.mjs --report`, one argument set per library | the four fixture libraries, one record |
-| `productionLibrary` | the production library loaded by the physical harness: its descriptor attested at load against the lock's profile and block spec (a mismatch refuses the load), then every check of its profile, including `units` (an ablation that moves the next-token distribution, finite taps, one anatomy replay, one static read, the S readout) on `standard-v4` or `unit_refusal` (each unit call answers the lock's `unitRefusal`, no unit function exported) on `standard-v4-residual`, at an advertised context | `webui/scripts/browser-full-runtime.mjs` | each lock model (`libraries.<id>.productionLibrary`) |
-| `productionQ4Parity` | q4 against the source weights (B1 §4.3 item 2): hook-disabled greedy parity, probe and capture error ≤ 1%, steering direction cosine ≥ 0.99; on a `standard-v4` library also `act`, `z` and `mid` ≤ 1% per layer, neuron-write static reads ≤ 1e-3 relative with top-8 overlap ≥ 7/8, and top-32 unit activity Jaccard ≥ 0.9 (null on a residual library) | `capture-hosted-residuals.mjs` (capture schema 5) then `validate_mlc_q4_parity.py` | each q4f32_1 model (`libraries.<id>.productionQ4Parity`) |
+| `productionLibrary` | the production library loaded by the physical harness: its descriptor attested at load against the lock's profile and block spec (a mismatch refuses the load), then every check of its profile, including `units` (an ablation that moves the next-token distribution, finite taps, one anatomy replay, one static read, the S readout) on `standard-v4` or `unit_refusal` (each unit call answers the lock's `unitRefusal`, no unit function exported) on `standard-v4-residual`, at an advertised context | `webui/scripts/browser-full-runtime.mjs` | optional, per lock model (`libraries.<id>.productionLibrary`) |
+| `productionQ4Parity` | q4 against the source weights (B1 §4.3 item 2): hook-disabled greedy parity, probe and capture error ≤ 1%, steering direction cosine ≥ 0.99; on a `standard-v4` library also `act`, `z` and `mid` ≤ 1% per layer, neuron-write static reads ≤ 1e-3 relative with top-8 overlap ≥ 7/8, and top-32 unit activity Jaccard ≥ 0.9 (null on a residual library) | `capture-hosted-residuals.mjs` (capture schema 5) then `validate_mlc_q4_parity.py` | optional, per q4f32_1 model (`libraries.<id>.productionQ4Parity`) |
 
 Offline, before any record: `assemble-hosted-model.mjs` requires each library's VM function
 surface (present and, for a residual library, absent) from the overlay's own lists, and
@@ -613,14 +640,19 @@ profiles physically exercised for each model.
    units packs and any SAE pack (the publisher runs the release policy); fill each `convertedRevision` (`--converted-revision`;
    a later recompile clears it) and adopt the candidate (`--adopt`), which writes
    `runtime-lock.json` as `verified` and its identity fixture. Commit it.
-4. At that commit, record every runtime record: `cVmGoldens` and `webGpuGoldens` (re-run
-   through their producers), each library's `productionLibrary` and, for q4,
-   `productionQ4Parity`, all against the repository lock (the producers refuse an override-lock
-   report or capture), then the ledger. The attestation verifier refuses a ledger whose records
-   name different revisions, so a record made before the adopting commit cannot be reused; any
-   later commit, a submodule bump included, means recording them all again.
-5. Generate and sign the catalog (sequence 11 for this release), fill the exact Hugging Face
-   redirect origins, set `distribution-lock.json`'s minimum sequence and status to `verified`.
+4. At that commit, record the runtime gates: `cVmGoldens` and `webGpuGoldens` (re-run through
+   their producers, against the repository lock), then the ledger. A release does not run the
+   physical harness or the q4 capture on every library: the compile's CPU verification
+   (`verify-production-library.py`) and the fixture goldens stand for the libraries, and a
+   problem found in use comes back as an issue. `productionLibrary` and `productionQ4Parity`
+   stay as optional records for diagnosing one library, made the same way when they are made.
+   The attestation verifier refuses a ledger whose records name different revisions, so a record
+   made before the adopting commit cannot be reused; any later commit, a submodule bump
+   included, means recording them again.
+5. Generate and sign the catalog (sequence 11 for this release) and publish it at the lock's
+   `v2/` path (`publish:hosted:catalog`, which first verifies the root catalog the live site
+   reads, sequence 10), fill the exact Hugging Face redirect origins, set
+   `distribution-lock.json`'s minimum sequence and status to `verified`.
 6. Run the release checker and distribution preflight:
 
    ```bash
@@ -643,8 +675,15 @@ signed identity claim that does not match those artifact digests is rejected.
 
 The catalog signing key is never stored in this repository. The signing tool
 accepts an Ed25519 PKCS#8 PEM key path and signs the exact `catalog.json` bytes.
-The publisher verifies the currently published catalog against the lock's keys
-before it advances the sequence. A rotation that cannot sign with the outgoing
+The publisher writes to the directory the lock's URLs name and verifies the catalog published
+there against the lock's keys before it advances the sequence. The first catalog at a new
+directory has nothing there to advance, so the publisher verifies the previous directory's
+catalog instead (the one deployed builds still read) and requires a greater sequence: catalog 11
+at `v2/` must verify the root's catalog 10 and exceed it. A new directory whose predecessor has
+nothing published is refused; only the root may start without one. `./deploy.sh`
+checks the signed catalog at the lock's URL before every upload (`preflight-hosted-distribution.mjs
+--catalog-only`; `--full` runs the whole preflight), so a build never ships pointing at an
+unpublished path. A rotation that cannot sign with the outgoing
 key replaces both keys in the lock and passes the lock the published catalog was
 signed under: `--previous-lock OLD_DISTRIBUTION_LOCK`. Builds with the old lock
 reject the new catalog, so deploy the new build right after publishing.

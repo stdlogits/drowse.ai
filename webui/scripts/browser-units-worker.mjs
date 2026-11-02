@@ -4,7 +4,7 @@
 // (check, catalog, download, download_pack, load, probes, live state, generate, the units members).
 //
 //   node scripts/browser-units-worker.mjs --fixtures DIR --arch qwen3|gemma3 \
-//     --quantization q0f32|q4f32_1 --work DIR [--port N] [--headed] [--python python3]
+//     --quantization q0f32|q4f32_1 --work DIR [--chat | --goldens] [--port N] [--headed] [--python python3]
 //
 // DIR is what browser-core-build.mjs takes (support/units-webgpu-stage.mjs). The harness:
 // 1. stages the library as a hosted base model and has drowse build its packs bound to that
@@ -20,8 +20,31 @@
 //    ablation at @response and an S-lens-gated push with an `slens/` probe attached (tokens and the
 //    aggregate's units and lens channels); generated nodes' token anatomy and unit activity
 //    (unsteered, steered, S-lens-gated with slens/ attached, whose replay steps its gate, and
-//    S-lens-gated with nothing attached, whose gate never fires); and unitRead, unitTop and
-//    unitFind. Tolerances are each golden's.
+//    S-lens-gated with nothing attached, whose gate never fires; J-lens- and geometry-gated with
+//    their probes attached: drowse loads this run's browser-fitted manifold, and each gate's
+//    threshold is set from drowse's own per-step gate readings so it opens at the anatomy's
+//    forward and shuts elsewhere); and unitRead, unitTop and unitFind. Tolerances are each golden's.
+//
+// `--chat` stages the library as the instruct model drowse's fixture chat template makes
+// (support/units-webgpu-stage.mjs `chatConversation`) and replaces the raw cases with chat nodes,
+// generated through the hosted loom and replayed through renderPromptTokenIds: the goldens'
+// prompt (system and user) unsteered and steered, the user turn alone, a second assistant turn and
+// a user-seat turn under the first (unsteered and steered); each node's tokens, token anatomy and
+// unit activity against drowse's on the same model and template (the reference's `chat` mode).
+//
+// `--goldens` (chat staging) reads at the goldens' lens band (0.2/0.8, the worker's `lensBand`, as
+// drowse's fixture sets `session.lens.band`) and compares with five golden files directly: the
+// goldens' chat node (system and user, six distinct greedy tokens: presence penalty 1e4) unsteered,
+// steered and segmented (`!neuron/L1n5@prompt`) and the raw first turn, generated through the
+// hosted loom; token-anatomy's local:r cases, unit-activity's generated, sink, sink-population and
+// segmented cases, every unit-reads read, top and find, and unit-ablation's cases as raw
+// generations of the short prompt (each forward's greedy token against the golden logits' argmax,
+// and each forward's top eight log-probabilities against their log-softmax, read from a
+// temperature-1 run that follows the greedy path: a token row's logprob is the sampler's, native's
+// too, one-hot at temperature 0).
+// Not reachable through the worker: token-anatomy no-r-mid (a second R source), unit-activity
+// authored (the browser measures no prompts) and its hand-built forwards, neuron-push's lowering
+// and unit-ablation mixed (the fixture session's registered direction).
 import { execFile } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -40,12 +63,17 @@ const exec = promisify(execFile);
 const options = parseArguments(process.argv.slice(2));
 const webui = fileURLToPath(new URL("..", import.meta.url));
 const repository = resolve(webui, "..");
-const stage = await stageUnitsFixture(options);
-const { artifacts: modelFiles, blockSpec, contextTokens, runtimeIdentity, modelDirectory } = stage;
-const modelId = `units-${options.arch}`;
+const stage = await stageUnitsFixture({ ...options, chat: options.chat || options.goldens });
+if (options.goldens) options.chat = true;
+const modelType = options.chat ? "chat" : "base";
+const { artifacts: modelFiles, blockSpec, contextTokens, prefillChunkSize, runtimeIdentity, modelDirectory } = stage;
+const modelId = `units-${options.arch}${options.chat ? "-chat" : ""}`;
 const variantId = `${modelId}-${options.quantization}`;
 const revision = "a".repeat(40);
 const goldenFile = async (name) => JSON.parse(await readFile(resolve(goldensDirectory, `${name}-${options.arch}-v1.json`), "utf8"));
+
+/** The unit-activity golden cases the worker reaches (generated nodes and the raw first turn). */
+const GOLDEN_ACTIVITY = ["generated", "sink", "sink-population", "segmented"];
 
 const PREVIEW_DEFINES = {
   __DROWSE_HOSTED_RELEASE__: false,
@@ -68,7 +96,7 @@ const fingerprint = catalogModule.runtimeIdentitySha256(runtimeIdentity);
 const binding = catalogModule.contextBindingSha256(fingerprint, contextTokens);
 
 // ------------------------------------------------- 1. drowse's packs and references ---
-const nativeDirectory = resolve(options.work, `${stage.fixture}-native`);
+const nativeDirectory = resolve(options.work, `${stage.fixture}${options.chat ? "-chat" : ""}-native`);
 await rm(nativeDirectory, { recursive: true, force: true });
 await mkdir(nativeDirectory, { recursive: true });
 await writeFile(resolve(nativeDirectory, "runtime.json"), JSON.stringify({
@@ -77,7 +105,7 @@ await writeFile(resolve(nativeDirectory, "runtime.json"), JSON.stringify({
 console.log(`drowse: packs and references for ${stage.fixture} (${fingerprint.slice(0, 12)})`);
 await exec(options.python, [
   resolve(webui, "scripts/support/units-worker-reference.py"), options.arch, nativeDirectory,
-  resolve(nativeDirectory, "runtime.json"),
+  resolve(nativeDirectory, "runtime.json"), ...(options.chat ? ["chat"] : []),
 ], {
   maxBuffer: 1 << 26,
   env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONPATH: resolve(repository, "drowse") },
@@ -184,17 +212,18 @@ try {
       instance.postMessage(payload);
     });
   }, {
-    type: "run", modelId, modelType: "base", artifacts: modelFiles,
+    type: "run", modelId, modelType, artifacts: modelFiles,
     baselinePrompts: ["Hi.", "Go on.", "Say it."], contexts: [contextTokens], rows: [],
     nativeNeutralRows: true, runtimeIdentity, quantization: options.quantization, requiredFeatures: [],
     structuredHookProfile: "standard-v4", thinkingProfile: null, blockSpec, unitRefusal: null,
+    prefillChunkSize,
     artifactProducer: { drowseVersion: "0.0.0-fixture", producerVersion: "browser-units-worker" },
     manifolds,
   });
   check("core concepts and whitener through the release worker", core.type === "done", core.message ?? "");
   if (core.type !== "done") throw new Error("the core build failed");
   const [coreContext] = core.result.contexts;
-  const coreDirectory = resolve(options.work, `${stage.fixture}-core`);
+  const coreDirectory = resolve(options.work, `${stage.fixture}${options.chat ? "-chat" : ""}-core`);
   await rm(coreDirectory, { recursive: true, force: true });
   await mkdir(resolve(coreDirectory, String(contextTokens)), { recursive: true });
   await mkdir(resolve(coreDirectory, "manifolds", String(contextTokens)), { recursive: true });
@@ -220,6 +249,20 @@ try {
   }));
   await writeFile(resolve(coreDirectory, coreStatistics.tensor_file),
     await readFile(resolve(packsDirectory, "core", coreStatistics.tensor_file)));
+
+  // Gated replays: drowse gates on the very manifold this core build fitted (its own loader on
+  // the archive's fitted pair) and on the R pack's lens; its nodes join the reference's.
+  if (!options.chat) {
+    console.log("drowse: gated references on the browser's fitted manifold");
+    await exec(options.python, [
+      resolve(webui, "scripts/support/units-worker-reference.py"), options.arch, nativeDirectory,
+      resolve(nativeDirectory, "runtime.json"), "gated",
+      resolve(coreDirectory, "manifolds", String(contextTokens), "local-calm.alert.drowse"),
+    ], { maxBuffer: 1 << 26, env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONPATH: resolve(repository, "drowse") } });
+    const gated = JSON.parse(await readFile(resolve(nativeDirectory, "gated-reference.json"), "utf8"));
+    Object.assign(reference.nodes, gated.nodes);
+    reference.declared_ties.push(...gated.declared_ties);
+  }
 
   // ------------------------------------------------------------- the catalog and lock ---
   const catalogFile = (prefix, file, role) => {
@@ -264,7 +307,7 @@ try {
       schemaVersion: 1, sequence: 1, issuedAt: "2026-01-01T00:00:00.000Z", expiresAt: "2099-01-01T00:00:00.000Z",
       runtimeAbi: runtimeIdentity.runtimeAbi,
       models: [{
-        id: modelId, modelType: "base", displayName: `Units tiny ${options.arch}`, description: "B4's tiny v5 fixture",
+        id: modelId, modelType, displayName: `Units tiny ${options.arch}`, description: "B4's tiny v5 fixture",
         sourceUrl: "https://huggingface.co/drowse/units-tiny", license: "AGPL-3.0-or-later", languages: ["en"],
         variants: [variant],
       }],
@@ -283,26 +326,52 @@ try {
       limits: { manifoldFitMaxIntrinsicDim: 4 },
     },
     runtimeLockModels: [{
-      modelType: "base", runtimeIdentity, structuredHookProfile: "standard-v4", thinkingProfile: null,
+      modelType, runtimeIdentity, structuredHookProfile: "standard-v4", thinkingProfile: null,
       convertedRepository: "drowse/units-tiny", convertedRevision: revision, contextProfiles: [contextTokens],
-      blockSpec, unitRefusal: null,
+      prefillChunkSize, blockSpec, unitRefusal: null,
     }],
   };
 
+  if (options.goldens) {
+    const band = JSON.parse(await readFile(resolve(goldensDirectory, "units-tiny-models-v1.json"), "utf8")).band;
+    harnessConfig.lensBand = { lo: band[0], hi: band[1] };
+  }
+
   // ------------------------------------------------- 3. the hosted runtime worker ---
   const unitProbes = await goldenFile("unit-probes");
+  const goldens = options.goldens ? {
+    anatomy: await goldenFile("token-anatomy"), activity: await goldenFile("unit-activity"),
+    reads: await goldenFile("unit-reads"), ablation: await goldenFile("unit-ablation"),
+  } : null;
   const plan = {
-    variantId, contextTokens, packIds: packs.slice(1).map((entry) => entry.id),
+    chat: options.chat, variantId, contextTokens, packIds: packs.slice(1).map((entry) => entry.id),
     text: reference.text, probes: reference.settings.probes, unitProbes: unitProbes.probes,
     probeCases: unitProbes.cases.map((entry) => ({ name: entry.name, steering: entry.steering })),
     generations: Object.entries(reference.generations).map(([name, entry]) => ({ name, steering: entry.steering })),
-    nodes: Object.entries(reference.nodes).map(([name, entry]) => ({
-      name, steering: entry.steering, probes: entry.probes, anatomyKnobs: entry.anatomy.knobs, activityKnobs: entry.activity?.knobs ?? null,
+    goldens: goldens === null ? null : {
+      ...reference.golden_inputs,
+      anatomyIndex: goldens.anatomy.raw_index,
+      anatomy: goldens.anatomy.cases.filter((entry) => entry.lens === "local:r")
+        .map((entry) => ({ name: entry.name, steering: entry.steering, knobs: entry.knobs })),
+      activity: goldens.activity.cases.filter((entry) => GOLDEN_ACTIVITY.includes(entry.name))
+        .map((entry) => ({ name: entry.name, arguments: entry.arguments })),
+      reads: goldens.reads.reads.map((entry) => ({ unit: entry.unit, k: entry.k, hideHubs: entry.hide_hubs })),
+      top: goldens.reads.top.map((entry) => ({ token: entry.token, by: entry.by, k: entry.k })),
+      find: goldens.reads.find.map((entry) => (entry.target === "vector"
+        ? { vector: Array.from(decode(entry.vector)), layer: entry.layer, k: entry.k }
+        : { selector: entry.target, k: entry.k })),
+      ablation: goldens.ablation.cases.filter((entry) => entry.name !== "mixed")
+        .map((entry) => ({ name: entry.name, steering: entry.steering, steps: entry.decode_steps })),
+    },
+    nodes: options.goldens ? [] : Object.entries(reference.nodes).map(([name, entry]) => ({
+      name, steering: entry.steering, probes: entry.probes, input: entry.input, system: entry.system,
+      parent: entry.parent, seat: entry.seat, raw: entry.raw,
+      anatomyKnobs: entry.anatomy.knobs, activityKnobs: entry.activity?.knobs ?? null,
     })),
     settings: reference.settings,
-    reads: reference.reads.map((entry) => ({ unit: entry.unit, k: entry.read.knobs.k, hideHubs: entry.hide_hubs })),
-    top: reference.top.map((entry) => ({ token: entry.token, by: entry.by, k: entry.result.knobs.k })),
-    find: reference.find.map((entry) => ({ vector: Array.from(decode(entry.vector)), layer: entry.layer, k: entry.result.knobs.k })),
+    reads: options.goldens ? [] : reference.reads.map((entry) => ({ unit: entry.unit, k: entry.read.knobs.k, hideHubs: entry.hide_hubs })),
+    top: options.goldens ? [] : reference.top.map((entry) => ({ token: entry.token, by: entry.by, k: entry.result.knobs.k })),
+    find: options.goldens ? [] : reference.find.map((entry) => ({ vector: Array.from(decode(entry.vector)), layer: entry.layer, k: entry.result.knobs.k })),
   };
   const run = await page.evaluate(driveWorker, plan);
   if (run.error) {
@@ -310,9 +379,12 @@ try {
     throw new Error(run.error);
   }
   check("worker installs and loads the v5 library with its packs", true, run.loaded);
-  check("a plain greedy generation through the worker", JSON.stringify(run.plain) === JSON.stringify(unitProbes.cases[0].tokens.slice(0, 2)),
-    `${JSON.stringify(run.plain)} vs ${JSON.stringify(unitProbes.cases[0].tokens.slice(0, 2))}`);
+  if (!options.chat) {
+    check("a plain greedy generation through the worker", JSON.stringify(run.plain) === JSON.stringify(unitProbes.cases[0].tokens.slice(0, 2)),
+      `${JSON.stringify(run.plain)} vs ${JSON.stringify(unitProbes.cases[0].tokens.slice(0, 2))}`);
+  }
   compareRun(run, unitProbes);
+  if (goldens !== null) compareGoldens(run.goldens, goldens);
 } finally {
   await browser.close();
   await new Promise((ok) => http.close(ok));
@@ -332,8 +404,9 @@ function compareRun(run, unitProbes) {
     if (/probability$|\.p$/.test(path)) return tol.probability_atol + 2e-6;
     return tol.z_atol + 2e-6;
   };
-  const record = (label, actual, expected, options = {}) => {
+  const record = (label, value, expected, options = {}) => {
     const deltas = [];
+    const actual = withoutUnderflow(value);
     const problems = compareRecord(actual, expected, {
       numberTol: (path, e) => {
         return numberTol(path, e);
@@ -345,7 +418,7 @@ function compareRun(run, unitProbes) {
     return deltas;
   };
   // unit-probes: tokens, every forward's units channel, gate scalars through the gate case, aggregate.
-  for (const [index, golden] of unitProbes.cases.entries()) {
+  for (const [index, golden] of run.probeCases.length === 0 ? [] : unitProbes.cases.entries()) {
     const ours = run.probeCases[index];
     // Frames by raw index: a piece whose text completes in a later token (a split UTF-8 byte)
     // rides that token's frame, so a forward can have no frame of its own.
@@ -379,15 +452,20 @@ function compareRun(run, unitProbes) {
   for (const ours of run.nodes) {
     const native = reference.nodes[ours.name];
     check(`node ${ours.name}: tokens`, JSON.stringify(ours.tokens) === JSON.stringify(native.tokens),
-      `${JSON.stringify(ours.tokens)} vs ${JSON.stringify(native.tokens)}`);
+      `${JSON.stringify(ours.tokens)} vs ${JSON.stringify(native.tokens)} (frames ${JSON.stringify(ours.frameTypes)})`);
     record(`node ${ours.name}: token anatomy`, withoutSources(ours.anatomy), withoutSources(native.anatomy.result),
       { root: `nodes.${ours.name}.anatomy.result`, ties: reference.declared_ties });
     if (native.activity) {
       // Node ids are each tree's own; the population is fp16, matched within one ulp.
       const population = populationProblems(ours.activity?.population ?? null, native.activity.result.population);
       check(`node ${ours.name}: unit activity population (fp16, one ulp)`, population.length === 0, population.slice(0, 3).join("; "));
-      record(`node ${ours.name}: unit activity`, { ...ours.activity, node_id: null, population: null },
-        { ...native.activity.result, node_id: null, population: null },
+      // A unit whose peak row has no margin (drowse's `_check_activity`) is compared by value.
+      const tied = new Set(native.activity.tied_peak_rows ?? []);
+      const rowless = (result) => ({
+        ...result, node_id: null, population: null,
+        top: (result?.top ?? []).map((entry) => (tied.has(entry.unit) ? { ...entry, raw_index: null } : entry)),
+      });
+      record(`node ${ours.name}: unit activity`, rowless(ours.activity), rowless(native.activity.result),
         { root: `nodes.${ours.name}.activity.result`, ties: reference.declared_ties });
     }
   }
@@ -397,6 +475,93 @@ function compareRun(run, unitProbes) {
     reference.top[i].result.result, { root: `top[${i}].result`, ties: reference.declared_ties }));
   run.find.forEach((ours, i) => record(`unitFind vector at L${reference.find[i].layer}`, ours,
     reference.find[i].result.result, { root: `find[${i}].result`, ties: reference.declared_ties }));
+}
+
+/** The worker's answers at the goldens' band against the golden files themselves. */
+function compareGoldens(ours, goldens) {
+  const tol = goldens.anatomy.tolerance.library;
+  const numberTol = (path) => (/probability$|\.p$/.test(path) ? tol.probability_atol : tol.z_atol) + 2e-6;
+  const record = (label, value, expected, options) => {
+    const actual = withoutUnderflow(value);
+    const want = withoutUnderflow(expected);
+    const problems = compareRecord(actual, want, { numberTol, ...options });
+    measureWorst(label, actual, want);
+    check(label, problems.length === 0, problems.slice(0, 4).join("; "));
+  };
+  const caseOf = (name) => goldens.activity.cases.find((entry) => entry.name === name);
+  for (const name of ["generated", "segmented", "sink"]) {
+    const want = caseOf(name).result.tokens.map((entry) => entry.token_id);
+    check(`golden node ${name}: tokens`, JSON.stringify(ours.tokens[name]) === JSON.stringify(want),
+      `${JSON.stringify(ours.tokens[name])} vs ${JSON.stringify(want)}`);
+  }
+  goldens.anatomy.cases.filter((entry) => entry.lens === "local:r").forEach((entry, i) => {
+    const index = goldens.anatomy.cases.indexOf(entry);
+    record(`golden token-anatomy ${entry.name}`, withoutSources(ours.anatomy[i]), withoutSources(entry.envelope),
+      { root: `cases[${index}].envelope`, ties: goldens.anatomy.declared_ties });
+  });
+  GOLDEN_ACTIVITY.forEach((name, i) => {
+    const entry = caseOf(name);
+    const index = goldens.activity.cases.indexOf(entry);
+    const tied = new Set(entry.tied_peak_rows ?? []);
+    const rowless = (result) => ({
+      ...result, population: null,
+      top: (result?.top ?? []).map((item) => (tied.has(item.unit) ? { ...item, raw_index: null } : item)),
+    });
+    const { node_id: _nodeId, ...mine } = ours.activity[i] ?? {};
+    const population = populationProblems(mine.population ?? null, entry.result.population ?? null);
+    check(`golden unit-activity ${name}: population (fp16, one ulp)`, population.length === 0, population.slice(0, 3).join("; "));
+    record(`golden unit-activity ${name}`, rowless(mine), rowless(entry.result),
+      { root: `cases[${index}].result`, ties: goldens.activity.declared_ties });
+  });
+  const reads = goldens.reads;
+  reads.reads.forEach((entry, i) => record(`golden unit-reads read ${entry.unit}`, ours.reads[i], entry.read,
+    { root: `reads[${i}].read`, ties: reads.declared_ties }));
+  reads.top.forEach((entry, i) => record(`golden unit-reads top ${entry.token} by ${entry.by}`, ours.top[i], entry.result,
+    { root: `top[${i}].result`, ties: reads.declared_ties }));
+  reads.find.forEach((entry, i) => record(`golden unit-reads find ${entry.target}`, ours.find[i], entry.result,
+    { root: `find[${i}].result`, ties: reads.declared_ties }));
+  // unit-ablation: every forward's greedy token is the golden logits' argmax, and every forward's
+  // top eight log-probabilities at temperature 1 (on the greedy path) are the golden logits'
+  // log-softmax (the library tolerance on fp32 logits), so a decode forward's numbers count too: the
+  // gated case differs from unsteered only in its last forward's logits.
+  goldens.ablation.cases.filter((entry) => entry.name !== "mixed").forEach((entry, i) => {
+    const mine = ours.ablation[i] ?? { tokens: null, forwards: null, tried: 0, last: null };
+    const problems = [];
+    const logSoftmax = (encoded) => {
+      const logits = Array.from(decode(encoded));
+      const max = Math.max(...logits);
+      const lse = max + Math.log(logits.reduce((sum, value) => sum + Math.exp(value - max), 0));
+      return logits.map((value) => value - lse);
+    };
+    const tolerated = (delta, value) => delta <= tol.atol + tol.rtol * Math.abs(value);
+    let worstLogprob = 0;
+    entry.forwards.forEach((forward, step) => {
+      const logp = logSoftmax(forward.logits);
+      const best = logp.reduce((at, value, index) => (value > logp[at] ? index : at), 0);
+      if (mine.tokens?.[step] !== best) problems.push(`forward ${step}: token ${mine.tokens?.[step]} != ${best}`);
+      const read = mine.forwards?.[step];
+      if (read === undefined) return;
+      const want = logp.map((value, id) => [id, value]).sort((a, b) => b[1] - a[1]).slice(0, 8);
+      want.forEach(([id, value], rank) => {
+        const alt = (read.alts ?? []).find((item) => item.id === id);
+        if (alt === undefined) return problems.push(`forward ${step}: token ${id} (rank ${rank}) missing from the top alternatives`);
+        const delta = Math.abs(alt.logprob - value);
+        worstLogprob = Math.max(worstLogprob, delta);
+        if (!tolerated(delta, value)) problems.push(`forward ${step}: token ${id} logprob off by ${delta}`);
+      });
+      const chosen = Math.abs(read.logprob - logp[read.token]);
+      worstLogprob = Math.max(worstLogprob, chosen);
+      if (!tolerated(chosen, logp[read.token])) problems.push(`forward ${step}: sampled token logprob off by ${chosen}`);
+    });
+    if (mine.forwards === null) {
+      problems.push(`no temperature-1 run in ${mine.tried} seeds followed the greedy path with a frame per token, so no forward's log-probabilities were read (last run: ${mine.last})`);
+    } else {
+      worst.set("golden unit-ablation logprob", Math.max(worst.get("golden unit-ablation logprob") ?? 0, worstLogprob));
+    }
+    const at = mine.forwards === null ? "" : ` (read on seed ${mine.tried})`;
+    check(`golden unit-ablation ${entry.name} (${entry.steering}): ${entry.forwards.length} forwards, argmax and top-8 log-probabilities each${at}`,
+      problems.length === 0, problems.slice(0, 4).join("; "));
+  });
 }
 
 /** An activity population's fp16 rows (base64, little-endian) against drowse's, one ulp apart at
@@ -424,6 +589,18 @@ function populationProblems(actual, expected) {
     }
   });
   return problems;
+}
+
+/** `value` without probability entries that underflowed to exactly 0 (the reference's
+ *  `without_underflow`): which zero-probability tokens fill a list is arbitrary. */
+function withoutUnderflow(value) {
+  if (Array.isArray(value)) return value.map(withoutUnderflow);
+  if (value === null || typeof value !== "object") return value;
+  const probability = value.unit === "probability";
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key,
+    probability && Array.isArray(child)
+      ? child.filter((item) => !(item && typeof item === "object" && item.value === 0))
+      : withoutUnderflow(child)]));
 }
 
 /** The lens sources' labels are each runtime's own (native `local:r`, a pack id here). */
@@ -510,6 +687,78 @@ async function driveWorker(plan) {
     return { frames, tokens, done };
   };
   const greedy = (steps) => ({ temperature: 0, max_tokens: steps, seed: 0 });
+  const recordedTokens = async (nodeId) =>
+    (await service("tree", "get")).nodes.find((item) => item.id === nodeId)?.raw_token_ids ?? null;
+  // The goldens' nodes through the hosted loom, read at the goldens' band (the worker's lensBand).
+  const driveGoldens = async (g, root) => {
+    // drowse's goldens decode six distinct greedy tokens (presence penalty 1e4).
+    const distinct = { temperature: 0, max_tokens: g.decode_steps, seed: 0, presence_penalty: 1e4 };
+    const chatNode = async (steering) => {
+      const result = await generate({
+        input: g.user, raw: false, stateless: false, parent_node_id: root, steering, sampling: distinct,
+        system_prompt: g.system, generate_seat: "assistant",
+      });
+      return result.done?.node_id ?? result.tokens.at(-1)?.node_id;
+    };
+    const nodes = {
+      generated: await chatNode(null),
+      steered: await chatNode(g.anatomy_steering),
+      segmented: await chatNode(g.segmented_steering),
+    };
+    const first = await generate({
+      input: g.raw_first, raw: true, stateless: false, parent_node_id: root, steering: null, sampling: greedy(3),
+    });
+    nodes.sink = first.done?.node_id ?? first.tokens.at(-1)?.node_id;
+    nodes["sink-population"] = nodes.sink;
+    const result = { tokens: {}, anatomy: [], activity: [], reads: [], top: [], find: [], ablation: [] };
+    for (const [name, nodeId] of Object.entries(nodes)) result.tokens[name] = await recordedTokens(nodeId);
+    for (const entry of g.anatomy) {
+      result.anatomy.push(await service("instruments", "tokenAnatomy", entry.steering ? nodes.steered : nodes.generated,
+        g.anatomyIndex, { ...entry.knobs, raw: false }));
+    }
+    for (const entry of g.activity) {
+      const a = entry.arguments;
+      result.activity.push(await service("instruments", "unitActivity", nodes[entry.name], {
+        top: a.top, units: a.units, rawIndex: a.raw_index, layers: a.layers, raw: a.raw,
+      }));
+    }
+    for (const entry of g.reads) result.reads.push(await service("instruments", "unitRead", entry.unit, { k: entry.k, hideHubs: entry.hideHubs }));
+    for (const entry of g.top) result.top.push(await service("instruments", "unitTop", entry.token, { by: entry.by, k: entry.k }));
+    for (const entry of g.find) result.find.push(await service("instruments", "unitFind", entry));
+    for (const entry of g.ablation) {
+      // The greedy decode under the case's program (its node's record). A token row's logprobs are
+      // the sampler's (native's too), so every forward's distribution is read at temperature 1: a
+      // seed whose sampled run follows the greedy path (each forward but the last fed the greedy
+      // token) with every token in a frame of its own (a lone UTF-8 byte streams none) gives each
+      // forward's top eight, the model's log-softmax under the program.
+      const run = await generate({
+        input: g.short_text, raw: true, stateless: false, parent_node_id: root, steering: entry.steering,
+        sampling: greedy(entry.steps + 1),
+      });
+      const tokens = await recordedTokens(run.done?.node_id ?? run.tokens.at(-1)?.node_id);
+      let forwards = null;
+      let tried = 0;
+      let last = null;
+      for (let k = 0; forwards === null && tokens !== null && k < 32; k += 1) {
+        tried += 1;
+        // The bridge draws from TVM's LCG seeded with the request's seed (multiplier 48271, no
+        // increment), so a small seed's first draw is about 2.2e-5 × seed: the most probable
+        // token. Seeds a million apart spread the first draw over the distribution.
+        const seed = 1 + k * 1000003;
+        const sampled = await generate({
+          input: g.short_text, raw: true, stateless: true, steering: entry.steering,
+          sampling: { temperature: 1, top_p: 1, top_k: 0, max_tokens: entry.steps + 1, seed, return_top_k: 8 },
+        });
+        const frames = sampled.tokens;
+        last = { done: sampled.done?.result ?? null, tokens: frames.map((frame) => [frame.raw_index, frame.token_id]) };
+        const onPath = frames.length === tokens.length && frames.every((frame, step) =>
+          frame.raw_index === step && (step === tokens.length - 1 || frame.token_id === tokens[step]));
+        if (onPath) forwards = frames.map((frame) => ({ token: frame.token_id, logprob: frame.logprob, alts: frame.top_alts }));
+      }
+      result.ablation.push({ tokens, forwards, tried, last: forwards === null ? JSON.stringify(last).slice(0, 400) : null });
+    }
+    return result;
+  };
   try {
     await readyPromise;
     await send("check", undefined);
@@ -520,11 +769,13 @@ async function driveWorker(plan) {
     await service("instruments", "setLive", "units", { enabled: true });
     const out = { loaded: `${plan.packIds.length} optional packs`, probeCases: [], generations: [], nodes: [] };
     // A plain greedy generation first: no program, no probes.
-    const plain = await generate({ input: plan.text, raw: true, stateless: true, steering: null, sampling: greedy(2) });
-    out.plain = plain.tokens.map((frame) => frame.token_id);
+    if (!plan.chat) {
+      const plain = await generate({ input: plan.text, raw: true, stateless: true, steering: null, sampling: greedy(2) });
+      out.plain = plain.tokens.map((frame) => frame.token_id);
+    }
 
-    for (const unit of plan.unitProbes) await service("probes", "attach", { selector: unit });
-    for (const entry of plan.probeCases) {
+    for (const unit of plan.chat ? [] : plan.unitProbes) await service("probes", "attach", { selector: unit });
+    for (const entry of plan.chat ? [] : plan.probeCases) {
       const result = await generate({ input: plan.text, raw: true, stateless: true, steering: entry.steering, sampling: greedy(5) });
       out.probeCases.push({
         name: entry.name,
@@ -533,7 +784,7 @@ async function driveWorker(plan) {
         aggregate: result.done?.result?.measurements ?? null,
       });
     }
-    await service("probes", "attach", { selector: `slens/${plan.settings.slensWord}` });
+    if (!plan.chat) await service("probes", "attach", { selector: `slens/${plan.settings.slensWord}` });
     for (const entry of plan.generations) {
       const result = await generate({ input: plan.text, raw: true, stateless: true, steering: entry.steering, sampling: greedy(plan.settings.steps) });
       out.generations.push({
@@ -543,29 +794,42 @@ async function driveWorker(plan) {
         aggregate: result.done?.result?.measurements ?? null,
       });
     }
-    for (const name of [...plan.unitProbes, `slens/${plan.settings.slensWord}`]) await service("probes", "detach", name);
+    if (!plan.chat) {
+      for (const name of [...plan.unitProbes, `slens/${plan.settings.slensWord}`]) await service("probes", "detach", name);
+    }
 
     const root = (await service("tree", "get")).root_id;
+    const nodeIds = new Map();
     for (const entry of plan.nodes) {
       // The node's probes stay attached through its generation and its replays, as drowse's.
       for (const selector of entry.probes) await service("probes", "attach", { selector });
-      // Each node from the root, as drowse's reference navigates there first.
+      // From the root (or the named parent node), as drowse's reference generates it.
       const result = await generate({
-        input: plan.text, raw: true, stateless: false, parent_node_id: root, steering: entry.steering,
+        input: entry.input, raw: entry.raw, stateless: false,
+        parent_node_id: entry.parent === null ? root : nodeIds.get(entry.parent), steering: entry.steering,
         sampling: greedy(plan.settings.decodeSteps),
+        ...(entry.raw ? {} : { system_prompt: entry.system, generate_seat: entry.seat }),
       });
       const nodeId = result.done?.node_id ?? result.tokens.at(-1)?.node_id;
-      const node = { name: entry.name, nodeId, tokens: result.tokens.map((frame) => frame.token_id) };
-      node.anatomy = await service("instruments", "tokenAnatomy", nodeId, plan.settings.anatomyIndex, entry.anatomyKnobs);
+      nodeIds.set(entry.name, nodeId);
+      // The node's raw token record (what its replays feed): a piece whose UTF-8 never completes
+      // (a lone lead byte, repeated) streams no token frame of its own.
+      const recorded = (await service("tree", "get")).nodes.find((item) => item.id === nodeId);
+      const node = { name: entry.name, nodeId, tokens: recorded?.raw_token_ids ?? null,
+        frameTypes: result.frames.map((frame) => `${frame.type}${frame.thinking ? ":thinking" : ""}`) };
+      node.anatomy = await service("instruments", "tokenAnatomy", nodeId, plan.settings.anatomyIndex,
+        { ...entry.anatomyKnobs, raw: entry.raw });
       if (entry.activityKnobs !== null) {
         const activity = plan.settings.activity;
         node.activity = await service("instruments", "unitActivity", nodeId, {
           top: entry.activityKnobs.top, units: activity.units, rawIndex: activity.raw_index, layers: activity.layers,
+          raw: entry.raw,
         });
       }
       for (const selector of entry.probes) await service("probes", "detach", selector);
       out.nodes.push(node);
     }
+    if (plan.goldens !== null) out.goldens = await driveGoldens(plan.goldens, root);
     out.reads = [];
     for (const entry of plan.reads) out.reads.push(await service("instruments", "unitRead", entry.unit, { k: entry.k, hideHubs: entry.hideHubs }));
     out.top = [];
@@ -581,10 +845,12 @@ async function driveWorker(plan) {
 }
 
 function parseArguments(args) {
-  const out = { port: 0, headed: false, python: process.env.PYTHON ?? "python3" };
+  const out = { port: 0, headed: false, chat: false, goldens: false, python: process.env.PYTHON ?? "python3" };
   for (let i = 0; i < args.length; i += 1) {
     const flag = args[i];
     if (flag === "--headed") out.headed = true;
+    else if (flag === "--chat") out.chat = true;
+    else if (flag === "--goldens") out.goldens = true;
     else if (["--fixtures", "--arch", "--quantization", "--work", "--port", "--python"].includes(flag)) {
       out[flag.slice(2)] = flag === "--port" ? Number(args[++i]) : args[++i];
     } else throw new Error(`unknown argument ${flag}`);

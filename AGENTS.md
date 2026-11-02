@@ -74,7 +74,9 @@ the submodule's own repository. A submodule bump is a change to executable
 source, so evidence recorded against the previous pin no longer qualifies.
 `./deploy.sh` builds the release from a clean, pushed HEAD, uploads `webui/dist-hosted` to the
 `drowse-web` Pages project with Wrangler and verifies the live site. It skips the runtime-lock and
-distribution gates unless given `--full`, which changes to the runtime, its locks or the pin need;
+distribution gates unless given `--full`, which changes to the runtime, its locks or the pin need
+(it always checks the signed catalog at the distribution lock's URL: runtime v2 reads
+`v2/catalog.json`, so catalog 11 must be published there before such a build ships);
 `--dry-run` stops before the upload. The Cloudflare account is not a9's: deploying needs access
 granted by its owner. The gated process behind it is in
 `browser-runtime/README.md#cloudflare-pages-deployment`.

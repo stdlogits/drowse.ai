@@ -11,6 +11,7 @@ import {
   releaseEvidenceProducerBinding,
   requireReleaseEvidenceProducer,
 } from "./release-evidence-producers.mjs";
+import { CURRENT_CATALOG_URLS } from "./hosted-catalog-location.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -1170,12 +1171,12 @@ function validateDistribution(value) {
   if (!["feasibility-required", "verified"].includes(value.status)) {
     throw new Error("invalid browser distribution lock status");
   }
-  const expectedBase =
-    "https://huggingface.co/stdlogits/drowse-web-catalog/resolve/main/";
-  if (value.catalogUrl !== `${expectedBase}catalog.json`) {
+  // The newest catalog directory (hosted-catalog-location.mjs): runtime v2 builds read
+  // `v2/catalog.json`, so publishing their catalog never changes what deployed v1 builds read.
+  if (value.catalogUrl !== CURRENT_CATALOG_URLS.catalogUrl) {
     throw new Error("unexpected browser catalog URL");
   }
-  if (value.signatureUrl !== `${expectedBase}catalog.sig.json`) {
+  if (value.signatureUrl !== CURRENT_CATALOG_URLS.signatureUrl) {
     throw new Error("unexpected browser catalog signature URL");
   }
   if (

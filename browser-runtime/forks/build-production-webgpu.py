@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import copy
 import dataclasses
 import hashlib
 import json
@@ -47,6 +48,14 @@ UNIT_ARCHITECTURES = frozenset({"qwen3", "gemma3_text", "gemma3"})
 STRUCTURED_HOOK_PROFILES = ("standard-v4", "standard-v4-residual")
 RUNTIME_ABI = "drowse-web-runtime-v2"
 HOOK_ABI = "block-sites-v5"
+#: The bridge's conversation rules each MLC template takes, so a chat prompt prefills what the
+#: model's own chat template (and drowse's scene grammar) renders: Qwen3 renders no system block
+#: without a system message (MLC's template defaults one); Gemma 3 folds the system message into
+#: the first turn and trims each turn's text (`| trim`, Python's str.strip()).
+DROWSE_CONVERSATION_RULES = {
+    "qwen3": {"system_message": ""},
+    "gemma3_instruction": {"drowse_system_fold_sep": "\n\n", "drowse_content_trim": True},
+}
 
 
 def structured_hook_profile_for(architecture: str) -> str:
@@ -237,9 +246,10 @@ def rebind(args) -> None:
     """The weights do not depend on the hook ABI, so a published conversion moves to a new runtime
     ABI by its manifest alone: the conversion must be the runtime lock's (its tensor-cache.json is
     the lock's `manifestSha256`, its architecture and quantization the lock's and its chat
-    config's), every file its drowse-build.json lists is verified and copied unchanged, and the
+    config's), every file its drowse-build.json lists is verified and copied unchanged but the chat
+    config, which takes the bridge's conversation rules (`apply_conversation_rules`), and the
     manifest takes the current ABI names, profile and toolchain, recording the manifest and
-    conversion toolchain it came from."""
+    conversion toolchain it came from and the conversation fields it set."""
     source = args.model.resolve(strict=True)
     output = args.output.resolve()
     validate_new_output(output, directory=True)
@@ -293,6 +303,16 @@ def rebind(args) -> None:
         if artifact_files(stage) != [{key: file.get(key) for key in ("path", "bytes", "sha256")}
                                      for file in listed]:
             raise SystemExit("rebound files differ from the build manifest")
+        conversation_rules = apply_conversation_rules(chat)
+        if conversation_rules:
+            if "mlc-chat-config.json" not in {file["path"] for file in files}:
+                raise SystemExit("model build manifest does not list mlc-chat-config.json")
+            config_path = stage / "mlc-chat-config.json"
+            config_path.write_text(json.dumps(chat, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            rewritten = {"bytes": config_path.stat().st_size, "sha256": sha256(config_path)}
+            manifest["files"] = [{**file, **rewritten} if file["path"] == "mlc-chat-config.json" else file
+                                 for file in files]
+            manifest["rebind"]["conversationRules"] = conversation_rules
         (stage / "drowse-build.json").write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
@@ -466,12 +486,25 @@ def generate_config(args, source: Path, output: Path, model, quantization) -> No
         if getattr(config, key) is None:
             setattr(config, key, value)
     payload = config.model_dump(by_alias=True)
+    apply_conversation_rules(payload)
     if completion_prefix is not None:
         payload["drowse_completion_prefix_token_ids"] = completion_prefix
     (output / "mlc-chat-config.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def apply_conversation_rules(chat: dict) -> dict:
+    """Give a chat config's conversation template the bridge's rules for it
+    (`DROWSE_CONVERSATION_RULES`), in place; returns the fields that changed."""
+    conversation = chat.get("conv_template")
+    if not isinstance(conversation, dict):
+        return {}
+    rules = DROWSE_CONVERSATION_RULES.get(conversation.get("name"), {})
+    changed = {key: value for key, value in rules.items() if conversation.get(key) != value}
+    conversation.update(changed)
+    return changed
 
 
 def completion_prefix_ids(tokenizer) -> list[int]:
@@ -832,6 +865,10 @@ def verify_build_manifest(
         path = model / entry["path"]
         if path.stat().st_size != entry.get("bytes") or sha256(path) != entry.get("sha256"):
             raise SystemExit(f"model artifact failed verification: {entry['path']}")
+    chat_config = json.loads((model / "mlc-chat-config.json").read_text(encoding="utf-8"))
+    missing_rules = apply_conversation_rules(copy.deepcopy(chat_config))
+    if missing_rules:
+        raise SystemExit(f"mlc-chat-config.json lacks the bridge's conversation rules: {sorted(missing_rules)}")
 
 
 def adapter_digests(architecture: str) -> dict:

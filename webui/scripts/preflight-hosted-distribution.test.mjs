@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
   assertCatalogSequenceFloor,
+  parsePreflightArguments,
   fetchChecked,
   preflightArtifact,
   retryAfterMilliseconds,
@@ -10,6 +11,13 @@ import {
 
 const tests = [];
 const test = (name, run) => tests.push({ name, run });
+
+test("parses the catalog-only mode deploys run", () => {
+  assert.deepEqual(parsePreflightArguments([]), { catalogOnly: false });
+  assert.deepEqual(parsePreflightArguments(["--catalog-only"]), { catalogOnly: true });
+  assert.throws(() => parsePreflightArguments(["--catalog"]), /usage/);
+  assert.throws(() => parsePreflightArguments(["--catalog-only", "--catalog-only"]), /usage/);
+});
 const timeoutMs = 1_000;
 
 function corsResponse(body, { status = 200, origin = "*", headers = {} } = {}) {

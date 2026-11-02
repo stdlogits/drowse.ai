@@ -1,0 +1,16 @@
+{
+  "$schema": "../evidence-config.schema.json",
+  "schemaVersion": 1,
+  "evidenceType": "productionQ4Parity",
+  "observer": "browser-runtime/validate_mlc_q4_parity.py",
+  "arguments": [
+    "/Users/a9lim/.drowse-parity/release/qwen3-1.7b/model",
+    "/Users/a9lim/.drowse-parity/release/qwen3-1.7b/q4-capture",
+    "--device",
+    "cpu",
+    "--evidence-type",
+    "productionQ4Parity",
+    "--fixture-path",
+    "browser-runtime/fixtures/production-q4-parity-input-v1.json"
+  ]
+}

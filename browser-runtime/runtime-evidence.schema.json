@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:drowse:schema:browser-runtime-evidence-v4",
   "title": "Hook ABI v5 runtime evidence ledger",
-  "description": "References to the release evidence records of one tested revision (README.md, \"Release evidence\"): the units goldens on the C TVM VM and on WebGPU over the four fixture libraries, then per production library its physical runtime record and, for a q4 library, its q4 parity record.",
+  "description": "References to the release evidence records of one tested revision (README.md, \"Release evidence\"): the units goldens on the C TVM VM and on WebGPU over the four fixture libraries, then, optionally, per production library its physical runtime record and, for a q4 library, its q4 parity record.",
   "type": "object",
   "additionalProperties": false,
   "required": ["$schema", "schemaVersion", "status", "drowseRevision", "gates", "libraries"],

@@ -1,0 +1,28 @@
+{
+  "$schema": "../evidence-config.schema.json",
+  "schemaVersion": 1,
+  "evidenceType": "productionLibrary",
+  "observer": "webui/scripts/browser-full-runtime.mjs",
+  "arguments": [
+    "--model-id",
+    "gemma3-270m-instruct",
+    "--model-directory",
+    "/Users/a9lim/.drowse-parity/release/gemma3-270m-instruct/model",
+    "--model-library",
+    "/Users/a9lim/.drowse-parity/release/gemma3-270m-instruct/model/model.wasm",
+    "--webllm",
+    "node_modules/@drowse/web-llm/lib/index.js",
+    "--browser-channel",
+    "chrome-beta",
+    "--core-directory",
+    "/Users/a9lim/.drowse-parity/release/gemma3-270m-instruct/core",
+    "--context-tokens",
+    "2048",
+    "--jlens-directory",
+    "/Users/a9lim/.drowse-parity/release/gemma3-270m-instruct/jlens",
+    "--slens-directory",
+    "/Users/a9lim/.drowse-parity/release/gemma3-270m-instruct/slens",
+    "--units-directory",
+    "/Users/a9lim/.drowse-parity/release/gemma3-270m-instruct/units"
+  ]
+}

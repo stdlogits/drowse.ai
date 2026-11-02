@@ -11,10 +11,6 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import type { BrowserModelArtifact, BrowserModelLoadRequest } from "./modelBackend";
 import { LEGACY_PRODUCT_SLUGS } from "../../../../drowse/webui/src/lib/brandMigration";
 import {
-  contextBindingSha256,
-  runtimeIdentitySha256,
-} from "../../lib/runtime/catalog";
-import {
   BrowserInstrumentRegistry,
   isNeutralStatisticsPath,
   readNeutralStatistics,
@@ -64,7 +60,6 @@ import {
   type StructuredSlensProbe,
 } from "./structuredHookProgram";
 import {
-  isBlockSitesProfile,
   resolveStructuredHookProfile,
   type StructuredHookCapacityProfile,
 } from "./structuredHookProfile";
@@ -702,7 +697,7 @@ export class BrowserFeasibilityCorePackCompiler {
   private requireProbeCapacity(probe: ProbeInfo): void {
     const attached = [...this.attachedProbes.values()];
     if (probe.family === "units") {
-      const capacity = isBlockSitesProfile(this.structuredHookProfile) ? this.structuredHookProfile.maxUnitTaps : 0;
+      const capacity = this.structuredHookProfile.maxUnitTaps;
       if (attached.filter((entry) => entry.family === "units").length >= capacity) {
         throw coreError("CORE_PACK_PROBE_LIMIT", `The browser GPU program supports at most ${capacity} attached unit probes at once`);
       }
@@ -3148,7 +3143,7 @@ export async function loadCoreWhiteners(
   const context = request.variant.contextProfiles?.find(
     (profile) => profile.contextTokens === request.contextTokens,
   );
-  const compatibleBindings = compatibleRuntimeBindings(request, request.contextTokens);
+  const compatibleBindings = runtimeBindings(request, request.contextTokens);
   if (
     keys.length !== expectedKeys.length ||
     keys.some((key, index) => key !== expectedKeys[index]) ||
@@ -3255,9 +3250,9 @@ async function selectCoreWhiteners(
     );
   }
   const allowedBindings = (request.variant.contextProfiles ?? []).flatMap((candidate) =>
-    compatibleRuntimeBindings(request, candidate.contextTokens)
+    runtimeBindings(request, candidate.contextTokens)
   );
-  const selectedBindings = compatibleRuntimeBindings(request, request.contextTokens);
+  const selectedBindings = runtimeBindings(request, request.contextTokens);
   const seenBindings = new Set<string>();
   let selected: { tensor: BrowserModelArtifact; sidecar: BrowserModelArtifact } | null = null;
   for (const [key, tensor] of tensors) {
@@ -3335,7 +3330,7 @@ function matchingFittedArtifacts(
   request: BrowserModelLoadRequest,
   requireContextBinding = false,
 ): readonly VerifiedDrowseArchive["fittedArtifacts"][number][] {
-  const compatibleBindings = compatibleRuntimeBindings(request, request.contextTokens);
+  const compatibleBindings = runtimeBindings(request, request.contextTokens);
   return verified.fittedArtifacts.filter((artifact) =>
     (artifact.variant === "raw" && artifact.variantIdentity === null ||
       artifact.variant === "sae" && artifact.variantIdentity !== null) &&
@@ -3348,7 +3343,9 @@ function matchingFittedArtifacts(
   );
 }
 
-function compatibleRuntimeBindings(
+/** The variant's runtime binding at `contextTokens` (none when the variant does not offer that
+ *  context): what a core artifact's fingerprint and context binding must equal. */
+function runtimeBindings(
   request: BrowserModelLoadRequest,
   contextTokens: number,
 ): readonly {
@@ -3359,26 +3356,10 @@ function compatibleRuntimeBindings(
     (candidate) => candidate.contextTokens === contextTokens,
   );
   if (!profile) return [];
-  const current = {
+  return [{
     runtimeIdentitySha256: request.variant.runtimeIdentitySha256,
     contextBindingSha256: profile.bindingSha256,
-  };
-  if (request.variant.runtimeIdentity.runtimeAbi !== "drowse-web-runtime-v1") {
-    return [current];
-  }
-  return [current, ...LEGACY_PRODUCT_SLUGS.map((slug) => {
-    const legacyRuntimeIdentitySha256 = runtimeIdentitySha256({
-      ...request.variant.runtimeIdentity,
-      runtimeAbi: `${slug}-web-runtime-v1`,
-    });
-    return {
-      runtimeIdentitySha256: legacyRuntimeIdentitySha256,
-      contextBindingSha256: contextBindingSha256(
-        legacyRuntimeIdentitySha256,
-        contextTokens,
-      ),
-    };
-  })];
+  }];
 }
 
 function fittedLayerNumbers(tensors: Fp32SafetensorsReader): number[] {

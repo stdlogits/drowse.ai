@@ -1,0 +1,28 @@
+{
+  "$schema": "../evidence-config.schema.json",
+  "schemaVersion": 1,
+  "evidenceType": "productionLibrary",
+  "observer": "webui/scripts/browser-full-runtime.mjs",
+  "arguments": [
+    "--model-id",
+    "qwen3-4b",
+    "--model-directory",
+    "/Users/a9lim/.drowse-parity/release/qwen3-4b/model",
+    "--model-library",
+    "/Users/a9lim/.drowse-parity/release/qwen3-4b/model/model.wasm",
+    "--webllm",
+    "node_modules/@drowse/web-llm/lib/index.js",
+    "--browser-channel",
+    "chrome-beta",
+    "--core-directory",
+    "/Users/a9lim/.drowse-parity/release/qwen3-4b/core",
+    "--context-tokens",
+    "2048",
+    "--jlens-directory",
+    "/Users/a9lim/.drowse-parity/release/qwen3-4b/jlens",
+    "--slens-directory",
+    "/Users/a9lim/.drowse-parity/release/qwen3-4b/slens",
+    "--units-directory",
+    "/Users/a9lim/.drowse-parity/release/qwen3-4b/units"
+  ]
+}

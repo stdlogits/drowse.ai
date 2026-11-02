@@ -6,8 +6,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-import torch
+import logging
+
+# torch.distributed.elastic logs a macOS note to stderr when Transformers imports it. The release
+# evidence producer refuses any stderr from an observer, so this one known note is silenced.
+logging.getLogger("torch.distributed.elastic.multiprocessing.redirects").setLevel(logging.ERROR)
+
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
 
 from mlc_q4_torch import build_transformers_model
 from q4_unit_parity import (

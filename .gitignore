@@ -18,7 +18,7 @@ webui/dist-local/
 browser-runtime/.v3-compile.*/
 browser-runtime/.local-build/
 browser-runtime/vendor/*.tgz
-!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.46.tgz
+!browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.49.tgz
 
 # Virtual environments
 .venv/

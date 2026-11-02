@@ -26,9 +26,9 @@ import {
   BLOCK_SITES_HOOK_ABI,
   BLOCK_SITES_RUNTIME_ABI,
   checkedStructuredHookProduct,
+  structuredHookMemoryRequirements,
   UNIT_POSITIONS_FROM,
-  validateBlockSitesProfile,
-  type BlockSitesCapacityProfile,
+  validateStructuredHookProfile,
   type BlockSpec,
   type StructuredHookCapacityProfile,
 } from "./structuredHookProfile";
@@ -58,6 +58,10 @@ export interface BrowserModelLoadRequest {
   /** The runtime lock's `unitRefusal` for a residual variant (native `UnsupportedBlockError`'s
    *  text, B1 §7): what its unit members answer (422). */
   unitRefusal?: string | null;
+  /** The runtime lock's `prefillChunkSize`: the library's compiled prefill chunk, which its
+   *  descriptor attests as PREFILL_CHUNK_SIZE (HOOK_ABI.md §6). Absent or null fails the load
+   *  with `HOOK_ABI_MISMATCH`. */
+  prefillChunkSize?: number | null;
   requiredCorePack: CatalogInstrumentPack;
   contextTokens: number;
   runtimeClass?: BrowserRuntimeClass;
@@ -258,7 +262,7 @@ export interface BlockSitesCapabilities {
   readonly runtimeAbi: typeof BLOCK_SITES_RUNTIME_ABI;
   readonly exactReadoutAbi: typeof BLOCK_SITES_EXACT_READOUT_ABI;
   /** The attested profile (B1 §3.5); `unitSites` says whether the unit members run. */
-  readonly profile: BlockSitesCapacityProfile;
+  readonly profile: StructuredHookCapacityProfile;
   readonly layerCount: number;
   readonly hiddenSize: number;
   readonly vocabSize: number;
@@ -275,7 +279,7 @@ export interface BlockSitesCapabilities {
 
 /** Validate a capabilities record against its own profile (the bridge builds it at load). */
 export function validateBlockSitesCapabilities(value: BlockSitesCapabilities): BlockSitesCapabilities {
-  const profile = validateBlockSitesProfile(value.profile);
+  const profile = validateStructuredHookProfile(value.profile);
   if (
     value.hookAbi !== BLOCK_SITES_HOOK_ABI ||
     value.runtimeAbi !== BLOCK_SITES_RUNTIME_ABI ||
@@ -461,7 +465,8 @@ export interface BrowserBlockSitesBackend {
   /** §4.1 `drowse_unit_weight_rows`: `neuron_write` `s·γ_mo ⊙ W_down[:, n]` → `[n, d]`;
    *  `neuron_read` `(â, b̂)`, `â = γ_mi ⊙ W_gate[n] / max(‖·‖, 1e-12)` → `[n, 2, d]`;
    *  `head_write` `γ_ao ⊙ W_O[:, h·hd:(h+1)·hd]` → `[n, d, hd]`; `head_read` raw
-   *  `(γ_ai ⊙ W_Q^h, γ_ai ⊙ W_K^g, γ_ai ⊙ W_V^g)` → `[n, 3, hd, d]`, units in request order. */
+   *  `(γ_ai ⊙ W_Q^h, γ_ai ⊙ W_K^g, γ_ai ⊙ W_V^g)` → `[n, 3, hd, d]`, units in request order, any
+   *  number of them (`unitRowsPerCall` units per library call). */
   unitWeightRows(kind: UnitWeightRowsKind, units: readonly BlockSitesUnitRef[]): Promise<F32Tensor>;
   /** §2.2/§4.1 `drowse_head_write_grams`: `G_h = Bᵀ B` per head → `[n, hd, hd]`. */
   headWriteGrams(heads: readonly { layer: number; head: number }[]): Promise<F32Tensor>;
@@ -749,7 +754,7 @@ export function replayMetaLayout(input: StructuredHookCapacityProfile): {
   readonly patternLayers: number;
   readonly flags: number;
 } {
-  const profile = validateBlockSitesProfile(input);
+  const profile = validateStructuredHookProfile(input);
   if (profile.unitSites !== 1) {
     throw new UnsupportedBlockError(`the ${profile.id} profile has no replay entry point`);
   }
@@ -789,7 +794,7 @@ export function encodeReplayMeta(
   },
   request: Pick<BlockSitesReplayRequest, "anatomyPosition" | "activity" | "patternLayers">,
 ): Int32Array {
-  const profile = validateBlockSitesProfile(input);
+  const profile = validateStructuredHookProfile(input);
   const layout = replayMetaLayout(profile);
   const { layerCount, contextTokens, blockSpec } = model;
   if (!Number.isSafeInteger(contextTokens) || contextTokens < 1 || contextTokens >= 2 ** 24) {
@@ -896,7 +901,7 @@ export function blockSitesBufferElements(
   | "patternKeysSlot" | "patternQ" | "replayMeta" | "chunkAct" | "chunkHeadValues",
   number
 >> {
-  const profile = validateBlockSitesProfile(input);
+  const profile = validateStructuredHookProfile(input);
   const spec = model.blockSpec;
   const l = model.layerCount;
   const hd = spec.headDim;
@@ -923,6 +928,121 @@ export function blockSitesBufferElements(
     chunkAct: size("chunk act", model.prefillChunkSize, spec.dFF),
     chunkHeadValues: size("chunk head values", model.prefillChunkSize, spec.nHeads),
   });
+}
+
+/** Rows of a full-vocabulary static read per library call (`drowse_vocab_logits`,
+ *  `drowse_footprint_scores`): a longer read runs in calls of at most this many rows, so each
+ *  `[rows, V]` output stays within the binding the catalog declares (`libraryBindingBytes`). */
+export const VOCAB_READ_ROWS = 64;
+
+/** Units per `drowse_neuron_rows` or `drowse_head_rows` call (`unitWeightRows`): a longer request
+ *  runs in several calls, so each `[n, 3, d]` or `[n, 4, hd, d]` output stays within a layer's head
+ *  rows `[H, 4, hd, d]`, which the binding covers (`blockSitesBindingBytes`). */
+export function unitRowsPerCall(spec: BlockSpec, kind: "neuron" | "head"): number {
+  return kind === "head" ? spec.nHeads : Math.max(1, Math.floor((4 * spec.nHeads * spec.headDim) / 3));
+}
+
+/** Vocabulary rows per `vocabRowsTimes` call in the unit reads (`unitReader.ts`): each call's
+ *  `[rows, d]` embedding rows and `[rows, m ≤ H·hd]` product stay within the library's binding. */
+export const UNIT_VOCAB_ROWS = 8192;
+
+/** The largest buffer a units library's v5 machinery allocates at its largest context and prefill
+ *  chunk (HOOK_ABI.md §10): `pattern_keys` whole (every pattern slot, a full-context pattern
+ *  replay), the head grams, the chunk's MLP gate/up activation `[prefill, 2·d_ff]`, a layer's head
+ *  rows (`drowse_head_rows` over every head, `[H, 4, hd, d]`), and every other
+ *  `blockSitesBufferElements` buffer. The catalog's binding must cover it (`catalog.ts`). */
+export function blockSitesBindingBytes(
+  input: StructuredHookCapacityProfile,
+  model: Parameters<typeof blockSitesBufferElements>[1],
+): number {
+  const profile = validateStructuredHookProfile(input);
+  const elements = blockSitesBufferElements(profile, model);
+  const largest = Math.max(
+    ...Object.entries(elements).map(([name, count]) =>
+      name === "patternKeysSlot"
+        ? checkedStructuredHookProduct("pattern keys", count, profile.maxPatternLayers)
+        : count
+    ),
+    checkedStructuredHookProduct("chunk gate and up", model.prefillChunkSize, 2, model.blockSpec.dFF),
+    checkedStructuredHookProduct(
+      "layer head rows", model.blockSpec.nHeads, 4, model.blockSpec.headDim, model.hiddenSize,
+    ),
+  );
+  return checkedStructuredHookProduct("block-sites binding bytes", largest, 4);
+}
+
+/** The bytes of a converted model's largest weight tensor as the GPU holds it (a `float32` record
+ *  stays fp32 whatever its storage format), from its `tensor-cache.json`: the floor of its binding. */
+export function largestWeightTensorBytes(cache: unknown): number {
+  const shards = (cache as { records?: unknown } | null)?.records;
+  if (!Array.isArray(shards) || shards.length === 0) {
+    throw new TypeError("tensor-cache.json has no weight tensor records");
+  }
+  const dtypeBytes: Readonly<Record<string, number>> = { float16: 2, float32: 4, int32: 4, uint32: 4 };
+  let largest = 0;
+  for (const shard of shards) {
+    const tensors = (shard as { records?: unknown } | null)?.records;
+    if (!Array.isArray(tensors) || tensors.length === 0) {
+      throw new TypeError("tensor-cache.json has no weight tensor records");
+    }
+    for (const tensor of tensors as { dtype?: unknown; shape?: unknown }[]) {
+      const shape = tensor?.shape;
+      if (
+        typeof tensor?.dtype !== "string" || !Object.hasOwn(dtypeBytes, tensor.dtype) ||
+        !Array.isArray(shape) || shape.some((size) => !Number.isSafeInteger(size) || size < 1)
+      ) {
+        throw new TypeError("tensor-cache.json has an invalid weight tensor dimension or dtype");
+      }
+      const bytes = (shape as number[]).reduce((total, size) => total * size, dtypeBytes[tensor.dtype]);
+      if (!Number.isSafeInteger(bytes)) {
+        throw new TypeError("A tensor-cache.json weight tensor size exceeds safe buffer arithmetic");
+      }
+      largest = Math.max(largest, bytes);
+    }
+  }
+  return largest;
+}
+
+/** The `maxStorageBufferBindingSize` (and `maxBufferSize`) a v5 library needs on any adapter
+ *  (HOOK_ABI.md §10): its largest weight tensor, its units machinery at the largest context
+ *  (`blockSitesBindingBytes`, units libraries) and a unit read's vocabulary chunk, the structured
+ *  program's buffers, a static read's `[VOCAB_READ_ROWS, V]` output and a resident lens layer. The bridge asks the device for
+ *  exactly this, so the catalog admits an adapter if and only if it can load and run the model. */
+export function libraryBindingBytes(
+  input: StructuredHookCapacityProfile,
+  model: {
+    readonly layerCount: number;
+    readonly hiddenSize: number;
+    readonly vocabSize: number;
+    readonly contextTokens: number;
+    readonly prefillChunkSize: number;
+    readonly blockSpec: BlockSpec | null;
+    readonly largestWeightBytes: number;
+  },
+): number {
+  const profile = validateStructuredHookProfile(input);
+  for (const key of ["layerCount", "hiddenSize", "vocabSize", "contextTokens", "prefillChunkSize", "largestWeightBytes"] as const) {
+    if (!Number.isSafeInteger(model[key]) || model[key] < 1) {
+      throw new TypeError(`The library's ${key} must be a positive integer`);
+    }
+  }
+  if ((profile.unitSites === 1) !== (model.blockSpec !== null)) {
+    throw new TypeError("A units library's binding needs its block spec, a residual library's none");
+  }
+  return Math.max(
+    model.largestWeightBytes,
+    model.blockSpec === null ? 0 : blockSitesBindingBytes(profile, { ...model, blockSpec: model.blockSpec }),
+    // A unit read's vocabulary chunk: `[UNIT_VOCAB_ROWS, d]` rows times a `[d, m ≤ max(d, H·hd)]` factor.
+    model.blockSpec === null ? 0 : checkedStructuredHookProduct(
+      "unit vocabulary chunk",
+      UNIT_VOCAB_ROWS,
+      Math.max(model.hiddenSize, model.blockSpec.nHeads * model.blockSpec.headDim),
+      4,
+    ),
+    structuredHookMemoryRequirements(profile, model.layerCount, model.hiddenSize).maxStorageBufferBindingSize,
+    checkedStructuredHookProduct("vocabulary read", VOCAB_READ_ROWS, model.vocabSize, 4),
+    checkedStructuredHookProduct("lens layer", model.hiddenSize, model.hiddenSize, 4),
+  );
 }
 
 /** Rows below this absolute position are never ablated or ranked (re-exported for callers). */
