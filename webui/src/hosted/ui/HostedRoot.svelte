@@ -176,7 +176,10 @@
   // User-initiated Chats/Models moves add a history entry so Back returns to
   // the previous view instead of leaving the app. Reaching the URL already
   // shown replaces the entry, so repeated clicks never stack duplicates.
+  // The shell's views have no rooms: a room's hash left from the workbench
+  // would otherwise reopen the next workbench in that room.
   function commitEntryUrl(url: URL, mode: HistoryMode, state: EntryHistoryState | null): void {
+    url.hash = "";
     if (mode === "push" && url.href !== window.location.href) {
       window.history.pushState(state, "", url);
     } else {
@@ -402,10 +405,11 @@
         const component = (await import("../../../../drowse/webui/src/App.svelte")).default;
         if (!disposed) {
           if (appController.current().runtime.phase === "ready") {
-            // The models view clears its choice from the query as it opens the workbench.
-            shownEntry = entryKey();
             Workbench = component;
             completeChunkRecovery("workbench");
+            // The models view clears its choice from the query as it opens the workbench, and a
+            // recovery reload's marker leaves it just above: read the entry once both are gone.
+            shownEntry = entryKey();
           } else {
             reloadToOnboarding();
           }

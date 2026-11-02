@@ -737,6 +737,14 @@ test("a stale workbench module reloads once and preserves the installed model", 
   await expect(page).toHaveURL(`${devUrl}/app?fixture=1&reopen=1`);
   await expect(page.locator(".shell")).toBeVisible();
   expect(await fixtureInstallIds(page)).toContain("qwen3-1.7b-fixture");
+  // The recovery marker is gone from the entry the workbench counts as its own, so a room's Back
+  // stays in the workbench.
+  await selectRoom(page, "Lens");
+  await page.goBack();
+  await expect(page.locator("main h1")).toHaveText("Workbench");
+  await page.goForward();
+  await expect(page.locator("main h1")).toHaveText("Lens");
+  await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toHaveCount(0);
 });
 
 test("a stale hosted bootstrap module reloads once instead of leaving a broken page", async ({ page }) => {

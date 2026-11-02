@@ -104,6 +104,20 @@ test("Back and Forward move between rooms without leaving the workbench", async 
   await expect(page.locator("main h1")).toHaveText("Lens");
 });
 
+test("Your chats from a room leaves the room behind, and Continue opens on the Workbench", async ({ page, browserName }) => {
+  test.skip(browserName === "webkit", "The worker fixture needs OPFS, which headless WebKit rejects.");
+  // The shell's views carry no room hash, so the next open starts where drowse starts.
+  await openFixtureWorkbench(page);
+  await selectRoom(page, "Lens");
+  await expect(page).toHaveURL(/#\/lens$/);
+  await returnToChats(page);
+  expect(new URL(page.url()).hash).toBe("");
+  await page.getByRole("button", { name: /^Continue with / }).click();
+  await expect(composer(page)).toBeVisible();
+  await expect(page.locator("main h1")).toHaveText("Workbench");
+  expect(new URL(page.url()).hash).toBe("");
+});
+
 test("Back from the workbench's first room returns to the shell view before it", async ({ page, browserName }) => {
   test.skip(browserName === "webkit", "The worker fixture needs OPFS, which headless WebKit rejects.");
   await openFixtureWorkbench(page);
