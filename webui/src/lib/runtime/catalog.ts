@@ -14,6 +14,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import {
   EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
+  isBlockSitesProfile,
   resolveStructuredHookProfile,
   structuredHookMemoryRequirements,
   WEB_LLM_RUNTIME_MIN_STORAGE_BUFFERS_PER_SHADER_STAGE,
@@ -561,14 +562,15 @@ function validateVariant(value: unknown, index: number): ModelVariant {
         `${WEB_LLM_RUNTIME_MIN_STORAGE_BUFFERS_PER_SHADER_STAGE} for the WebLLM runtime`,
     );
   }
-  if (structuredHookProfile.id === "standard-v3") {
+  // standard-v3 and both hook ABI v5 profiles export the exact top-k readout kernels.
+  if (structuredHookProfile.id === "standard-v3" || isBlockSitesProfile(structuredHookProfile)) {
     for (const [name, minimum] of Object.entries(
       EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
     )) {
       if (!Object.hasOwn(limits, name) || limits[name] < minimum) {
         throw invalid(
           `${path}.requirements.limits.${name} must explicitly declare at least ${minimum} ` +
-            "for standard-v3 exact GPU readout",
+            `for ${structuredHookProfile.id} exact GPU readout`,
         );
       }
     }

@@ -17,6 +17,10 @@ const NATIVE_LENS_CORPUS = JSON.parse(await readFile(
   "utf8",
 ));
 
+/** Instrument kinds whose publication and catalog admission run this policy (`--release`): the
+ *  lenses and units drowse fits natively, and a provider R lens for a model it cannot fit. */
+export const RELEASE_POLICY_KINDS = Object.freeze(["jlens", "slens", "units"]);
+
 export async function validateReleaseInstrumentPack({
   directory,
   kind,

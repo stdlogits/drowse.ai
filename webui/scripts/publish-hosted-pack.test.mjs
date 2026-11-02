@@ -10,8 +10,23 @@ assert.deepEqual(parseArguments(["qwen3-0.6b", "core", "./core"]), {
   modelId: "qwen3-0.6b",
   kind: "core",
   directory: join(process.cwd(), "core"),
+  companions: [],
+  coreStatistics: null,
   upload: false,
 });
+assert.deepEqual(
+  parseArguments(["qwen3-0.6b", "units", "./units", "--with", "./jlens", "--with", "./slens", "--core-statistics", "./core"]),
+  {
+    modelId: "qwen3-0.6b",
+    kind: "units",
+    directory: join(process.cwd(), "units"),
+    companions: [join(process.cwd(), "jlens"), join(process.cwd(), "slens")],
+    coreStatistics: join(process.cwd(), "core"),
+    upload: false,
+  },
+);
+assert.throws(() => parseArguments(["qwen3-0.6b", "slens", "./slens", "--with", "./jlens"]), /belong to a units pack/);
+assert.throws(() => parseArguments(["qwen3-0.6b", "units", "./units"]), /belong to a units pack/);
 assert.equal(
   parseArguments(["qwen3-0.6b", "sae", "./sae", "--upload"]).upload,
   true,
@@ -34,13 +49,18 @@ assert.deepEqual(
   semanticValidationArguments("fixture", "core", "/tmp/core").slice(1),
   ["fixture", "/tmp/core"],
 );
+// Native lens and units packs (and a provider R lens) publish under the release policy.
 assert.deepEqual(
   semanticValidationArguments("fixture", "jlens", "/tmp/jlens").slice(1),
-  ["fixture", "jlens", "/tmp/jlens"],
+  ["fixture", "jlens", "/tmp/jlens", "--release"],
 );
 assert.deepEqual(
-  semanticValidationArguments("fixture", "jlens", "/tmp/jlens", true).slice(1),
-  ["fixture", "jlens", "/tmp/jlens"],
+  semanticValidationArguments("fixture", "sae", "/tmp/sae").slice(1),
+  ["fixture", "sae", "/tmp/sae"],
+);
+assert.deepEqual(
+  semanticValidationArguments("fixture", "units", "/tmp/units", ["/tmp/jlens", "/tmp/slens"], "/tmp/core").slice(1),
+  ["fixture", "units", "/tmp/units", "--release", "--with", "/tmp/jlens", "--with", "/tmp/slens", "--core-statistics", "/tmp/core"],
 );
 
 console.log("hosted pack publisher checks passed");

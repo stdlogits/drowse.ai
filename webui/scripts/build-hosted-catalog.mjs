@@ -16,6 +16,8 @@ import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createServer } from "vite";
+import { structuredHookProfile as structuredHookProfileId } from "./hosted-model-profiles.mjs";
+import { RELEASE_POLICY_KINDS } from "./hosted-instrument-release-policy.mjs";
 import { validatePublishDirectory } from "./publish-hosted-model.mjs";
 
 const runtimeLockUrl = new URL("../../browser-runtime/runtime-lock.json", import.meta.url);
@@ -184,6 +186,18 @@ async function prepareModel(entry, runtimeLock, specDirectory, semanticValidator
     if (compatible("units").length === 1 && (compatible("slens").length !== 1 || compatible("jlens").length === 0)) {
       throw new Error(`${lock.id} context ${profile.contextTokens} has a units pack without its R and S lens packs`);
     }
+    // Hook ABI v5 parity: a units library ships the units, the token anatomy and the S lens, so
+    // its R, S and units packs are in the release at every context; a residual library refuses
+    // unit reads (the lock's unitRefusal) and has no native S lens or units.
+    if (lock.structuredHookProfile === "standard-v4") {
+      for (const [kind, label] of [["jlens", "R-lens"], ["slens", "S-lens"], ["units", "units"]]) {
+        if (compatible(kind).length === 0) {
+          throw new Error(`${lock.id} context ${profile.contextTokens} has no ${label} pack (standard-v4 ships units and both lenses)`);
+        }
+      }
+    } else if (compatible("slens").length > 0 || compatible("units").length > 0) {
+      throw new Error(`${lock.id} is ${lock.structuredHookProfile} and cannot list S-lens or units packs`);
+    }
   }
   return {
     id: nonempty(entry.id, `${lock.id} id`),
@@ -309,6 +323,7 @@ export async function validatePackSemantics(
     ? [fileURLToPath(coreValidatorUrl), modelId, directory]
     : [
         fileURLToPath(instrumentValidatorUrl), modelId, kind, directory,
+        ...(RELEASE_POLICY_KINDS.includes(kind) ? ["--release"] : []),
         ...companions.flatMap((companion) => ["--with", companion]),
         ...(coreStatistics === null ? [] : ["--core-statistics", coreStatistics]),
       ];
@@ -395,20 +410,20 @@ export function prepareRequirements(value, modelId, structuredHookProfile) {
   if (!value.limits || typeof value.limits !== "object" || Array.isArray(value.limits)) {
     throw new Error(`${modelId} required limits are invalid`);
   }
-  if (structuredHookProfile === "standard-v3") {
-    for (const [name, minimum] of Object.entries(
-      EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
-    )) {
-      if (
-        !Object.hasOwn(value.limits, name) ||
-        !Number.isSafeInteger(value.limits[name]) ||
-        value.limits[name] < minimum
-      ) {
-        throw new Error(
-          `${modelId} ${name} must explicitly declare at least ${minimum} ` +
-            "for standard-v3 exact GPU readout",
-        );
-      }
+  // Every hook ABI v5 library, units or residual, exports exact-readout-v2's top-k kernels.
+  structuredHookProfileId(structuredHookProfile);
+  for (const [name, minimum] of Object.entries(
+    EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
+  )) {
+    if (
+      !Object.hasOwn(value.limits, name) ||
+      !Number.isSafeInteger(value.limits[name]) ||
+      value.limits[name] < minimum
+    ) {
+      throw new Error(
+        `${modelId} ${name} must explicitly declare at least ${minimum} ` +
+          `for ${structuredHookProfile} exact GPU readout`,
+      );
     }
   }
   return { features: [...value.features], limits: { ...value.limits } };
