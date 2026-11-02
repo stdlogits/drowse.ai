@@ -1646,6 +1646,15 @@ export class BrowserFeasibilityCorePackCompiler {
       }
       return { slots, geometry: null };
     }
+    const namespace = name.includes("/") ? name.slice(0, name.indexOf("/")) : null;
+    if (attached === undefined && (namespace === "neuron" || namespace === "head" || namespace === "slens")) {
+      // Units and the S lens parse, but this runtime cannot read them yet: refuse rather than
+      // install a gate that would never fire.
+      throw coreError(
+        "CORE_PACK_EXPRESSION_UNAVAILABLE",
+        `${namespace}/ instrument atoms are not available in the browser runtime`,
+      );
+    }
     let geometryTarget: {
       manifold: CoreManifold;
       name: string;

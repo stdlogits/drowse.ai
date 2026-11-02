@@ -2779,6 +2779,20 @@ try {
         expression,
       );
     }
+    const whitened = await BrowserFeasibilityCorePackCompiler.load(
+      (await fixture({ withWhitener: true })).request,
+    );
+    for (const expression of [
+      "0.5 alert@when:neuron/L8n344>2", "0.5 alert@after&when:head/L3h2<=0.5",
+      "0.5 alert@when:slens/Owl>3",
+    ]) {
+      assert.throws(
+        () => whitened.compile(expression),
+        (error) => error.code === "CORE_PACK_EXPRESSION_UNAVAILABLE" &&
+          /instrument atoms are not available in the browser runtime/.test(error.message),
+        expression,
+      );
+    }
     for (const expression of ["0.3 slens/#12", "0.3 slens/Owl", "0.2 neuron/L8n344", "!head/L3h2"]) {
       assert.throws(
         () => compiler.compile(expression),
