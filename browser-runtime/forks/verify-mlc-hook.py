@@ -1382,7 +1382,7 @@ def verify_units_fixtures(args, tvm, relax, nn, op) -> None:
     from mlc_llm import compiler_pass as _compiler_pass  # noqa: F401  (registers the pipeline)
     from mlc_llm import op as op_ext
     from mlc_llm.interface.compiler_flags import IPCAllReduceStrategyType
-    from mlc_llm.model import drowse_units
+    from mlc_llm.model import drowse_reads, drowse_units
     from mlc_llm.model.drowse_hooks import structured_curve_program_spec
     from mlc_llm.model.gemma3.gemma3_model import Gemma3Config, Gemma3ForCausalLM
     from mlc_llm.model.qwen3.qwen3_model import Qwen3Config, Qwen3LMHeadModel
@@ -1408,6 +1408,7 @@ def verify_units_fixtures(args, tvm, relax, nn, op) -> None:
         unit_coeff_layout=drowse_units.unit_coeff_layout,
         UnitSites=drowse_units.UnitSites,
         drowse_units=drowse_units,
+        drowse_reads=drowse_reads,
         UNIT_MAX_GROUPS=drowse_units.UNIT_MAX_GROUPS,
         UNIT_MAX_HEAD_TAPS=drowse_units.UNIT_MAX_HEAD_TAPS,
     )

@@ -289,6 +289,8 @@ class FixtureVM:
                 "paged_kv_cache": nn.spec.Object(object_type=PagedKVCache),
                 **units, "$": packed,
             },
+            **env.drowse_reads.readout_spec(model),
+            **env.drowse_reads.unit_read_spec(model),
         }
         return nn.spec.ModuleSpec.from_raw(raw, model)
 
@@ -656,6 +658,10 @@ def verify_arch(env, fixtures: Path, goldens: Path, arch: str, quantization: str
                 tolerance.check(label + ".gate", case["gate_scalars"][number][gate], scores[gate],
                                 atol=tolerance.z_atol, rtol=0.0)
     verify_replay(env, vm, tensors, stats, goldens, arch, program, tolerance.worst)
+    if not os.environ.get("DROWSE_UNITS_SKIP_READS"):
+        import static_reads
+
+        static_reads.verify(env, vm, tensors, goldens, arch, tolerance.check)
     tolerance.worst["skipped"] = skipped
     return tolerance.worst
 

@@ -4619,12 +4619,1352 @@ index 00000000..d67ebc61
 +        return te.compute((1,), lambda _: values_te[layer_id], name=name)
 +
 +    return op.tensor_expr_op(_take, name_hint=name, args=[values])
+diff --git a/python/mlc_llm/model/drowse_reads.py b/python/mlc_llm/model/drowse_reads.py
+new file mode 100644
+index 00000000..c2be84e0
+--- /dev/null
++++ b/python/mlc_llm/model/drowse_reads.py
+@@ -0,0 +1,1334 @@
++"""Drowse static reads and `exact-readout-v2` (hook ABI v5, B1 §4.1).
++
++Weight primitives read the resident weights in fp32, dequantizing group-quantized storage inside
++the kernel through the quantization config's own `_dequantize` (the expression is inlined from
++its TE definition, so a kernel reads exactly what the forward reads). A Relax function cannot
++index per-layer parameters by a runtime layer, so every weight primitive loops the layers
++statically and each layer's launch handles only the requests naming that layer (all-layers,
++masked). Everything else is weight-free fp32 with dynamic shapes. Layouts: drowse.ai
++`browser-runtime/HOOK_ABI.md` §8.
++"""
++
++import inspect
++
++from tvm import te, tirx
++from tvm.relax.frontend import nn
++from tvm.relax.frontend.nn import Tensor, op
++from tvm.script import tirx as T
++
++_LANES = 64  # workgroup lanes of the per-row reductions
++_THREADS = 256  # threads of the thread-per-output kernels
++_GRID = 1024  # their workgroups; a grid-stride loop covers any extent under WebGPU's 65535 cap
++_ATTR = {"op_pattern": 8, "tirx.is_scheduled": 1, "tirx.noalias": True}
++LOWEST = -3.4028234663852886e38  # stands for -inf on the device (WGSL has no infinity literal)
++NORM_FLOOR = 1e-12
++QUADRATIC_FLOOR = 1e-30
++
++
++def _i32(extent):
++    return extent if isinstance(extent, int) else tirx.Cast("int32", extent)
++
++
++def _dt(expr) -> str:
++    ty = getattr(expr, "ty", None)
++    if ty is not None and hasattr(ty, "dtype"):
++        return str(ty.dtype)
++    return str(expr.dtype)
++
++
++def _inline(tensor, indices, buffers):
++    """The TE expression of `tensor[indices]` with every producer inlined down to loads of
++    `buffers` (keyed by placeholder name)."""
++    tensor_op = tensor.op
++    if isinstance(tensor_op, te.PlaceholderOp):
++        return tirx.BufferLoad(buffers[tensor_op.name], list(indices))
++    body = tensor_op.body[tensor.value_index]
++    body = tirx.stmt_functor.substitute(
++        body,
++        {
++            iv.var: (idx if _dt(idx) == _dt(iv.var) else tirx.Cast(_dt(iv.var), idx))
++            for iv, idx in zip(tensor_op.axis, indices)
++        },
++    )
++
++    def post(node):
++        if isinstance(node, tirx.ProducerLoad):
++            return _inline(node.producer, list(node.indices), buffers)
++        return None
++
++    return tirx.stmt_functor.ir_transform(
++        tirx.Evaluate(body), None, post, ["tirx.ProducerLoad"]
++    ).value
++
++
++def fresh(dep: Tensor, shape, value: float = 0.0, dtype: str = "float32") -> Tensor:
++    """A buffer filled with `value`, computed at run time from a kernel that binds `dep` (a
++    runtime input or parameter). Never `op.zeros`/`op.ones` for a buffer a kernel writes in place
++    or reads: those fold to module constants, the VM deduplicates equal constants across
++    functions, and an in-place store into one then changes every function's copy (a v5 unit-tap
++    store into a folded `zeros(64)` turned another function's zero offset into stale taps)."""
++    total = 1
++    for extent in shape:
++        total = total * extent
++    count = _i32(total)
++    steps = (count + _GRID * _THREADS - 1) // (_GRID * _THREADS)
++    dep_shape, dep_dtype = list(dep.shape), dep.dtype
++    literal = tirx.const(value, dtype)
++
++    @T.prim_func(private=True, s_tir=True)
++    def _fill(var_dep: T.handle, var_out: T.handle):
++        T.func_attr(_ATTR)
++        T.match_buffer(var_dep, dep_shape, dep_dtype)
++        o = T.match_buffer(var_out, (total,), dtype)
++        for bx in T.thread_binding(_GRID, thread="blockIdx.x"):
++            for tx in T.thread_binding(_THREADS, thread="threadIdx.x"):
++                with T.sblock("drowse_fill"):
++                    b = T.axis.spatial(_GRID, bx)
++                    t = T.axis.spatial(_THREADS, tx)
++                    for step in T.serial(steps):
++                        e = T.meta_var((step * _GRID + b) * _THREADS + t)
++                        if e < count:
++                            o[e] = literal
++
++    flat = op.tensor_ir_op(_fill, "drowse_fill", args=[dep], out=Tensor.placeholder((total,), dtype))
++    return op.reshape(flat, tuple(shape))
++
++
++class _Weight:
++    """A weight `[rows, cols]` (`[out, in]` for a linear, `[V, d]` for an embedding) as the forward
++    reads it, loaded in fp32 inside a kernel. Every kernel binds two buffers for it: group storage
++    `(q_weight, q_scale)`, or a plain weight and a one-element placeholder."""
++
++    def __init__(self, module):
++        if hasattr(module, "q_weight") and hasattr(module, "q_scale"):
++            config = module.config
++            if getattr(config, "linear_weight_layout", "NK") != "NK":
++                raise ValueError("drowse static reads expect NK group-quantized weights")
++            self.config = config
++            self.args = [module.q_weight, module.q_scale]
++            self.cols = int(module.q_weight.shape[1]) * int(config.num_elem_per_storage)
++        elif hasattr(module, "weight"):
++            self.config = None
++            self.args = [module.weight, fresh(module.weight, (1,))]
++            self.cols = int(module.weight.shape[1])
++        else:
++            raise ValueError(f"drowse static reads cannot read {type(module).__name__}")
++        self.rows = self.args[0].shape[0]
++        self.shapes = [list(arg.shape) for arg in self.args]
++        self.dtypes = [arg.dtype for arg in self.args]
++
++    def load(self, qw, qs, row, col):
++        if self.config is None:
++            return T.Cast("float32", qw[row, col])
++        weight = te.placeholder(qw.shape, qw.dtype, "qw")
++        scale = te.placeholder(qs.shape, qs.dtype, "qs")
++        value = self.config._dequantize(
++            weight, scale, axis=1, out_shape=[_i32(qw.shape[0]), tirx.IntImm("int32", self.cols)]
++        )
++        return T.Cast("float32", _inline(value, [row, col], {"qw": qw, "qs": qs}))
++
++
++def _gain(weight, size: int, dep: Tensor) -> Tensor:
++    """A norm's gain in fp32 (ones where the block has no such norm)."""
++    if weight is None:
++        return fresh(dep, (size,), 1.0)
++    return weight.astype("float32") if weight.dtype != "float32" else weight
++
++
++# --------------------------------------------------------------------- the block ---
++
++
++def _parts(model, layer_id: int, block: dict) -> dict:
++    layer = model.model.layers[layer_id]
++    attn, mlp = layer.self_attn, layer.mlp
++    hd, heads, kv = block["head_dim"], block["n_heads"], block["n_kv_heads"]
++    if hasattr(attn, "c_attn"):
++        q, k, v = (attn.c_attn, 0), (attn.c_attn, heads * hd), (attn.c_attn, (heads + kv) * hd)
++    else:
++        q, k, v = (attn.q_proj, 0), (attn.k_proj, 0), (attn.v_proj, 0)
++    if block["sandwich"]:
++        ao, mi, mo = (
++            layer.post_attention_layernorm.weight,
++            layer.pre_feedforward_layernorm.weight,
++            layer.post_feedforward_layernorm.weight,
++        )
++    else:
++        ao, mi, mo = None, layer.post_attention_layernorm.weight, None
++    return {
++        "q": q, "k": k, "v": v, "o": attn.o_proj, "gate_up": mlp.gate_up_proj,
++        "down": mlp.down_proj, "ai": layer.input_layernorm.weight, "ao": ao, "mi": mi, "mo": mo,
++        "dep": layer.input_layernorm.weight,
++    }
++
++
++def _gather_rows(units, weight: _Weight, gain, out, layer_id, slot, row_base, group, transpose,
++                 scale, name):
++    """`out[u, slot, i, k] = scale · gain[k] · W(r, k)` for every unit `u` of `layer_id`, with
++    `r = row_base + (index // group) · R + i` (`R = out.shape[2]`) and `W(r, k)` the weight at
++    `[r, k]`, or at `[k, r]` when `transpose` (a column of an `[d, ·]` weight)."""
++    n, slots, per_unit, width = out.shape
++    total = _i32(n * per_unit * width)
++    steps = (total + _GRID * _THREADS - 1) // (_GRID * _THREADS)
++    w0, w1 = weight.shapes
++    d0, d1 = weight.dtypes
++
++    @T.prim_func(private=True, s_tir=True)
++    def _gather(var_units: T.handle, var_w: T.handle, var_s: T.handle, var_gain: T.handle,
++                var_out: T.handle):
++        T.func_attr(_ATTR)
++        table = T.match_buffer(var_units, (n, 2), "int32")
++        qw = T.match_buffer(var_w, w0, d0)
++        qs = T.match_buffer(var_s, w1, d1)
++        g = T.match_buffer(var_gain, (width,), "float32")
++        o = T.match_buffer(var_out, (n, slots, per_unit, width), "float32")
++        for bx in T.thread_binding(_GRID, thread="blockIdx.x"):
++            for tx in T.thread_binding(_THREADS, thread="threadIdx.x"):
++                with T.sblock("drowse_gather_rows"):
++                    b = T.axis.spatial(_GRID, bx)
++                    t = T.axis.spatial(_THREADS, tx)
++                    for step in T.serial(steps):
++                        e = T.meta_var((step * _GRID + b) * _THREADS + t)
++                        if e < total:
++                            u = T.meta_var(T.floordiv(e, _i32(per_unit * width)))
++                            i = T.meta_var(T.floormod(T.floordiv(e, _i32(width)), _i32(per_unit)))
++                            k = T.meta_var(T.floormod(e, _i32(width)))
++                            if table[u, 0] == layer_id:
++                                r = T.meta_var(
++                                    row_base + T.floordiv(table[u, 1], group) * _i32(per_unit) + i
++                                )
++                                if transpose:
++                                    o[u, slot, i, k] = (
++                                        T.float32(scale) * g[k] * weight.load(qw, qs, k, r)
++                                    )
++                                else:
++                                    o[u, slot, i, k] = (
++                                        T.float32(scale) * g[k] * weight.load(qw, qs, r, k)
++                                    )
++
++    return op.tensor_ir_inplace_op(
++        _gather, name, args=[units, *weight.args, gain, out], inplace_indices=[4],
++        out=Tensor.placeholder(out.shape, "float32"),
++    )
++
++
++def _normalize_rows(out, first_slot: int, name: str):
++    """Each `[d]` row `out[u, s, 0]` for `s ≥ first_slot` divided by `max(‖row‖, 1e-12)`."""
++    n, slots, per_unit, width = out.shape
++    rows = n * (slots - first_slot)
++    chunks = (width + _LANES - 1) // _LANES
++
++    @T.prim_func(private=True, s_tir=True)
++    def _normalize(var_out: T.handle):
++        T.func_attr(_ATTR)
++        o = T.match_buffer(var_out, (n, slots, per_unit, width), "float32")
++        partial = T.sblock_alloc_buffer((_LANES,), "float32", scope="shared")
++        acc = T.sblock_alloc_buffer((1,), "float32", scope="local")
++        for row in T.thread_binding(_i32(rows), thread="blockIdx.x"):
++            for lane in T.thread_binding(_LANES, thread="threadIdx.x"):
++                with T.sblock("drowse_normalize_rows"):
++                    r = T.axis.spatial(_i32(rows), row)
++                    t = T.axis.spatial(_LANES, lane)
++                    u = T.meta_var(T.floordiv(r, slots - first_slot))
++                    s = T.meta_var(first_slot + T.floormod(r, slots - first_slot))
++                    acc[0] = T.float32(0)
++                    for c in T.serial(chunks):
++                        if c * _LANES + t < _i32(width):
++                            acc[0] = acc[0] + o[u, s, 0, c * _LANES + t] * o[u, s, 0, c * _LANES + t]
++                    partial[t] = acc[0]
++                    T.tvm_storage_sync("shared")
++                    for stage in T.unroll(6):
++                        if t < (32 >> stage):
++                            partial[t] = partial[t] + partial[t + (32 >> stage)]
++                        T.tvm_storage_sync("shared")
++                    for c in T.serial(chunks):
++                        if c * _LANES + t < _i32(width):
++                            o[u, s, 0, c * _LANES + t] = o[u, s, 0, c * _LANES + t] / T.max(
++                                T.sqrt(partial[0]), T.float32(NORM_FLOOR)
++                            )
++
++    return op.tensor_ir_inplace_op(
++        _normalize, name, args=[out], inplace_indices=[0],
++        out=Tensor.placeholder(out.shape, "float32"),
++    )
++
++
++def neuron_rows(model, units: Tensor) -> Tensor:
++    """`drowse_neuron_rows(units [n, 2] (layer, neuron)) → [n, 3, d]`: the write
++    `s·γ_mo ⊙ W_down[:, n]`, then `â = γ_mi ⊙ W_gate[n] / max(‖·‖, 1e-12)` and `b̂` from `W_up`."""
++    block = model._drowse_block_spec()
++    d, d_ff = model.hidden_size, block["d_ff"]
++    scale = float(block.get("residual_scale", 1.0))
++    out = fresh(units, (units.shape[0], 3, 1, d))
++    for layer_id in range(model.num_hidden_layers):
++        p = _parts(model, layer_id, block)
++        down, gate_up = _Weight(p["down"]), _Weight(p["gate_up"])
++        out = _gather_rows(units, down, _gain(p["mo"], d, p["dep"]), out, layer_id, 0, 0, 1, True, scale,
++                           f"drowse_neuron_write_rows_{layer_id}")
++        mi = _gain(p["mi"], d, p["dep"])
++        out = _gather_rows(units, gate_up, mi, out, layer_id, 1, 0, 1, False, 1.0,
++                           f"drowse_neuron_gate_rows_{layer_id}")
++        out = _gather_rows(units, gate_up, mi, out, layer_id, 2, d_ff, 1, False, 1.0,
++                           f"drowse_neuron_up_rows_{layer_id}")
++    out = _normalize_rows(out, 1, "drowse_neuron_read_rows_normalize")
++    return op.reshape(out, (units.shape[0], 3, d))
++
++
++def head_rows(model, units: Tensor) -> Tensor:
++    """`drowse_head_rows(units [n, 2] (layer, head)) → [n, 4, hd, d]`: the write block transposed
++    `(γ_ao ⊙ W_O[:, h·hd:(h+1)·hd])ᵀ`, then the raw read rows `γ_ai ⊙ W_Q^h`, `γ_ai ⊙ W_K^g`,
++    `γ_ai ⊙ W_V^g` (g the head's KV group)."""
++    block = model._drowse_block_spec()
++    d, hd = model.hidden_size, block["head_dim"]
++    group = block["n_heads"] // block["n_kv_heads"]
++    out = fresh(units, (units.shape[0], 4, hd, d))
++    for layer_id in range(model.num_hidden_layers):
++        p = _parts(model, layer_id, block)
++        out = _gather_rows(units, _Weight(p["o"]), _gain(p["ao"], d, p["dep"]), out, layer_id, 0, 0, 1, True,
++                           1.0, f"drowse_head_write_rows_{layer_id}")
++        ai = _gain(p["ai"], d, p["dep"])
++        for slot, role in ((1, "q"), (2, "k"), (3, "v")):
++            module, base = p[role]
++            out = _gather_rows(units, _Weight(module), ai, out, layer_id, slot, base,
++                               1 if role == "q" else group, False, 1.0,
++                               f"drowse_head_{role}_rows_{layer_id}")
++    return out
++
++
++def _layer_project(x, layers, weight: _Weight, gain, out, layer_id, slot, row_base, transpose,
++                   normalize, scale, name):
++    """For every slot `j` with `layers[j] == layer_id` and row `r`:
++    `out[j, slot, r, f] = scale · Σ_k x[j, r, k] · gain[k] · W(f, k)`, with `W(f, k)` the weight
++    at `[row_base + f, k]` or, when `transpose`, at `[k, row_base + f]`; with `normalize` the
++    weight row `gain ⊙ W(f, ·)` is divided by `max(‖·‖, 1e-12)` first."""
++    count, rows, width = x.shape
++    _, slots, _, features = out.shape
++    total = _i32(count * rows * features)
++    steps = (total + _GRID * _THREADS - 1) // (_GRID * _THREADS)
++    w0, w1 = weight.shapes
++    d0, d1 = weight.dtypes
++
++    @T.prim_func(private=True, s_tir=True)
++    def _project(var_x: T.handle, var_layers: T.handle, var_w: T.handle, var_s: T.handle,
++                 var_gain: T.handle, var_out: T.handle):
++        T.func_attr(_ATTR)
++        xs = T.match_buffer(var_x, (count, rows, width), "float32")
++        table = T.match_buffer(var_layers, (count,), "int32")
++        qw = T.match_buffer(var_w, w0, d0)
++        qs = T.match_buffer(var_s, w1, d1)
++        g = T.match_buffer(var_gain, (width,), "float32")
++        o = T.match_buffer(var_out, (count, slots, rows, features), "float32")
++        acc = T.sblock_alloc_buffer((2,), "float32", scope="local")
++        for bx in T.thread_binding(_GRID, thread="blockIdx.x"):
++            for tx in T.thread_binding(_THREADS, thread="threadIdx.x"):
++                with T.sblock("drowse_layer_project"):
++                    b = T.axis.spatial(_GRID, bx)
++                    t = T.axis.spatial(_THREADS, tx)
++                    for step in T.serial(steps):
++                        e = T.meta_var((step * _GRID + b) * _THREADS + t)
++                        if e < total:
++                            j = T.meta_var(T.floordiv(e, _i32(rows * features)))
++                            r = T.meta_var(T.floormod(T.floordiv(e, _i32(features)), _i32(rows)))
++                            f = T.meta_var(T.floormod(e, _i32(features)))
++                            if table[j] == layer_id:
++                                acc[0] = T.float32(0)
++                                acc[1] = T.float32(0)
++                                for k in T.serial(width):
++                                    if transpose:
++                                        acc[0] = acc[0] + xs[j, r, k] * (
++                                            g[k] * weight.load(qw, qs, k, row_base + f)
++                                        )
++                                    else:
++                                        acc[0] = acc[0] + xs[j, r, k] * (
++                                            g[k] * weight.load(qw, qs, row_base + f, k)
++                                        )
++                                        if normalize:
++                                            acc[1] = acc[1] + (
++                                                g[k] * weight.load(qw, qs, row_base + f, k)
++                                            ) * (g[k] * weight.load(qw, qs, row_base + f, k))
++                                if normalize:
++                                    o[j, slot, r, f] = acc[0] / T.max(
++                                        T.sqrt(acc[1]), T.float32(NORM_FLOOR)
++                                    )
++                                else:
++                                    o[j, slot, r, f] = T.float32(scale) * acc[0]
++
++    return op.tensor_ir_inplace_op(
++        _project, name, args=[x, layers, *weight.args, gain, out], inplace_indices=[5],
++        out=Tensor.placeholder(out.shape, "float32"),
++    )
++
++
++def layer_write_scores(model, x: Tensor, layers: Tensor) -> Tensor:
++    """`drowse_layer_write_scores(x [c, m, d], layers [c]) → [c, m, d_ff]`:
++    `x · (s·γ_mo ⊙ W_down)` at each slot's layer."""
++    block = model._drowse_block_spec()
++    count, rows, d = x.shape
++    d_ff = block["d_ff"]
++    scale = float(block.get("residual_scale", 1.0))
++    out = fresh(x, (count, 1, rows, d_ff))
++    for layer_id in range(model.num_hidden_layers):
++        p = _parts(model, layer_id, block)
++        out = _layer_project(x, layers, _Weight(p["down"]), _gain(p["mo"], d, p["dep"]), out, layer_id, 0,
++                             0, True, False, scale, f"drowse_layer_write_scores_{layer_id}")
++    return op.reshape(out, (count, rows, d_ff))
++
++
++def layer_read_scores(model, x: Tensor, layers: Tensor) -> Tensor:
++    """`drowse_layer_read_scores(x [c, m, d], layers [c]) → [c, 2, m, d_ff]`: `(â·x, b̂·x)`."""
++    block = model._drowse_block_spec()
++    count, rows, d = x.shape
++    d_ff = block["d_ff"]
++    out = fresh(x, (count, 2, rows, d_ff))
++    for layer_id in range(model.num_hidden_layers):
++        p = _parts(model, layer_id, block)
++        gate_up, mi = _Weight(p["gate_up"]), _gain(p["mi"], d, p["dep"])
++        out = _layer_project(x, layers, gate_up, mi, out, layer_id, 0, 0, False, True, 1.0,
++                             f"drowse_layer_gate_scores_{layer_id}")
++        out = _layer_project(x, layers, gate_up, mi, out, layer_id, 1, d_ff, False, True, 1.0,
++                             f"drowse_layer_up_scores_{layer_id}")
++    return out
++
++
++def _row_rms(x: Tensor, enabled: bool, eps: float, name: str) -> Tensor:
++    """`rsqrt(mean(x²) + eps)` per row of `x [c, d]` (1 when not `enabled`) → `[c]`."""
++    count, width = x.shape
++
++    @T.prim_func(private=True, s_tir=True)
++    def _rms(var_x: T.handle, var_out: T.handle):
++        T.func_attr(_ATTR)
++        xs = T.match_buffer(var_x, (count, width), "float32")
++        o = T.match_buffer(var_out, (count,), "float32")
++        acc = T.sblock_alloc_buffer((1,), "float32", scope="local")
++        for bx in T.thread_binding(_i32((count + _LANES - 1) // _LANES), thread="blockIdx.x"):
++            for tx in T.thread_binding(_LANES, thread="threadIdx.x"):
++                with T.sblock("drowse_row_rms"):
++                    b = T.axis.spatial(_i32((count + _LANES - 1) // _LANES), bx)
++                    t = T.axis.spatial(_LANES, tx)
++                    if b * _LANES + t < _i32(count):
++                        if enabled:
++                            acc[0] = T.float32(0)
++                            for k in T.serial(width):
++                                acc[0] = acc[0] + xs[b * _LANES + t, k] * xs[b * _LANES + t, k]
++                            o[b * _LANES + t] = T.rsqrt(
++                                acc[0] / T.float32(width) + T.float32(eps)
++                            )
++                        else:
++                            o[b * _LANES + t] = T.float32(1)
++
++    return op.tensor_ir_op(_rms, name, args=[x], out=Tensor.placeholder((count,), "float32"))
++
++
++def _scale_rows(values: Tensor, factor: Tensor, scale: Tensor, groups: int, name: str) -> Tensor:
++    """`out[j, c] = scale[j] · Σ_{i < groups} values[j, c·groups + i] · factor[j, c·groups + i]`
++    (`groups = 1`: an elementwise product) → `[count, width / groups]`."""
++    count, width = values.shape
++    outputs = width // groups if isinstance(width, int) else width
++    total = _i32(count * outputs)
++    steps = (total + _GRID * _THREADS - 1) // (_GRID * _THREADS)
++
++    @T.prim_func(private=True, s_tir=True)
++    def _scale(var_v: T.handle, var_f: T.handle, var_s: T.handle, var_out: T.handle):
++        T.func_attr(_ATTR)
++        v = T.match_buffer(var_v, (count, width), "float32")
++        fa = T.match_buffer(var_f, (count, width), "float32")
++        s = T.match_buffer(var_s, (count,), "float32")
++        o = T.match_buffer(var_out, (count, outputs), "float32")
++        acc = T.sblock_alloc_buffer((1,), "float32", scope="local")
++        for bx in T.thread_binding(_GRID, thread="blockIdx.x"):
++            for tx in T.thread_binding(_THREADS, thread="threadIdx.x"):
++                with T.sblock("drowse_scale_rows"):
++                    b = T.axis.spatial(_GRID, bx)
++                    t = T.axis.spatial(_THREADS, tx)
++                    for step in T.serial(steps):
++                        e = T.meta_var((step * _GRID + b) * _THREADS + t)
++                        if e < total:
++                            j = T.meta_var(T.floordiv(e, _i32(outputs)))
++                            c = T.meta_var(T.floormod(e, _i32(outputs)))
++                            acc[0] = T.float32(0)
++                            for i in T.serial(groups):
++                                acc[0] = acc[0] + v[j, c * groups + i] * fa[j, c * groups + i]
++                            o[j, c] = s[j] * acc[0]
++
++    return op.tensor_ir_op(
++        _scale, name, args=[values, factor, scale],
++        out=Tensor.placeholder((count, outputs), "float32"),
++    )
++
++
++def neuron_contributions(model, g: Tensor, act: Tensor, mlp_o: Tensor, layers: Tensor) -> Tensor:
++    """`drowse_neuron_contributions(g [c, d], act [c, d_ff], mlp_o [c, d], layers [c]) → [c, d_ff]`:
++    `act_n · ((g ⊙ γ_mo)·W_down[:, n]) · r_mo · s`, `r_mo = rsqrt(mean(mlp_o²) + ε)` on a sandwich
++    block, 1 otherwise."""
++    block = model._drowse_block_spec()
++    count, d = g.shape
++    d_ff = block["d_ff"]
++    scale = float(block.get("residual_scale", 1.0))
++    reads = fresh(g, (count, 1, 1, d_ff))
++    rows = op.reshape(g, (count, 1, d))
++    for layer_id in range(model.num_hidden_layers):
++        p = _parts(model, layer_id, block)
++        reads = _layer_project(rows, layers, _Weight(p["down"]), _gain(p["mo"], d, p["dep"]), reads,
++                               layer_id, 0, 0, True, False, scale,
++                               f"drowse_neuron_contribution_reads_{layer_id}")
++    r_mo = _row_rms(mlp_o, block["sandwich"], block["rms_eps"], "drowse_mlp_out_rms")
++    return _scale_rows(op.reshape(reads, (count, d_ff)), act, r_mo, 1,
++                       "drowse_neuron_contributions")
++
++
++def head_contributions(model, g: Tensor, z: Tensor, attn_o: Tensor, layers: Tensor) -> Tensor:
++    """`drowse_head_contributions(g [c, d], z [c, H·hd], attn_o [c, d], layers [c]) → [c, H]`:
++    `r_ao · Σ_i ((g ⊙ γ_ao)ᵀ W_O)[h·hd + i] · z[h·hd + i]`."""
++    block = model._drowse_block_spec()
++    count, d = g.shape
++    width = block["n_heads"] * block["head_dim"]
++    reads = fresh(g, (count, 1, 1, width))
++    rows = op.reshape(g, (count, 1, d))
++    for layer_id in range(model.num_hidden_layers):
++        p = _parts(model, layer_id, block)
++        reads = _layer_project(rows, layers, _Weight(p["o"]), _gain(p["ao"], d, p["dep"]), reads, layer_id,
++                               0, 0, True, False, 1.0, f"drowse_head_contribution_reads_{layer_id}")
++    r_ao = _row_rms(attn_o, block["sandwich"], block["rms_eps"], "drowse_attn_out_rms")
++    return _scale_rows(op.reshape(reads, (count, width)), z, r_ao, block["head_dim"],
++                       "drowse_head_contributions")
++
++
++def head_write_norms(model, z: Tensor, attn_o: Tensor, layers: Tensor, head_grams: Tensor) -> Tensor:
++    """`drowse_head_write_norms(z [c, H·hd], attn_o [c, d], layers [c], head_grams) → [c, H]`:
++    `sqrt(max(0, z_hᵀ G_h z_h)) · r_ao` from the resident grams (no weight is read)."""
++    block = model._drowse_block_spec()
++    grams = head_grams
++    count, width = z.shape
++    num_layers, heads, hd, _ = grams.shape
++    r_ao = _row_rms(attn_o, block["sandwich"], block["rms_eps"], "drowse_attn_out_rms")
++    total = _i32(count * heads)
++
++    @T.prim_func(private=True, s_tir=True)
++    def _norms(var_z: T.handle, var_layers: T.handle, var_grams: T.handle, var_r: T.handle,
++               var_out: T.handle):
++        T.func_attr(_ATTR)
++        zs = T.match_buffer(var_z, (count, width), "float32")
++        table = T.match_buffer(var_layers, (count,), "int32")
++        gs = T.match_buffer(var_grams, (num_layers, heads, hd, hd), "float32")
++        r = T.match_buffer(var_r, (count,), "float32")
++        o = T.match_buffer(var_out, (count, heads), "float32")
++        acc = T.sblock_alloc_buffer((2,), "float32", scope="local")
++        for bx in T.thread_binding((total + _LANES - 1) // _LANES, thread="blockIdx.x"):
++            for tx in T.thread_binding(_LANES, thread="threadIdx.x"):
++                with T.sblock("drowse_head_write_norms"):
++                    b = T.axis.spatial((total + _LANES - 1) // _LANES, bx)
++                    t = T.axis.spatial(_LANES, tx)
++                    e = T.meta_var(b * _LANES + t)
++                    if e < total:
++                        j = T.meta_var(T.floordiv(e, heads))
++                        h = T.meta_var(T.floormod(e, heads))
++                        o[j, h] = T.float32(0)
++                        if T.And(table[j] >= 0, table[j] < num_layers):
++                            acc[0] = T.float32(0)
++                            for i in T.serial(hd):
++                                acc[1] = T.float32(0)
++                                for c in T.serial(hd):
++                                    acc[1] = acc[1] + gs[table[j], h, i, c] * zs[j, h * hd + c]
++                                acc[0] = acc[0] + zs[j, h * hd + i] * acc[1]
++                            o[j, h] = T.sqrt(T.max(acc[0], T.float32(0))) * r[j]
++
++    return op.tensor_ir_op(
++        _norms, "drowse_head_write_norms", args=[z, layers, grams, r_ao],
++        out=Tensor.placeholder((count, heads), "float32"),
++    )
++
++
++def gather_head_grams(head_grams: Tensor, heads: Tensor) -> Tensor:
++    """`drowse_gather_head_grams(head_grams [L, H, hd, hd], heads [n, 2] (layer, head))
++    → [n, hd, hd]` (zero for an out-of-range pair)."""
++    grams, heads_table = head_grams, heads
++    num_layers, heads, hd, _ = grams.shape
++    n = heads_table.shape[0]
++    total = _i32(n * hd * hd)
++    steps = (total + _GRID * _THREADS - 1) // (_GRID * _THREADS)
++
++    @T.prim_func(private=True, s_tir=True)
++    def _gather(var_grams: T.handle, var_heads: T.handle, var_out: T.handle):
++        T.func_attr(_ATTR)
++        gs = T.match_buffer(var_grams, (num_layers, heads, hd, hd), "float32")
++        table = T.match_buffer(var_heads, (n, 2), "int32")
++        o = T.match_buffer(var_out, (n, hd, hd), "float32")
++        for bx in T.thread_binding(_GRID, thread="blockIdx.x"):
++            for tx in T.thread_binding(_THREADS, thread="threadIdx.x"):
++                with T.sblock("drowse_gather_head_grams"):
++                    b = T.axis.spatial(_GRID, bx)
++                    t = T.axis.spatial(_THREADS, tx)
++                    for step in T.serial(steps):
++                        e = T.meta_var((step * _GRID + b) * _THREADS + t)
++                        if e < total:
++                            u = T.meta_var(T.floordiv(e, hd * hd))
++                            i = T.meta_var(T.floormod(T.floordiv(e, hd), hd))
++                            c = T.meta_var(T.floormod(e, hd))
++                            o[u, i, c] = T.float32(0)
++                            if T.And(
++                                T.And(table[u, 0] >= 0, table[u, 0] < num_layers),
++                                T.And(table[u, 1] >= 0, table[u, 1] < heads),
++                            ):
++                                o[u, i, c] = gs[table[u, 0], table[u, 1], i, c]
++
++    return op.tensor_ir_op(
++        _gather, "drowse_gather_head_grams", args=[grams, heads_table],
++        out=Tensor.placeholder((n, hd, hd), "float32"),
++    )
++
++
++# ------------------------------------------------------------------ vocabulary ---
++
++
++def _embedding_module(model):
++    inner = model.model
++    for name in ("embed_tokens", "wte", "embed_in"):
++        if hasattr(inner, name):
++            return getattr(inner, name)
++    raise ValueError("drowse static reads cannot find the input embedding")
++
++
++def _unembedding_module(model):
++    if getattr(model, "tie_word_embeddings", False):
++        return _embedding_module(model)
++    return model.lm_head
++
++
++def embed_scale(model) -> float:
++    """`s_E`, the factor the model applies to an embedding row on lookup (the block spec's
++    `embed_scale`; 1 on a residual library)."""
++    block = model._drowse_block_spec()
++    return float(block["embed_scale"]) if block else 1.0
++
++
++def _vocab_rows(ids: Tensor, weight: _Weight, gain: Tensor, offset: Tensor, scale: float,
++                factor: Tensor, name: str) -> Tensor:
++    """`out[u, k] = (scale · gain[k] · W[ids[u], k] − offset[k]) · factor[u]` → `[n, d]` (an id
++    outside the vocabulary gives a zero row)."""
++    n = ids.shape[0]
++    width = weight.cols
++    vocab = weight.rows
++    total = _i32(n * width)
++    steps = (total + _GRID * _THREADS - 1) // (_GRID * _THREADS)
++    w0, w1 = weight.shapes
++    d0, d1 = weight.dtypes
++
++    @T.prim_func(private=True, s_tir=True)
++    def _rows(var_ids: T.handle, var_w: T.handle, var_s: T.handle, var_gain: T.handle,
++              var_offset: T.handle, var_factor: T.handle, var_out: T.handle):
++        T.func_attr(_ATTR)
++        table = T.match_buffer(var_ids, (n,), "int32")
++        qw = T.match_buffer(var_w, w0, d0)
++        qs = T.match_buffer(var_s, w1, d1)
++        g = T.match_buffer(var_gain, (width,), "float32")
++        off = T.match_buffer(var_offset, (width,), "float32")
++        fa = T.match_buffer(var_factor, (n,), "float32")
++        o = T.match_buffer(var_out, (n, width), "float32")
++        for bx in T.thread_binding(_GRID, thread="blockIdx.x"):
++            for tx in T.thread_binding(_THREADS, thread="threadIdx.x"):
++                with T.sblock("drowse_vocab_rows"):
++                    b = T.axis.spatial(_GRID, bx)
++                    t = T.axis.spatial(_THREADS, tx)
++                    for step in T.serial(steps):
++                        e = T.meta_var((step * _GRID + b) * _THREADS + t)
++                        if e < total:
++                            u = T.meta_var(T.floordiv(e, width))
++                            k = T.meta_var(T.floormod(e, width))
++                            o[u, k] = T.float32(0)
++                            if T.And(table[u] >= 0, table[u] < _i32(vocab)):
++                                o[u, k] = (
++                                    T.float32(scale) * g[k] * weight.load(qw, qs, table[u], k)
++                                    - off[k]
++                                ) * fa[u]
++
++    return op.tensor_ir_op(
++        _rows, name, args=[ids, *weight.args, gain, offset, factor],
++        out=Tensor.placeholder((n, width), "float32"),
++    )
++
++
++def embedding_rows(model, ids: Tensor, mean: Tensor) -> Tensor:
++    """`drowse_embedding_rows(ids [n], mean_E [d]) → [n, d]`: `ẽ_v = s_E·E[v] − mean_E`."""
++    d = model.hidden_size
++    return _vocab_rows(ids, _Weight(_embedding_module(model)), fresh(ids, (d,), 1.0), mean,
++                       embed_scale(model), fresh(ids, (ids.shape[0],), 1.0),
++                       "drowse_embedding_rows")
++
++
++def _final_gain(model) -> Tensor:
++    weight = model.model.norm.weight
++    return weight.astype("float32") if weight.dtype != "float32" else weight
++
++
++def unembedding_rows(model, ids: Tensor) -> Tensor:
++    """`drowse_unembedding_rows(ids [n]) → [n, d]`: `γ_f ⊙ W_U[v]`."""
++    d = model.hidden_size
++    return _vocab_rows(ids, _Weight(_unembedding_module(model)), _final_gain(model),
++                       fresh(ids, (d,)), 1.0, fresh(ids, (ids.shape[0],), 1.0),
++                       "drowse_unembedding_rows")
++
++
++def unembed_cotangent(model, hidden: Tensor, ids: Tensor) -> Tensor:
++    """`drowse_unembed_cotangent(h_final [n, d], ids [n]) → [n, d]`:
++    `rsqrt(mean(h²) + ε_f) · γ_f ⊙ W_U[v]`."""
++    d = model.hidden_size
++    r = _row_rms(hidden, True, float(model.model.norm.epsilon), "drowse_final_rms")
++    return _vocab_rows(ids, _Weight(_unembedding_module(model)), _final_gain(model),
++                       fresh(ids, (d,)), 1.0, r, "drowse_unembed_cotangent")
++
++
++def _vocab_scores(rows: Tensor, weight: _Weight, scale: float, shift: Tensor, mask: Tensor,
++                  flags: Tensor, name: str) -> Tensor:
++    """`out[u, v] = (scale · Σ_k rows[u, k] · W[v, k] − shift[u, 0]) / shift[u, 1]`, and
++    `LOWEST` where `flags[0]` is set and bit `v` of `mask` is clear → `[n, V]`."""
++    n, width = rows.shape
++    vocab = weight.rows
++    words = mask.shape[0]
++    total = _i32(n * vocab)
++    steps = (total + _GRID * _THREADS - 1) // (_GRID * _THREADS)
++    w0, w1 = weight.shapes
++    d0, d1 = weight.dtypes
++
++    @T.prim_func(private=True, s_tir=True)
++    def _scores(var_rows: T.handle, var_w: T.handle, var_s: T.handle, var_shift: T.handle,
++                var_mask: T.handle, var_flags: T.handle, var_out: T.handle):
++        T.func_attr(_ATTR)
++        xs = T.match_buffer(var_rows, (n, width), "float32")
++        qw = T.match_buffer(var_w, w0, d0)
++        qs = T.match_buffer(var_s, w1, d1)
++        sh = T.match_buffer(var_shift, (n, 2), "float32")
++        bits = T.match_buffer(var_mask, (words,), "uint32")
++        fl = T.match_buffer(var_flags, (1,), "int32")
++        o = T.match_buffer(var_out, (n, vocab), "float32")
++        acc = T.sblock_alloc_buffer((1,), "float32", scope="local")
++        for bx in T.thread_binding(_GRID, thread="blockIdx.x"):
++            for tx in T.thread_binding(_THREADS, thread="threadIdx.x"):
++                with T.sblock("drowse_vocab_scores"):
++                    b = T.axis.spatial(_GRID, bx)
++                    t = T.axis.spatial(_THREADS, tx)
++                    for step in T.serial(steps):
++                        e = T.meta_var((step * _GRID + b) * _THREADS + t)
++                        if e < total:
++                            u = T.meta_var(T.floordiv(e, _i32(vocab)))
++                            v = T.meta_var(T.floormod(e, _i32(vocab)))
++                            kept = T.meta_var(
++                                T.Or(
++                                    fl[0] == 0,
++                                    T.And(
++                                        T.shift_right(v, 5) < _i32(words),
++                                        T.bitwise_and(
++                                            T.shift_right(
++                                                bits[T.shift_right(v, 5)],
++                                                T.Cast("uint32", T.bitwise_and(v, 31)),
++                                            ),
++                                            T.uint32(1),
++                                        ) == T.uint32(1),
++                                    ),
++                                )
++                            )
++                            o[u, v] = T.float32(LOWEST)
++                            if kept:
++                                acc[0] = T.float32(0)
++                                for k in T.serial(width):
++                                    acc[0] = acc[0] + xs[u, k] * weight.load(qw, qs, v, k)
++                                o[u, v] = (T.float32(scale) * acc[0] - sh[u, 0]) / sh[u, 1]
++
++    return op.tensor_ir_op(
++        _scores, name, args=[rows, *weight.args, shift, mask, flags],
++        out=Tensor.placeholder((n, vocab), "float32"),
++    )
++
++
++def _shift_identity(rows: Tensor) -> Tensor:
++    n = rows.shape[0]
++    return op.concat([fresh(rows, (n, 1)), fresh(rows, (n, 1), 1.0)], dim=1)
++
++
++def vocab_logits(model, rows: Tensor) -> Tensor:
++    """`drowse_vocab_logits(rows [n, d]) → [n, V]`: `W_U · N_f(row)` in fp32, the final norm in the
++    model's dtype as the model runs it (native `full_logits`)."""
++    n = rows.shape[0]
++    hidden = model.model.norm(rows.astype(model.dtype) if model.dtype != "float32" else rows)
++    hidden = hidden.astype("float32") if hidden.dtype != "float32" else hidden
++    return _vocab_scores(hidden, _Weight(_unembedding_module(model)), 1.0, _shift_identity(rows),
++                         fresh(rows, (1,), 0, "uint32"), fresh(rows, (1,), 0, "int32"),
++                         "drowse_vocab_logits")
++
++
++def footprint_scores(model, u: Tensor, mean: Tensor, sigma: Tensor, mask: Tensor) -> Tensor:
++    """`drowse_footprint_scores(u [n, d], mean_E [d], Σ_E [d, d], mask) → [n, V]`:
++    `z_v = (s_E·(u·E[v]) − u·mean_E) / sqrt(max(uᵀΣ_E u, 1e-30))`, `LOWEST` at masked ids."""
++    n, d = u.shape
++    root = quadratic_form(u, op.reshape(sigma, (1, d, d)), root=True)
++    offset = op.reshape(batched_matmul(op.reshape(u, (1, n, d)), op.reshape(mean, (1, d, 1))),
++                        (n, 1))
++    shift = op.concat([offset, op.reshape(root, (n, 1))], dim=1)
++    return _vocab_scores(u, _Weight(_embedding_module(model)), embed_scale(model), shift, mask,
++                         fresh(u, (1,), 1, "int32"), "drowse_footprint_scores")
++
++
++
++# ------------------------------------------------------------------- utilities ---
++
++
++def quadratic_form(x: Tensor, matrix: Tensor, root: bool = False) -> Tensor:
++    """`drowse_quadratic_form(x [b, n], M [bm, n, n]) → [b]`: `xᵢᵀ M xᵢ` (`M` shared when
++    `bm = 1`); with `root`, `sqrt(max(·, 1e-30))`. One workgroup per row."""
++    batch, width = x.shape
++    mats = matrix.shape[0]
++    chunks = (width + _LANES - 1) // _LANES
++
++    @T.prim_func(private=True, s_tir=True)
++    def _quadratic(var_x: T.handle, var_m: T.handle, var_out: T.handle):
++        T.func_attr(_ATTR)
++        xs = T.match_buffer(var_x, (batch, width), "float32")
++        ms = T.match_buffer(var_m, (mats, width, width), "float32")
++        o = T.match_buffer(var_out, (batch,), "float32")
++        partial = T.sblock_alloc_buffer((_LANES,), "float32", scope="shared")
++        acc = T.sblock_alloc_buffer((2,), "float32", scope="local")
++        for row in T.thread_binding(_i32(batch), thread="blockIdx.x"):
++            for lane in T.thread_binding(_LANES, thread="threadIdx.x"):
++                with T.sblock("drowse_quadratic_form"):
++                    r = T.axis.spatial(_i32(batch), row)
++                    t = T.axis.spatial(_LANES, lane)
++                    m = T.meta_var(T.if_then_else(mats == 1, 0, r))
++                    acc[0] = T.float32(0)
++                    for c in T.serial(_i32(chunks)):
++                        if c * _LANES + t < _i32(width):
++                            acc[1] = T.float32(0)
++                            for k in T.serial(_i32(width)):
++                                acc[1] = acc[1] + ms[m, c * _LANES + t, k] * xs[r, k]
++                            acc[0] = acc[0] + xs[r, c * _LANES + t] * acc[1]
++                    partial[t] = acc[0]
++                    T.tvm_storage_sync("shared")
++                    for stage in T.unroll(6):
++                        if t < (32 >> stage):
++                            partial[t] = partial[t] + partial[t + (32 >> stage)]
++                        T.tvm_storage_sync("shared")
++                    if t == 0:
++                        if root:
++                            o[r] = T.sqrt(T.max(partial[0], T.float32(QUADRATIC_FLOOR)))
++                        else:
++                            o[r] = partial[0]
++
++    return op.tensor_ir_op(
++        _quadratic, "drowse_quadratic_form_root" if root else "drowse_quadratic_form",
++        args=[x, matrix], out=Tensor.placeholder((batch,), "float32"),
++    )
++
++
++def _matmul(a: Tensor, w: Tensor, transpose: bool) -> Tensor:
++    batch, rows, inner = a.shape
++    if transpose:
++        mats, cols, _ = w.shape
++    else:
++        mats, _, cols = w.shape
++    total = _i32(batch * rows * cols)
++    steps = (total + _GRID * _THREADS - 1) // (_GRID * _THREADS)
++    w_shape = (mats, cols, inner) if transpose else (mats, inner, cols)
++
++    @T.prim_func(private=True, s_tir=True)
++    def _mm(var_a: T.handle, var_w: T.handle, var_out: T.handle):
++        T.func_attr(_ATTR)
++        xa = T.match_buffer(var_a, (batch, rows, inner), "float32")
++        xw = T.match_buffer(var_w, w_shape, "float32")
++        o = T.match_buffer(var_out, (batch, rows, cols), "float32")
++        acc = T.sblock_alloc_buffer((1,), "float32", scope="local")
++        for bx in T.thread_binding(_GRID, thread="blockIdx.x"):
++            for tx in T.thread_binding(_THREADS, thread="threadIdx.x"):
++                with T.sblock("drowse_batched_matmul"):
++                    b = T.axis.spatial(_GRID, bx)
++                    t = T.axis.spatial(_THREADS, tx)
++                    for step in T.serial(steps):
++                        e = T.meta_var((step * _GRID + b) * _THREADS + t)
++                        if e < total:
++                            i = T.meta_var(T.floordiv(e, _i32(rows * cols)))
++                            r = T.meta_var(T.floormod(T.floordiv(e, _i32(cols)), _i32(rows)))
++                            c = T.meta_var(T.floormod(e, _i32(cols)))
++                            m = T.meta_var(T.if_then_else(mats == 1, 0, i))
++                            acc[0] = T.float32(0)
++                            for k in T.serial(_i32(inner)):
++                                if transpose:
++                                    acc[0] = acc[0] + xa[i, r, k] * xw[m, c, k]
++                                else:
++                                    acc[0] = acc[0] + xa[i, r, k] * xw[m, k, c]
++                            o[i, r, c] = acc[0]
++
++    return op.tensor_ir_op(
++        _mm, "drowse_batched_matmul_nt" if transpose else "drowse_batched_matmul",
++        args=[a, w], out=Tensor.placeholder((batch, rows, cols), "float32"),
++    )
++
++
++def batched_matmul(a: Tensor, w: Tensor) -> Tensor:
++    """`drowse_batched_matmul(a [b, m, k], w [bw, k, n]) → [b, m, n]` (`w` shared when `bw = 1`)."""
++    return _matmul(a, w, False)
++
++
++def batched_matmul_nt(a: Tensor, w: Tensor) -> Tensor:
++    """`drowse_batched_matmul_nt(a [b, m, k], w [bw, n, k]) → [b, m, n]`: `a @ wᵀ`."""
++    return _matmul(a, w, True)
++
++
++def grouped_row_norms(x: Tensor) -> Tensor:
++    """`drowse_grouped_row_norms(x [n, g, w]) → [n, g]`: the Euclidean norm of each group."""
++    n, groups, width = x.shape
++    total = _i32(n * groups)
++    steps = (total + _GRID * _THREADS - 1) // (_GRID * _THREADS)
++
++    @T.prim_func(private=True, s_tir=True)
++    def _norms(var_x: T.handle, var_out: T.handle):
++        T.func_attr(_ATTR)
++        xs = T.match_buffer(var_x, (n, groups, width), "float32")
++        o = T.match_buffer(var_out, (n, groups), "float32")
++        acc = T.sblock_alloc_buffer((1,), "float32", scope="local")
++        for bx in T.thread_binding(_GRID, thread="blockIdx.x"):
++            for tx in T.thread_binding(_THREADS, thread="threadIdx.x"):
++                with T.sblock("drowse_grouped_row_norms"):
++                    b = T.axis.spatial(_GRID, bx)
++                    t = T.axis.spatial(_THREADS, tx)
++                    for step in T.serial(steps):
++                        e = T.meta_var((step * _GRID + b) * _THREADS + t)
++                        if e < total:
++                            r = T.meta_var(T.floordiv(e, _i32(groups)))
++                            g = T.meta_var(T.floormod(e, _i32(groups)))
++                            acc[0] = T.float32(0)
++                            for k in T.serial(_i32(width)):
++                                acc[0] = acc[0] + xs[r, g, k] * xs[r, g, k]
++                            o[r, g] = T.sqrt(acc[0])
++
++    return op.tensor_ir_op(
++        _norms, "drowse_grouped_row_norms", args=[x], out=Tensor.placeholder((n, groups), "float32")
++    )
++
++
++def chan_merge(count: Tensor, mean: Tensor, m2: Tensor, rows: Tensor):
++    """`drowse_chan_merge(count [1], mean [d], m2 [d], rows [r, d]) → (mean', m2')`: the rows'
++    own mean and centred sum of squares merged into the running state by Chan's rule."""
++    batch, width = rows.shape
++    total = _i32(width)
++    steps = (total + _GRID * _THREADS - 1) // (_GRID * _THREADS)
++
++    @T.prim_func(private=True, s_tir=True)
++    def _merge(var_count: T.handle, var_mean: T.handle, var_m2: T.handle, var_rows: T.handle,
++               var_mean_out: T.handle, var_m2_out: T.handle):
++        T.func_attr(_ATTR)
++        cnt = T.match_buffer(var_count, (1,), "float32")
++        mu = T.match_buffer(var_mean, (width,), "float32")
++        sq = T.match_buffer(var_m2, (width,), "float32")
++        xs = T.match_buffer(var_rows, (batch, width), "float32")
++        mu_out = T.match_buffer(var_mean_out, (width,), "float32")
++        sq_out = T.match_buffer(var_m2_out, (width,), "float32")
++        acc = T.sblock_alloc_buffer((3,), "float32", scope="local")
++        for bx in T.thread_binding(_GRID, thread="blockIdx.x"):
++            for tx in T.thread_binding(_THREADS, thread="threadIdx.x"):
++                with T.sblock("drowse_chan_merge"):
++                    b = T.axis.spatial(_GRID, bx)
++                    t = T.axis.spatial(_THREADS, tx)
++                    for step in T.serial(steps):
++                        c = T.meta_var((step * _GRID + b) * _THREADS + t)
++                        if c < total:
++                            acc[0] = T.float32(0)
++                            for r in T.serial(_i32(batch)):
++                                acc[0] = acc[0] + xs[r, c]
++                            acc[0] = acc[0] / T.Cast("float32", batch)
++                            acc[1] = T.float32(0)
++                            for r in T.serial(_i32(batch)):
++                                acc[1] = acc[1] + (xs[r, c] - acc[0]) * (xs[r, c] - acc[0])
++                            acc[2] = acc[0] - mu[c]
++                            mu_out[c] = mu[c] + acc[2] * (
++                                T.Cast("float32", batch) / (cnt[0] + T.Cast("float32", batch))
++                            )
++                            sq_out[c] = sq[c] + acc[1] + acc[2] * acc[2] * (
++                                cnt[0] * T.Cast("float32", batch)
++                                / (cnt[0] + T.Cast("float32", batch))
++                            )
++
++    return op.tensor_ir_op(
++        _merge, "drowse_chan_merge", args=[count, mean, m2, rows],
++        out=[Tensor.placeholder((width,), "float32"), Tensor.placeholder((width,), "float32")],
++    )
++
++
++def log_sum_exp(x: Tensor) -> Tensor:
++    """`drowse_log_sum_exp(x [n, m]) → [n]`, one workgroup per row (max, then the shifted sum)."""
++    n, width = x.shape
++    chunks = (width + _LANES - 1) // _LANES
++
++    @T.prim_func(private=True, s_tir=True)
++    def _lse(var_x: T.handle, var_out: T.handle):
++        T.func_attr(_ATTR)
++        xs = T.match_buffer(var_x, (n, width), "float32")
++        o = T.match_buffer(var_out, (n,), "float32")
++        partial = T.sblock_alloc_buffer((_LANES,), "float32", scope="shared")
++        top = T.sblock_alloc_buffer((1,), "float32", scope="shared")
++        acc = T.sblock_alloc_buffer((1,), "float32", scope="local")
++        for row in T.thread_binding(_i32(n), thread="blockIdx.x"):
++            for lane in T.thread_binding(_LANES, thread="threadIdx.x"):
++                with T.sblock("drowse_log_sum_exp"):
++                    r = T.axis.spatial(_i32(n), row)
++                    t = T.axis.spatial(_LANES, lane)
++                    acc[0] = T.float32(LOWEST)
++                    for c in T.serial(_i32(chunks)):
++                        if c * _LANES + t < _i32(width):
++                            acc[0] = T.max(acc[0], xs[r, c * _LANES + t])
++                    partial[t] = acc[0]
++                    T.tvm_storage_sync("shared")
++                    for stage in T.unroll(6):
++                        if t < (32 >> stage):
++                            partial[t] = T.max(partial[t], partial[t + (32 >> stage)])
++                        T.tvm_storage_sync("shared")
++                    if t == 0:
++                        top[0] = partial[0]
++                    T.tvm_storage_sync("shared")
++                    acc[0] = T.float32(0)
++                    for c in T.serial(_i32(chunks)):
++                        if c * _LANES + t < _i32(width):
++                            acc[0] = acc[0] + T.exp(xs[r, c * _LANES + t] - top[0])
++                    partial[t] = acc[0]
++                    T.tvm_storage_sync("shared")
++                    for stage in T.unroll(6):
++                        if t < (32 >> stage):
++                            partial[t] = partial[t] + partial[t + (32 >> stage)]
++                        T.tvm_storage_sync("shared")
++                    if t == 0:
++                        o[r] = top[0] + T.log(partial[0])
++
++    return op.tensor_ir_op(_lse, "drowse_log_sum_exp", args=[x],
++                           out=Tensor.placeholder((n,), "float32"))
++
++
++def topk(x: Tensor, values: Tensor, indices: Tensor):
++    """`drowse_topk(x [n, m], values [n, k], indices [n, k]) → (values, indices)`, in place:
++    each row's `k` largest by value desc, index asc (exact; `k` selection passes, each a workgroup
++    argmax over the entries strictly after the previous pick in that order). A row with fewer
++    than `k` entries pads with index −1 and value `LOWEST`."""
++    n, width = x.shape
++    k = values.shape[1]
++    chunks = (width + _LANES - 1) // _LANES
++
++    @T.prim_func(private=True, s_tir=True)
++    def _topk(var_x: T.handle, var_values: T.handle, var_indices: T.handle):
++        T.func_attr(_ATTR)
++        xs = T.match_buffer(var_x, (n, width), "float32")
++        vs = T.match_buffer(var_values, (n, k), "float32")
++        ids = T.match_buffer(var_indices, (n, k), "int32")
++        pv = T.sblock_alloc_buffer((_LANES,), "float32", scope="shared")
++        pi = T.sblock_alloc_buffer((_LANES,), "int32", scope="shared")
++        prev_v = T.sblock_alloc_buffer((1,), "float32", scope="shared")
++        prev_i = T.sblock_alloc_buffer((1,), "int32", scope="shared")
++        bv = T.sblock_alloc_buffer((1,), "float32", scope="local")
++        bi = T.sblock_alloc_buffer((1,), "int32", scope="local")
++        for row in T.thread_binding(_i32(n), thread="blockIdx.x"):
++            for lane in T.thread_binding(_LANES, thread="threadIdx.x"):
++                with T.sblock("drowse_topk"):
++                    r = T.axis.spatial(_i32(n), row)
++                    t = T.axis.spatial(_LANES, lane)
++                    if t == 0:
++                        prev_v[0] = T.float32(-LOWEST)
++                        prev_i[0] = -1
++                    T.tvm_storage_sync("shared")
++                    for p in T.serial(_i32(k)):
++                        bv[0] = T.float32(LOWEST)
++                        bi[0] = -1
++                        for c in T.serial(_i32(chunks)):
++                            if c * _LANES + t < _i32(width):
++                                if T.And(
++                                    T.Or(
++                                        xs[r, c * _LANES + t] < prev_v[0],
++                                        T.And(
++                                            xs[r, c * _LANES + t] == prev_v[0],
++                                            c * _LANES + t > prev_i[0],
++                                        ),
++                                    ),
++                                    T.Or(bi[0] < 0, xs[r, c * _LANES + t] > bv[0]),
++                                ):
++                                    bv[0] = xs[r, c * _LANES + t]
++                                    bi[0] = c * _LANES + t
++                        pv[t] = bv[0]
++                        pi[t] = bi[0]
++                        T.tvm_storage_sync("shared")
++                        for stage in T.unroll(6):
++                            if t < (32 >> stage):
++                                if T.And(
++                                    pi[t + (32 >> stage)] >= 0,
++                                    T.Or(
++                                        pi[t] < 0,
++                                        T.Or(
++                                            pv[t + (32 >> stage)] > pv[t],
++                                            T.And(
++                                                pv[t + (32 >> stage)] == pv[t],
++                                                pi[t + (32 >> stage)] < pi[t],
++                                            ),
++                                        ),
++                                    ),
++                                ):
++                                    pv[t] = pv[t + (32 >> stage)]
++                                    pi[t] = pi[t + (32 >> stage)]
++                            T.tvm_storage_sync("shared")
++                        if t == 0:
++                            vs[r, p] = T.if_then_else(pi[0] < 0, T.float32(LOWEST), pv[0])
++                            ids[r, p] = pi[0]
++                            if pi[0] >= 0:
++                                prev_v[0] = pv[0]
++                                prev_i[0] = pi[0]
++                        T.tvm_storage_sync("shared")
++
++    return op.tensor_ir_inplace_op(
++        _topk, "drowse_topk", args=[x, values, indices], inplace_indices=[1, 2],
++        out=[Tensor.placeholder((n, k), "float32"), Tensor.placeholder((n, k), "int32")],
++    )
++
++
++def logit_moments(logits: Tensor, mask: Tensor, flags: Tensor) -> Tensor:
++    """`drowse_logit_moments(logits [n, V], mask, flags [1]) → [n, 2]`: skew and kurtosis of each
++    row over the kept ids (every id when `flags[0] = 0`), native `logit_moments`: population
++    moments, the variance clamped at 1e-30."""
++    n, vocab = logits.shape
++    words = mask.shape[0]
++    chunks = (vocab + _LANES - 1) // _LANES
++
++
++    @T.prim_func(private=True, s_tir=True)
++    def _moments(var_x: T.handle, var_mask: T.handle, var_flags: T.handle, var_out: T.handle):
++        T.func_attr(_ATTR)
++        xs = T.match_buffer(var_x, (n, vocab), "float32")
++        bits = T.match_buffer(var_mask, (words,), "uint32")
++        fl = T.match_buffer(var_flags, (1,), "int32")
++        o = T.match_buffer(var_out, (n, 2), "float32")
++        partial = T.sblock_alloc_buffer((3, _LANES), "float32", scope="shared")
++        stats = T.sblock_alloc_buffer((2,), "float32", scope="shared")
++        acc = T.sblock_alloc_buffer((3,), "float32", scope="local")
++        for row in T.thread_binding(_i32(n), thread="blockIdx.x"):
++            for lane in T.thread_binding(_LANES, thread="threadIdx.x"):
++                with T.sblock("drowse_logit_moments"):
++                    r = T.axis.spatial(_i32(n), row)
++                    t = T.axis.spatial(_LANES, lane)
++                    acc[0] = T.float32(0)
++                    acc[1] = T.float32(0)
++                    for c in T.serial(_i32(chunks)):
++                        v = T.meta_var(c * _LANES + t)
++                        if v < _i32(vocab):
++                            if T.Or(
++                                fl[0] == 0,
++                                T.And(
++                                    T.shift_right(v, 5) < _i32(words),
++                                    T.bitwise_and(
++                                        T.shift_right(
++                                            bits[T.shift_right(v, 5)],
++                                            T.Cast("uint32", T.bitwise_and(v, 31)),
++                                        ),
++                                        T.uint32(1),
++                                    ) == T.uint32(1),
++                                ),
++                            ):
++                                acc[0] = acc[0] + T.float32(1)
++                                acc[1] = acc[1] + xs[r, v]
++                    partial[0, t] = acc[0]
++                    partial[1, t] = acc[1]
++                    T.tvm_storage_sync("shared")
++                    for stage in T.unroll(6):
++                        if t < (32 >> stage):
++                            partial[0, t] = partial[0, t] + partial[0, t + (32 >> stage)]
++                            partial[1, t] = partial[1, t] + partial[1, t + (32 >> stage)]
++                        T.tvm_storage_sync("shared")
++                    if t == 0:
++                        stats[0] = T.max(partial[0, 0], T.float32(1))
++                        stats[1] = partial[1, 0] / T.max(partial[0, 0], T.float32(1))
++                    T.tvm_storage_sync("shared")
++                    acc[0] = T.float32(0)
++                    acc[1] = T.float32(0)
++                    acc[2] = T.float32(0)
++                    for c in T.serial(_i32(chunks)):
++                        v = T.meta_var(c * _LANES + t)
++                        if v < _i32(vocab):
++                            if T.Or(
++                                fl[0] == 0,
++                                T.And(
++                                    T.shift_right(v, 5) < _i32(words),
++                                    T.bitwise_and(
++                                        T.shift_right(
++                                            bits[T.shift_right(v, 5)],
++                                            T.Cast("uint32", T.bitwise_and(v, 31)),
++                                        ),
++                                        T.uint32(1),
++                                    ) == T.uint32(1),
++                                ),
++                            ):
++                                acc[0] = acc[0] + (xs[r, v] - stats[1]) * (xs[r, v] - stats[1])
++                                acc[1] = acc[1] + (xs[r, v] - stats[1]) * (xs[r, v] - stats[1]) * (
++                                    xs[r, v] - stats[1]
++                                )
++                                acc[2] = acc[2] + (xs[r, v] - stats[1]) * (xs[r, v] - stats[1]) * (
++                                    xs[r, v] - stats[1]
++                                ) * (xs[r, v] - stats[1])
++                    partial[0, t] = acc[0]
++                    partial[1, t] = acc[1]
++                    partial[2, t] = acc[2]
++                    T.tvm_storage_sync("shared")
++                    for stage in T.unroll(6):
++                        if t < (32 >> stage):
++                            partial[0, t] = partial[0, t] + partial[0, t + (32 >> stage)]
++                            partial[1, t] = partial[1, t] + partial[1, t + (32 >> stage)]
++                            partial[2, t] = partial[2, t] + partial[2, t + (32 >> stage)]
++                        T.tvm_storage_sync("shared")
++                    if t == 0:
++                        acc[0] = T.max(partial[0, 0] / stats[0], T.float32(QUADRATIC_FLOOR))
++                        o[r, 0] = (partial[1, 0] / stats[0]) / (acc[0] * T.sqrt(acc[0]))
++                        o[r, 1] = (partial[2, 0] / stats[0]) / (acc[0] * acc[0])
++
++    return op.tensor_ir_op(_moments, "drowse_logit_moments", args=[logits, mask, flags],
++                           out=Tensor.placeholder((n, 2), "float32"))
++
++
++# ------------------------------------------------------------------ the surface ---
++
++_PACKED = {"param_mode": "packed", "effect_mode": "none"}
++_NONE = {"param_mode": "none", "effect_mode": "none"}
++
++
++def readout_spec(model) -> dict:
++    """`exact-readout-v2`: the vocabulary reads and the weight-free utilities, every library."""
++    d = model.hidden_size
++    tensor = nn.spec.Tensor
++    return {
++        "drowse_embedding_rows": {
++            "ids": tensor(["n"], "int32"), "mean": tensor([d], "float32"), "$": _PACKED,
++        },
++        "drowse_unembedding_rows": {"ids": tensor(["n"], "int32"), "$": _PACKED},
++        "drowse_vocab_logits": {"rows": tensor(["n", d], "float32"), "$": _PACKED},
++        "drowse_footprint_scores": {
++            "u": tensor(["n", d], "float32"), "mean": tensor([d], "float32"),
++            "sigma": tensor([d, d], "float32"), "mask": tensor(["mask_words"], "uint32"),
++            "$": _PACKED,
++        },
++        "drowse_logit_moments": {
++            "logits": tensor(["n", "m"], "float32"), "mask": tensor(["mask_words"], "uint32"),
++            "flags": tensor([1], "int32"), "$": _NONE,
++        },
++        "drowse_log_sum_exp": {"x": tensor(["n", "m"], "float32"), "$": _NONE},
++        "drowse_topk": {
++            "x": tensor(["n", "m"], "float32"), "values": tensor(["n", "k"], "float32"),
++            "indices": tensor(["n", "k"], "int32"), "$": _NONE,
++        },
++        "drowse_batched_matmul": {
++            "a": tensor(["b", "m", "k"], "float32"), "w": tensor(["bw", "k", "n"], "float32"),
++            "$": _NONE,
++        },
++        "drowse_batched_matmul_nt": {
++            "a": tensor(["b", "m", "k"], "float32"), "w": tensor(["bw", "n", "k"], "float32"),
++            "$": _NONE,
++        },
++        "drowse_quadratic_form": {
++            "x": tensor(["b", "n"], "float32"), "matrix": tensor(["bm", "n", "n"], "float32"),
++            "$": _NONE,
++        },
++        "drowse_grouped_row_norms": {"x": tensor(["n", "g", "w"], "float32"), "$": _NONE},
++        "drowse_chan_merge": {
++            "count": tensor([1], "float32"), "mean": tensor(["d"], "float32"),
++            "m2": tensor(["d"], "float32"), "rows": tensor(["r", "d"], "float32"), "$": _NONE,
++        },
++    }
++
++
++def unit_read_spec(model) -> dict:
++    """The unit static reads (B1 §4.1), libraries with unit sites only."""
++    block = model._drowse_block_spec()
++    d, num_layers = model.hidden_size, model.num_hidden_layers
++    d_ff, heads, hd = block["d_ff"], block["n_heads"], block["head_dim"]
++    tensor = nn.spec.Tensor
++    grams = tensor([num_layers, heads, hd, hd], "float32")
++    return {
++        "drowse_neuron_rows": {"units": tensor(["n", 2], "int32"), "$": _PACKED},
++        "drowse_head_rows": {"units": tensor(["n", 2], "int32"), "$": _PACKED},
++        "drowse_layer_write_scores": {
++            "x": tensor(["c", "m", d], "float32"), "layers": tensor(["c"], "int32"), "$": _PACKED,
++        },
++        "drowse_layer_read_scores": {
++            "x": tensor(["c", "m", d], "float32"), "layers": tensor(["c"], "int32"), "$": _PACKED,
++        },
++        "drowse_neuron_contributions": {
++            "g": tensor(["c", d], "float32"), "act": tensor(["c", d_ff], "float32"),
++            "mlp_o": tensor(["c", d], "float32"), "layers": tensor(["c"], "int32"), "$": _PACKED,
++        },
++        "drowse_head_contributions": {
++            "g": tensor(["c", d], "float32"), "z": tensor(["c", heads * hd], "float32"),
++            "attn_o": tensor(["c", d], "float32"), "layers": tensor(["c"], "int32"),
++            "$": _PACKED,
++        },
++        "drowse_head_write_norms": {
++            "z": tensor(["c", heads * hd], "float32"), "attn_o": tensor(["c", d], "float32"),
++            "layers": tensor(["c"], "int32"), "head_grams": grams, "$": _NONE,
++        },
++        "drowse_gather_head_grams": {
++            "head_grams": grams, "heads": tensor(["n", 2], "int32"), "$": _NONE,
++        },
++        "drowse_unembed_cotangent": {
++            "hidden": tensor(["n", d], "float32"), "ids": tensor(["n"], "int32"), "$": _PACKED,
++        },
++    }
++
++
++READOUT_FUNCTIONS = tuple(
++    "drowse_" + name for name in (
++        "embedding_rows", "unembedding_rows", "vocab_logits", "footprint_scores",
++        "logit_moments", "log_sum_exp", "topk", "batched_matmul", "batched_matmul_nt",
++        "quadratic_form", "grouped_row_norms", "chan_merge",
++    )
++)
++UNIT_READ_FUNCTIONS = tuple(
++    "drowse_" + name for name in (
++        "neuron_rows", "head_rows", "layer_write_scores", "layer_read_scores",
++        "neuron_contributions", "head_contributions", "head_write_norms", "gather_head_grams",
++        "unembed_cotangent",
++    )
++)
++
++
++def _method(function, with_model: bool):
++    if with_model:
++        def bound(self, *args):
++            return function(self, *args)
++    else:
++        def bound(self, *args):
++            return function(*args)
++    parameters = list(inspect.signature(function).parameters.values())
++    if with_model:
++        parameters = parameters[1:]
++    parameters = [inspect.Parameter("self", inspect.Parameter.POSITIONAL_OR_KEYWORD)] + [
++        parameter for parameter in parameters if parameter.default is inspect.Parameter.empty
++    ]
++    bound.__signature__ = inspect.Signature(parameters)
++    bound.__name__ = function.__name__
++    bound.__doc__ = function.__doc__
++    return bound
++
++
++_METHODS = {
++    "drowse_embedding_rows": (embedding_rows, True),
++    "drowse_unembedding_rows": (unembedding_rows, True),
++    "drowse_vocab_logits": (vocab_logits, True),
++    "drowse_footprint_scores": (footprint_scores, True),
++    "drowse_logit_moments": (logit_moments, False),
++    "drowse_log_sum_exp": (log_sum_exp, False),
++    "drowse_topk": (topk, False),
++    "drowse_batched_matmul": (batched_matmul, False),
++    "drowse_batched_matmul_nt": (batched_matmul_nt, False),
++    "drowse_quadratic_form": (quadratic_form, False),
++    "drowse_grouped_row_norms": (grouped_row_norms, False),
++    "drowse_chan_merge": (chan_merge, False),
++    "drowse_neuron_rows": (neuron_rows, True),
++    "drowse_head_rows": (head_rows, True),
++    "drowse_layer_write_scores": (layer_write_scores, True),
++    "drowse_layer_read_scores": (layer_read_scores, True),
++    "drowse_neuron_contributions": (neuron_contributions, True),
++    "drowse_head_contributions": (head_contributions, True),
++    "drowse_head_write_norms": (head_write_norms, True),
++    "drowse_gather_head_grams": (gather_head_grams, False),
++    "drowse_unembed_cotangent": (unembed_cotangent, True),
++}
++
++
++def install(cls) -> None:
++    """Give a model class every static-read method (the spec decides which a library exports)."""
++    for name, (function, with_model) in _METHODS.items():
++        setattr(cls, name, _method(function, with_model))
 diff --git a/python/mlc_llm/model/drowse_units.py b/python/mlc_llm/model/drowse_units.py
 new file mode 100644
-index 00000000..f010092f
+index 00000000..46d630e9
 --- /dev/null
 +++ b/python/mlc_llm/model/drowse_units.py
-@@ -0,0 +1,1337 @@
+@@ -0,0 +1,1342 @@
 +"""Drowse hook ABI v5 (`block-sites-v5`): in-block unit sites for dense blocks.
 +
 +Every eligible model's decoder layer runs `drowse_block(hidden, cache, layer_id, sites)`. With
@@ -4641,6 +5981,8 @@ index 00000000..f010092f
 +from tvm.relax.frontend import nn
 +from tvm.relax.frontend.nn import Tensor, op
 +from tvm.script import tirx as T
++
++from mlc_llm.model.drowse_reads import fresh
 +
 +UNIT_MAX_GROUPS = 4
 +UNIT_MAX_NEURON_ABLATIONS = 256
@@ -4840,7 +6182,7 @@ index 00000000..f010092f
 +        self.tap_grams = tap_grams
 +        self.sandwich = sandwich
 +        self.rms_eps = rms_eps
-+        self.taps = op.zeros((UNIT_MAX_TAPS,), "float32")
++        self.taps = fresh(unit_meta, (UNIT_MAX_TAPS,))
 +
 +    def head(self, z: Tensor, layer_id: int) -> Tensor:
 +        return _head_ablate(z, layer_id, self)
@@ -5240,9 +6582,9 @@ index 00000000..f010092f
 +        self.population = population
 +        self.pattern_keys = pattern_keys
 +        self.layout = anatomy_layout(hidden_size, block)
-+        self.anatomy = op.zeros((num_layers, self.layout["stride"]), "float32")
-+        self.pattern_q = op.zeros(
-+            (UNIT_MAX_PATTERN_LAYERS, block["n_heads"], block["head_dim"]), "float32"
++        self.anatomy = fresh(replay_meta, (num_layers, self.layout["stride"]))
++        self.pattern_q = fresh(
++            replay_meta, (UNIT_MAX_PATTERN_LAYERS, block["n_heads"], block["head_dim"])
 +        )
 +
 +    def block_in(self, hidden: Tensor, layer_id: int) -> None:
@@ -5912,7 +7254,10 @@ index 00000000..f010092f
 +    fp32 from the weights the library runs, written per layer into one `[L, H, hd, hd]` buffer."""
 +    block = model._drowse_block_spec()
 +    num_layers = model.num_hidden_layers
-+    grams = op.zeros((num_layers, block["n_heads"], block["head_dim"], block["head_dim"]), "float32")
++    grams = fresh(
++        model.model.layers[0].input_layernorm.weight,
++        (num_layers, block["n_heads"], block["head_dim"], block["head_dim"]),
++    )
 +    for layer_id, layer in enumerate(model.model.layers):
 +        weight = dequantized_weight(layer.self_attn.o_proj)
 +        if block["sandwich"]:
@@ -5963,7 +7308,7 @@ index 00000000..f010092f
 +        out=Tensor.placeholder(grams.shape, "float32"),
 +    )
 diff --git a/python/mlc_llm/model/gemma3/gemma3_model.py b/python/mlc_llm/model/gemma3/gemma3_model.py
-index b022bab9..740a27cd 100644
+index b022bab9..03cdd837 100644
 --- a/python/mlc_llm/model/gemma3/gemma3_model.py
 +++ b/python/mlc_llm/model/gemma3/gemma3_model.py
 @@ -3,13 +3,15 @@
@@ -6182,7 +7527,7 @@ index b022bab9..740a27cd 100644
              dtype=self.dtype,
          )
  
-@@ -665,3 +757,77 @@ class Gemma3ForCausalLM(nn.Module):
+@@ -665,3 +757,86 @@ class Gemma3ForCausalLM(nn.Module):
              },
          }
          return nn.spec.ModuleSpec.from_raw(mod_spec, self)
@@ -6260,6 +7605,15 @@ index b022bab9..740a27cd 100644
 +Gemma3ForCausalLM._get_logits = Qwen3LMHeadModel._get_logits
 +Gemma3ForCausalLM.drowse_hook_profile = Qwen3LMHeadModel.drowse_hook_profile
 +Gemma3ForCausalLM.get_default_spec = Qwen3LMHeadModel.get_default_spec
++
++
++def _install_drowse_reads():
++    from mlc_llm.model import drowse_reads
++
++    drowse_reads.install(Gemma3ForCausalLM)
++
++
++_install_drowse_reads()
 diff --git a/python/mlc_llm/model/llama/llama_model.py b/python/mlc_llm/model/llama/llama_model.py
 index 4659a249..48289578 100644
 --- a/python/mlc_llm/model/llama/llama_model.py
@@ -7500,10 +8854,10 @@ index 4659a249..48289578 100644
                  "input_embeds": nn.spec.Tensor([1, "seq_len", self.hidden_size], self.dtype),
                  "paged_kv_cache": nn.spec.Object(object_type=PagedKVCache),
 diff --git a/python/mlc_llm/model/qwen3/qwen3_model.py b/python/mlc_llm/model/qwen3/qwen3_model.py
-index f3bdfec1..655529bb 100644
+index f3bdfec1..3ac35745 100644
 --- a/python/mlc_llm/model/qwen3/qwen3_model.py
 +++ b/python/mlc_llm/model/qwen3/qwen3_model.py
-@@ -12,6 +12,45 @@ from tvm.relax.frontend.nn import Tensor, op
+@@ -12,6 +12,46 @@ from tvm.relax.frontend.nn import Tensor, op
  
  from mlc_llm import op as op_ext
  from mlc_llm.model.model_utils import index_last_token
@@ -7535,6 +8889,7 @@ index f3bdfec1..655529bb 100644
 +    structured_hook_profile_descriptor,
 +    transport_jlens_hidden,
 +)
++from mlc_llm.model import drowse_reads
 +from mlc_llm.model.drowse_units import (
 +    ACTIVATION_SILU,
 +    NO_SITES,
@@ -7549,7 +8904,7 @@ index f3bdfec1..655529bb 100644
  from mlc_llm.nn import PagedKVCache, RopeMode
  from mlc_llm.support import logging
  from mlc_llm.support import tensor_parallel as tp
-@@ -130,6 +169,13 @@ class Qwen3Attention(nn.Module):
+@@ -130,6 +170,13 @@ class Qwen3Attention(nn.Module):
          self.k_norm = nn.RMSNorm(config.head_dim, -1, config.rms_norm_eps, bias=False)
  
      def forward(self, hidden_states: Tensor, paged_kv_cache: PagedKVCache, layer_id: int):
@@ -7563,7 +8918,7 @@ index f3bdfec1..655529bb 100644
          d, h_q, h_kv = self.head_dim, self.num_attention_heads, self.num_key_value_heads
          b, s, _ = hidden_states.shape
          qkv = self.c_attn(hidden_states)
-@@ -138,14 +184,14 @@ class Qwen3Attention(nn.Module):
+@@ -138,14 +185,14 @@ class Qwen3Attention(nn.Module):
          q = self.q_norm(q)
          k = self.k_norm(k)
          qkv = op.concat([q, k, v], dim=2)
@@ -7580,7 +8935,7 @@ index f3bdfec1..655529bb 100644
  
  
  ACT2FN = {
-@@ -183,9 +229,13 @@ class Qwen3MLP(nn.Module):
+@@ -183,9 +230,13 @@ class Qwen3MLP(nn.Module):
          self.act_fn = ACT2FN[config.hidden_act]
  
      def forward(self, x: Tensor):
@@ -7595,7 +8950,7 @@ index f3bdfec1..655529bb 100644
  
  
  class Qwen3DecoderLayer(nn.Module):
-@@ -226,11 +276,20 @@ class Qwen3DecoderLayer(nn.Module):
+@@ -226,11 +277,20 @@ class Qwen3DecoderLayer(nn.Module):
          _set_tp()
  
      def forward(self, hidden_states: Tensor, paged_kv_cache: PagedKVCache, layer_id: int):
@@ -7619,7 +8974,7 @@ index f3bdfec1..655529bb 100644
          hidden_states = self._apply_residual(out, residual=hidden_states)
          return hidden_states
  
-@@ -255,6 +314,251 @@ class Qwen3Model(nn.Module):
+@@ -255,6 +315,251 @@ class Qwen3Model(nn.Module):
          hidden_states = self.norm(hidden_states)
          return hidden_states
  
@@ -7871,7 +9226,7 @@ index f3bdfec1..655529bb 100644
  
  class Qwen3LMHeadModel(nn.Module):
      def __init__(self, config: Qwen3Config):
-@@ -274,6 +578,8 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -274,6 +579,8 @@ class Qwen3LMHeadModel(nn.Module):
          self.tensor_parallel_shards = config.tensor_parallel_shards
          self.head_dim = config.head_dim
          self.weight_block_size = config.weight_block_size
@@ -7880,7 +9235,7 @@ index f3bdfec1..655529bb 100644
  
      def to(self, dtype: Optional[str] = None):
          super().to(dtype=dtype)
-@@ -330,6 +636,912 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -330,6 +637,912 @@ class Qwen3LMHeadModel(nn.Module):
              logits = logits.astype("float32")
          return logits, paged_kv_cache
  
@@ -8793,7 +10148,7 @@ index f3bdfec1..655529bb 100644
      def batch_prefill(
          self,
          input_embeds: Tensor,
-@@ -375,8 +1587,153 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -375,8 +1588,153 @@ class Qwen3LMHeadModel(nn.Module):
              dtype=self.dtype,
          )
  
@@ -8947,7 +10302,7 @@ index f3bdfec1..655529bb 100644
              "embed": {
                  "input_ids": nn.spec.Tensor(["seq_len"], "int32"),
                  "$": {
-@@ -400,6 +1757,62 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -400,6 +1758,62 @@ class Qwen3LMHeadModel(nn.Module):
                      "effect_mode": "none",
                  },
              },
@@ -9010,7 +10365,7 @@ index f3bdfec1..655529bb 100644
              "batch_prefill": {
                  "input_embeds": nn.spec.Tensor([1, "seq_len", self.hidden_size], self.dtype),
                  "logit_positions": nn.spec.Tensor(["batch_size"], "int32"),
-@@ -417,6 +1830,169 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -417,6 +1831,169 @@ class Qwen3LMHeadModel(nn.Module):
                      "effect_mode": "none",
                  },
              },
@@ -9180,6 +10535,21 @@ index f3bdfec1..655529bb 100644
              "batch_verify": {
                  "input_embeds": nn.spec.Tensor([1, "seq_len", self.hidden_size], self.dtype),
                  "paged_kv_cache": nn.spec.Object(object_type=PagedKVCache),
+@@ -437,9 +2014,14 @@ class Qwen3LMHeadModel(nn.Module):
+                 },
+             },
+         }
++        mod_spec.update(drowse_reads.readout_spec(self))
++        mod_spec.update(drowse_reads.unit_read_spec(self))
+         return nn.spec.ModuleSpec.from_raw(mod_spec, self)
+ 
+ 
++drowse_reads.install(Qwen3LMHeadModel)
++
++
+ class Qwen3EmbeddingModel(Qwen3LMHeadModel):
+     """Qwen3 model for embedding inference.
+ 
 diff --git a/python/mlc_llm/op/moe_misc.py b/python/mlc_llm/op/moe_misc.py
 index 3a530ebe..3f477e1a 100644
 --- a/python/mlc_llm/op/moe_misc.py

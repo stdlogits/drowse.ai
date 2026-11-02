@@ -50,16 +50,17 @@
       "baseCommit": "9fa644f54b04983adea4d0168f49fc6af4a893ba",
       "baseTree": "3ecd325c3ab1f631e4c1390917ae48bbf07bf965",
       "patch": "mlc-llm-drowse.patch",
-      "patchBytes": 412335,
-      "patchSha256": "269045bb0474f477e7565fe23f067b39bdefd248e7ca179f4b2d04f097440f54",
+      "patchBytes": 481100,
+      "patchSha256": "4184a1c12a15058b34baed6ae13d7ef4f0b841d2f87e28384ed2555b1dbd6ebd",
       "resultFiles": {
         "python/mlc_llm/interface/compile.py": "435876d96e9ba6fbc3f02dd6f5ed858df559ebded169ce91c5cdd8151e610d32",
         "python/mlc_llm/interface/convert_weight.py": "dffc4af8487f54087bc27f9a35f959df318a70c4c33326b65d4a6d9f6479a1b5",
         "python/mlc_llm/model/drowse_hooks.py": "037315ae8e9a0c12aad9aa4bd712c9df2f7b418633424a3e03689c901e9fb5da",
-        "python/mlc_llm/model/drowse_units.py": "ce1ce0315de8b6b4d91d4b373022c0588794dc423b8794c35aa0aa851a53d6e8",
-        "python/mlc_llm/model/gemma3/gemma3_model.py": "a08be20f3d5aa3753fdaca634f915d4d7243a7b9a07efa3413fdcb7c26fda9ec",
+        "python/mlc_llm/model/drowse_reads.py": "cad15b9a015ee57031b521b27bb2c323a7f8d18abfa0f9908a63654f0dad240f",
+        "python/mlc_llm/model/drowse_units.py": "68f4b3f8280020c2e1a71ed550090e5d0ea5b05e88bba97f3c2cbf296ff61fd6",
+        "python/mlc_llm/model/gemma3/gemma3_model.py": "af1ea843a037d1f71cb47d98be95b7053cd55597019d51f5705800c4c116e38b",
         "python/mlc_llm/model/llama/llama_model.py": "59300670ca3bb95b96570018bbdfb8fc7d44a3744c607b42a4ed92dd767da070",
-        "python/mlc_llm/model/qwen3/qwen3_model.py": "18d41c0a242c99c70ad6db75eed33b05878e622c60746dfe35500982d2f09010",
+        "python/mlc_llm/model/qwen3/qwen3_model.py": "9577ebc5e3050c187727c03c24ffd55ad42b79c5bc17273e5d0b9599e2287b8e",
         "python/mlc_llm/op/moe_misc.py": "4141be404d6d31b1ee152ef495fd5bdfc75b16af968ad01e07c3d1d26637ef92"
       }
     },
