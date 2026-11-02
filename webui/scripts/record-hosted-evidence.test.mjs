@@ -712,6 +712,52 @@ test("durable evidence verification covers referenced gates and canonical benchm
   }
 });
 
+test("runtime ledger takes golden and library records only from its one revision", async () => {
+  // The release transaction records the goldens at the commit that adopts the lock, beside the
+  // library records: a golden recorded before adoption names another revision and is refused.
+  const root = await attestationFixture();
+  const evidenceRoot = join(root.path, "browser-runtime", "evidence");
+  const reference = async (name, record) => {
+    const bytes = `${JSON.stringify(record)}\n`;
+    await writeFile(join(evidenceRoot, name), bytes);
+    return { path: `evidence/${name}`, sha256: createHash("sha256").update(bytes).digest("hex") };
+  };
+  const ledger = async (goldenRevision) => writeFile(
+    join(root.path, "browser-runtime", "runtime-evidence.json"),
+    JSON.stringify({
+      drowseRevision: revision,
+      gates: {
+        cVmGoldens: await reference("cvm.json", { evidenceType: "cVmGoldens", drowseRevision: goldenRevision }),
+        webGpuGoldens: null,
+      },
+      libraries: {
+        "qwen3-1.7b": {
+          productionLibrary: await reference("qwen.json", {
+            evidenceType: "productionLibrary",
+            drowseRevision: revision,
+            results: { modelId: "qwen3-1.7b" },
+          }),
+        },
+      },
+    }),
+  );
+  try {
+    await ledger(revision);
+    const subjects = await collectEvidenceAttestationSubjects(root.path);
+    assert.deepEqual(
+      subjects.filter(({ kind }) => kind === "gate").map(({ evidenceType }) => evidenceType),
+      ["cVmGoldens", "fittingKernelParity", "productionLibrary"],
+    );
+    await ledger("e".repeat(40));
+    await assert.rejects(
+      collectEvidenceAttestationSubjects(root.path),
+      /cVmGoldens evidence source binding is invalid/,
+    );
+  } finally {
+    await root.remove();
+  }
+});
+
 test("durable evidence verification fails closed on digest drift or a missing attestation", async () => {
   const root = await attestationFixture();
   try {

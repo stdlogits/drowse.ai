@@ -558,8 +558,10 @@ profiles physically exercised for each model.
 ## Release transaction
 
 1. Compile the nine libraries with the v5 overlay (`compiler/README.md`), assemble each
-   (`assemble:hosted:model`), and record `cVmGoldens` and `webGpuGoldens` on the fixture
-   libraries.
+   (`assemble:hosted:model`), and run the C VM and WebGPU goldens on the four fixture libraries
+   (`record-cvm-goldens.py`, `browser-units-goldens.mjs --report`) as checks. Nothing is recorded
+   yet: every record in the ledger carries the one revision and runtime lock identity it was made
+   at, and both change when the lock is adopted in step 3.
 2. Fill a candidate lock from the assembled directories (`prepare:hosted:candidate-lock`, one
    model at a time with `--base`), rebind the packs to each new runtime identity
    (`RUNTIME_LOCK=CANDIDATE.json build-hosted-packs.sh MODEL_ID`) and build each core pack
@@ -570,9 +572,12 @@ profiles physically exercised for each model.
    units packs and any SAE pack (the publisher runs the release policy); fill each `convertedRevision` (`--converted-revision`;
    a later recompile clears it) and adopt the candidate (`--adopt`), which writes
    `runtime-lock.json` as `verified` and its identity fixture. Commit it.
-4. At that commit, record each library's `productionLibrary` and, for q4, `productionQ4Parity`
-   against the repository lock (the producers refuse an override-lock report or capture), then
-   the ledger.
+4. At that commit, record every runtime record: `cVmGoldens` and `webGpuGoldens` (re-run
+   through their producers), each library's `productionLibrary` and, for q4,
+   `productionQ4Parity`, all against the repository lock (the producers refuse an override-lock
+   report or capture), then the ledger. The attestation verifier refuses a ledger whose records
+   name different revisions, so a record made before the adopting commit cannot be reused; any
+   later commit, a submodule bump included, means recording them all again.
 5. Generate and sign the catalog (sequence 11 for this release), fill the exact Hugging Face
    redirect origins, set `distribution-lock.json`'s minimum sequence and status to `verified`.
 6. Run the release checker and distribution preflight:
