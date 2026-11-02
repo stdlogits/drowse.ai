@@ -58,6 +58,7 @@ export function packLayerShard(
   pack: Pick<CatalogInstrumentPack, "kind">,
   path: string,
 ): PackLayerShard | null {
+  if (typeof path !== "string") return null;
   const parts = path.split("/");
   const name = parts.at(-1) ?? "";
   if (parts.length < 2 || parts.at(-2) !== pack.kind) return null;

@@ -1310,22 +1310,21 @@ try {
     assert.equal(bufferBlock.limitBytes, adapterLimitBytes);
     assert.deepEqual(bufferBlock.packIds, [sae.id]);
 
-    const largeJlens = {
+    // A pre-6.0 lens pack's one multi-layer file installs whole, so all of it stays resident.
+    const lensPack = (id, bytes) => ({
       ...base,
-      id: "fixture-jlens-large",
+      id,
       kind: "jlens",
-      bytes: Math.ceil(OPTIONAL_PACK_RESIDENT_BUDGET_BYTES * 0.6),
-    };
+      bytes,
+      files: [{ path: "packs/jlens/layers.safetensors", bytes }],
+    });
+    const largeJlens = lensPack("fixture-jlens-large", Math.ceil(OPTIONAL_PACK_RESIDENT_BUDGET_BYTES * 0.6));
     const largeSae = {
       ...sae,
       id: "fixture-sae-large",
       bytes: Math.ceil(OPTIONAL_PACK_RESIDENT_BUDGET_BYTES * 0.6),
     };
-    const alternateLargeJlens = {
-      ...largeJlens,
-      id: "fixture-rlens-large",
-      bytes: Math.ceil(OPTIONAL_PACK_RESIDENT_BUDGET_BYTES * 0.7),
-    };
+    const alternateLargeJlens = lensPack("fixture-rlens-large", Math.ceil(OPTIONAL_PACK_RESIDENT_BUDGET_BYTES * 0.7));
     const ampleWebGpu = {
       ...normalWebGpu,
       limits: {
