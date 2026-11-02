@@ -30,6 +30,9 @@ const PROVENANCE_KEYS = [
 const NODE_KEYS = ["kind", "label", "role"];
 const LABEL = /^[a-z][a-z0-9_-]{0,63}$/;
 const KINDS = new Set([null, "abstract", "concrete", "custom"]);
+// `local`: written for the hosted site (the starter); `bundled`: drowse's own default concept,
+// copied from the submodule by sync-core-concepts.mjs.
+const SOURCES = new Set(["local", "bundled"]);
 
 export async function readCoreManifoldSource(directory, repositoryRoot) {
   const root = resolve(directory);
@@ -59,7 +62,7 @@ export async function readCoreManifoldSource(directory, repositoryRoot) {
     typeof manifest.name !== "string" || !LABEL.test(manifest.name.split(".")[0]) ||
     !/^[a-z][a-z0-9._-]{0,63}$/.test(manifest.name) ||
     typeof manifest.description !== "string" || !manifest.description.trim() ||
-    manifest.source !== "local" || manifest.template_ref !== null ||
+    !SOURCES.has(manifest.source) || manifest.template_ref !== null ||
     !plainObject(manifest.files) || Object.keys(manifest.files).length !== 0
   ) {
     throw new Error("core manifold source is not an unfitted local v10 PCA manifold");
@@ -81,8 +84,9 @@ export async function readCoreManifoldSource(directory, repositoryRoot) {
   ) {
     throw new Error("core manifold tags are invalid");
   }
-  if (!Array.isArray(manifest.nodes) || manifest.nodes.length < 2) {
-    throw new Error("core manifold needs at least two nodes");
+  // 6.0's one-node concepts (deceptive, refusing, manipulative) fold against the neutral mean.
+  if (!Array.isArray(manifest.nodes) || manifest.nodes.length < 1) {
+    throw new Error("core manifold needs at least one node");
   }
   const labels = new Set();
   for (const [index, node] of manifest.nodes.entries()) {
@@ -128,7 +132,10 @@ export async function readCoreManifoldSource(directory, repositoryRoot) {
       statements.some((statement) =>
         typeof statement !== "string" || !statement.trim() || statement.includes("\0") ||
         statement.length > 4_096
-      ) || new Set(statements).size !== statements.length
+      ) ||
+      // A bundled concept is drowse's corpus as native fits it, repeats included (a refusal
+      // answers several prompts alike); a hosted starter's statements are each written once.
+      (manifest.source === "local" && new Set(statements).size !== statements.length)
     ) {
       throw new Error(`core manifold node ${node.label} corpus is invalid`);
     }

@@ -1991,6 +1991,69 @@ function pythonNumberRepr(value: number, forceFloat = false): string {
   return `${negative ? "-" : ""}${coefficient}e${exponent >= 0 ? "+" : "-"}${Math.abs(exponent).toString().padStart(2, "0")}`;
 }
 
+// ---------------------------------------------------------------- core neutral statistics ---
+
+const NEUTRAL_STATISTICS_FORMAT = "drowse-neutral-statistics-v1";
+const NEUTRAL_STATISTICS_RECORD = "neutral-statistics.json";
+const NEUTRAL_STATISTICS_KEYS = ["head_mean", "head_scale", "mid_mean", "neuron_mean", "neuron_scale", "out_mean"];
+
+/** Whether a core pack file is part of its neutral statistics (not a manifold envelope). */
+export function isNeutralStatisticsPath(path: string): boolean {
+  const name = path.split("/").at(-1);
+  return name === NEUTRAL_STATISTICS_RECORD || name === "neutral-statistics.safetensors";
+}
+
+/** The neutral pass a core pack carries (B1 §4.2): unit statistics and the `out` and `mid` means,
+ *  each `[L, ...]` over the runtime's layers, row-major at its logical shape. */
+export interface BrowserNeutralStatistics {
+  readonly nDocuments: number;
+  /** Python's canonical digest of the neutral pass's identity, which a units pack binds. */
+  readonly neutralSha256: string;
+  readonly tensors: ReadonlyMap<string, { readonly shape: readonly number[]; readonly data: Float32Array }>;
+}
+
+/** Read a core pack's neutral statistics (`null` when the pack has none: a model whose blocks
+ *  units do not cover). */
+export async function readNeutralStatistics(
+  artifacts: readonly BrowserModelArtifact[],
+  request: Pick<BrowserModelLoadRequest, "variant" | "signal">,
+): Promise<BrowserNeutralStatistics | null> {
+  const records = artifacts.filter((artifact) => artifact.manifest.path.split("/").at(-1) === NEUTRAL_STATISTICS_RECORD);
+  if (records.length === 0) return null;
+  const invalid = (detail: string): never => {
+    throw instrumentError("CORE_NEUTRAL_STATISTICS_INVALID", `The core pack's neutral statistics are invalid: ${detail}`);
+  };
+  if (records.length !== 1) invalid("more than one record");
+  const record = jsonObject(records[0], await textArtifact(records[0], request.signal));
+  const identity = request.variant.runtimeIdentity;
+  const layers = identity.layerMap.length;
+  const shapes = isRecord(record.shapes) ? record.shapes : invalid("no shapes");
+  const neutral = isRecord(record.neutral) ? record.neutral : invalid("no neutral pass");
+  if (
+    record.format !== NEUTRAL_STATISTICS_FORMAT ||
+    record.runtime_identity_sha256 !== request.variant.runtimeIdentitySha256 ||
+    record.model_layer_count !== layers || !positiveInteger(record.n_documents) ||
+    typeof neutral.sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(neutral.sha256) ||
+    typeof record.tensor_file !== "string" || !safeBasename(record.tensor_file) ||
+    !sameStrings(Object.keys(shapes).sort(), NEUTRAL_STATISTICS_KEYS) ||
+    Object.values(shapes).some((shape) => !Array.isArray(shape) || shape[0] !== layers || !shape.every(positiveInteger)) ||
+    (shapes.mid_mean as number[])[1] !== identity.hiddenSize || (shapes.out_mean as number[])[1] !== identity.hiddenSize
+  ) invalid("its record does not match this runtime");
+  const tensorArtifact = artifactAt(artifacts, siblingPath(records[0].manifest.path, record.tensor_file as string));
+  if (tensorArtifact.manifest.sha256 !== record.tensor_sha256) invalid("the tensor digest");
+  const reader = await tensorArtifactReader(tensorArtifact, request.signal);
+  if (!sameStrings(reader.keys, NEUTRAL_STATISTICS_KEYS)) invalid("unexpected tensors");
+  const tensors = new Map<string, { shape: readonly number[]; data: Float32Array }>();
+  for (const name of NEUTRAL_STATISTICS_KEYS) {
+    const shape = shapes[name] as number[];
+    const stored = shape.length > 2
+      ? [shape.slice(0, -1).reduce((total, size) => total * size, 1), shape[shape.length - 1]]
+      : shape;
+    tensors.set(name, { shape, data: reader.tensor(name, stored).data });
+  }
+  return { nDocuments: record.n_documents as number, neutralSha256: neutral.sha256 as string, tensors };
+}
+
 /** The artifacts hold every file that installs with the pack and nothing outside its catalog
  *  closure (on-demand layer files may be present too: a release validator passes them all). */
 function assertArtifactClosure(pack: BrowserInstrumentPackArtifacts, request: BrowserModelLoadRequest): void {

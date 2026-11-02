@@ -177,6 +177,49 @@ try {
   const lying = await load(async (file) => new File([new Uint8Array(file.bytes + 1)], file.path));
   await assert.rejects(lying.lensMatrix("R", "mid", 1, signal), { code: "INSTRUMENT_PACK_ARTIFACT_MISMATCH" });
   console.log("ok - hosted pack residency: install set, on-demand layers, fetch once, refusals");
+
+  // The core pack's neutral statistics: stacked over layers, deeper tensors stored rank 2.
+  const { isNeutralStatisticsPath, readNeutralStatistics } = await server.ssrLoadModule(
+    "/src/hosted/runtime/browserInstrumentPacks.ts",
+  );
+  assert.equal(isNeutralStatisticsPath("neutral-statistics.json"), true);
+  assert.equal(isNeutralStatisticsPath("manifolds/2048/default-deceptive.drowse"), false);
+  const L = 5;
+  const shapes = {
+    head_mean: [L, 2, 3], head_scale: [L, 2], mid_mean: [L, d], neuron_mean: [L, 6],
+    neuron_scale: [L, 2, 6], out_mean: [L, d],
+  };
+  const statisticsBytes = safetensors(Object.fromEntries(Object.entries(shapes).map(([name, shape]) => {
+    const stored = shape.length > 2 ? [shape[0] * shape[1], shape[2]] : shape;
+    return [name, { shape: stored, data: Array.from({ length: stored[0] * stored[1] }, (_, i) => i) }];
+  })));
+  const statisticsRecord = {
+    format: "drowse-neutral-statistics-v1", runtime_identity_sha256: variant.runtimeIdentitySha256,
+    model_layer_count: L, n_documents: 96, neutral: { sha256: "c".repeat(64) }, shapes,
+    tensor_file: "neutral-statistics.safetensors", tensor_sha256: sha(statisticsBytes),
+  };
+  const coreFile = (path, bytes) => ({
+    manifest: { path, role: "core_pack", bytes: bytes.byteLength, sha256: sha(bytes) },
+    file: new File([bytes], path),
+  });
+  const statistics = await readNeutralStatistics([
+    coreFile("neutral-statistics.json", new TextEncoder().encode(JSON.stringify(statisticsRecord))),
+    coreFile("neutral-statistics.safetensors", statisticsBytes),
+  ], { variant, signal });
+  assert.equal(statistics.nDocuments, 96);
+  assert.deepEqual(statistics.tensors.get("neuron_scale").shape, [L, 2, 6]);
+  assert.equal(statistics.tensors.get("neuron_scale").data.length, L * 12);
+  assert.equal(await readNeutralStatistics([], { variant, signal }), null, "a pack without units has none");
+  await assert.rejects(
+    readNeutralStatistics([
+      coreFile("neutral-statistics.json", new TextEncoder().encode(JSON.stringify({
+        ...statisticsRecord, runtime_identity_sha256: "0".repeat(64),
+      }))),
+      coreFile("neutral-statistics.safetensors", statisticsBytes),
+    ], { variant, signal }),
+    { code: "CORE_NEUTRAL_STATISTICS_INVALID" },
+  );
+  console.log("ok - core neutral statistics read back at their logical shapes and refuse another runtime");
 } finally {
   await server.close();
 }

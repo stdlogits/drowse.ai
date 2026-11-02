@@ -1,0 +1,23 @@
+{
+  "format_version": 10,
+  "name": "deceptive",
+  "description": "One-node concept: deceptive (+) against the model's default answers (0). Steer with negative alpha for more honest than the default.",
+  "fit_mode": "pca",
+  "hyperparams": {
+    "max_dim": 1,
+    "var_threshold": 0.7
+  },
+  "nodes": [
+    {
+      "label": "deceptive",
+      "kind": "abstract",
+      "role": null
+    }
+  ],
+  "files": {},
+  "tags": [
+    "epistemic"
+  ],
+  "source": "bundled",
+  "template_ref": null
+}

@@ -48,7 +48,8 @@ interface BuildRequest {
     drowseVersion: string;
     producerVersion: string;
   };
-  manifold: {
+  /** The core concepts (drowse 6.0's default roster and the hosted starter), fitted in order. */
+  manifolds: Array<{
     namespace: string;
     name: string;
     description: string;
@@ -62,7 +63,7 @@ interface BuildRequest {
       kind: string | null;
       statements: string[];
     }>;
-  };
+  }>;
 }
 
 self.onmessage = async (event: MessageEvent<BuildRequest>) => {
@@ -210,17 +211,21 @@ self.onmessage = async (event: MessageEvent<BuildRequest>) => {
       )].map((byte) => byte.toString(16).padStart(2, "0")).join("");
       const response = await fetch(`/output?context=${context.contextTokens}`, { method: "POST", body: tensorPayload });
       if (!response.ok) throw new Error("failed to return the fitted neutral whitener");
-      const manifoldSha256 = await fitCoreManifold(
-        runtime,
-        event.data.manifold,
-        event.data.runtimeIdentity,
-        identitySha256,
-        context.bindingSha256,
-        context.contextTokens,
-        whiteners,
-        event.data.baselinePrompts,
-        event.data.artifactProducer,
-      );
+      const manifoldSha256: string[] = [];
+      for (const [index, manifold] of event.data.manifolds.entries()) {
+        manifoldSha256.push(await fitCoreManifold(
+          runtime,
+          manifold,
+          index,
+          event.data.runtimeIdentity,
+          identitySha256,
+          context.bindingSha256,
+          context.contextTokens,
+          whiteners,
+          event.data.baselinePrompts,
+          event.data.artifactProducer,
+        ));
+      }
       await runtime.unload();
       fittedContexts.push({ ...context, ridgePerLayer, tensorsSha256, manifoldSha256 });
     }
@@ -243,7 +248,8 @@ self.onmessage = async (event: MessageEvent<BuildRequest>) => {
 
 async function fitCoreManifold(
   runtime: DrowseWebLlmRuntime,
-  manifold: BuildRequest["manifold"],
+  manifold: BuildRequest["manifolds"][number],
+  manifoldIndex: number,
   runtimeIdentity: RuntimeIdentity,
   identitySha256: string,
   contextBindingSha256: string,
@@ -352,7 +358,10 @@ async function fitCoreManifold(
   const archive = await browserFittedFlatDiscoverPack(packInput);
   const bytes = new Uint8Array(await archive.arrayBuffer());
   const archiveSha256 = bytesToHex(sha256(bytes));
-  const response = await fetch(`/manifold-output?context=${contextTokens}`, { method: "POST", body: bytes });
+  const response = await fetch(
+    `/manifold-output?context=${contextTokens}&manifold=${manifoldIndex}`,
+    { method: "POST", body: bytes },
+  );
   if (!response.ok) throw new Error("failed to return the fitted core manifold");
   return archiveSha256;
 }

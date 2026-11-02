@@ -129,7 +129,7 @@ try {
     .filter((name) => name.endsWith(".drowse"));
   assert.ok(archives.length > 0, "core pack must contain a Drowse manifold archive");
   const manifoldSha256ByPath = {};
-  const manifoldIdentities = new Set();
+  const identitiesByContext = new Map();
   for (const path of archives) {
     const archiveBytes = await readFile(resolve(manifoldDirectory, path));
     const verified = await validateDrowseArchive(new Blob([archiveBytes]));
@@ -137,11 +137,35 @@ try {
     assert.equal(verified.fittedArtifacts[0].modelId, lock.sourceRepository);
     assert.equal(verified.fittedArtifacts[0].modelFingerprint, identitySha256);
     assert.equal(verified.fittedArtifacts[0].variant, "raw");
-    manifoldIdentities.add(verified.primaryIdentity.join("/"));
+    const context = path.split("/")[0];
+    const identity = verified.primaryIdentity.join("/");
+    const identities = identitiesByContext.get(context) ?? new Set();
+    assert.ok(!identities.has(identity), `context ${context} repeats ${identity}`);
+    identities.add(identity);
+    identitiesByContext.set(context, identities);
     manifoldSha256ByPath[path] = sha256(archiveBytes);
     coreArtifacts.push(artifact(`manifolds/${path}`, archiveBytes));
   }
-  assert.equal(manifoldIdentities.size, 1, "core pack must contain exactly one manifold identity");
+  // Every context carries the same concepts (6.0's default roster and the hosted starter).
+  const manifoldIdentities = new Set([...identitiesByContext.values()][0] ?? []);
+  assert.deepEqual([...identitiesByContext.keys()].sort(), lock.contextProfiles.map(String).sort());
+  for (const identities of identitiesByContext.values()) {
+    assert.deepEqual([...identities].sort(), [...manifoldIdentities].sort(), "contexts carry different concepts");
+  }
+  // The neutral statistics (`build_hosted_packs.py` core/): unit statistics and the out and mid
+  // means of the neutral pass, when the model's blocks have units.
+  let neutralStatistics = null;
+  try {
+    const recordBytes = await readFile(resolve(directory, "neutral-statistics.json"));
+    const record = JSON.parse(recordBytes.toString("utf8"));
+    coreArtifacts.push(
+      artifact("neutral-statistics.json", recordBytes),
+      artifact(record.tensor_file, await readFile(resolve(directory, record.tensor_file))),
+    );
+    neutralStatistics = { tensorSha256: record.tensor_sha256, nDocuments: record.n_documents };
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
   const actualArtifacts = await collectPackArtifacts(directory);
   assert.deepEqual(actualArtifacts.files.map((file) => file.path).sort(),
     coreArtifacts.map((entry) => entry.manifest.path).sort(),
@@ -171,6 +195,13 @@ try {
       signal: new AbortController().signal,
     });
     assert.equal(compiler.fittingWhiteners().size, lock.layerMap.length);
+    const statistics = await compiler.neutralStatistics(new AbortController().signal);
+    assert.equal(statistics === null, neutralStatistics === null);
+    if (statistics !== null) {
+      for (const [name, tensor] of statistics.tensors) {
+        assert.equal(tensor.shape[0], lock.layerMap.length, `${name} covers every layer`);
+      }
+    }
   }
   process.stdout.write(`${JSON.stringify({
     modelId,
@@ -178,7 +209,8 @@ try {
     identitySha256,
     tensorSha256ByContext,
     manifoldSha256ByPath,
-    manifold: [...manifoldIdentities][0],
+    manifolds: [...manifoldIdentities].sort(),
+    neutralStatistics,
     contexts: lock.contextProfiles,
     layers: lock.layerMap.length,
   }, null, 2)}\n`);

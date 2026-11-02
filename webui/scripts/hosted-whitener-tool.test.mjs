@@ -231,4 +231,33 @@ assert.match(validatorSource, /id: `\$\{modelId\}-\$\{lock\.quantization\}`/);
 assert.match(validatorSource, /readRuntimeLock\(runtimeLockPath\)/);
 assert.doesNotMatch(validatorSource, /structuredHookProfile: "standard-v1"/);
 
+// drowse 6.0's default concepts, as core sources: the checked-in copies equal the pinned drowse's
+// bundled corpora, and every one reads as a core source (three of them one-node).
+const { coreConceptSources, DEFAULT_PROBE_CATEGORIES } = await import("./sync-core-concepts.mjs");
+const sessionSource = await readFile(resolve(repositoryRoot, "drowse/drowse/session/session.py"), "utf8");
+assert.deepEqual(
+  [...sessionSource.match(/PROBE_CATEGORIES = \[([^\]]*)\]/u)[1].matchAll(/"([a-z]+)"/gu)].map((match) => match[1]),
+  [...DEFAULT_PROBE_CATEGORIES],
+  "the core concepts follow drowse's default probe categories",
+);
+const concepts = await coreConceptSources();
+assert.equal(Object.keys(concepts).length, 17);
+for (const [name, files] of Object.entries(concepts)) {
+  const directory = resolve(repositoryRoot, "browser-runtime/release-inputs/core-manifolds", name);
+  for (const [path, text] of Object.entries(files)) {
+    assert.equal(await readFile(resolve(directory, path), "utf8"), text, `${name}/${path} is drowse's (sync-core-concepts.mjs)`);
+  }
+  const concept = await readCoreManifoldSource(directory, repositoryRoot);
+  assert.equal(`${concept.namespace}/${concept.name}`, `default/${name}`);
+}
+for (const name of ["deceptive", "refusing", "manipulative"]) {
+  assert.equal(JSON.parse(concepts[name]["manifold.json"]).nodes.length, 1, `${name} is 6.0's one-node concept`);
+}
+const sources = (await import("node:fs/promises")).readdir;
+assert.deepEqual(
+  (await sources(resolve(repositoryRoot, "browser-runtime/release-inputs/core-manifolds"))).sort(),
+  [...Object.keys(concepts), "welcoming.detached"].sort(),
+  "the release inputs hold the default concepts and the hosted starter only",
+);
+
 console.log("Hosted whitener release-tool checks passed");

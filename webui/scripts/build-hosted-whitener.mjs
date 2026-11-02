@@ -30,8 +30,10 @@ const options = parseArguments(process.argv.slice(2));
 if (options.help) {
   process.stdout.write(
     "Usage: npm run build:hosted:whitener -- MODEL_ID MODEL_DIR MODEL.wasm WEBLLM.js OUTPUT_DIR\n" +
-    "       --manifold-source DIR [--browser-channel chrome] [--timeout-ms 1800000]\n" +
-    "       [--runtime-lock PATH] [--manual-browser]\n",
+    "       --manifold-source DIR [--manifold-source DIR]... [--neutral-statistics DIR]\n" +
+    "       [--browser-channel chrome] [--timeout-ms 1800000] [--runtime-lock PATH] [--manual-browser]\n" +
+    "  --manifold-source  one core concept source each (browser-runtime/release-inputs/core-manifolds/*)\n" +
+    "  --neutral-statistics  the core/ directory build_hosted_packs.py wrote for this runtime\n",
   );
   process.exit(0);
 }
@@ -129,7 +131,16 @@ const runtimeIdentity = {
   hiddenSize: lock.hiddenSize,
   layerMap: [...lock.layerMap],
 };
-const manifold = await readCoreManifoldSource(resolve(options.manifoldSource), repositoryRoot);
+const manifolds = [];
+for (const source of options.manifoldSources) {
+  manifolds.push(await readCoreManifoldSource(resolve(source), repositoryRoot));
+}
+if (new Set(manifolds.map((manifold) => `${manifold.namespace}/${manifold.name}`)).size !== manifolds.length) {
+  throw new Error("the core concept sources repeat a manifold identity");
+}
+const neutralStatistics = options.neutralStatistics === null
+  ? null
+  : await readNeutralStatistics(resolve(options.neutralStatistics));
 const captureRequest = {
   type: "run",
   modelId: options.modelId,
@@ -142,7 +153,7 @@ const captureRequest = {
   quantization: lock.quantization,
   requiredFeatures: lock.quantization === "q4f16_1" ? ["shader-f16"] : [],
   ...executionProfiles,
-  manifold,
+  manifolds,
   artifactProducer,
 };
 
@@ -221,10 +232,15 @@ const server = createHttpServer(async (request, response) => {
     }
     if (request.method === "POST" && url.pathname === "/manifold-output") {
       const context = Number(url.searchParams.get("context"));
-      if (!lock.contextProfiles.includes(context) || manifoldBytesByContext.has(context)) {
-        return send(response, "invalid or repeated context", "text/plain", 400);
+      const index = Number(url.searchParams.get("manifold"));
+      const key = `${context}:${index}`;
+      if (
+        !lock.contextProfiles.includes(context) || !Number.isSafeInteger(index) || index < 0 ||
+        index >= manifolds.length || manifoldBytesByContext.has(key)
+      ) {
+        return send(response, "invalid or repeated context or manifold", "text/plain", 400);
       }
-      manifoldBytesByContext.set(context, await readBoundedBody(request, 2 * 1024 * 1024 * 1024));
+      manifoldBytesByContext.set(key, await readBoundedBody(request, 2 * 1024 * 1024 * 1024));
       return send(response, "ok", "text/plain");
     }
     vite.middlewares(request, response);
@@ -344,9 +360,10 @@ try {
     const context = result.contexts.find((candidate) => candidate.contextTokens === contextTokens);
     if (!context) throw new Error(`browser whitener omitted context ${contextTokens}`);
     const tensorBytes = tensorBytesByContext.get(contextTokens);
-    const manifoldBytes = manifoldBytesByContext.get(contextTokens);
+    const manifoldBytes = manifolds.map((_, index) => manifoldBytesByContext.get(`${contextTokens}:${index}`));
     if (!tensorBytes || sha256(tensorBytes) !== context.tensorsSha256 ||
-        !manifoldBytes || sha256(manifoldBytes) !== context.manifoldSha256 ||
+        !Array.isArray(context.manifoldSha256) || context.manifoldSha256.length !== manifolds.length ||
+        manifoldBytes.some((bytes, index) => !bytes || sha256(bytes) !== context.manifoldSha256[index]) ||
         context.bindingSha256 !== sha256(canonicalJson({
           runtimeIdentitySha256: result.runtimeIdentitySha256, contextTokens,
         })) ||
@@ -367,7 +384,16 @@ try {
     }, null, 2)}\n`);
     const manifoldDirectory = resolve(stage, "manifolds", String(contextTokens));
     await mkdir(manifoldDirectory, { recursive: true });
-    await writeFile(resolve(manifoldDirectory, `${manifold.namespace}-${manifold.name}.drowse`), manifoldBytes);
+    for (const [index, manifold] of manifolds.entries()) {
+      await writeFile(resolve(manifoldDirectory, `${manifold.namespace}-${manifold.name}.drowse`), manifoldBytes[index]);
+    }
+  }
+  if (neutralStatistics !== null) {
+    if (neutralStatistics.record.runtime_identity_sha256 !== result.runtimeIdentitySha256) {
+      throw new Error("the neutral statistics were built for another runtime identity");
+    }
+    await writeFile(resolve(stage, "neutral-statistics.json"), neutralStatistics.recordBytes);
+    await writeFile(resolve(stage, neutralStatistics.record.tensor_file), neutralStatistics.tensorBytes);
   }
   await rename(stage, outputDirectory);
 } catch (error) {
@@ -384,10 +410,11 @@ process.stdout.write(`${JSON.stringify({
   layers: lock.layerMap.length,
   runtimeIdentitySha256: result.runtimeIdentitySha256,
   contexts: result.contexts,
-  manifold: {
+  manifolds: manifolds.map((manifold, index) => ({
     identity: `${manifold.namespace}/${manifold.name}`,
-    sha256ByContext: Object.fromEntries(result.contexts.map(context => [context.contextTokens, context.manifoldSha256])),
-  },
+    sha256ByContext: Object.fromEntries(result.contexts.map(context => [context.contextTokens, context.manifoldSha256[index]])),
+  })),
+  neutralStatistics: neutralStatistics === null ? null : neutralStatistics.record.tensor_sha256,
 }, null, 2)}\n`);
 
 function parseArguments(args) {
@@ -395,7 +422,8 @@ function parseArguments(args) {
   const positional = [];
   const result = {
     browserChannel: "chrome",
-    manifoldSource: null,
+    manifoldSources: [],
+    neutralStatistics: null,
     runtimeLock: null,
     manualBrowser: false,
     timeoutMs: 1_800_000,
@@ -412,14 +440,16 @@ function parseArguments(args) {
     }
     if (
       argument !== "--browser-channel" && argument !== "--manifold-source" &&
-      argument !== "--timeout-ms" && argument !== "--runtime-lock"
+      argument !== "--timeout-ms" && argument !== "--runtime-lock" &&
+      argument !== "--neutral-statistics"
     ) {
       throw new Error(`unexpected argument ${argument}`);
     }
     const value = args[index + 1];
     if (!value || value.startsWith("--")) throw new Error(`missing value for ${argument}`);
     if (argument === "--browser-channel") result.browserChannel = value;
-    else if (argument === "--manifold-source") result.manifoldSource = value;
+    else if (argument === "--manifold-source") result.manifoldSources.push(value);
+    else if (argument === "--neutral-statistics") result.neutralStatistics = value;
     else if (argument === "--runtime-lock") result.runtimeLock = value;
     else result.timeoutMs = Number(value);
     index += 1;
@@ -427,7 +457,7 @@ function parseArguments(args) {
   if (positional.length !== 5) {
     throw new Error("expected MODEL_ID MODEL_DIR MODEL.wasm WEBLLM.js OUTPUT_DIR");
   }
-  if (result.manifoldSource === null) {
+  if (result.manifoldSources.length === 0) {
     throw new Error("--manifold-source is required for a releasable core pack");
   }
   if (!Number.isSafeInteger(result.timeoutMs) || result.timeoutMs < 1_000) {
@@ -439,6 +469,24 @@ function parseArguments(args) {
 
 async function readJson(path) {
   return JSON.parse(await readFile(path, "utf8"));
+}
+
+/** The core statistics `build_hosted_packs.py` wrote (`core/neutral-statistics.*`), checked
+ *  against their own record; the record's runtime identity is checked against the build's. */
+async function readNeutralStatistics(directory) {
+  const recordBytes = await readFile(resolve(directory, "neutral-statistics.json"));
+  const record = JSON.parse(recordBytes.toString("utf8"));
+  if (
+    record?.format !== "drowse-neutral-statistics-v1" || record.tensor_file !== "neutral-statistics.safetensors" ||
+    !/^[0-9a-f]{64}$/u.test(record.tensor_sha256 ?? "") || !/^[0-9a-f]{64}$/u.test(record.runtime_identity_sha256 ?? "")
+  ) {
+    throw new Error("neutral-statistics.json is not a neutral statistics record");
+  }
+  const tensorBytes = await readFile(resolve(directory, record.tensor_file));
+  if (sha256(tensorBytes) !== record.tensor_sha256) {
+    throw new Error("the neutral statistics tensor does not match its record");
+  }
+  return { record, recordBytes, tensorBytes };
 }
 
 async function requireFile(path, label) {
