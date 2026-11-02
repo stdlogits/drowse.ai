@@ -906,7 +906,7 @@ index 0000000..74d754a
 +}
 diff --git a/src/drowse.ts b/src/drowse.ts
 new file mode 100644
-index 0000000..4e00bb6
+index 0000000..42d6c20
 --- /dev/null
 +++ b/src/drowse.ts
 @@ -0,0 +1,1529 @@
@@ -1110,7 +1110,7 @@ index 0000000..4e00bb6
 +/** Descriptor indices the bridge itself reads (the rest is attested by the caller). */
 +export const DROWSE_DESCRIPTOR_UNIT_SITES = 31;
 +export const DROWSE_DESCRIPTOR_HEAD_DIM = 35;
-+export const DROWSE_DESCRIPTOR_PREFILL_CHUNK_SIZE = 52;
++export const DROWSE_DESCRIPTOR_PREFILL_CHUNK_SIZE = 51;
 +export const DROWSE_DESCRIPTOR_CONTEXT_TOKENS = 66;
 +/** Unit capacities of `standard-v4` (B1 §3.1, §3.5). */
 +export const DROWSE_UNIT_MAX_GROUPS = 4;
@@ -10825,10 +10825,10 @@ index 0000000..f54302c
 +});
 diff --git a/tests/drowse.test.ts b/tests/drowse.test.ts
 new file mode 100644
-index 0000000..be8f7e7
+index 0000000..2ae08f7
 --- /dev/null
 +++ b/tests/drowse.test.ts
-@@ -0,0 +1,862 @@
+@@ -0,0 +1,875 @@
 +import { describe, expect, test } from "@jest/globals";
 +import {
 +  DROWSE_HOOK_ABI,
@@ -10876,6 +10876,10 @@ index 0000000..be8f7e7
 +  drowseProgramHasUnits,
 +  drowseUnitSectionLengths,
 +  validateDrowseUnitSection,
++  DROWSE_DESCRIPTOR_CONTEXT_TOKENS,
++  DROWSE_DESCRIPTOR_HEAD_DIM,
++  DROWSE_DESCRIPTOR_PREFILL_CHUNK_SIZE,
++  DROWSE_DESCRIPTOR_UNIT_SITES,
 +} from "../src/drowse";
 +
 +describe("Drowse structured hook profile", () => {
@@ -11000,6 +11004,15 @@ index 0000000..be8f7e7
 +  });
 +  const program = (unit: Partial<ReturnType<typeof section>>) =>
 +    unit as unknown as Parameters<typeof validateDrowseUnitSection>[0];
++
++  test("names the descriptor fields the bridge reads by C0's order", () => {
++    expect([
++      DROWSE_DESCRIPTOR_UNIT_SITES,
++      DROWSE_DESCRIPTOR_HEAD_DIM,
++      DROWSE_DESCRIPTOR_PREFILL_CHUNK_SIZE,
++      DROWSE_DESCRIPTOR_CONTEXT_TOKENS,
++    ]).toEqual([31, 35, 51, 66]);
++  });
 +
 +  test("sizes the tables as HOOK_ABI.md lays them out", () => {
 +    expect(lengths).toEqual({
