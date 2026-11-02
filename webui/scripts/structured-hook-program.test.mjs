@@ -20,9 +20,9 @@ try {
     server.ssrLoadModule("/src/hosted/runtime/structuredHookProgram.ts"),
     server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts"),
   ]);
-  const standardProfile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE;
-  const geometryProfile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V2;
-  const exactReadoutProfile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V3;
+  const standardProfile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4;
+  const geometryProfile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4;
+  const exactReadoutProfile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4;
   const program = hooks.compileStructuredHookProgram(2, [
     {
       affineGroups: [{
@@ -229,7 +229,7 @@ try {
     productionLayerCount,
   ));
   assert.doesNotThrow(() => validateDrowseJlensDictionary({
-    hookAbi: "post-block-residual-v4",
+    hookAbi: "block-sites-v5",
     bindingId: productionBindingId,
     hiddenSize: 2,
     layerIndices: productionLayerIndices,
@@ -439,23 +439,13 @@ try {
   assert.ok(Math.abs(sphereResult.geometry[5] - Math.PI / 2) < 2e-3);
   console.log("ok 6 - sphere geometry and fixed-width GPU denominator lanes remain finite");
 
-  const requirements = profiles.structuredHookMemoryRequirements(
-    standardProfile,
-    2,
-    960,
-  );
-  assert.equal(requirements.curveParameterStride, 671);
-  assert.equal(requirements.hostProgramBytes, 636_704);
-  assert.equal(requirements.gpuInputBytes, 636_736);
-  assert.equal(requirements.maxBufferSize, 245_760);
-  assert.equal(requirements.maxStorageBufferBindingSize, 245_760);
-  assert.equal(requirements.maxStorageBuffersPerShaderStage, 8);
-  assert.equal(requirements.maxComputeWorkgroupStorageSize, 32_768);
   const geometryRequirements = profiles.structuredHookMemoryRequirements(
     geometryProfile,
     2,
     960,
   );
+  assert.equal(geometryRequirements.curveParameterStride, 671);
+  assert.equal(geometryRequirements.maxComputeWorkgroupStorageSize, 32_768);
   assert.equal(geometryRequirements.hostProgramBytes, 2_084_784);
   assert.equal(geometryRequirements.gpuInputBytes, 2_084_816);
   assert.equal(geometryRequirements.maxBufferSize, 737_280);
@@ -497,7 +487,6 @@ try {
   assert.ok(geometryLayout.offsets.every((offset) => (offset * 4) % 4 === 0));
   assert.ok(geometryRequirements.geometryHeaderBytes <= geometryRequirements.maxBufferSize);
   assert.ok(geometryRequirements.geometryPayloadBytes <= geometryRequirements.maxBufferSize);
-  assert.ok(geometryRequirements.hostProgramBytes > requirements.hostProgramBytes);
   const jlensRequirements = profiles.structuredHookMemoryRequirements(
     geometryProfile,
     2,
@@ -512,7 +501,7 @@ try {
     profiles.structuredHookMemoryRequirements(exactReadoutProfile, 2, 960),
     profiles.structuredHookMemoryRequirements(geometryProfile, 2, 960),
   );
-  assert.equal(profiles.resolveStructuredHookProfile("standard-v3"), exactReadoutProfile);
+  assert.equal(profiles.resolveStructuredHookProfile("standard-v4"), exactReadoutProfile);
   assert.throws(
     () => profiles.validateStructuredHookProfile({ ...standardProfile, maxRank: 9 }),
     /modified/,

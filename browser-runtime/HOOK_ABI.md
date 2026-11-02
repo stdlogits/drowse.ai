@@ -10,8 +10,12 @@ Derivations and alternatives are in the parity handoff, `B1-hook-abi-v5.md` (cit
 the toolchain corrections of `B40-toolchain.md` §7. Where the two differ, this document follows
 the decisions taken since: one hook ABI for all nine libraries, full-depth lens packs fetched per
 layer, patterns mandatory (no `standard-v4-nopatterns`), one units entry-point pair on the curved
-superset, and the v1-v3 profiles, `drowse-structured-v2` and the rank-one functions removed once
-v5 libraries exist.
+superset, and one runtime path. As built: the rank-one functions are gone from the MLC overlay
+(`drowse_prefill`/`decode`, the batch pair, the rank-one capture v1 functions), from the bridge
+(rank-one programs and captures, `drowse-structured-v2`, the legacy alias table) and from the
+adapter's runtime, which compiles and installs `drowse-structured-v4` programs under the v4
+profiles only. The v1-v3 profile records stay in `structuredHookProfile.ts` while the lock, the
+catalog and the release tooling still name them (W4 rewrites those); no v5 code path accepts them.
 
 The TypeScript side of this contract, pinned by script tests:
 
@@ -20,6 +24,8 @@ The TypeScript side of this contract, pinned by script tests:
 | `webui/src/hosted/runtime/structuredHookProfile.ts` | ABI names, profiles, `BlockSpec`, descriptor schema 4 | `structured-hook-units.test.mjs` |
 | `webui/src/hosted/runtime/structuredHookProgram.ts` | `drowse-structured-v4`: unit tables, encoder, controls, CPU ablation reference | `structured-hook-units.test.mjs` |
 | `webui/src/hosted/runtime/modelBackend.ts` | `BrowserBlockSitesBackend` (the device surface), typed tensors, replay layouts | `block-sites-backend.test.mjs` |
+| `webui/src/hosted/runtime/webLlmBlockSites.ts`, `webLlmStaticReads.ts` | the surface over the bridge (replay, residents, static reads) | `web-llm-block-sites.test.mjs`; WebGPU `browser-units-goldens.mjs --suite all` |
+| `browser-runtime/forks/units_goldens.py`, `static_reads.py` | the C TVM VM checks against the goldens | `verify-mlc-hook.py --units-fixtures` |
 
 ## 1. Names (§8.1)
 
@@ -361,33 +367,51 @@ the captures and drops the sequence (`cancel()` drops it unread).
 ## 8. Static reads and `exact-readout-v2` (§4)
 
 A Relax function cannot index per-layer parameters by a runtime layer, so every weight primitive
-is all-layers and masked: it loops the layers statically, reads each layer's `(count, indices)`
-slice of a meta table and stores into a shared `[L, …]` output; a layer with count 0 costs one
-empty launch. Weights are dequantized in-kernel through the fork's `config._dequantize`. Every
-value is fp32. The surface member each maps to is in `modelBackend.ts`:
+is all-layers and masked: it loops the layers statically and each layer's launch handles only the
+requests naming that layer (`units [n, 2] = (layer, index)` or `layers [c]`), writing in place into
+one fresh buffer. Weights are read inside the kernel: group-quantized storage is dequantized by the
+quantization config's own `_dequantize`, whose TE expression is inlined into the kernel
+(`drowse_reads._Weight`), so a read sees exactly the values the forward multiplies. Every value is
+fp32. Functions as built (MLC overlay `drowse_reads.py`; adapter `webLlmStaticReads.ts`):
 
-| function | formula | member |
-|---|---|---|
-| `drowse_unit_weight_rows` | neuron write `s·γ_mo ⊙ W_down[:, n]`; read rows `â = γ_mi⊙W_gate[n] / max(‖·‖, 1e-12)`, `b̂` from `W_up`; head write `γ_ao ⊙ W_O[:, h·hd:(h+1)·hd]`; head read `γ_ai ⊙ W_Q^h, W_K^g, W_V^g` raw | `unitWeightRows` |
-| `drowse_head_write_grams` | `G_h = Bᵀ B` | `headWriteGrams`, `residentHeadGrams` |
-| `drowse_layer_write_scores` | `x · (s·γ_mo ⊙ W_down)` | `layerWriteScores` |
-| `drowse_layer_read_scores` | `(â·x, b̂·x)` | `layerReadScores` |
-| `drowse_neuron_contributions` | `act_n · ((g ⊙ γ_mo)·W_down[:, n]) · r_mo · s` | `neuronContributions` |
-| `drowse_head_contributions` | `r_ao · Σ_i ((g ⊙ γ_ao)ᵀ W_O)[h·hd+i] · z[h·hd+i]` | `headContributions` |
-| `drowse_head_write_norms` | `sqrt(max(0, z_hᵀ G_h z_h)) · r_ao` | `headWriteNorms` |
-| `drowse_vocab_rows_times` | `ẽ_v = s_E·E[v] − mean_E` or `γ_f ⊙ W_U[v]`, times an fp32 factor | `vocabRowsTimes` |
-| `drowse_vocab_readout_topk` | `softmax(W_U · N_f(rows))` top-k ≤ 256 (logit desc, id asc), full-vocabulary normalizer | `vocabReadoutTopK` |
-| `drowse_vocab_token_logits` | the same at chosen ids | `vocabTokenLogits` |
-| `drowse_vocab_logit_moments` | skew and kurtosis of `W_U · N_f(row)` over the kept ids | `vocabLogitMoments` |
-| `drowse_footprint_topk` | `z_v = (s_E·(u·E[v]) − u·mean_E) / sqrt(max(uᵀΣ_E u, 1e-30))`, masked `−∞` | `footprintTopK` |
-| `drowse_unembed_cotangent` | `rsqrt(mean(h²)+ε_f) · γ_f ⊙ W_U[v]` | `unembedCotangent` |
-| `drowse_slens_probes` | `z_L(v)` of `u = (h_L − μ_L) @ K_L` per S:out layer | `slensProbes` |
-| `drowse_footprint_directions` | `K_L ẽ_v` per S:out layer | `footprintDirections` |
+| function | inputs → output | formula | member |
+|---|---|---|---|
+| `drowse_neuron_rows` | `units [n, 2]` → `[n, 3, d]` | write `s·γ_mo ⊙ W_down[:, n]`; `â = γ_mi ⊙ W_gate[n] / max(‖·‖, 1e-12)`; `b̂` from `W_up` | `unitWeightRows` (`neuron_write`, `neuron_read`) |
+| `drowse_head_rows` | `units [n, 2]` → `[n, 4, hd, d]` | `(γ_ao ⊙ W_O^h)ᵀ`; raw `γ_ai ⊙ W_Q^h`, `γ_ai ⊙ W_K^g`, `γ_ai ⊙ W_V^g` | `unitWeightRows` (`head_write` transposed back to `[d, hd]` on the host, `head_read`) |
+| `drowse_head_write_grams` | → `[L, H, hd, hd]` | `G_h = Bᵀ B` | `residentHeadGrams` |
+| `drowse_gather_head_grams` | `head_grams`, `heads [n, 2]` → `[n, hd, hd]` | gather | `headWriteGrams`; `bindStructuredProgram` fills `tapGrams` with it |
+| `drowse_layer_write_scores` | `x [c, m, d]`, `layers [c]` → `[c, m, d_ff]` | `x · (s·γ_mo ⊙ W_down)` | `layerWriteScores` |
+| `drowse_layer_read_scores` | `x [c, m, d]`, `layers [c]` → `[c, 2, m, d_ff]` | `(â·x, b̂·x)` | `layerReadScores` |
+| `drowse_neuron_contributions` | `g [c, d]`, `act [c, d_ff]`, `mlp_o [c, d]`, `layers` → `[c, d_ff]` | `act_n · ((g ⊙ γ_mo)·W_down[:, n]) · r_mo · s` | `neuronContributions` |
+| `drowse_head_contributions` | `g`, `z [c, H·hd]`, `attn_o`, `layers` → `[c, H]` | `r_ao · Σ_i ((g ⊙ γ_ao)ᵀ W_O)[h·hd+i] · z[h·hd+i]` | `headContributions` |
+| `drowse_head_write_norms` | `z`, `attn_o`, `layers`, `head_grams` → `[c, H]` | `sqrt(max(0, z_hᵀ G_h z_h)) · r_ao` | `headWriteNorms` |
+| `drowse_unembed_cotangent` | `h_final [n, d]`, `ids [n]` → `[n, d]` | `rsqrt(mean(h²)+ε_f) · γ_f ⊙ W_U[v]` | `unembedCotangent` (refused on a residual library) |
+| `drowse_embedding_rows` | `ids [n]`, `mean_E [d]` → `[n, d]` | `ẽ_v = s_E·E[v] − mean_E` | `vocabRowsTimes` (`embed`), `footprintDirections` |
+| `drowse_unembedding_rows` | `ids [n]` → `[n, d]` | `γ_f ⊙ W_U[v]` | `vocabRowsTimes` (`unembed`) |
+| `drowse_vocab_logits` | `rows [n, d]` → `[n, V]` | `W_U · N_f(row)`, the model's own final norm in its dtype, the product in fp32 (native `full_logits`) | `vocabReadoutTopK`, `vocabTokenLogits`, `vocabLogitMoments` |
+| `drowse_footprint_scores` | `u [n, d]`, `mean_E`, `Σ_E`, mask → `[n, V]` | `(s_E·(u·E[v]) − u·mean_E) / sqrt(max(uᵀΣ_E u, 1e-30))`, masked ids LOWEST | `footprintTopK` |
+| `drowse_logit_moments` | `logits [n, m]`, mask, `flags [1]` → `[n, 2]` | skew, kurtosis over the kept ids (all when `flags[0] = 0`), variance clamped at 1e-30 | `vocabLogitMoments` |
+| `drowse_log_sum_exp` | `x [n, m]` → `[n]` | | `logSumExp`, the readouts' normalizer |
+| `drowse_topk` | `x [n, m]`, `values [n, k]`, `indices [n, k]` in place | exact, value desc, index asc; `k` passes of a workgroup argmax after the previous pick | `topK` (≤ 1024), the readouts (≤ 256) |
+| `drowse_batched_matmul(_nt)` | `a [b, m, k]`, `w [1 or b, k, n]` (`_nt`: `[·, n, k]`) → `[b, m, n]` | | `batchedMatmul`, `lensTransport` (R `x @ Jᵀ` is `_nt`, S `x @ K` plain), `vocabRowsTimes`, `slensProbes` |
+| `drowse_quadratic_form` | `x [b, n]`, `M [1 or b, n, n]` → `[b]` | | `batchedQuadraticForm`, `slensProbes` |
+| `drowse_grouped_row_norms` | `x [n, g, w]` → `[n, g]` | | `groupedRowNorms` |
+| `drowse_chan_merge` | `count [1]`, `mean [d]`, `m2 [d]`, `rows [r, d]` → `(mean, m2)` | Chan's merge of the rows' own two-pass statistics | `chanMerge` |
 
-Weight-free utilities, compiled once under `exact-readout-v2` with dynamic shapes: lens transport
-through resident `[1, d, d]` matrices in either orientation (R `x @ Jᵀ`, S `x @ K`;
-`lensTransport`), batched small matmul, batched quadratic form (`Σ_E` resident), grouped row
-norms, Chan's streamed mean merge, log-sum-exp, exact top-k up to 1024 (value desc, index asc).
+Every v5 library exports the twelve `exact-readout-v2` functions (embedding rows through Chan's
+merge); exactly the libraries with unit sites export the nine unit reads (neuron rows through the
+cotangent; gather included). The bridge fails a load that breaks either rule (`HOOK_ABI_MISMATCH`).
+Compositions run in the adapter as one bridge request each: `drowseBlockSites({ op: "read", steps,
+read })`, a list of library calls whose arguments are host tensors, residents (with an optional
+view) or earlier outputs, and whose named outputs come back with one device sync. `slensProbes`
+centres on the host (`h_L − μ_L`), pulls through `K_L` on the device and divides each probe's dot
+by `sqrt(uᵀΣ_E u)`; `footprintDirections` is `ẽ_v @ K_Lᵀ` per layer; `vocabTokenLogits` reads the
+full logits back and gathers on the host. The device writes −∞ as the lowest finite float (WGSL
+has no infinity literal); the adapter reports it as `-Infinity`.
+
+Fill buffers (the in-place bases and constant inputs) are `drowse_reads.fresh`, a fill kernel
+bound to a runtime input: `op.zeros`/`op.ones` fold to module constants, the VM deduplicates equal
+constants across functions, and an in-place store into one changes every function's copy.
 
 Everything averaged over the vocabulary or the neutral corpus is offline (§4.2): unit statistics,
 `mid` and `out` means, head-norm derivatives `D_query`, `D_key` (applied on the host to the raw
@@ -452,7 +476,7 @@ keeps every unit kernel within 8:
 | activity, heads A (values) | `z`, `attn_o`, `head_grams`, `unit_scales`, `replay_meta`, `head_values` out = 6 (as built: `replay_meta` lets an anatomy-only replay skip the quadratic forms; one workgroup per row, heads looped, barriers in uniform control flow) |
 | activity, heads B (reduce) | `head_values`, `positions`, `replay_meta`, `activity_state`, `traces`, `population` = 6 |
 | pattern K capture | `qkv`, `positions`, `replay_meta`, `pattern_keys`, `pattern_q` = 5 |
-| `drowse_slens_probes` | hidden, means, `K` chunk, layer ids, `ẽ`, `Σ_E`, output = 7 |
+| static-read kernels (§8) | at most 7: `drowse_vocab_rows` and `drowse_vocab_scores` (ids or rows, two weight buffers, gain or shift, offset or mask, factor or flags, out); the layer projections 6; the gathers 5 |
 | `drowse_attention_rows` | `pattern_keys`, `pattern_q`, `rows_meta`, rows out = 4 |
 | `drowse_head_write_gram_L` | dequantized `W_O` (γ applied), `head_grams` in/out = 2 |
 

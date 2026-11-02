@@ -125,7 +125,6 @@ COPY forks/verify-tvm-attention.py /opt/drowse/verify-tvm-attention.py
 RUN python /opt/drowse/verify-tvm-attention.py \
     && python /opt/drowse/verify-mlc-hook.py \
       --mlc-repository /opt/mlc-llm --tvm-repository /opt/tvm \
-      --fixture /opt/drowse/fixtures/post-block-rank-one-v2.json \
     && python /opt/drowse/compile-tiny-webgpu.py \
       --mlc-repository /opt/mlc-llm --tvm-repository /opt/tvm \
       --architecture qwen3 --output /tmp/drowse-tiny-qwen3.wasm \

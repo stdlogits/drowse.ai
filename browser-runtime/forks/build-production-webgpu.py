@@ -41,16 +41,25 @@ TOKENIZER_SOURCE_FILES = [
     "tokenizer_config.json",
 ]
 OPTIONAL_SOURCE_FILES = ["generation_config.json", "LICENSE", "README.md"]
-STANDARD_STRUCTURED_HOOK_PROFILE = "standard-v3"
+#: Hook ABI v5 (HOOK_ABI.md §1, §7): dense gated-MLP blocks compile the unit sites
+#: (`standard-v4`); every other architecture attests the residual descriptor.
+UNIT_ARCHITECTURES = frozenset({"qwen3", "gemma3_text", "gemma3"})
+STRUCTURED_HOOK_PROFILES = ("standard-v4", "standard-v4-residual")
+RUNTIME_ABI = "drowse-web-runtime-v2"
+HOOK_ABI = "block-sites-v5"
+
+
+def structured_hook_profile_for(architecture: str) -> str:
+    return "standard-v4" if architecture in UNIT_ARCHITECTURES else "standard-v4-residual"
 THINKING_DELIMITERS = ("<think>", "</think>")
 PRODUCTION_QUANTIZATIONS = ("q4f16_1", "q4f32_1", "q0f32")
 PRODUCTION_ARCHITECTURES = ("qwen3", "llama", "gemma3_text", "gpt2", "gpt_neox", "qwen3_5")
 BASE_ADAPTER_DIGESTS = {
-    "base_model_adapters.py": "8056482704d65958065f8c32ff46be798c84bb0b49acb636affab7f9555f6fd5",
+    "base_model_adapters.py": "92606e6406f81221e76a30f41f3aa0a08e4acb830fdcdd4b5ec5b4034b974c1c",
 }
 HYBRID_ADAPTER_DIGESTS = {
     **BASE_ADAPTER_DIGESTS,
-    "qwen35_adapter.py": "02f78f5acc870f27d46efd1dea5551dbddf67cd5e18b7280cb71fb0ef0b77fdf",
+    "qwen35_adapter.py": "77865be561dfebca0a888d5f0cb8a060206a28ef0c18ff8300bf759d8df73514",
     "hybrid_state_kernels.py": "7075a4b80b11093503ca5048074095eb41c39cade72edf4fa6a0f69b2fdfb8a3",
 }
 BASE_MODEL_SOURCE_DIGESTS = {
@@ -108,8 +117,9 @@ def parse_args() -> argparse.Namespace:
     convert_parser.add_argument("--model-type", choices=["chat", "base"], default="chat")
     convert_parser.add_argument(
         "--structured-hook-profile",
-        choices=[STANDARD_STRUCTURED_HOOK_PROFILE],
-        default=STANDARD_STRUCTURED_HOOK_PROFILE,
+        choices=STRUCTURED_HOOK_PROFILES,
+        default=None,
+        help="defaults to the architecture's profile; any other value is refused",
     )
     convert_parser.add_argument("--output", required=True, type=Path)
 
@@ -123,11 +133,19 @@ def parse_args() -> argparse.Namespace:
     )
     compile_parser.add_argument(
         "--structured-hook-profile",
-        choices=[STANDARD_STRUCTURED_HOOK_PROFILE],
-        default=STANDARD_STRUCTURED_HOOK_PROFILE,
+        choices=STRUCTURED_HOOK_PROFILES,
+        default=None,
+        help="defaults to the architecture's profile; any other value is refused",
     )
     compile_parser.add_argument("--output", required=True, type=Path)
-    return parser.parse_args()
+    args = parser.parse_args()
+    architecture = getattr(args, "architecture", None)
+    if architecture is not None and hasattr(args, "structured_hook_profile"):
+        expected = structured_hook_profile_for(architecture)
+        if args.structured_hook_profile not in (None, expected):
+            raise SystemExit(f"{architecture} compiles {expected}, not {args.structured_hook_profile}")
+        args.structured_hook_profile = expected
+    return args
 
 
 def validate_toolchain(mlc_repository: Path, tvm_repository: Path) -> None:
@@ -539,8 +557,8 @@ def write_build_manifest(args, source: Path, output: Path) -> None:
     source_files = conversion_source_files(source)
     manifest = {
         "schemaVersion": 1,
-        "runtimeAbi": "drowse-web-runtime-v1",
-        "hookAbi": "post-block-residual-v4",
+        "runtimeAbi": RUNTIME_ABI,
+        "hookAbi": HOOK_ABI,
         "structuredHookProfile": args.structured_hook_profile,
         "thinkingProfile": derive_thinking_profile(source, args.architecture),
         "architecture": args.architecture,
@@ -636,14 +654,14 @@ def verify_build_manifest(
     model: Path,
     architecture: str,
     quantization: str,
-    structured_hook_profile: str = STANDARD_STRUCTURED_HOOK_PROFILE,
+    structured_hook_profile: str | None = None,
 ) -> None:
     manifest = json.loads((model / "drowse-build.json").read_text(encoding="utf-8"))
     expected = {
         "schemaVersion": 1,
-        "runtimeAbi": "drowse-web-runtime-v1",
-        "hookAbi": "post-block-residual-v4",
-        "structuredHookProfile": structured_hook_profile,
+        "runtimeAbi": RUNTIME_ABI,
+        "hookAbi": HOOK_ABI,
+        "structuredHookProfile": structured_hook_profile or structured_hook_profile_for(architecture),
         "thinkingProfile": derive_thinking_profile(model, architecture),
         "architecture": architecture,
         "quantization": quantization,

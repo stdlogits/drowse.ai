@@ -304,7 +304,7 @@ try {
   failsWith("UNIT_OUT_OF_RANGE", { ablations: [{ kind: "head", layer: 4, index: 0, keep: 0, bias: headBias, group: 0 }] });
   assert.throws(() => hooks.encodeStructuredUnitTables(residual, 4, shape, units), /no unit sites/);
 
-  // ---------------------------------- a v4 program without units is v3's buffers (§3.4) ---
+  // ------------------ only the v4 profiles compile; a v4 program without units has no section ---
   const layers = [
     {
       affineGroups: [{ active: true, basis: [[1, 0], [0, 1]], neutral: [0, 0], target: [1, 0], along: 0.5, kappa: [0, 1] }],
@@ -314,20 +314,10 @@ try {
     {},
     {},
   ];
-  const programV3 = hooks.compileStructuredHookProgram(2, layers, v3);
+  assert.throws(() => hooks.compileStructuredHookProgram(2, layers, v3), /compiles standard-v4 programs, not standard-v3/);
   const programV4 = hooks.compileStructuredHookProgram(2, layers, v4);
-  assert.equal(programV3.format, "drowse-structured-v3");
-  assert.equal(programV3.hookAbi, "post-block-residual-v4");
   assert.equal(programV4.format, "drowse-structured-v4");
   assert.equal(programV4.hookAbi, "block-sites-v5");
-  assert.deepEqual(typedKeys(programV4), typedKeys(programV3));
-  for (const key of typedKeys(programV3)) {
-    assert.deepEqual(
-      Buffer.from(programV4[key].buffer, programV4[key].byteOffset, programV4[key].byteLength),
-      Buffer.from(programV3[key].buffer, programV3[key].byteOffset, programV3[key].byteLength),
-      `${key} is byte-identical`,
-    );
-  }
   assert.equal(hooks.withStructuredUnitSection(programV4, shape, { ablations: [], taps: [], controls: [] }), programV4);
   assert.equal(hooks.hasStructuredUnitSection(programV4), false);
   assert.deepEqual(hooks.structuredTapGramHeads(programV4), []);
@@ -342,7 +332,7 @@ try {
     () => hooks.validateStructuredHookProgram({ ...residualProgram, unitShape: shape, ...tables }),
     /rejects any unit section/,
   );
-  assert.throws(() => hooks.validateStructuredHookProgram({ ...programV3, hookAbi: "block-sites-v5" }), /identity/);
+  assert.throws(() => hooks.validateStructuredHookProgram({ ...programV4, hookAbi: "post-block-residual-v4" }), /identity/);
 
   const withUnits = hooks.withStructuredUnitSection(programV4, shape, units);
   assert.equal(hooks.hasStructuredUnitSection(withUnits), true);

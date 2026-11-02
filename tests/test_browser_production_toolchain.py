@@ -306,9 +306,9 @@ def test_verify_build_manifest_closes_and_hashes_every_artifact(tmp_path: Path):
     }
     manifest = {
         "schemaVersion": 1,
-        "runtimeAbi": "drowse-web-runtime-v1",
-        "hookAbi": "post-block-residual-v4",
-        "structuredHookProfile": TOOL.STANDARD_STRUCTURED_HOOK_PROFILE,
+        "runtimeAbi": TOOL.RUNTIME_ABI,
+        "hookAbi": TOOL.HOOK_ABI,
+        "structuredHookProfile": "standard-v4",
         "thinkingProfile": thinking_profile,
         "architecture": "qwen3",
         "quantization": "q4f16_1",
@@ -351,8 +351,8 @@ def test_gemma_unquantized_manifest_requires_precise_normalization_provenance(tm
     tensor_cache = tmp_path / "tensor-cache.json"
     tensor_cache.write_text(json.dumps({"records": [{"records": [{"format": "raw", "dtype": "float32"}]}]}))
     manifest = {
-        "schemaVersion": 1, "runtimeAbi": "drowse-web-runtime-v1",
-        "hookAbi": "post-block-residual-v4", "structuredHookProfile": TOOL.STANDARD_STRUCTURED_HOOK_PROFILE,
+        "schemaVersion": 1, "runtimeAbi": TOOL.RUNTIME_ABI,
+        "hookAbi": TOOL.HOOK_ABI, "structuredHookProfile": "standard-v4",
         "thinkingProfile": None, "architecture": "gemma3_text", "quantization": "q0f32",
         "weightEncoding": "raw", "toolchain": TOOL.toolchain_manifest("gemma3_text"),
         "files": [{"path": tensor_cache.name, "bytes": tensor_cache.stat().st_size,

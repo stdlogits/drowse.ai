@@ -23,7 +23,6 @@ def main() -> None:
     args = parse_args()
     mlc_repository = args.mlc_repository.resolve(strict=True)
     tvm_repository = args.tvm_repository.resolve(strict=True)
-    fixture_path = args.fixture.resolve(strict=True)
     verify_sources(mlc_repository, tvm_repository)
     verify_exact_parallel_topk_cpu_golden()
     ensure_import_roots(mlc_repository, tvm_repository)
@@ -48,7 +47,6 @@ def main() -> None:
             accumulate_jlens_readout,
             accumulate_sae_jump_relu_readout,
             accumulate_sae_readout,
-            apply_rank_one_hook,
             apply_structured_affine_hook,
             apply_structured_curved_hook,
             capture_residual_positions,
@@ -106,83 +104,7 @@ def main() -> None:
         tvm_tensor,
         structured_hook_profile_descriptor,
     )
-    fixture = json.loads(fixture_path.read_text())
-    if fixture.get("hookAbi") != "post-block-residual-v4" or fixture.get("hiddenSize") != 4:
-        raise SystemExit("unexpected rank-one hook fixture identity")
-
-    class HookModule(nn.Module):
-        def forward(
-            self,
-            residual,
-            enabled,
-            basis,
-            neutral,
-            target,
-            along,
-            collapse,
-            probe_basis,
-            probe_neutral,
-        ):
-            return apply_rank_one_hook(
-                residual,
-                0,
-                enabled,
-                basis,
-                neutral,
-                target,
-                along,
-                collapse,
-                probe_basis,
-                probe_neutral,
-            )
-
-    hidden_size = fixture["hiddenSize"]
-    module, _, _ = HookModule().export_tvm(
-        spec={
-            "forward": {
-                "residual": spec.Tensor([1, 1, hidden_size], "float32"),
-                "enabled": spec.Tensor([1], "uint32"),
-                "basis": spec.Tensor([1, hidden_size], "float32"),
-                "neutral": spec.Tensor([1, hidden_size], "float32"),
-                "target": spec.Tensor([1], "float32"),
-                "along": spec.Tensor([1], "float32"),
-                "collapse": spec.Tensor([1], "float32"),
-                "probe_basis": spec.Tensor([1, hidden_size], "float32"),
-                "probe_neutral": spec.Tensor([1, hidden_size], "float32"),
-            }
-        },
-        allow_extern=True,
-    )
-    executable = relax.build(module, target=tvm.target.Target("c"))
-    vm = relax.VirtualMachine(executable, tvm.cpu())
-
-    for case in fixture["cases"]:
-        arrays = [
-            np.asarray(case["residual"], dtype="float32").reshape(1, 1, hidden_size),
-            np.asarray([1], dtype="uint32"),
-            np.asarray(case["basis"], dtype="float32").reshape(1, hidden_size),
-            np.asarray(case["neutral"], dtype="float32").reshape(1, hidden_size),
-            np.asarray([case["target"]], dtype="float32"),
-            np.asarray([case["along"]], dtype="float32"),
-            np.asarray([case["collapse"]], dtype="float32"),
-            np.asarray(case["probeBasis"], dtype="float32").reshape(1, hidden_size),
-            np.asarray(case["probeNeutral"], dtype="float32").reshape(1, hidden_size),
-        ]
-        result, probe = vm["forward"](*(tvm_tensor(value, device=tvm.cpu()) for value in arrays))
-        np.testing.assert_allclose(
-            result.numpy().reshape(hidden_size),
-            np.asarray(case["expectedResidual"], dtype="float32"),
-            rtol=1e-6,
-            atol=1e-7,
-            err_msg=f"{case['name']} residual",
-        )
-        np.testing.assert_allclose(
-            probe.numpy().reshape(-1),
-            np.asarray([case["expectedProbe"]], dtype="float32"),
-            rtol=1e-6,
-            atol=1e-7,
-            err_msg=f"{case['name']} probe",
-        )
+    hidden_size = 4
 
     class CaptureModule(nn.Module):
         def forward(self, residual, positions):
@@ -234,7 +156,7 @@ def main() -> None:
     )
     verify_isolated_readout_goldens(args)
     print(
-        "exact-source MLC rank-one, structured, packed geometry, "
+        "exact-source MLC capture, structured, packed geometry, "
         "multidimensional/periodic/sphere curved, exact J-lens/SAE top-8, "
         "capture, and compiled C/LLVM golden checks passed"
     )
@@ -1431,8 +1353,6 @@ def verify_isolated_model_exports(args) -> None:
                 str(args.mlc_repository),
                 "--tvm-repository",
                 str(args.tvm_repository),
-                "--fixture",
-                str(args.fixture),
                 "--export-only",
                 architecture,
             ],
@@ -1449,8 +1369,6 @@ def verify_isolated_readout_goldens(args) -> None:
             str(args.mlc_repository),
             "--tvm-repository",
             str(args.tvm_repository),
-            "--fixture",
-            str(args.fixture),
             "--readout-only",
         ],
         check=True,
@@ -1474,11 +1392,6 @@ def parse_args() -> argparse.Namespace:
         "--goldens",
         type=Path,
         default=repository_root / "drowse/tests/fixtures/browser",
-    )
-    parser.add_argument(
-        "--fixture",
-        type=Path,
-        default=repository_root / "drowse/tests/fixtures/browser/post-block-rank-one-v2.json",
     )
     return parser.parse_args()
 
