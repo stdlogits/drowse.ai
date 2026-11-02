@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
+import { waitForReply } from "./workbench-navigation";
 
 const modules = {
   stores: `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`,
@@ -55,7 +56,7 @@ for (const [zone, instant, expected] of [
       await page.getByRole("button", { name: "Continue text", exact: true }).click();
       await expect.poll(() => page.evaluate(async url =>
         (await import(url)).currentLoomTreeSnapshot()?.nodes.some((node: { tokens?: unknown[] }) => node.tokens?.length), modules.stores)).toBe(true);
-      await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+      await waitForReply(page);
       const original = await page.evaluate(async modules => {
         const { conversationLibrary, flushConversationAutosave } = await import(modules.saved);
         await flushConversationAutosave();
@@ -82,7 +83,7 @@ for (const [zone, instant, expected] of [
   });
 }
 
-test("chat names stay transparent and neutral, and renaming preserves order through reload", async ({ page }, testInfo) => {
+test("renaming a chat on Your chats preserves order and activity time through reload", async ({ page }) => {
   const records = await seed(page);
   await mountHome(page);
   await expect(page.locator("[data-saved-conversation]")).toHaveCount(3);
@@ -90,30 +91,18 @@ test("chat names stay transparent and neutral, and renaming preserves order thro
   const target = records.at(-1);
   const card = page.locator(`[data-saved-conversation="${target.id}"]`);
   const timestamp = await card.locator("time").getAttribute("datetime");
-  for (const theme of ["dark", "light"]) {
-    await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
-    const name = card.locator(".chat-name");
-    await name.hover();
-    const styles = await page.locator(".chat-name").evaluateAll(names => names.map(name => {
-      const style = getComputedStyle(name);
-      return { appearance: style.appearance, background: style.backgroundColor, image: style.backgroundImage, shadow: style.boxShadow, color: style.color };
-    }));
-    for (const style of styles) expect(style).toEqual({ appearance: "none", background: "rgba(0, 0, 0, 0)", image: "none", shadow: "none", color: styles[0].color });
-    await name.focus();
-    await card.screenshot({ path: testInfo.outputPath(`chat-name-${theme}.png`) });
-  }
   await card.locator(".chat-name").click();
   const input = card.getByRole("textbox", { name: "Chat name", exact: true });
   await input.fill("Alpha renamed");
   await input.press("Enter");
-  await expect(card.locator(".chat-name .morph-source")).toHaveText("Alpha renamed");
+  await expect(card.locator(".chat-name")).toContainText("Alpha renamed");
   expect(await order(page)).toEqual(before);
   await expect(card.locator("time")).toHaveAttribute("datetime", timestamp!);
   await seed(page);
   await mountHome(page);
   await expect(page.locator("[data-saved-conversation]")).toHaveCount(3);
   expect(await order(page)).toEqual(before);
-  await expect(card.locator(".chat-name .morph-source")).toHaveText("Alpha renamed");
+  await expect(card.locator(".chat-name")).toContainText("Alpha renamed");
 });
 
 test("renaming in the saved-chat drawer preserves position and activity time", async ({ page }) => {

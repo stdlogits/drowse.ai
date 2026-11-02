@@ -7,6 +7,9 @@ const devPort = 4176;
 const previewPort = 4177;
 const browserChannel = process.env.PLAYWRIGHT_CHANNEL;
 const runCacheRoot = resolve(tmpdir(), `drowse-playwright-vite-${process.pid}`);
+// PLAYWRIGHT_REUSE_SERVERS=1 attaches to dev and preview servers already listening on the fixed
+// ports (fast spec-by-spec runs); without it every run starts and builds its own.
+const reuseServers = process.env.PLAYWRIGHT_REUSE_SERVERS === "1";
 const desktopFirefox = {
   ...devices["Desktop Firefox"],
   userAgent: undefined,
@@ -38,21 +41,22 @@ export default defineConfig({
     },
     {
       name: "webkit-ios-layout",
-      testMatch: /(base-editor-layout|ios-layout|hosted-onboarding|ui-skill-pass|sae-descriptions|technical-controls|completion-selection|chat-name-stability|loom-search|token-sidebar|mobile-sheet|model-downloads|message-identity|new-chat-start|storage-persistence|theme-default|public-header|saved-chat-menu|contact)\.spec\.ts/,
+      // "ios-layout" also matches every *.ios-layout.spec.ts.
+      testMatch: /(ios-layout|hosted-onboarding|site-pages|chat-library|technical-controls|completion-selection|chat-name-stability|loom-search|token-inspector|mobile-sheet|model-downloads|new-chat-start|storage-persistence|theme-default|public-header|saved-chat-menu|contact|workbench-rooms|sae-descriptions)\.spec\.ts/,
       use: {
         ...devices["iPhone 13"],
       },
     },
     {
       name: "webkit-macos",
-      testMatch: /(base-editor-layout|desktop-browser-compat|storage-persistence|theme-default|contrast-audit\.ios-layout|public-header|saved-chat-menu|contact|mobile-sheet)\.spec\.ts/,
+      testMatch: /(desktop-browser-compat|storage-persistence|theme-default|contrast-audit\.ios-layout|public-header|saved-chat-menu|contact|mobile-sheet|workbench-rooms)\.spec\.ts/,
       use: {
         ...devices["Desktop Safari"],
       },
     },
     {
       name: "firefox-macos",
-      testMatch: /(base-editor-layout|desktop-browser-compat|storage-persistence|theme-default|contrast-audit\.ios-layout|public-header|saved-chat-menu|contact|mobile-sheet)\.spec\.ts/,
+      testMatch: /(desktop-browser-compat|storage-persistence|theme-default|contrast-audit\.ios-layout|public-header|saved-chat-menu|contact|mobile-sheet|workbench-rooms)\.spec\.ts/,
       use: {
         ...desktopFirefox,
       },
@@ -63,14 +67,14 @@ export default defineConfig({
       command: `npm run dev:hosted -- --force --host ${host} --port ${devPort} --strictPort`,
       url: `http://${host}:${devPort}`,
       env: { DROWSE_VITE_CACHE_DIR: resolve(runCacheRoot, "dev") },
-      reuseExistingServer: false,
+      reuseExistingServer: reuseServers,
       timeout: 120_000,
     },
     {
       command: `npm run build:hosted && npm run preview:hosted -- --host ${host} --port ${previewPort} --strictPort`,
       url: `http://${host}:${previewPort}`,
       env: { DROWSE_VITE_CACHE_DIR: resolve(runCacheRoot, "preview") },
-      reuseExistingServer: false,
+      reuseExistingServer: reuseServers,
       timeout: 120_000,
     },
   ],

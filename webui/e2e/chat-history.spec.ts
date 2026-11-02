@@ -1,7 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { resolve } from "node:path";
-
-const storesUrl = `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
+import { storesUrl } from "./workbench-navigation";
 
 test("historical chat text remains selectable and its tokens keyboard accessible", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -29,7 +27,7 @@ test("historical chat text remains selectable and its tokens keyboard accessible
   const old = page.locator(".msg.historical").filter({hasText: "Amberneedle"});
   await expect(old).toHaveCount(1);
   await old.scrollIntoViewIfNeeded();
-  const body = old.locator(".response-body");
+  const body = old.locator(".dw-said");
   expect(await body.evaluate(element => {
     const range = document.createRange(); range.selectNodeContents(element);
     const selection = getSelection()!; selection.removeAllRanges(); selection.addRange(range);
@@ -39,6 +37,7 @@ test("historical chat text remains selectable and its tokens keyboard accessible
   await token.focus();
   await expect(token).toBeFocused();
   await token.press("Enter");
-  await expect(page.getByRole("button", {name: "Full token details", exact: true})).toBeVisible();
+  const inspector = page.getByRole("complementary", {name: "Inspector", exact: true});
+  await expect(inspector.getByRole("region", {name: "Token", exact: true}).getByRole("heading", {name: "Amberneedle"})).toBeVisible();
   expect(await page.evaluate(async url => (await import(url)).currentLoomTreeSnapshot().nodes.find((node: any) => node.id === "history-1").tokens.length, storesUrl)).toBe(5);
 });

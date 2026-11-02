@@ -61,3 +61,30 @@ test("the runtime follows the system when storage is unavailable", async ({ page
   expect(mode).toEqual({ choice: "auto", mode: "light" });
   await expect(page.locator("html")).not.toHaveAttribute("data-theme", /.+/);
 });
+
+test("a chosen theme holds across the landing, the model chooser and the workbench", async ({ page, browserName }) => {
+  test.skip(browserName === "webkit", "The worker fixture needs OPFS, which headless WebKit rejects.");
+  const theme = page.locator("html");
+  const expectTheme = async (chosen: string | null) => {
+    if (chosen) await expect(theme).toHaveAttribute("data-theme", chosen);
+    else await expect(theme).not.toHaveAttribute("data-theme", /.+/);
+  };
+  await page.goto(devUrl);
+  await page.getByRole("button", { name: "Use the dark theme", exact: true }).click();
+  await expectTheme("dark");
+  await page.goto(`${devUrl}/app?fixture=1`);
+  await expect(page.getByRole("heading", { name: "Choose your first model" })).toBeVisible();
+  await expectTheme("dark");
+  await page.getByRole("button", { name: "Download and open", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: /^Compose as / })).toBeVisible();
+  await expectTheme("dark");
+  // The workbench's own button steps on from the stored choice, and the next pages keep it.
+  await page.getByRole("button", { name: /^(Use the (light|dark) theme|Follow the system's theme)$/ }).click();
+  const chosen = await theme.getAttribute("data-theme");
+  expect(chosen).not.toBe("dark");
+  await page.reload();
+  await expect(page.getByRole("textbox", { name: /^Compose as / })).toBeVisible();
+  await expectTheme(chosen);
+  await page.goto(`${devUrl}/credits`);
+  await expectTheme(chosen);
+});

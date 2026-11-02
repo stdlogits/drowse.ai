@@ -1,143 +1,97 @@
-import { chooseFixtureModel } from "./workbench-navigation";
-import { clickWorkspaceAction } from "./workbench-navigation";
-import { openWorkspaceMenu } from "./workbench-navigation";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
-import { resolve } from "node:path";
-import { setAppearance } from "./workbench-navigation";
+import {
+  chooseFixtureModel, composer, devUrl, openFixtureWorkbench, openMenuItem, selectRoom, sendMessage,
+  setAppearance, settle, storesUrl, toolDialog,
+} from "./workbench-navigation";
 
-const devUrl = "http://127.0.0.1:4176";
-const drawerStoreUrl = `/@fs/${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
-
-const sendButton = (page: Page) => page.getByRole("button", {
-  name: /^(Send|Generate reply|Add message)$/,
-});
+// Automated WCAG 2.2 AA checks (axe) over the hosted pages, the 6.0 workbench and its rooms, and
+// every tool dialog, after animations settle.
 
 test.beforeEach(async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
 });
 
 async function expectAccessible(page: Page, include?: string): Promise<void> {
-  let builder = new AxeBuilder({ page }).withTags([
-    "wcag2a",
-    "wcag2aa",
-    "wcag21aa",
-    "wcag22aa",
-  ]);
+  await settle(page);
+  let builder = new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"]);
   if (include) builder = builder.include(include);
   const results = await builder.analyze();
-  expect(
-    results.violations.map(({ id, impact, nodes }) => ({
-      id,
-      impact,
-      nodes: nodes.map((node) => ({
-        target: node.target,
-        html: node.html,
-        failureSummary: node.failureSummary,
-      })),
-    })),
-  ).toEqual([]);
-}
-
-async function openFixtureWorkbench(page: Page): Promise<void> {
-  await page.goto(`${devUrl}/app?fixture=1`);
-  await expect(
-    page.getByRole("heading", { name: "Choose your first model" }),
-  ).toBeVisible();
-  await chooseFixtureModel(page);
-  await page.getByRole("button", { name: "Download and open", exact: true }).click();
-  await expect(page.locator(".shell")).toBeVisible();
+  expect(results.violations.map(({ id, impact, nodes }) => ({
+    id, impact, nodes: nodes.map(node => ({ target: node.target, html: node.html, failureSummary: node.failureSummary })),
+  }))).toEqual([]);
 }
 
 test("landing, onboarding, and workbench meet automated WCAG checks", async ({ page }) => {
   await page.goto(devUrl);
-  await expect(page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse" })).toBeVisible();
+  await expect(page.getByRole("main").getByRole("link", { name: "Open Drowse", exact: true }).first()).toBeVisible();
   await expectAccessible(page);
 
   await page.goto(`${devUrl}/app?fixture=1`);
-  await expect(
-    page.getByRole("heading", { name: "Choose your first model" }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Choose your first model" })).toBeVisible();
   await expectAccessible(page);
 
   await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
-  await expect(page.locator(".shell")).toBeVisible();
+  await expect(composer(page)).toBeVisible();
   await expectAccessible(page);
-
-  await setAppearance(page, "Dark");
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await expectAccessible(page);
-
-  await setAppearance(page, "Light");
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
-  await expectAccessible(page);
+  for (const theme of ["Dark", "Light"]) {
+    await setAppearance(page, theme);
+    await expectAccessible(page);
+  }
   await setAppearance(page, "Dark");
 
   await page.goto(devUrl);
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await expect(page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse" })).toBeVisible();
   await expectAccessible(page);
-
   await page.goto(`${devUrl}/app?fixture=1&choose=1`);
   await expect(page.getByRole("heading", { name: "Models" })).toBeVisible();
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await expectAccessible(page);
 });
 
-test("every hosted command drawer meets automated WCAG checks", async ({ page }) => {
+test("every room of the populated workbench meets automated WCAG checks", async ({ page }) => {
   await openFixtureWorkbench(page);
-  await clickWorkspaceAction(page, "All tools");
-  const palette = page.getByRole("dialog", { name: "Command palette" });
-  await expect(palette).toBeVisible();
-  await expectAccessible(page, '[role="dialog"]');
-
-  const commands = await palette.getByRole("option").evaluateAll((options) =>
-    options.filter((option) =>
-      option.querySelector(".group")?.textContent !== "Controls" &&
-      option.querySelector(".label")?.textContent?.trim() !== "Model settings"
-    )
-      .map((option) => option.querySelector(".label")?.textContent?.trim() ?? ""),
-  );
-  await page.keyboard.press("Escape");
-
-  for (const command of commands) {
-    await clickWorkspaceAction(page, "All tools");
-    const search = page.getByRole("combobox", { name: "Filter commands" });
-    await search.fill(command);
-    await page.getByRole("option", { name: new RegExp(`^${command}\\b`, "i") }).click();
-    const dialog = page.getByRole("dialog").last();
-    await expect(dialog, command).toBeVisible();
-    await expect(dialog.getByText("checking…", { exact: true })).toHaveCount(0);
-    await expectAccessible(page, '[role="dialog"]');
-    await page.keyboard.press("Escape");
+  await sendMessage(page, "Create inspectable context");
+  for (const theme of ["Light", "Dark"]) {
+    await setAppearance(page, theme);
+    for (const room of ["Workbench", "Lens", "Probes", "Artifacts", "Model"]) {
+      await selectRoom(page, room);
+      await expectAccessible(page, "main");
+    }
   }
 });
 
-test("context-launched workbench drawers meet automated WCAG checks", async ({ page }) => {
+test("every Menu dialog meets automated WCAG checks", async ({ page }) => {
   await openFixtureWorkbench(page);
-  await page.getByRole("textbox", { name: /^Compose as / }).fill("Create inspectable context");
-  await sendButton(page).click();
-  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
-
-  const drawers: Array<{ name: string; params?: unknown }> = [
-    { name: "save_conversation" },
-    { name: "load_conversation" },
-    { name: "system_prompt" },
-    { name: "advanced_sampling" },
-    { name: "subspace" },
-    { name: "manifolds" },
-    { name: "transcript" },
-    { name: "token_drilldown", params: { turnIdx: 1, tokenIdx: 0 } },
-    { name: "probe_inspector", params: {} },
-    { name: "node_compare", params: { node_ids: [] } },
+  await sendMessage(page, "Create inspectable context");
+  const dialogs: Array<[item: string, label: string]> = [
+    ["Save chat", "Save chat"], ["Saved chats", "Saved chats"], ["Download chat", "Download chat"],
+    ["Transcript", "Transcript"], ["System prompt", "System prompt"], ["Sampling", "Sampling settings"],
+    ["Help and shortcuts", "Help and shortcuts"], ["Feedback", "Feedback"],
   ];
+  for (const [item, label] of dialogs) {
+    await openMenuItem(page, item);
+    await expect(toolDialog(page, label), item).toBeVisible();
+    await expect(toolDialog(page, label).getByText("checking…", { exact: true })).toHaveCount(0);
+    await expectAccessible(page, '[role="dialog"]');
+    await page.keyboard.press("Escape");
+    await expect(toolDialog(page, label)).toHaveCount(0);
+  }
+  await page.getByRole("button", { name: "Search everything (⌘K)", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Search everything", exact: true })).toBeVisible();
+  await expectAccessible(page, '[role="dialog"]');
+});
 
+test("context-launched tool dialogs meet automated WCAG checks", async ({ page }) => {
+  await openFixtureWorkbench(page);
+  await sendMessage(page, "Create inspectable context");
+  const drawers: Array<{ name: string; params?: unknown }> = [
+    { name: "subspace" }, { name: "manifolds" }, { name: "node_compare", params: { node_ids: [] } },
+  ];
   for (const drawer of drawers) {
     await page.evaluate(async ({ moduleUrl, name, params }) => {
-      const store = await import(moduleUrl);
-      store.openDrawer(name, params);
-    }, { moduleUrl: drawerStoreUrl, ...drawer });
+      (await import(moduleUrl)).openDrawer(name, params);
+    }, { moduleUrl: storesUrl, ...drawer });
     const dialog = page.getByRole("dialog").last();
     await expect(dialog, drawer.name).toBeVisible();
     await expectAccessible(page, '[role="dialog"]');
@@ -147,22 +101,29 @@ test("context-launched workbench drawers meet automated WCAG checks", async ({ p
 
 test("a populated saved-chat library meets automated WCAG checks", async ({ page }) => {
   await openFixtureWorkbench(page);
-  await page.getByRole("textbox", { name: /^Compose as / }).fill("A saved accessibility check");
-  await sendButton(page).click();
-  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
-  await page.getByRole("button", { name: /^(Loom|Branches)$/ }).click();
-  await openWorkspaceMenu(page);
-  await page.getByRole("button", { name: "Show Loom tools", exact: true }).click();
-  const loom = page.locator(".loom-sidebar");
-  await loom.getByRole("button", { name: "Save", exact: true }).click();
-  const saveDrawer = page.getByRole("dialog", { name: "Save chat" });
-  await saveDrawer.getByRole("textbox", { name: "Name" }).fill("Accessible saved chat");
+  await sendMessage(page, "A saved accessibility check");
+  await openMenuItem(page, "Save chat");
+  const save = toolDialog(page, "Save chat");
+  await save.getByRole("textbox", { name: "Name" }).fill("Accessible saved chat");
   await expectAccessible(page, '[role="dialog"]');
-  await saveDrawer.getByRole("button", { name: /^(Save|Update)$/ }).click();
-  await loom.getByRole("button", { name: "Open", exact: true }).click();
-  const libraryDrawer = page.getByRole("dialog", { name: "Saved chats" });
-  await expect(libraryDrawer.getByText("Accessible saved chat", { exact: true })).toBeVisible();
+  await save.getByRole("button", { name: /^(Save|Update)$/ }).click();
+  await expect(save).toHaveCount(0);
+  await openMenuItem(page, "Saved chats");
+  const library = toolDialog(page, "Saved chats");
+  await expect(library.getByText("Accessible saved chat", { exact: true })).toBeVisible();
   await expectAccessible(page, '[role="dialog"]');
-  await libraryDrawer.getByRole("button", { name: "Delete", exact: true }).click();
+  await library.getByRole("button", { name: "Delete", exact: true }).first().click();
   await expectAccessible(page, '[role="dialog"]');
+});
+
+test("closing a tool dialog returns focus to the control that opened it", async ({ page }) => {
+  // Product bug (lanes/A5.md, "dialog focus return"): App.svelte's dialog moves focus in but not
+  // back; after Escape, focus is on <body>.
+  test.fixme(true, "the tool dialog does not restore focus on close; see lanes/A5.md");
+  await openFixtureWorkbench(page);
+  await openMenuItem(page, "Feedback");
+  await expect(toolDialog(page, "Feedback")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(toolDialog(page, "Feedback")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Menu", exact: true })).toBeFocused();
 });

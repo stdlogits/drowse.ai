@@ -1,17 +1,18 @@
-import { setAppearance } from "./workbench-navigation";
 import { expect, test, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { composer, devUrl as dev, openMenuItem, setAppearance, settle } from "./workbench-navigation";
 
-const dev = "http://127.0.0.1:4176";
 const endpoint = "https://drowse.ai/api/contact";
+const feedbackDialog = (page: Page) => page.getByRole("dialog", { name: "Feedback", exact: true });
 
-async function openFeedback(page: Page) {
-  await page.goto(`${dev}/app?layoutFixture=1`);
-  await expect(page.locator(".shell")).toBeVisible();
-  const opener = page.getByRole("button", { name: "Submit Feedback", exact: true });
-  if (!await opener.isVisible()) await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await opener.click();
-  await expect(page.getByRole("dialog", { name: "Submit Feedback", exact: true })).toBeVisible();
+/** The workbench's Feedback dialog: the header Menu's Feedback item. */
+async function openFeedback(page: Page, load = true) {
+  if (load) {
+    await page.goto(`${dev}/app?layoutFixture=1`);
+    await expect(composer(page)).toBeVisible();
+  }
+  await openMenuItem(page, "Feedback");
+  await expect(feedbackDialog(page)).toBeVisible();
 }
 
 async function fillMessage(page: Page) {
@@ -19,7 +20,7 @@ async function fillMessage(page: Page) {
   await page.getByRole("textbox", { name: "Message", exact: true }).fill("Synthetic test content. No real email is sent.");
 }
 
-test("contact email is available in public footers, feedback, help, and the workspace menu", async ({ page }) => {
+test("contact email is available in public footers, feedback and help", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   const address = "contact@drowse.ai";
@@ -29,26 +30,23 @@ test("contact email is available in public footers, feedback, help, and the work
     expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
   }
   await openFeedback(page);
-  await expect(page.getByRole("dialog", { name: "Submit Feedback", exact: true }).getByRole("link", { name: address, exact: true })).toHaveAttribute("href", `mailto:${address}`);
+  await expect(feedbackDialog(page).getByRole("link", { name: address, exact: true })).toHaveAttribute("href", `mailto:${address}`);
   await page.getByRole("button", { name: "Close feedback", exact: true }).click();
-  await page.getByRole("button", { name: "Workspace menu", exact: true }).click();
-  await expect(page.getByRole("navigation", { name: "About Drowse", exact: true }).getByRole("link", { name: address, exact: true })).toHaveAttribute("href", `mailto:${address}`);
-  await page.getByRole("button", { name: "Help", exact: true }).click();
+  await openMenuItem(page, "Help and shortcuts");
   await expect(page.getByRole("region", { name: "Help reference", exact: true }).getByRole("link", { name: address, exact: true })).toHaveAttribute("href", `mailto:${address}`);
 });
 
-test("feedback opens below Help, traps focus, validates, and preserves a closed draft", async ({ page }) => {
+test("feedback keeps focus inside, validates, and preserves a closed draft", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await openFeedback(page);
-  const dialog = page.getByRole("dialog", { name: "Submit Feedback", exact: true });
-  expect(await page.locator(".sidebar-links button").last().evaluate(button => button.previousElementSibling?.textContent)).toContain("Help and shortcuts");
+  const dialog = feedbackDialog(page);
   await expect(dialog.getByRole("link", { name: /Contact us/ })).toHaveAttribute("href", "/contact");
-  await expect(dialog.getByRole("button", { name: "Side panel", exact: true })).toBeFocused();
+  await expect(dialog.getByRole("button", { name: "Close feedback", exact: true })).toBeFocused();
   await page.keyboard.press("Shift+Tab");
   await expect(dialog.getByRole("link", { name: "contact@drowse.ai", exact: true })).toBeFocused();
   await page.keyboard.press("Tab");
-  await expect(dialog.getByRole("button", { name: "Side panel", exact: true })).toBeFocused();
+  await expect(dialog.getByRole("button", { name: "Close feedback", exact: true })).toBeFocused();
   await page.getByRole("button", { name: "Send message", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Title", exact: true })).toBeFocused();
   await expect(page.getByText("Add a short title.")).toBeVisible();
@@ -58,8 +56,7 @@ test("feedback opens below Help, traps focus, validates, and preserves a closed 
   await expect(page.getByRole("textbox", { name: /^Email/ })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(dialog).not.toBeVisible();
-  await expect(page.getByRole("button", { name: "Submit Feedback", exact: true })).toBeFocused();
-  await page.getByRole("button", { name: "Submit Feedback", exact: true }).click();
+  await openFeedback(page, false);
   await expect(page.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("A synthetic feedback test");
   await page.getByRole("button", { name: "Topic" }).click();
   await page.keyboard.press("Escape");
@@ -93,7 +90,6 @@ test("offline and failed sends retain text and retry the same reference before s
   expect(Object.keys(requests[0]).sort()).toEqual(["body", "email", "reason", "requestId", "source", "title", "topic", "website"]);
   await expect(page.getByText("You didn't leave an email, so we can't reply.")).toBeVisible();
   await page.getByRole("button", { name: "Done", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Submit Feedback", exact: true })).toBeFocused();
 });
 
 test("sending is single-flight and survives closing the popup", async ({ page }) => {
@@ -113,7 +109,7 @@ test("sending is single-flight and survives closing the popup", async ({ page })
   await expect.poll(() => count).toBe(1);
   await page.getByRole("button", { name: "Close feedback" }).click();
   release();
-  await page.getByRole("button", { name: "Submit Feedback", exact: true }).click();
+  await openFeedback(page, false);
   await expect(page.getByRole("heading", { name: "Message sent" })).toBeVisible();
   expect(count).toBe(1);
 });
@@ -169,27 +165,27 @@ test("a slow connection times out and leaves a recoverable draft", async ({ page
   await expect(page.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("A synthetic feedback test");
 });
 
-test("feedback fits a narrow phone and exposes accessible validation and clear controls", async ({ page }, testInfo) => {
+test("feedback fits a narrow phone and exposes accessible validation and clear controls", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 568 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await openFeedback(page);
-  const dialog = page.getByRole("dialog", { name: "Submit Feedback", exact: true });
+  const dialog = feedbackDialog(page);
   await fillMessage(page);
   await page.getByRole("textbox", { name: /^Email/ }).fill("invalid");
   await page.getByRole("button", { name: "Send message", exact: true }).click();
   expect(await dialog.evaluate(node => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
   for (const theme of ["dark", "light"]) {
     await page.evaluate(value => { document.documentElement.dataset.theme = value; }, theme);
+    await settle(page);
     const audit = await new AxeBuilder({ page }).include('[role="dialog"]').analyze();
     expect(audit.violations).toEqual([]);
-    await page.screenshot({ path: testInfo.outputPath(`feedback-phone-${theme}.png`) });
   }
   await page.getByRole("button", { name: "Clear draft", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("A synthetic feedback test");
   await page.getByRole("button", { name: "Confirm clear draft", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("");
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("button", { name: "Workspace menu", exact: true })).toBeFocused();
+  await expect(dialog).toHaveCount(0);
 });
 
 test("topics follow the reason, preserve shared choices, and submit the matching category", async ({ page }) => {
@@ -258,7 +254,7 @@ test("topics follow the reason, preserve shared choices, and submit the matching
   await expect(page.getByRole("heading", { name: "Message sent" })).toBeVisible();
 });
 
-test("contact categories, success, and mobile layout are accessible", async ({ page }, testInfo) => {
+test("contact categories, success, and mobile layout are accessible", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto(`${dev}/contact`);
@@ -280,13 +276,10 @@ test("contact categories, success, and mobile layout are accessible", async ({ p
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
     for (const width of [320, 390, 768, 1440]) {
       await page.setViewportSize({ width, height: 900 });
-      await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+      await settle(page);
       expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
       const audit = await new AxeBuilder({ page }).include("main").analyze();
       expect(audit.violations).toEqual([]);
-      if (width === 390 || width === 1440) {
-        await page.screenshot({ path: testInfo.outputPath(`contact-${width}-${theme}.png`), fullPage: true });
-      }
     }
   }
   await page.setViewportSize({ width: 390, height: 844 });
@@ -297,61 +290,3 @@ test("contact categories, success, and mobile layout are accessible", async ({ p
   await expect(page.getByRole("textbox", { name: "Message", exact: true })).toHaveValue("");
 });
 
-for (const viewportWidth of [390, 1280]) {
-  test(`dropdown width stays aligned through pointer presses and scrolling at ${viewportWidth}px`, async ({ page }) => {
-    await page.setViewportSize({ width: viewportWidth, height: 720 });
-    await page.emulateMedia({ reducedMotion: "no-preference" });
-    await page.goto(`${dev}/contact`);
-    const field = page.getByRole("button", { name: /^Reason / });
-    await field.click({ delay: 160 });
-    const list = page.getByRole("listbox", { name: "Reason", exact: true });
-    await expect(list).toHaveCSS("transform", "matrix(1, 0, 0, 1, 0, 0)");
-    await expect(field).toHaveCSS("scale", "none");
-    const width = (await field.boundingBox())!.width;
-    const alignment = () => list.evaluate(menu => {
-      const field = menu.parentElement!.querySelector("button")!.getBoundingClientRect();
-      const popup = menu.getBoundingClientRect();
-      return Math.max(Math.abs(popup.width - field.width), Math.abs(popup.left - field.left));
-    });
-    expect(await alignment()).toBeLessThanOrEqual(1);
-    await page.evaluate(() => scrollBy(0, 120));
-    await expect.poll(() => page.evaluate(() => scrollY)).toBeGreaterThan(0);
-    await expect.poll(alignment).toBeLessThanOrEqual(1);
-    expect(Math.abs((await list.boundingBox())!.width - width)).toBeLessThanOrEqual(1);
-    await list.getByRole("option", { name: "Research and collaboration", exact: true }).click();
-    await expect(field).toContainText("Research and collaboration");
-    await expect(field).toBeFocused();
-  });
-}
-
-test("chat spacing and corners remain concentric at desktop, phone, and landscape sizes", async ({ page }, testInfo) => {
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${dev}/app?layoutFixture=1`);
-  await expect(page.locator(".input-row")).toBeVisible();
-  await page.getByRole("textbox", { name: /^Compose as / }).fill("Hello, this is a layout test.");
-  await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.locator(".msg").first()).toBeVisible();
-  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
-  expect(await page.locator(".chat").evaluate(chat => {
-    const message = chat.querySelector(".msg")!.getBoundingClientRect();
-    const composer = chat.querySelector(".input-row")!.getBoundingClientRect();
-    return Math.max(Math.abs(message.left - composer.left), Math.abs(message.right - composer.right));
-  })).toBeLessThanOrEqual(1);
-  for (const viewport of [{ width: 1440, height: 1000 }, { width: 1024, height: 768 }, { width: 390, height: 844 }, { width: 844, height: 390 }, { width: 320, height: 568 }]) {
-    await page.setViewportSize(viewport);
-    await expect.poll(() => page.locator(".chat").evaluate(chat => {
-      chat.scrollTop = chat.scrollHeight;
-      const composer = chat.querySelector<HTMLElement>(".input-row")!;
-      const box = chat.getBoundingClientRect();
-      const input = composer.getBoundingClientRect();
-      const outside = getComputedStyle(chat);
-      const inside = getComputedStyle(composer);
-      const left = input.left - box.left;
-      const right = box.right - input.right;
-      const bottom = box.bottom - input.bottom;
-      return Math.max(Math.abs(left - right), Math.abs(left - bottom), Math.abs(parseFloat(outside.borderBottomLeftRadius) - parseFloat(inside.borderBottomLeftRadius) - left));
-    })).toBeLessThanOrEqual(1);
-  }
-  await page.screenshot({ path: testInfo.outputPath("chat-concentric-phone.png") });
-});

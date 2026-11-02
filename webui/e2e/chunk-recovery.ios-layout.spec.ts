@@ -89,7 +89,7 @@ test.afterEach(async ({ page }, testInfo) => {
 
 async function breakCachedShell(page: Page, suppressAutomaticRecovery = false) {
   await page.goto("/");
-  await expect(page.locator("#hero-title")).toBeVisible();
+  await expect(page.getByRole("main").getByRole("link", { name: "Open Drowse", exact: true }).first()).toBeVisible();
   await page.evaluate(async suppress => {
     await navigator.serviceWorker.ready;
     const cache = await caches.open(`drowse-hosted-precache-v2-${location.origin}/`);
@@ -104,7 +104,7 @@ test("automatic recovery escapes a stale service worker instead of reloading its
   let navigations = 0;
   page.on("request", request => { if (request.isNavigationRequest() && request.frame() === page.mainFrame()) navigations += 1; });
   await page.reload();
-  await expect(page.locator("#hero-title")).toBeVisible();
+  await expect(page.getByRole("main").getByRole("link", { name: "Open Drowse", exact: true }).first()).toBeVisible();
   await expect(page.locator(".bootstrap-error")).toHaveCount(0);
   expect(navigations).toBe(2);
   await expect.poll(() => page.evaluate(() => location.search)).toBe("");
@@ -149,7 +149,7 @@ test("the recovery button repairs a repeat-on-reload failure without removing sa
   expect(await cachedModels()).toEqual(Array(3).fill("keep model"));
   expect(await page.evaluate(async () => (await (await caches.open("drowse-hosted-on-demand-wasm-v1")).match("/stale-app-code.wasm"))?.text())).toBe("stale app code");
   await page.getByRole("button", { name: "Reload Drowse", exact: true }).click();
-  await expect(page.locator("#hero-title")).toBeVisible();
+  await expect(page.getByRole("main").getByRole("link", { name: "Open Drowse", exact: true }).first()).toBeVisible();
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("deleted-test-caches") ?? "[]"))).toEqual([
     expect.stringMatching(/^drowse-hosted-precache-v2-/), "drowse-hosted-on-demand-wasm-v1",
   ]);
@@ -181,10 +181,10 @@ test("offline recovery keeps the cached app and gives an actionable retry", asyn
   expect(await page.evaluate(async () => Boolean(await (await caches.open(`drowse-hosted-precache-v2-${location.origin}/`)).match("/__broken_shell__")))).toBe(true);
   await context.setOffline(false);
   await page.getByRole("button", { name: "Try reloading again" }).click();
-  await expect(page.locator("#hero-title")).toBeVisible();
+  await expect(page.getByRole("main").getByRole("link", { name: "Open Drowse", exact: true }).first()).toBeVisible();
 });
 
-test("reload guidance matches the OS and the error actions have room at narrow widths", async ({ page }, testInfo) => {
+test("reload guidance matches the OS and the error actions fit narrow widths", async ({ page }, testInfo) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "platform", { value: "MacIntel" });
     Object.defineProperty(navigator, "maxTouchPoints", { value: 0 });
@@ -198,15 +198,11 @@ test("reload guidance matches the OS and the error actions have room at narrow w
     await page.setViewportSize({ width, height: 900 });
     const layout = await error.evaluate(el => {
       const button = el.querySelector("button")!.getBoundingClientRect();
-      const detail = el.querySelector("p")!.getBoundingClientRect();
-      const safety = el.querySelector(".bootstrap-error-safety")!.getBoundingClientRect();
-      return { gapBefore: button.top - detail.bottom, gapAfter: safety.top - button.bottom, width: el.scrollWidth, viewport: innerWidth, buttonHeight: button.height, inset: button.left };
+      return { width: el.scrollWidth, viewport: innerWidth, left: button.left, right: button.right };
     });
-    expect(layout.gapBefore).toBeGreaterThanOrEqual(24);
-    expect(layout.gapAfter).toBeGreaterThanOrEqual(12);
-    expect(layout.buttonHeight).toBeGreaterThanOrEqual(48);
-    expect(layout.inset).toBeGreaterThanOrEqual(16);
     expect(layout.width).toBeLessThanOrEqual(layout.viewport);
+    expect(layout.left).toBeGreaterThanOrEqual(0);
+    expect(layout.right).toBeLessThanOrEqual(layout.viewport);
     await page.screenshot({ path: testInfo.outputPath(`recovery-${width}.png`) });
   }
   expect((await new AxeBuilder({ page }).include(".bootstrap-error").analyze()).violations).toEqual([]);

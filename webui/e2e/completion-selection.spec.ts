@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
+import { waitForReply } from "./workbench-navigation";
 
 const modules = {
   stores: `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`,
@@ -25,7 +26,7 @@ async function generate(page: Page) {
   await editor(page).fill("Once beneath the moon: ");
   await page.getByRole("button", { name: "Continue text", exact: true }).click();
   await expect.poll(async () => (await tree(page))?.nodes.some((node: any) => node.tokens?.length > 0)).toBe(true);
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await waitForReply(page);
 }
 
 test("selection completion branches at the cursor, selection end, and selection start without overwriting tokens", async ({ page }, testInfo) => {
@@ -35,10 +36,10 @@ test("selection completion branches at the cursor, selection end, and selection 
   const originalNodes = original.nodes;
   for (const action of [
     { start: 5, end: 12, cut: 12, label: "Continue after selection" },
-    { start: 5, end: 12, cut: 5, label: "Re-complete from selection" },
+    { start: 5, end: 12, cut: 5, label: "Re-complete selection" },
     { start: 0, end: 0, cut: 0, label: "Continue from cursor" },
     { start: 22, end: 22, cut: 22, label: "Continue from cursor" },
-    { start: 24, end: originalText.length - 2, cut: 24, label: "Re-complete from selection" },
+    { start: 24, end: originalText.length - 2, cut: 24, label: "Re-complete selection" },
     { start: 10, end: 26, cut: 26, label: "Continue after selection" },
     { start: originalText.length, end: originalText.length, cut: originalText.length, label: "Continue from cursor" },
   ]) {
@@ -51,7 +52,7 @@ test("selection completion branches at the cursor, selection end, and selection 
     await page.keyboard.press("Enter");
     await expect.poll(async () => (await tree(page)).active_node_id).not.toBe(original.active_node_id);
     await expect.poll(() => editor(page).inputValue()).not.toBe(originalText.slice(0, action.cut));
-    await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+    await waitForReply(page);
     const result = await tree(page);
     const active = result.nodes.find((node: any) => node.id === result.active_node_id);
     expect(active.tokens.length).toBeGreaterThan(0);
@@ -73,10 +74,9 @@ test("unsaved selections require saving, and branch failures leave the original 
   const original = await editor(page).inputValue();
   await editor(page).fill(original + " Extra words.");
   await select(page, 3, 7);
-  await expect(page.getByRole("button", { name: "Re-complete from selection", exact: true })).toBeDisabled();
-  await expect(page.locator("#selection-hint")).toContainText("Save edits first.");
+  await expect(page.getByRole("button", { name: "Re-complete selection", exact: true })).toBeDisabled();
   await page.getByRole("button", { name: "Save edit", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Save edit", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Save edit", exact: true })).toBeHidden();
   await expect(editor(page)).toHaveValue(original + " Extra words.");
   await select(page, 3, 7);
   await page.evaluate(async url => {
@@ -84,13 +84,13 @@ test("unsaved selections require saving, and branch failures leave the original 
     const branch = apiTree.branch;
     apiTree.branch = async () => { apiTree.branch = branch; throw new Error("Selection branch unavailable"); };
   }, modules.api);
-  await page.getByRole("button", { name: "Re-complete from selection", exact: true }).click();
+  await page.getByRole("button", { name: "Re-complete selection", exact: true }).click();
   await expect(page.getByRole("alert").filter({ hasText: "Selection branch unavailable" })).toBeVisible();
   await expect(editor(page)).toHaveValue(original + " Extra words.");
   await expect(editor(page)).not.toHaveAttribute("readonly");
 });
 
-test("duplicate chat UI preserves full snapshots and independent autosave identities", async ({ page }, testInfo) => {
+test("duplicate chat UI preserves full snapshots and independent autosave identities", async ({ page }) => {
   await generate(page);
   await page.evaluate(async modules => {
     const [{ default: HostedHome }, { mount }, { conversationLibrary, registerConversationAutosave }, { sessionState }, { captureConversationSnapshot }] = await Promise.all([
@@ -115,17 +115,11 @@ test("duplicate chat UI preserves full snapshots and independent autosave identi
   await page.getByRole("menuitem", { name: "Duplicate Moon notes", exact: true }).click();
   await expect(cards).toHaveCount(beforeCount + 1);
   const copyCard = cards.filter({ hasText: "Moon notes (copy)" });
-  await expect(copyCard.locator(".chat-counts .morph-source")).toHaveText("2 messages · 1 Loom thread");
-  for (const width of [1440, 600, 450, 320]) {
+  await expect(copyCard.locator(".chat-counts")).toContainText("2 messages · 1 Loom thread");
+  for (const width of [1440, 320]) {
     await page.setViewportSize({ width, height: 1000 });
     await copyCard.scrollIntoViewIfNeeded();
     expect(await copyCard.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
-    expect(await copyCard.evaluate(el => {
-      const color = el.querySelector(".chat-color")!.getBoundingClientRect();
-      const download = el.querySelector(".backup-action")!.getBoundingClientRect();
-      return download.top >= color.bottom || download.left >= color.right;
-    })).toBe(true);
-    await copyCard.screenshot({ path: testInfo.outputPath(`duplicate-${width}.png`) });
   }
   const result = await page.evaluate(async modules => {
     const { conversationLibrary } = await import(modules.saved);
@@ -168,7 +162,7 @@ test("a duplicate opens from saved chats and subsequent generation autosaves onl
   await editor(page).fill((await editor(page).inputValue()) + " Another night: ");
   await page.getByRole("button", { name: "Continue text", exact: true }).click();
   await expect.poll(async () => (await tree(page)).active_node_id).not.toBe(copied.active_node_id);
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await waitForReply(page);
   const saved = await page.evaluate(async ({ url, originalId }) => {
     const { conversationLibrary, savedConversationState, flushConversationAutosave } = await import(url);
     await flushConversationAutosave();

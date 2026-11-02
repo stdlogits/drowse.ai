@@ -69,7 +69,7 @@ async function chats(page: Page) {
   });
   await page.getByRole("link", { name: "Chats", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
-  await page.locator(".hero-actions").getByRole("button", { name: "New chat", exact: true }).click();
+  await page.getByRole("region", { name: "Your chats", exact: true }).getByRole("button", { name: "New chat", exact: true }).click();
   await page.locator('[data-model-id="qwen3-1.7b-fixture"] .model-choice-button').click();
   await expect(page.getByRole("heading", { name: "Start a new chat with Qwen3 1.7B?", exact: true })).toBeVisible();
   await page.evaluate(() => {
@@ -116,7 +116,7 @@ test("a fresh same-model chat discards the previous tree, status, and hidden gen
     applyTreeSnapshot({ ...tree, root_id: root.id, active_node_id: user.id, rev: 12,
       nodes: [root, user], children_of: { [root.id]: [user.id], [user.id]: [] } });
     Object.assign(samplingState, { stop_sequences: "Hello", seed: 42, assistant_role: "wrongrole" });
-    steerRack.customExpression = "0.5 jlens/fake";
+    steerRack.readOnlyRecipe = "0.5 jlens/fake";
     Object.assign(genStatus, { startedAt: 1, tokensSoFar: 17, finishReason: "stop" });
   }, `/@fs${resolve("../drowse/webui/src")}`);
   await page.getByRole("button", { name: "Start new chat", exact: true }).click();
@@ -132,7 +132,7 @@ test("a fresh same-model chat discards the previous tree, status, and hidden gen
     ]);
     return { stop: samplingState.stop_sequences, seed: samplingState.seed,
       role: samplingState.assistant_role, defaultRole: sessionState.info.default_assistant_role ?? "assistant",
-      steering: steerRack.customExpression, defaultSteering: sessionState.info.default_steering };
+      steering: steerRack.readOnlyRecipe, defaultSteering: sessionState.info.default_steering };
   }, `/@fs${resolve("../drowse/webui/src")}`);
   expect(fresh.stop).toBe("");
   expect(fresh.seed).toBeNull();

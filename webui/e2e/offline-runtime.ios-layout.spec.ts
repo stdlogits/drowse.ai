@@ -4,7 +4,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import ts from "typescript";
 
-test("first-visit model setup caches the engine for a fresh worker during an origin outage", async ({ page, context, outageOrigin }) => {
+test("first-visit model setup caches the engine for a fresh worker during an origin outage", async ({ page, context, outageOrigin, browserName }) => {
   test.setTimeout(180_000);
   const assets = await readdir(resolve("dist-hosted/assets"));
   const workerName = assets.find(name => /^browser\.worker-.*\.js$/u.test(name))!;
@@ -51,5 +51,11 @@ test("first-visit model setup caches the engine for a fresh worker during an ori
   await outageOrigin.disconnect();
   const offlinePage = await context.newPage();
   await offlinePage.goto(`${outageOrigin.url}/app?outage=1`, { waitUntil: "domcontentloaded" });
+  // The app starts its worker on model load, after the page has loaded. In WebKit a module worker
+  // made in the instant after DOMContentLoaded sometimes misses the service worker (its fetches go
+  // to the dead origin although the page reports a controller; 3 of 6 runs), so start it from a
+  // loaded page, as the app does.
+  await offlinePage.waitForLoadState("load");
+  expect(await offlinePage.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
   await importEngine(await startWorker(offlinePage));
 });

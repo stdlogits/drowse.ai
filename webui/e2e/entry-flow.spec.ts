@@ -1,9 +1,7 @@
-import { chooseFixtureModel } from "./workbench-navigation";
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
-import { returnToChats } from "./workbench-navigation";
+import { chooseFixtureModel, composer, devUrl, returnToChats } from "./workbench-navigation";
 
-const devUrl = "http://127.0.0.1:4176";
 const hostedHomeModule = `/@fs/${resolve("src/hosted/ui/HostedHome.svelte")}`;
 
 test("first use chooses a model and later visits open the chat home", async ({ page }) => {
@@ -13,7 +11,7 @@ test("first use chooses a model and later visits open the chat home", async ({ p
   await expect(page.getByRole("heading", { name: "This device is ready" })).toHaveCount(0);
   await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
-  await expect(page.locator(".shell")).toBeVisible();
+  await expect(composer(page)).toBeVisible();
   await expect.poll(() => new URL(page.url()).searchParams.get("reopen")).toBe("1");
 
   await returnToChats(page);
@@ -21,7 +19,7 @@ test("first use chooses a model and later visits open the chat home", async ({ p
 
   await page.goto(`${devUrl}/app?fixture=1`);
   await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
-  await expect(page.locator(".home-shell .hero").getByRole("button", { name: "New chat", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "New chat", exact: true }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: /^Continue with / })).toBeVisible();
   await expect(page.getByRole("heading", { name: "This device is ready" })).toHaveCount(0);
 
@@ -59,10 +57,10 @@ test("missing model files preserve saved chats and offer a matching re-download"
       role_label: null, thinking_text: null, aggregate_readings: {}, applied_steering: null,
       finish_reason: null, starred: false, notes: "", created_at: Date.now(), edited_at: null,
       edit_count: 0, mean_logprob: null, mean_surprise: null, tokens: null,
-      thinking_tokens: null, raw_token_ids: null,
+      thinking_tokens: null, raw_token_ids: null, aggregate_measurements: null, prompt_capture: null,
     };
     const snapshot = {
-      version: 7,
+      version: 8,
       savedAt: "2026-09-04T12:00:00.000Z",
       model_id: "qwen3-1.7b-fixture",
       session_id: "default",
@@ -84,7 +82,7 @@ test("missing model files preserve saved chats and offer a matching re-download"
       },
       steerRack: [],
       subspaceAlong: 0.5,
-      customSteeringExpression: null,
+      readOnlyRecipe: null,
       probeRack: { sortMode: "name", active: [], entries: [] },
       highlightState: { target: null, compareTarget: null, compareTwo: false, smoothBlend: false },
       samplingState,
@@ -128,7 +126,7 @@ test("missing model files preserve saved chats and offer a matching re-download"
   await expect(card).toContainText("Still here");
   await expect(card).toContainText("Download required");
   await card.getByRole("button", { name: "Download model", exact: true }).click();
-  await expect(page.locator(".shell")).toBeVisible();
+  await expect(composer(page)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Models", exact: true })).toHaveCount(0);
   await expect(page.locator(".msg").filter({ hasText: "Saved prompt" })).toBeVisible();
 });

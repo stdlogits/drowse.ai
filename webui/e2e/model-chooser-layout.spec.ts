@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 
-test("new chat separates all model types without clipping and keeps downloads inline", async ({ page }, testInfo) => {
+test("new chat separates all model types without clipping and keeps downloads inline", async ({ page }) => {
   test.setTimeout(60_000);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("http://127.0.0.1:4176/outside-the-workbench");
@@ -44,7 +44,7 @@ test("new chat separates all model types without clipping and keeps downloads in
       onChooseModels(id) { document.body.dataset.chosen = id; },
     } });
   }, `/@fs/${resolve("src/hosted/ui/HostedHome.svelte")}`);
-  await page.locator(".hero-actions").getByRole("button", { name: "New chat", exact: true }).click();
+  await page.getByRole("region", { name: "Your chats", exact: true }).getByRole("button", { name: "New chat", exact: true }).click();
   const chooser = page.getByRole("region", { name: "Choose a model", exact: true });
   await expect(chooser.getByRole("region", { name: "Chat models", exact: true }).getByRole("button")).toHaveCount(4);
   await expect(chooser.getByRole("region", { name: "Base models", exact: true }).locator(".model-choices button")).toHaveCount(4);
@@ -60,26 +60,21 @@ test("new chat separates all model types without clipping and keeps downloads in
         const firstGroup = document.querySelector(".model-choice-group").getBoundingClientRect();
         return { clipped, overflow: document.documentElement.scrollWidth > innerWidth + 1, headingAboveChoices: heading.bottom <= firstGroup.top };
       })).toEqual({ clipped: [], overflow: false, headingAboveChoices: true });
-      if (width === 320 || width === 1440) await chooser.screenshot({ path: testInfo.outputPath(`chooser-${theme}-${width}.png`) });
     }
   }
-  const help = chooser.getByRole("button", { name: "What are base models?" });
-  const tooltip = page.getByRole("tooltip").filter({ hasText: "Base models predict what comes next" });
+  // The base-model note is a Ledger tip: it shows on hover and on keyboard focus.
+  const help = chooser.getByRole("note").filter({ hasText: "What are base models?" });
+  const tip = page.locator("#tip.shown");
   await help.hover();
-  await expect(tooltip).toBeVisible();
-  await help.click();
-  await expect(tooltip).toBeVisible();
-  await page.keyboard.press("Escape");
+  await expect(tip).toContainText("Base models predict what comes next");
   await page.mouse.move(0, 0);
-  await expect(tooltip).toBeHidden();
+  await expect(tip).toHaveCount(0);
   await chooser.getByRole("button", { name: "Qwen3 4B", exact: true }).focus();
   await page.keyboard.press("Tab");
   await expect(help).toBeFocused();
-  await expect(tooltip).toBeVisible();
-  await page.keyboard.press("Enter");
-  await expect(tooltip).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(tooltip).toBeHidden();
+  await expect(tip).toContainText("Base models predict what comes next");
+  await help.blur();
+  await expect(tip).toHaveCount(0);
   const download = chooser.locator('[data-model-id="gemma-chat"] .model-choice-button');
   await download.click();
   await expect(download).toContainText("Select again to confirm");
