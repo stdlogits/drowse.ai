@@ -475,8 +475,9 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    // This vendored ESM bundle must not outlive an inference-runtime update in Vite's cache.
-    exclude: ["@drowse/web-llm"],
+    // This vendored ESM bundle must not outlive an inference-runtime update in Vite's cache. Ledger
+    // ships TypeScript and .svelte sources the optimizer can't strip, so it goes through the plugins.
+    exclude: ["@drowse/web-llm", "@stdlogits/ledger"],
     include: [
       "@noble/hashes/blake2.js",
       "@noble/hashes/sha2.js",
