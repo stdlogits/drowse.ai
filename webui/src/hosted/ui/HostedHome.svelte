@@ -23,6 +23,7 @@
     queueConversationOpen,
   } from "../../../../drowse/webui/src/lib/conversationOpen";
   import { readEntryMemory } from "./entryMemory";
+  import { NO_LEGACY_CHATS, dismissLegacyChats, downloadLegacyChats, findLegacyChats, legacyChatsTitle, legacyNoticeShown, readDismissedLegacyChats, type LegacyChats } from "./legacyChats";
   import type { HostedModelOption, HostedShellController, HostedShellSnapshot } from "../../../../drowse/webui/src/lib/shell";
 
   let {
@@ -48,6 +49,12 @@
 
   let conversations: SavedConversationSummary[] = $state([]);
   let issues: SavedConversationIssue[] = $state([]);
+  // Chats saved before Drowse 6.0 (pre-v8 library rows and stashed 5.x autosaves): one notice offers
+  // them as a file, so the old rows leave the list of unreadable chats.
+  let legacyChats = $state.raw<LegacyChats>(NO_LEGACY_CHATS);
+  let legacyDismissed = $state.raw(readDismissedLegacyChats());
+  let legacyDownloading = $state(false);
+  let legacyResult = $state("");
   let loading = $state(true);
   let error = $state<string | null>(null);
   let openingId = $state<string | null>(null);
@@ -134,6 +141,9 @@
   // still lists chats, but open and recovery actions wait for the check.
   const deviceChecking = $derived(snapshot.phase === "idle" || snapshot.phase === "checking");
   const visibleConversations = $derived(conversations.filter(record => !pendingDeleteIds.has(record.id)));
+  const legacyIds = $derived(new Set(legacyChats.conversationIds));
+  const unreadable = $derived(issues.filter((issue) => !legacyIds.has(issue.id)));
+  const legacyShown = $derived(legacyNoticeShown(legacyChats, legacyDismissed));
   const missingChats = $derived(
     deviceChecking ? [] : visibleConversations.filter((record) => modelForConversation(record)?.setupComplete !== true),
   );
@@ -363,11 +373,39 @@
       const result = await conversationLibrary.listSummaries();
       conversations = result.conversations;
       issues = result.issues;
+      void refreshLegacyChats();
     } catch (cause) {
       error = userFacingError(cause, "Saved chats could not be opened. Your stored data was not changed.");
     } finally {
       loading = false;
     }
+  }
+
+  async function refreshLegacyChats(): Promise<void> {
+    try {
+      legacyChats = await findLegacyChats();
+    } catch {
+      // Without a count the old rows stay in the list as unreadable chats.
+      legacyChats = NO_LEGACY_CHATS;
+    }
+  }
+
+  async function downloadOldChats(): Promise<void> {
+    legacyDownloading = true;
+    legacyResult = "";
+    try {
+      const file = await downloadLegacyChats();
+      legacyResult = file ? `Downloaded ${file.filename}.` : "There are no old chats left to download.";
+    } catch (cause) {
+      legacyResult = userFacingError(cause, "The old chats could not be downloaded. They are still stored in this browser.");
+    } finally {
+      legacyDownloading = false;
+    }
+  }
+
+  function dismissOldChats(): void {
+    legacyDismissed = dismissLegacyChats(legacyChats);
+    legacyResult = "";
   }
 
   async function downloadBackup(record: SavedConversationSummary): Promise<void> {
@@ -921,6 +959,22 @@
 
     {#if error}<p class="error" role="alert">{error}</p>{/if}
 
+    {#if legacyShown}
+      <section class="notice legacy-chats" aria-labelledby="legacy-chats-title" in:expand out:expand>
+        <div>
+          <h2 id="legacy-chats-title">{legacyChatsTitle(legacyChats.keys.length)}</h2>
+          <p>Download them as one file to keep them. Dismissing this leaves them stored in this browser.</p>
+          {#if legacyResult}<p role="status">{legacyResult}</p>{/if}
+        </div>
+        <div class="panel-actions">
+          <button type="button" class="quiet" onclick={dismissOldChats}>Dismiss</button>
+          <button type="button" class="secondary" aria-busy={legacyDownloading} disabled={legacyDownloading} onclick={() => void downloadOldChats()}>
+            <MorphText text={legacyDownloading ? "Preparing file…" : "Download"} />
+          </button>
+        </div>
+      </section>
+    {/if}
+
     <section id="saved-chats" class="chats-section" aria-labelledby="chats-title" data-page-group="2">
       <div class="section-heading">
         <div>
@@ -979,7 +1033,7 @@
 
       {#if loading}
         <p class="empty" role="status">Loading saved chats…</p>
-      {:else if visibleConversations.length === 0 && issues.length === 0}
+      {:else if visibleConversations.length === 0 && unreadable.length === 0}
         <div class="empty">
           {#if !deviceChecking && installedModels.length === 0}
             <strong>No chats yet. Choose a model to start.</strong>
@@ -989,7 +1043,7 @@
             <button type="button" class="primary" disabled={openingId !== null || deviceChecking} onclick={beginNewChat}>New chat</button>
           {/if}
         </div>
-      {:else if shownConversations.length === 0 && issues.length === 0}
+      {:else if shownConversations.length === 0 && unreadable.length === 0}
         <div class="empty" role="status">
           <strong>No chats match your search.</strong>
           <button type="button" class="secondary" onclick={clearFilters}>Clear search</button>
@@ -1059,7 +1113,7 @@
             </div>
           {/each}
 
-          {#each issues as issue (issue.id)}
+          {#each unreadable as issue (issue.id)}
             <div class="chat-card unavailable" role="listitem">
               <div class="chat-copy">
                 <strong>{issue.name || "Unreadable saved chat"}</strong>
