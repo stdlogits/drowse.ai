@@ -3,6 +3,12 @@
 // (a short program of library calls over host tensors, residents and earlier outputs) and gets
 // its outputs back with one device sync, so a member costs one round trip as native's packed
 // readback does.
+import type {
+  DrowseBlockSitesRequest,
+  DrowseReadArg,
+  DrowseReadOutputs,
+  DrowseReadStep,
+} from "@drowse/web-llm";
 import {
   f32Tensor,
   i32Tensor,
@@ -27,30 +33,11 @@ const QUADRATIC_FLOOR = 1e-30;
 const MAX_TOP_K = 1024;
 
 type HostArray = Float32Array | Int32Array | Uint32Array;
+type WebLlmReadArg = DrowseReadArg;
+type WebLlmReadStep = DrowseReadStep;
 
-/** A static-read step argument (the vendored bridge's `DrowseReadArg`). */
-export type WebLlmReadArg =
-  | { tensor: { data: HostArray; shape: number[] } }
-  | { resident: string; index?: number; shape?: number[] }
-  | { ref: string; shape?: number[] };
-
-export interface WebLlmReadStep {
-  fn: string;
-  args: WebLlmReadArg[];
-  out: string | string[];
-}
-
-export type WebLlmStaticReadRequest =
-  | {
-      op: "uploadResident";
-      kind: "lens_layer" | "embedding_statistics";
-      tensors: { data: HostArray; shape: number[] }[];
-    }
-  | { op: "read"; steps: WebLlmReadStep[]; read: string[] };
-
-interface ReadOutputs {
-  tensors: Record<string, { data: HostArray; shape: number[] }>;
-}
+/** The static-read requests of the bridge's `drowseBlockSites`. */
+export type WebLlmStaticReadRequest = Extract<DrowseBlockSitesRequest, { op: "uploadResident" | "read" }>;
 
 export interface WebLlmStaticReadDevice {
   call(request: WebLlmStaticReadRequest): Promise<unknown>;
@@ -98,7 +85,7 @@ export function webLlmStaticReads(
   const topK = capabilities.profile.maxLensReadTopK;
 
   const run = async (steps: WebLlmReadStep[], read: string[]) => {
-    const out = (await device.call({ op: "read", steps, read })) as ReadOutputs;
+    const out = (await device.call({ op: "read", steps, read })) as DrowseReadOutputs;
     for (const name of read) {
       if (out?.tensors?.[name] === undefined) throw new TypeError(`The bridge read back no ${name}`);
     }

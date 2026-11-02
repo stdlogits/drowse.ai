@@ -3,6 +3,7 @@
 // statistics, pattern captures), the replay, the attention rows and the static reads
 // (`webLlmStaticReads.ts`). The bridge takes one request per call (`drowseBlockSites`), so the
 // worker engine carries the whole surface as one message kind.
+import type { DrowseBlockSitesRequest } from "@drowse/web-llm";
 import {
   activityStateLayout,
   anatomyTapLayout,
@@ -28,31 +29,10 @@ import {
   structuredUnitSectionLayout,
   type StructuredHookProgramBuffers,
 } from "./structuredHookProgram";
-import { webLlmStaticReads, type WebLlmStaticReadRequest } from "./webLlmStaticReads";
+import { webLlmStaticReads } from "./webLlmStaticReads";
 
-/** The bridge's block-sites requests (vendored WebLLM `DrowseBlockSitesRequest`). */
-export type WebLlmBlockSitesRequest =
-  | { op: "headGrams" }
-  | { op: "uploadUnitScales"; values: Float32Array }
-  | { op: "release"; id: string }
-  | {
-      op: "openReplay";
-      replayMeta: Int32Array;
-      unitScales: string | null;
-      rowCount: number;
-      tokenCount: number;
-    }
-  | {
-      op: "replayForward";
-      tokenIds: number[];
-      affineActive?: Uint32Array;
-      curveActive?: Uint32Array;
-      unitActive?: Float32Array;
-    }
-  | { op: "finishReplay" }
-  | { op: "cancelReplay" }
-  | { op: "attentionRows"; capture: string; rows: Int32Array }
-  | WebLlmStaticReadRequest;
+/** The bridge's block-sites requests. */
+export type WebLlmBlockSitesRequest = DrowseBlockSitesRequest;
 
 interface BridgeResident {
   id: string;

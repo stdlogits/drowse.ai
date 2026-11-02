@@ -16,6 +16,7 @@ import { MAX_OUTPUT_TOKEN_COUNT } from "../../../../drowse/webui/src/lib/runtime
 import {
   geometryCoordinateMean,
   createStructuredHookControlEvaluator,
+  STRUCTURED_HOOK_FORMAT,
   type StructuredGeometryMeasurementProbe,
   type StructuredHookProgramBuffers,
 } from "./structuredHookProgram";
@@ -1451,7 +1452,6 @@ export function measurementEnvelope(
   const geometrySchemas = schema.geometryProbes ?? [];
   if (geometrySchemas.some((probe) => probe !== null)) {
     if (
-      !carriesGeometry(hookProgram.format) ||
       hookProgram.profile.maxGeometryProbes === 0
     ) {
       throw generationError(
@@ -1942,7 +1942,6 @@ function prepareSubspaceTrailPlans(program: StructuredHookProgramBuffers): void 
   const geometry = program.measurementSchema?.geometryProbes;
   if (geometry === undefined || !geometry.some((probe) => probe !== null)) return;
   if (
-    !carriesGeometry(program.format) ||
     program.geometryActive === undefined ||
     program.geometryRank === undefined ||
     program.geometryCandidateCount === undefined ||
@@ -2179,25 +2178,16 @@ function subspaceTrailError(
   );
 }
 
-/** drowse-structured-v3 and v4 (v3 plus the unit section) carry the geometry section. */
-function carriesGeometry(format: string): boolean {
-  return format === "drowse-structured-v3" || format === "drowse-structured-v4";
-}
-
 function isStructuredProgram(
   program: WebLlmHookProgram,
 ): program is StructuredHookProgramBuffers {
-  return "format" in program && (
-    program.format === "drowse-structured-v2" ||
-    program.format === "drowse-structured-v3" ||
-    program.format === "drowse-structured-v4"
-  );
+  return "format" in program && program.format === STRUCTURED_HOOK_FORMAT;
 }
 
 function hasActiveGeometryMeasurements(
   program: WebLlmHookProgram,
 ): program is StructuredHookProgramBuffers {
-  if (!isStructuredProgram(program) || !carriesGeometry(program.format)) return false;
+  if (!isStructuredProgram(program)) return false;
   if (!program.measurementSchema?.geometryProbes?.some((probe) => probe !== null)) return false;
   return program.geometryActive?.some((active) => active === 1) ?? false;
 }

@@ -170,7 +170,7 @@ index 0070bde..2b279d6 100644
        "version": "9.3.0",
        "resolved": "https://registry.npmjs.org/v8-to-istanbul/-/v8-to-istanbul-9.3.0.tgz",
 diff --git a/package.json b/package.json
-index cabfc3d..c629895 100644
+index cabfc3d..970f86b 100644
 --- a/package.json
 +++ b/package.json
 @@ -1,12 +1,12 @@
@@ -178,7 +178,7 @@ index cabfc3d..c629895 100644
 -  "name": "@mlc-ai/web-llm",
 -  "version": "0.2.84",
 +  "name": "@drowse/web-llm",
-+  "version": "0.2.84-drowse.40",
++  "version": "0.2.84-drowse.41",
    "description": "Hardware accelerated language model chats on browsers",
    "main": "lib/index.js",
    "types": "lib/index.d.ts",
@@ -3652,10 +3652,10 @@ index 0000000..52f4053
 +  return required;
 +}
 diff --git a/src/index.ts b/src/index.ts
-index d583419..7062b28 100644
+index d583419..9a057a6 100644
 --- a/src/index.ts
 +++ b/src/index.ts
-@@ -32,6 +32,98 @@ export {
+@@ -32,6 +32,107 @@ export {
  
  export { MLCEngine, CreateMLCEngine } from "./engine";
  
@@ -3715,6 +3715,15 @@ index d583419..7062b28 100644
 +  type DrowseResidentHandle,
 +  type DrowseReplayForwardReadback,
 +  type DrowseReplayCaptures,
++  DROWSE_READOUT_FUNCTIONS,
++  DROWSE_UNIT_READ_FUNCTIONS,
++  DROWSE_PACKED_READ_FUNCTIONS,
++  DROWSE_MAX_READ_STEPS,
++  type DrowseReadArg,
++  type DrowseReadStep,
++  type DrowseReadOutputs,
++  type DrowseTensorInput,
++  type DrowseTensorOutput,
 +  drowseUnitSectionLengths,
 +  drowseProgramHasUnits,
 +  validateDrowseUnitSection,

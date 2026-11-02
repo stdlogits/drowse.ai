@@ -1,4 +1,3 @@
-import { DROWSE_HOOK_ABI } from "./rankOneHookProgram";
 import type {
   SteeringComparisonOperator,
   SteeringPhase,
@@ -14,28 +13,23 @@ import {
   type StructuredHookCapacityProfile,
 } from "./structuredHookProfile";
 
-export const STRUCTURED_HOOK_FORMAT_V2 = "drowse-structured-v2" as const;
-export const STRUCTURED_HOOK_FORMAT = "drowse-structured-v3" as const;
-/** v3 plus the unit section (B1 §3.1, §3.4); the only format a `block-sites-v5` library takes. */
-export const STRUCTURED_HOOK_FORMAT_V4 = "drowse-structured-v4" as const;
-export type StructuredHookFormat =
-  | typeof STRUCTURED_HOOK_FORMAT_V2
-  | typeof STRUCTURED_HOOK_FORMAT
-  | typeof STRUCTURED_HOOK_FORMAT_V4;
-export type StructuredHookAbi = typeof DROWSE_HOOK_ABI | typeof BLOCK_SITES_HOOK_ABI;
+/** The one program format hook ABI `block-sites-v5` runs: the affine, curve, probe and geometry
+ *  buffers, plus the optional unit section (B1 §3.1, §3.4). */
+export const STRUCTURED_HOOK_FORMAT = "drowse-structured-v4" as const;
+export type StructuredHookFormat = typeof STRUCTURED_HOOK_FORMAT;
+export type StructuredHookAbi = typeof BLOCK_SITES_HOOK_ABI;
 
-/** The hook ABI and format a program compiled under `profile` carries: `standard-v1` takes v2,
- *  `standard-v2`/`-v3` take v3 (hook ABI v4), and both v4 profiles take v4 (hook ABI v5). */
+/** The hook ABI and format of a program compiled under `profile`: only the v4 profiles compile
+ *  (`standard-v4`, `standard-v4-residual`); the v1-v3 profiles' libraries cannot load. */
 export function structuredHookIdentity(
   profile: StructuredHookCapacityProfile,
 ): { hookAbi: StructuredHookAbi; format: StructuredHookFormat } {
-  if (isBlockSitesProfile(profile)) {
-    return { hookAbi: BLOCK_SITES_HOOK_ABI, format: STRUCTURED_HOOK_FORMAT_V4 };
+  if (!isBlockSitesProfile(profile)) {
+    throw new TypeError(
+      `Hook ABI ${BLOCK_SITES_HOOK_ABI} compiles standard-v4 programs, not ${profile.id}`,
+    );
   }
-  return {
-    hookAbi: DROWSE_HOOK_ABI,
-    format: profile.maxGeometryProbes > 0 ? STRUCTURED_HOOK_FORMAT : STRUCTURED_HOOK_FORMAT_V2,
-  };
+  return { hookAbi: BLOCK_SITES_HOOK_ABI, format: STRUCTURED_HOOK_FORMAT };
 }
 
 export type StructuredProbeKind =
@@ -251,13 +245,6 @@ export interface StructuredHookProgramBuffers {
   measurementSchema?: StructuredMeasurementSchema;
   controls?: StructuredHookControls;
 }
-
-/** A program for a `post-block-residual-v4` library (`standard-v1`…`-v3`), the shape the v4
- *  WebLLM bridge takes. Goes with the v1-v3 profiles once v5 libraries exist (B4). */
-export type StructuredHookProgramV3Buffers = StructuredHookProgramBuffers & {
-  hookAbi: typeof DROWSE_HOOK_ABI;
-  format: typeof STRUCTURED_HOOK_FORMAT | typeof STRUCTURED_HOOK_FORMAT_V2;
-};
 
 export interface StructuredMeasurementSlot {
   layer: number;
@@ -1272,7 +1259,7 @@ function compileLayer(
     geometryProbes.length > 0
   ) {
     if (program.format !== STRUCTURED_HOOK_FORMAT) {
-      throw new TypeError("Geometry probes require the drowse-structured-v3 program");
+      throw new TypeError("Geometry probes require a drowse-structured-v4 program");
     }
     if (input.geometryWhitener === undefined || input.geometryWhitener === null) {
       throw new TypeError("Geometry probes require one exact layer whitener");
