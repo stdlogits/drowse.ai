@@ -52,7 +52,7 @@ interface BuildRequest {
   nativeNeutralRows: boolean;
   runtimeIdentity: RuntimeIdentity;
   quantization: "q4f16_1" | "q4f32_1" | "q0f32";
-  requiredFeatures: WebGPUFeatureName[];
+  requiredFeatures: GPUFeatureName[];
   structuredHookProfile: ModelVariant["structuredHookProfile"];
   thinkingProfile: ModelVariant["thinkingProfile"];
   artifactProducer: {
