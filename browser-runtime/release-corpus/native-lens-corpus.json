@@ -13,5 +13,10 @@
     "prompts": 64,
     "sequenceLength": 128
   },
-  "attributionApproval": null
+  "attributionApproval": {
+    "reviewStatus": "approved",
+    "reviewedBy": "a9lim",
+    "reviewedAt": "2026-11-02T08:05:00-05:00",
+    "attribution": "FineWeb-Edu (HuggingFaceFW/fineweb-edu, config sample-10BT, revision 87f09149ef4734204d70ed1d046ddc9ca3f2b8f9) by Hugging Face (Lozhkov, Ben Allal, von Werra and Wolf, 2024), used under the Open Data Commons Attribution License v1.0 (ODC-By 1.0); its use is also subject to Common Crawl's Terms of Use. The lens packs carry matrices fitted on 64 of its documents and token counts, not corpus text."
+  }
 }
