@@ -18,12 +18,17 @@ const runtimeScript = resolve(
 await exec(process.execPath, ["--check", runtimeScript]);
 assert.match(await readFile(runtimeScript, "utf8"), /\.\.\.executionProfiles/);
 assert.match(await readFile(runtimeScript, "utf8"), /--jlens-layer-limit/);
+// The repository lock with qwen3-1.7b's library-bound fields filled, as a W4 candidate lock is.
 const runtimeLock = JSON.parse(
   await readFile(
     resolve(repositoryRoot, "browser-runtime/runtime-lock.json"),
     "utf8",
   ),
 );
+for (const model of runtimeLock.models) {
+  model.manifestSha256 ??= "c".repeat(64);
+  model.librarySha256 ??= "d".repeat(64);
+}
 const lock = runtimeLock.models.find(
   (entry) => entry.id === "qwen3-1.7b",
 );
@@ -90,6 +95,8 @@ try {
 }
 
 const root = await mkdtemp(join(tmpdir(), "drowse-instrument-validator-"));
+const candidateLock = join(root, "candidate-runtime-lock.json");
+await writeFile(candidateLock, JSON.stringify(runtimeLock));
 const invalidRuntimeLock = join(root, "invalid-runtime-lock.json");
 await writeFile(invalidRuntimeLock, JSON.stringify({ ...runtimeLock, runtimeAbi: "unsupported" }));
 await assert.rejects(
@@ -205,7 +212,7 @@ const script = resolve(
   import.meta.dirname,
   "validate-hosted-instrument-pack.mjs",
 );
-const valid = await exec(process.execPath, [script, lock.id, "sae", sae]);
+const valid = await exec(process.execPath, [script, lock.id, "sae", sae, "--runtime-lock", candidateLock]);
 const result = JSON.parse(valid.stdout);
 assert.equal(result.descriptor.features, 2);
 assert.equal(result.descriptor.layer, 16);
@@ -293,6 +300,8 @@ const validJlens = await exec(process.execPath, [
   lock.id,
   "jlens",
   jlens,
+  "--runtime-lock",
+  candidateLock,
 ]);
 const jlensResult = JSON.parse(validJlens.stdout);
 assert.deepEqual(jlensResult.descriptor.layers, [0]);
@@ -303,7 +312,7 @@ await mkdir(invalid, { recursive: true });
 await writeFile(join(invalid, "manifest.json"), saeManifest);
 await writePackManifest(invalid, [["manifest.json", saeManifest]]);
 await assert.rejects(
-  exec(process.execPath, [script, lock.id, "sae", invalid]),
+  exec(process.execPath, [script, lock.id, "sae", invalid, "--runtime-lock", candidateLock]),
   /nested sae\/ closure/,
 );
 
