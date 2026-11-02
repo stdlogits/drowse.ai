@@ -78,11 +78,15 @@ assert.equal(filled.librarySha256, "b".repeat(64));
 assert.equal(filled.manifestSha256, "c".repeat(64));
 assert.equal(filled.convertedRevision, null);
 assert.equal(candidate.status, "feasibility-required");
+// A new library clears the model's converted revision and the lock's verified status, whether or
+// not the repository lock is adopted yet; everything else is the lock's.
 const normalized = structuredClone(candidate);
 Object.assign(normalized.models.find((entry) => entry.id === qwen), {
   librarySha256: model(qwen).librarySha256,
   manifestSha256: model(qwen).manifestSha256,
+  convertedRevision: model(qwen).convertedRevision,
 });
+normalized.status = runtimeLock.status;
 assert.deepEqual(normalized, runtimeLock);
 
 // Every refusal: ABI, profile, architecture, tokenizer drift, a block spec the converted
