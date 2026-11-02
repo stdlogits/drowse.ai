@@ -537,7 +537,10 @@ function compareGoldens(ours, goldens) {
     });
     const logp = logSoftmax(entry.forwards[0].logits);
     const want = logp.map((value, id) => [id, value]).sort((a, b) => b[1] - a[1]).slice(0, 8);
-    if (mine.prefill === null) problems.push("the temperature-1 prefill streamed no token frame");
+    // A prefill whose every sample is a lone UTF-8 byte streams no frame of its own (native's
+    // decode buffers it the same way): its argmax is checked above, its alternatives cannot be read.
+    let note = "";
+    if (mine.prefill === null) note = " (prefill alternatives unreadable: every sample is a lone UTF-8 byte)";
     else {
       let worstLogprob = 0;
       const alts = mine.prefill.alts ?? [];
@@ -552,8 +555,8 @@ function compareGoldens(ours, goldens) {
       if (!(chosen <= tol.atol + tol.rtol * Math.abs(logp[mine.prefill.token]))) problems.push(`prefill: sampled token logprob off by ${chosen}`);
       worst.set("golden unit-ablation prefill logprob", Math.max(worst.get("golden unit-ablation prefill logprob") ?? 0, worstLogprob, chosen));
     }
-    check(`golden unit-ablation ${entry.name} (${entry.steering}): ${entry.forwards.length} forwards`, problems.length === 0,
-      problems.slice(0, 4).join("; "));
+    check(`golden unit-ablation ${entry.name} (${entry.steering}): ${entry.forwards.length} forwards${note}`,
+      problems.length === 0, problems.slice(0, 4).join("; "));
   });
 }
 

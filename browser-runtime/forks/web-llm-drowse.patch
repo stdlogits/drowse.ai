@@ -275,7 +275,7 @@ index 6bf8d4f..69bf5db 100644
  }
  
 diff --git a/src/config.ts b/src/config.ts
-index 6c45add..160fc73 100644
+index 6c45add..1a5f839 100644
 --- a/src/config.ts
 +++ b/src/config.ts
 @@ -1,3 +1,5 @@
@@ -292,7 +292,7 @@ index 6c45add..160fc73 100644
  
  /**
   * Conversation template config
-@@ -25,6 +28,13 @@ export interface ConvTemplateConfig {
+@@ -25,6 +28,19 @@ export interface ConvTemplateConfig {
    system_prefix_token_ids?: Array<number>;
    stop_token_ids: Array<number>;
    add_role_after_system_message?: boolean;
@@ -303,10 +303,16 @@ index 6c45add..160fc73 100644
 +   * separator, and the system template is not rendered.
 +   */
 +  drowse_system_fold_sep?: string;
++  /**
++   * Drowse: a template that trims each turn's text (Gemma 3's `| trim`) says so here; the text is
++   * trimmed before the system fold composes with it, which stays as given (drowse's scene
++   * grammar: `content_trim`, the fold untrimmed).
++   */
++  drowse_content_trim?: boolean;
  }
  
  /**
-@@ -105,6 +115,7 @@ export interface ChatConfig {
+@@ -105,6 +121,7 @@ export interface ChatConfig {
    top_p: number;
    temperature: number;
    bos_token_id?: number;
@@ -314,7 +320,7 @@ index 6c45add..160fc73 100644
    // Model type identifier from mlc-chat-config.json (e.g. "phi3_v", "gemma3_v")
    model_type?: string;
    // Nested model config from mlc-chat-config.json, contains model-specific parameters
-@@ -148,6 +159,7 @@ export interface GenerationConfig {
+@@ -148,6 +165,7 @@ export interface GenerationConfig {
    ignore_eos?: boolean;
    // Shared by MLC and OpenAI APIs
    top_p?: number | null;
@@ -322,7 +328,7 @@ index 6c45add..160fc73 100644
    temperature?: number | null;
    // Only in OpenAI APIs
    max_tokens?: number | null;
-@@ -162,6 +174,12 @@ export interface GenerationConfig {
+@@ -162,6 +180,12 @@ export interface GenerationConfig {
    // extra_body in ChatCompletionsRequest
    enable_thinking?: boolean | null;
    enable_latency_breakdown?: boolean | null;
@@ -335,7 +341,7 @@ index 6c45add..160fc73 100644
  }
  
  export function postInitAndCheckGenerationConfigValues(
-@@ -172,16 +190,53 @@ export function postInitAndCheckGenerationConfigValues(
+@@ -172,16 +196,53 @@ export function postInitAndCheckGenerationConfigValues(
      return value !== undefined && value !== null;
    }
    if (
@@ -395,7 +401,7 @@ index 6c45add..160fc73 100644
    }
    if (_hasValue(config.repetition_penalty) && config.repetition_penalty! <= 0) {
      throw new MinValueError("repetition_penalty", 0);
-@@ -189,11 +244,27 @@ export function postInitAndCheckGenerationConfigValues(
+@@ -189,11 +250,27 @@ export function postInitAndCheckGenerationConfigValues(
    if (_hasValue(config.max_tokens) && config.max_tokens! <= 0) {
      throw new MinValueError("max_tokens", 0);
    }
@@ -426,7 +432,7 @@ index 6c45add..160fc73 100644
    }
    // If only one of frequency or presence penatly is set, make the other one 0.0
    if (
-@@ -235,9 +306,16 @@ export function postInitAndCheckGenerationConfigValues(
+@@ -235,9 +312,16 @@ export function postInitAndCheckGenerationConfigValues(
      if (!config.logprobs) {
        throw new DependencyError("top_logprobs", "logprobs", true);
      }
@@ -446,7 +452,7 @@ index 6c45add..160fc73 100644
      }
    }
    // If defined logprobs but not top_logprobs, simply make it 0
-@@ -305,6 +383,14 @@ export interface ModelRecord {
+@@ -305,6 +389,14 @@ export interface ModelRecord {
   * - "sync": require OPFS sync access handles.
   * - "auto": use sync access handles when available and fall back to async OPFS otherwise.
   *
@@ -461,7 +467,7 @@ index 6c45add..160fc73 100644
   * @note Note that the Cache API is the most well-tested in WebLLM as of now.
   */
  export type CacheBackend = "cache" | "indexeddb" | "cross-origin" | "opfs";
-@@ -314,6 +400,9 @@ export interface AppConfig {
+@@ -314,6 +406,9 @@ export interface AppConfig {
    model_list: Array<ModelRecord>;
    cacheBackend?: CacheBackend;
    opfsAccessMode?: OPFSAccessMode;
@@ -472,7 +478,7 @@ index 6c45add..160fc73 100644
  
  export function getCacheBackend(appConfig: AppConfig): CacheBackend {
 diff --git a/src/conversation.ts b/src/conversation.ts
-index 122e933..f421b39 100644
+index 122e933..8ee7100 100644
 --- a/src/conversation.ts
 +++ b/src/conversation.ts
 @@ -1,6 +1,7 @@
@@ -579,16 +585,19 @@ index 122e933..f421b39 100644
        // 1. Message from `appendReplyHeader()`, message is empty; not much processing is needed.
        if (messageContent === undefined) {
          if (i !== this.messages.length - 1) {
-@@ -149,6 +208,8 @@ export class Conversation {
+@@ -149,6 +208,11 @@ export class Conversation {
          // 2.2 content is just a string
          textContentPart = messageContent;
        }
++      if (this.config.drowse_content_trim === true) {
++        textContentPart = textContentPart.trim();
++      }
 +      textContentPart = pendingFold + textContentPart;
 +      pendingFold = "";
  
        // 3. Format textContentPart with role and sep to get message_str and role_prefix
        let message_str;
-@@ -299,10 +360,56 @@ export class Conversation {
+@@ -299,10 +363,56 @@ export class Conversation {
      return this.config.stop_token_ids;
    }
  
@@ -645,7 +654,7 @@ index 122e933..f421b39 100644
    ) {
      if (this.isTextCompletion) {
        throw new TextCompletionConversationError("appendMessage");
-@@ -316,28 +423,47 @@ export class Conversation {
+@@ -316,28 +426,47 @@ export class Conversation {
      if (!(role in this.config.roles)) {
        throw Error("Role is not supported: " + role);
      }
@@ -698,7 +707,7 @@ index 122e933..f421b39 100644
    }
  
    finishReply(message: string) {
-@@ -360,6 +486,45 @@ export class Conversation {
+@@ -360,6 +489,45 @@ export class Conversation {
    }
  }
  
@@ -744,7 +753,7 @@ index 122e933..f421b39 100644
  export function getConversation(
    conv_template: ConvTemplateConfig,
    conv_config?: Partial<ConvTemplateConfig>,
-@@ -488,9 +653,17 @@ export function getConversationFromChatCompletionRequest(
+@@ -488,9 +656,17 @@ export function getConversationFromChatCompletionRequest(
    // 2. Populate conversation.messages
    const input = request.messages;
    const lastId = input.length - 1;
@@ -10188,7 +10197,7 @@ index 074f5e7..58997b9 100644
    const indexedConfig: AppConfig = {
      ...baseAppConfig,
 diff --git a/tests/conversation.test.ts b/tests/conversation.test.ts
-index 8fa04b2..0664823 100644
+index 8fa04b2..92911d3 100644
 --- a/tests/conversation.test.ts
 +++ b/tests/conversation.test.ts
 @@ -53,6 +53,72 @@ describe("Test basic conversation loading and getPromptArray", () => {
@@ -10264,7 +10273,7 @@ index 8fa04b2..0664823 100644
    test("Test Qwen3 appendEmptyThinkingReplyHeader", () => {
      const config_json = JSON.parse(qwen3ChatConfigJSONString);
      const config = { ...config_json } as ChatConfig;
-@@ -84,6 +150,254 @@ describe("Test getConversationFromChatCompletionRequest with Qwen3", () => {
+@@ -84,6 +150,270 @@ describe("Test getConversationFromChatCompletionRequest with Qwen3", () => {
    });
  });
  
@@ -10422,6 +10431,22 @@ index 8fa04b2..0664823 100644
 +    unfolded.appendMessage(Role.user, "Hi there");
 +    expect(unfolded.getPromptArray().join("")).toEqual(
 +      "Be brief.<start_of_turn>user\nHi there<end_of_turn>\n",
++    );
++  });
++
++  test("a trimming template trims each turn's text before the fold", () => {
++    const conversation = getConversation({
++      ...gemma("\n\n").config,
++      drowse_content_trim: true,
++    });
++    conversation.override_system_message = "  Be brief.";
++    conversation.appendMessage(Role.user, "  Hi there \n");
++    conversation.appendMessage(Role.assistant, "Hello.\n");
++    conversation.appendReplyHeader(Role.user);
++    expect(conversation.getPromptArray().join("")).toEqual(
++      "<start_of_turn>user\n  Be brief.\n\nHi there<end_of_turn>\n" +
++        "<start_of_turn>model\nHello.<end_of_turn>\n" +
++        "<start_of_turn>user\n",
 +    );
 +  });
 +
