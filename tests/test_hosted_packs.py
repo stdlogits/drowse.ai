@@ -23,6 +23,7 @@ from build_hosted_packs import (  # noqa: E402
     PackBuildError,
     build,
     mask_words,
+    sha256_file,
     split_population,
     unpack_mask_words,
 )
@@ -179,6 +180,45 @@ def test_core_statistics_stack_the_neutral_pass(built) -> None:
         assert torch.equal(tensors["head_mean"][layer], stats.layer(layer).head_mean)
         assert torch.equal(tensors["mid_mean"][layer], fx.session._neutral.site_means("mid")[layer])
         assert torch.equal(tensors["out_mean"][layer], fx.session.layer_means[layer])
+
+
+def test_core_rows_are_the_whiteners_and_units_bind_them(built) -> None:
+    """The core builder fits the core pack's whitener from these rows, so the units pack's
+    write norms and the browser's whitener share one metric; units bind the rows' digest."""
+    from drowse.geometry.whitener import LayerWhitener
+
+    _, fx, model, _, out, record = built
+    core = json.loads((out / "core" / "neutral-statistics.json").read_text())
+    rows_file = out / "core" / core["neutral_rows"]["file"]
+    assert core["neutral"]["rows_sha256"] == sha256_file(rows_file)
+    rows = load_file(rows_file)
+    assert sorted(rows) == sorted(f"layer_{layer}" for layer in range(model.n_layers))
+    rebuilt = LayerWhitener.from_neutral_activations(
+        {layer: rows[f"layer_{layer}"] for layer in range(model.n_layers)}, fx.session.layer_means,
+    )
+    session = fx.session._neutral.whitener()
+    probe = torch.linspace(-1.0, 1.0, model.d_model)
+    for layer in range(model.n_layers):
+        assert rows[f"layer_{layer}"].shape[0] == core["neutral_rows"]["rows"]
+        assert rebuilt.mahalanobis_norm(layer, probe) == pytest.approx(session.mahalanobis_norm(layer, probe), rel=1e-6)
+    units = json.loads((out / "units" / "packs" / "units" / "units.json").read_text())
+    assert units["binding"]["neutral"] == core["neutral"] == record["packs"]["core"]["neutral"]
+
+
+def test_units_need_the_core_statistics_and_the_write_norms(built, tmp_path, monkeypatch) -> None:
+    _, _, model, runtime, _, _ = built
+    with pytest.raises(PackBuildError, match="core statistics"):
+        build(model, runtime, tmp_path / "a", ["jlens", "slens", "units"], full_depth=False, words=["a"])
+    reads = model.session.units.reads
+    original = reads.population_artifacts
+
+    def without_write_norms(layer):
+        return {k: v for k, v in original(layer).items() if k != "neurons.write_norms"}
+
+    monkeypatch.setattr(reads, "population_artifacts", without_write_norms)
+    with pytest.raises(PackBuildError, match="write_norms"):
+        build(model, runtime, tmp_path / "b", KINDS, full_depth=False, words=["a"])
+    assert not list(tmp_path.iterdir())
 
 
 def test_release_packs_refuse_a_lens_short_of_full_depth(built, tmp_path) -> None:

@@ -49,6 +49,10 @@ FAMILY_KIND = {"R": "jlens", "S": "slens"}
 EMBEDDING_STATISTICS = "embedding-statistics"
 UNITS_MODEL = "units-model.safetensors"
 CORE_STATISTICS = "neutral-statistics"
+# The neutral pass's raw activation rows, ``layer_<L>`` ``[N, D]``: what drowse's whitener is
+# built from, and what the core builder fits the core pack's whitener from (a build input; it
+# does not ship).
+NEUTRAL_ROWS = "neutral-rows.safetensors"
 VOCABULARY_FORMAT = "drowse-jlens-vocabulary-v2"
 WORD_SEEDS = Path(__file__).resolve().parent / "release-corpus" / "jlens-word-seeds.txt"
 # population_artifacts keys whose last axis is the vocabulary (or the head-read
@@ -180,6 +184,31 @@ class NativeModel:
         identity = neutral_cache_identity(validate_neutral_cache_metadata(self.model_id))
         return {"capture_sha256": identity["capture_sha256"], "sha256": canonical_digest(identity),
                 "n_prompts": identity["n_prompts"]}
+
+    def neutral_rows(self) -> dict[int, torch.Tensor]:
+        """The neutral pass's activation rows per layer, exactly as drowse's whitener was built
+        from them (``LayerWhitener.from_neutral_activations``), checked against the session's
+        means; refuses when the session has no whitener (units' write norms would be missing)."""
+        from drowse.fit.neutral import load_or_compute_neutral_cache
+
+        neutral = self.session._neutral
+        if neutral.whitener() is None:
+            raise PackBuildError("the session has no neutral whitener")
+        cache = load_or_compute_neutral_cache(
+            neutral._model, neutral._tokenizer, neutral._layers, model_id=self.model_id,
+        )
+        means = self.session.layer_means
+        layers = list(range(self.n_layers))
+        if sorted(cache.activations) != layers:
+            raise PackBuildError("the neutral pass does not cover every layer")
+        rows: dict[int, torch.Tensor] = {}
+        for layer in layers:
+            value = cache.activations[layer].to("cpu", torch.float32)
+            mean = means[layer].to("cpu", torch.float32)
+            if value.ndim != 2 or value.shape[1] != self.d_model or not torch.allclose(value.mean(0), mean, rtol=1e-5, atol=1e-6 * float(mean.abs().max()) + 1e-12):
+                raise PackBuildError(f"layer {layer}: the neutral rows are not the session's neutral pass")
+            rows[layer] = value
+        return rows
 
 
 def expected_layers(family: str, site: str, n_layers: int) -> list[int]:
@@ -390,6 +419,9 @@ def build_units_pack(
     entries: dict[str, Any] = {}
     for layer in layer_list:
         artifacts = reads_api.population_artifacts(layer)
+        if "neurons.write_norms" not in artifacts:
+            # drowse leaves them out without a whitener; the browser needs them.
+            raise PackBuildError(f"layer {layer} has no neurons.write_norms (no neutral whitener)")
         reads, contrast = split_population(artifacts)
         entry: dict[str, Any] = {}
         for part, tensors in (("reads", reads), ("contrast", contrast)):
@@ -463,13 +495,18 @@ def build_core_statistics(model: NativeModel, runtime: Mapping[str, Any], root: 
     core.mkdir(parents=True)
     tensor = core / f"{CORE_STATISTICS}.safetensors"
     digest, shapes = save_tensors(tensor, tensors)
-    neutral_identity = model.neutral_identity()
+    rows = model.neutral_rows()
+    rows_digest, _ = save_tensors(core / NEUTRAL_ROWS, {f"layer_{layer}": value for layer, value in rows.items()})
+    # The rows' digest joins the pass's identity: the units pack binds it, and the core pack's
+    # whitener is fitted from these rows (build-hosted-whitener.mjs), so both share one metric.
+    neutral_identity = {**model.neutral_identity(), "rows_sha256": rows_digest}
     record = {
         "format": "drowse-neutral-statistics-v1",
         "runtime_identity_sha256": runtime["runtimeIdentitySha256"],
         "model_layer_count": model.n_layers,
         "n_documents": int(stats.n_documents),
         "neutral": neutral_identity,
+        "neutral_rows": {"file": NEUTRAL_ROWS, "rows": int(next(iter(rows.values())).shape[0])},
         "shapes": shapes,
         "tensor_file": tensor.name,
         "tensor_sha256": digest,
@@ -527,8 +564,8 @@ def build(model: NativeModel, runtime: Mapping[str, Any], output: Path, kinds: I
     kinds = list(dict.fromkeys(kinds))
     if any(kind not in KINDS for kind in kinds):
         raise PackBuildError(f"unknown pack kinds {kinds}")
-    if "units" in kinds and not {"jlens", "slens"} <= set(kinds):
-        raise PackBuildError("a units pack is built with the lens packs it binds")
+    if "units" in kinds and not {"jlens", "slens", "core"} <= set(kinds):
+        raise PackBuildError("a units pack is built with the lens packs and the core statistics it binds")
     if output.exists():
         raise PackBuildError(f"{output} exists")
     partial = output.with_name(f"{output.name}.partial-{uuid.uuid4().hex}")
@@ -549,18 +586,19 @@ def build(model: NativeModel, runtime: Mapping[str, Any], output: Path, kinds: I
                 say(f"{kind}: copying {family} shards")
                 lenses[family] = build_lens_pack(model, family, runtime, partial / kind, full_depth=full_depth, words=words)
                 record["packs"][kind] = lenses[family]
+        if "core" in kinds:
+            say("core: neutral statistics and rows")
+            record["packs"]["core"] = build_core_statistics(model, runtime, partial)
         if "units" in kinds:
             binding = {
                 "r_lens_identity": lenses["R"]["lens_identity"],
                 "s_lens_identity": lenses["S"]["lens_identity"],
                 "embedding_statistics_sha256": lenses["S"]["embedding_statistics"]["sha256"],
-                "neutral": model.neutral_identity(),
+                # The neutral pass, its rows included: the write norms' whitener is built from them.
+                "neutral": record["packs"]["core"]["neutral"],
             }
             say("units: population artifacts per layer")
             record["packs"]["units"] = build_units_pack(model, runtime, partial / "units", binding, progress=say)
-        if "core" in kinds:
-            say("core: neutral statistics")
-            record["packs"]["core"] = build_core_statistics(model, runtime, partial)
         write_json(partial / "build.json", record)
         partial.rename(output)
         return record
