@@ -50,7 +50,7 @@ for KIND in jlens slens units; do
   [ -d "$OUT/$KIND" ] || continue
   WITH=()
   # A units pack reads through the R and S packs it binds.
-  [ "$KIND" = units ] && WITH=(--with "$OUT/jlens" --with "$OUT/slens")
+  [ "$KIND" = units ] && WITH=(--with "$OUT/jlens" --with "$OUT/slens" --core-statistics "$OUT/core")
   node "$SCRIPTS/validate-hosted-instrument-pack.mjs" "$ID" "$KIND" "$OUT/$KIND" ${WITH[@]+"${WITH[@]}"} \
     --runtime-lock "$LOCK" > "$OUT/$KIND.validation.json"
 done

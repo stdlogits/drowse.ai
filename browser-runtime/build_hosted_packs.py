@@ -161,6 +161,12 @@ class NativeModel:
         if manifest is None:
             raise PackBuildError(f"{self.model_id} local:{ref.name} has no durable manifest")
         identity = lens_identity(manifest)
+        # The fit was made on exactly the weights loaded here (drowse's weights identity: the
+        # resolved config and commit, the shard hashes and samples of every parameter).
+        from drowse.model.fingerprint import loaded_model_fingerprint
+
+        if manifest.get("model_fingerprint") != loaded_model_fingerprint(self.session.model, self.model_id):
+            raise PackBuildError(f"local:{ref.name} was fitted on other weights than the ones loaded")
         runtime = self.session.lens.runtime if family == "R" else self.session.lens.input_runtime
         resident = self.session.lens.resident() if family == "R" else self.session.lens.resident_input()
         if resident is None or runtime.identity != identity:
@@ -499,6 +505,12 @@ def check_weights(model: NativeModel, runtime: Mapping[str, Any], model_path: st
         raise PackBuildError(f"{model_path} is not the runtime's source model {identity['sourceModel']}")
     from huggingface_hub import hf_hub_download
 
+    # drowse loads the Hub id at `main`; that must resolve to the runtime's pinned revision.
+    loaded = Path(hf_hub_download(identity["sourceModel"], "config.json"))
+    if loaded.parent.name != identity["sourceRevision"]:
+        raise PackBuildError(
+            f"{identity['sourceModel']} main is {loaded.parent.name}, not the runtime's {identity['sourceRevision']}",
+        )
     tokenizer = Path(hf_hub_download(identity["sourceModel"], "tokenizer.json",
                                      revision=identity["sourceRevision"]))
     if sha256_file(tokenizer) != identity["tokenizerSha256"]:

@@ -14,10 +14,17 @@ const KINDS = ["sae", "jlens", "slens", "units"];
 const arguments_ = process.argv.slice(2);
 const values = [];
 const companions = [];
+let coreStatistics = null;
 let release = false;
 let runtimeLockInput = null;
 for (let index = 0; index < arguments_.length; index += 1) {
   const argument = arguments_[index];
+  if (argument === "--core-statistics") {
+    const value = arguments_[++index];
+    if (!value || value.startsWith("--")) throw new Error("--core-statistics requires a directory");
+    coreStatistics = resolve(value);
+    continue;
+  }
   if (argument === "--with") {
     const value = arguments_[++index];
     if (!value || value.startsWith("--")) throw new Error("--with requires a pack directory");
@@ -47,8 +54,9 @@ const [modelId, kind, input] = values;
 if (!modelId || !KINDS.includes(kind) || !input || values.length !== 3) {
   throw new Error(
     "usage: validate-hosted-instrument-pack.mjs MODEL_ID sae|jlens|slens|units PACK_DIR " +
-    "[--with PACK_DIR]... [--release] [--runtime-lock PATH]\n" +
-    "  --with loads another pack beside it (a units pack is read through the R and S packs it binds)",
+    "[--with PACK_DIR]... [--core-statistics DIR] [--release] [--runtime-lock PATH]\n" +
+    "  --with loads another pack beside it (a units pack is read through the R and S packs it binds)\n" +
+    "  --core-statistics names the directory holding the core pack's neutral-statistics.* (units bind it)",
   );
 }
 
@@ -143,7 +151,19 @@ try {
     requiredCorePack: { files: [] },
     contextTokens: lock.contextProfiles[0],
     adapter: {},
-    artifacts: [],
+    artifacts: coreStatistics === null ? [] : await Promise.all(
+      ["neutral-statistics.json", "neutral-statistics.safetensors"].map(async (path) => {
+        const bytes = await readFile(resolve(coreStatistics, path));
+        return {
+          manifest: {
+            path, role: "core_pack", revision, bytes: bytes.byteLength,
+            sha256: createHash("sha256").update(bytes).digest("hex"),
+            url: `https://huggingface.co/drowse/local/resolve/${revision}/${path}`,
+          },
+          file: new File([bytes], path),
+        };
+      }),
+    ),
     optionalPacks: [
       {
         pack: {

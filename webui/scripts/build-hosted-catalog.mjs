@@ -145,6 +145,7 @@ async function prepareModel(entry, runtimeLock, specDirectory, semanticValidator
   const lensDirectories = entry.packs
     .filter((pack) => pack?.kind === "jlens" || pack?.kind === "slens")
     .map((pack) => resolvePortable(specDirectory, pack.directory, `${lock.id} pack directory`));
+  const coreDirectory = entry.packs.find((pack) => pack?.kind === "core");
   for (const pack of entry.packs) {
     packs.push(await preparePack(
       pack,
@@ -154,6 +155,9 @@ async function prepareModel(entry, runtimeLock, specDirectory, semanticValidator
       contextProfiles,
       semanticValidator,
       pack?.kind === "units" ? lensDirectories : [],
+      pack?.kind === "units" && coreDirectory !== undefined
+        ? resolvePortable(specDirectory, coreDirectory.directory, `${lock.id} core pack directory`)
+        : null,
     ));
   }
   const requiredCore = packs.filter((pack) => pack.kind === "core" && pack.required);
@@ -244,6 +248,7 @@ async function preparePack(
   contextProfiles,
   semanticValidator,
   companions = [],
+  coreStatistics = null,
 ) {
   exactKeys(entry, [
     "id", "kind", "displayName", "license", "directory", "sourceRepository",
@@ -269,7 +274,7 @@ async function preparePack(
   }
   const directory = resolvePortable(specDirectory, entry.directory, `${lock.id} pack directory`);
   const manifest = await validatePackDirectory(directory);
-  await semanticValidator(lock.id, entry.kind, directory, undefined, companions);
+  await semanticValidator(lock.id, entry.kind, directory, undefined, companions, coreStatistics);
   const baseUrl = `https://huggingface.co/${entry.sourceRepository}/resolve/${entry.sourceRevision}/`;
   const files = manifest.files.map((file) => catalogFile(
     { ...file, role: entry.kind === "core" ? "core_pack" : "instrument" },
@@ -297,12 +302,15 @@ async function preparePack(
   };
 }
 
-export async function validatePackSemantics(modelId, kind, directory, runner = exec, companions = []) {
+export async function validatePackSemantics(
+  modelId, kind, directory, runner = exec, companions = [], coreStatistics = null,
+) {
   const args = kind === "core"
     ? [fileURLToPath(coreValidatorUrl), modelId, directory]
     : [
         fileURLToPath(instrumentValidatorUrl), modelId, kind, directory,
         ...companions.flatMap((companion) => ["--with", companion]),
+        ...(coreStatistics === null ? [] : ["--core-statistics", coreStatistics]),
       ];
   try {
     await runner(process.execPath, args, { encoding: "utf8" });

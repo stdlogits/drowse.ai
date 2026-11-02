@@ -270,6 +270,8 @@ interface BrowserUnits {
   readonly files: PackFiles;
   readonly root: string;
   readonly nullFile: { readonly path: string; readonly sha256: string };
+  /** The core pack's neutral pass identity (`neutral-statistics.json`), or null without one. */
+  readonly coreNeutralSha256: string | null;
   readonly layers: ReadonlyMap<number, Readonly<Record<"reads" | "contrast", {
     readonly path: string;
     readonly sha256: string;
@@ -588,6 +590,12 @@ export class BrowserInstrumentRegistry {
       throw instrumentError(
         "UNITS_PACK_BINDING_MISMATCH",
         "The units pack was built over other R and S lenses than the ones in use",
+      );
+    }
+    if (units.coreNeutralSha256 !== binding.neutralSha256) {
+      throw instrumentError(
+        "UNITS_PACK_BINDING_MISMATCH",
+        "The units pack was built over another neutral pass than the core pack's statistics",
       );
     }
     const entry = units.layers.get(layer)?.[part];
@@ -1760,6 +1768,16 @@ async function loadUnits(
   if (Object.keys(layersRecord).length !== identity.layerMap.length) invalid("layers outside the model");
   const nullPath = siblingPath(root, nullRecord.file as string);
   if (artifactAt(pack.artifacts, nullPath).manifest.sha256 !== nullRecord.sha256) invalid("null basis digest");
+  // What the core pack's neutral statistics were measured on, which every units statistic must
+  // share (read from its record alone; `readNeutralStatistics` checks the rest).
+  const coreRecords = request.artifacts.filter((artifact) =>
+    artifact.manifest.role === "core_pack" && artifact.manifest.path.split("/").at(-1) === NEUTRAL_STATISTICS_RECORD);
+  let coreNeutralSha256: string | null = null;
+  if (coreRecords.length === 1) {
+    const coreRecord = jsonObject(coreRecords[0], await textArtifact(coreRecords[0], request.signal));
+    const coreNeutral = isRecord(coreRecord.neutral) ? coreRecord.neutral : null;
+    coreNeutralSha256 = typeof coreNeutral?.sha256 === "string" ? coreNeutral.sha256 : null;
+  }
   return {
     descriptor: {
       source: pack.pack.id,
@@ -1782,6 +1800,7 @@ async function loadUnits(
     files,
     root,
     nullFile: { path: nullPath, sha256: nullRecord.sha256 as string },
+    coreNeutralSha256,
     layers,
     nullBasis: null,
   };

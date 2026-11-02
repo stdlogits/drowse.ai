@@ -108,6 +108,9 @@ interface ArtifactManifestSelection {
   packId?: string;
   partialOwner: PartialContentOwner;
   validPartialOwners: ValidPartialOwner[];
+  /** Add the files to the install record as it stands when committing, rather than replace it
+   *  (an on-demand layer joining its pack while other layers may be joining too). */
+  mergeInstall?: true;
 }
 
 export interface DownloadManifestSelection extends ArtifactManifestSelection {
@@ -393,12 +396,9 @@ export function selectOptionalPackFile(
       true,
     );
   }
-  const held = new Set([...installedHashes, file.sha256]);
-  const files = selection.pack.files.filter((candidate, index, all) =>
-    held.has(candidate.sha256) &&
-    all.findIndex((other) => other.sha256 === candidate.sha256) === index
-  );
-  return { ...selection, files, totalBytes: sumBytes(files) };
+  // The record grows by this file, merged into the record as it stands at commit (another tab's
+  // fetch may have added a layer since `installedHashes` was read).
+  return { ...selection, files: [file], totalBytes: file.bytes, mergeInstall: true };
 }
 
 export class VerifiedArtifactDownloader {
@@ -750,6 +750,7 @@ export class VerifiedArtifactDownloader {
             installedAt,
           }, {
             selectAsCurrentModel: selection.installKind === "model",
+            mergeObjectHashes: selection.mergeInstall === true,
           });
         } catch (error) {
           throw downloadError(
