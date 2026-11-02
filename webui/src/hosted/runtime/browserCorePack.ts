@@ -44,11 +44,6 @@ import type {
   VectorInfo,
 } from "../../../../drowse/webui/src/lib/types";
 import {
-  compileRankOneHookProgram,
-  type RankOneHookLayer,
-  type RankOneHookProgramBuffers,
-} from "./rankOneHookProgram";
-import {
   compileStructuredHookProgram,
   saeFeatureProbe,
   structuredUnitAblationTerm,
@@ -175,7 +170,7 @@ export interface BrowserSteeringTermLayers {
 
 /** A compiled program, with what steering validation answers about its expression: the
  *  canonical text, each term's fields, where each acts and the model's depth. */
-export type BrowserCompiledSteering = BrowserHookProgramBuffers & {
+export type BrowserCompiledSteering = StructuredHookProgramBuffers & {
   steeringExpression?: string;
   steeringParts?: SteeringPartJSON[];
   steeringTerms?: readonly BrowserSteeringTermLayers[];
@@ -192,10 +187,6 @@ interface StructuredAffineTermGroup {
   terms: ResolvedCoreTerm[];
 }
 
-export type BrowserHookProgramBuffers =
-  | RankOneHookProgramBuffers
-  | StructuredHookProgramBuffers;
-
 export class BrowserFeasibilityCorePackCompiler {
   private neutralStatisticsRead: Promise<BrowserNeutralStatistics | null> | null;
 
@@ -203,7 +194,7 @@ export class BrowserFeasibilityCorePackCompiler {
   private lensLive = false;
   private lensLiveLayers: readonly number[] | null = null;
   private saeLive = false;
-  private compiledProgram: { key: string; program: BrowserHookProgramBuffers } | null = null;
+  private compiledProgram: { key: string; program: StructuredHookProgramBuffers } | null = null;
   private unitSource: BrowserUnitProgramSource | null = null;
   private unitSourceVersion = 0;
   private readonly attachedProbes = new Map<string, ProbeInfo>();
@@ -990,7 +981,7 @@ export class BrowserFeasibilityCorePackCompiler {
   compile(
     expression: string,
     probeRequests?: readonly ProbeRequest[],
-  ): BrowserHookProgramBuffers {
+  ): StructuredHookProgramBuffers {
     return structuredClone(this.compileForGeneration(expression, probeRequests));
   }
 
@@ -998,7 +989,7 @@ export class BrowserFeasibilityCorePackCompiler {
   compileForGeneration(
     expression: string,
     probeRequests?: readonly ProbeRequest[],
-  ): BrowserHookProgramBuffers {
+  ): StructuredHookProgramBuffers {
     const key = JSON.stringify([
       expression, probeRequests ?? this.listProbes(),
       this.instrumentLiveState(), this.instrumentDescriptor(), this.unitSourceVersion,
@@ -1012,7 +1003,7 @@ export class BrowserFeasibilityCorePackCompiler {
   private compileUncached(
     expression: string,
     probeRequests?: readonly ProbeRequest[],
-  ): BrowserHookProgramBuffers {
+  ): StructuredHookProgramBuffers {
     if (probeRequests === undefined) return this.compileCurrent(expression);
     const previous = [...this.attachedProbes.entries()];
     this.attachedProbes.clear();
@@ -1038,19 +1029,7 @@ export class BrowserFeasibilityCorePackCompiler {
     );
     const placements = this.placeTerms(resolved);
     const activeRole = this.activeRole(resolved);
-    let program: BrowserCompiledSteering;
-    if (this.lensLive || this.saeLive || this.attachedProbes.size > 0 || resolved.length === 0 || resolved.some((term) =>
-      term.trigger !== null || term.manifoldPosition !== null ||
-      term.base.kind === "instrument" || term.projection?.onto.kind === "instrument"
-    ) || (resolved.length > 1 && resolved.some((term) => term.ablation))) {
-      program = this.compileStructured(resolved);
-    } else if (resolved.length === 1 && resolved[0].projection === null) {
-      program = resolved[0].ablation
-        ? this.compileSingleRankOneAblation(resolved[0])
-        : this.compileSingleRankOne(resolved[0]);
-    } else {
-      program = this.compileComposedPurePush(resolved);
-    }
+    const program: BrowserCompiledSteering = this.compileStructured(resolved);
     program.activeRole = activeRole;
     program.steeringExpression = formatSteering(ir);
     program.steeringParts = steeringParts(ir);
@@ -1402,24 +1381,14 @@ export class BrowserFeasibilityCorePackCompiler {
           `Probe ${manifold.key} layer ${layer} is outside the compiled model layer map`,
         );
       }
-      if (
-        this.structuredHookProfile.maxGeometryProbes === 0 &&
-        manifold.tensors.keys.includes(`${prefix}.node_params`)
-      ) {
-        throw coreError(
-          "CORE_PACK_CURVED_GATE_UNAVAILABLE",
-          "Curved manifold readings require the distance-readout GPU ABI",
-        );
-      }
       const shape = manifold.tensors.description.shapes.get(`${prefix}.basis`);
       if (
         !shape || shape.length !== 2 || shape[1] !== this.hiddenSize ||
-        shape[0] < 1 || shape[0] > this.structuredHookProfile.maxRank ||
-        (this.structuredHookProfile.maxGeometryProbes === 0 && shape[0] !== 1)
+        shape[0] < 1 || shape[0] > this.structuredHookProfile.maxRank
       ) {
         throw coreError(
           "CORE_PACK_GATE_PROBE_UNAVAILABLE",
-          `Probe ${manifold.key} is multidimensional and requires more than one GPU readout slot`,
+          `Probe ${manifold.key} layer ${layer} has a basis this browser model library cannot read`,
         );
       }
       if (!this.whiteners.has(layer)) {
@@ -1881,79 +1850,26 @@ export class BrowserFeasibilityCorePackCompiler {
     }
     const manifold = geometryTarget.manifold;
     this.assertGeometryProbeLowerable(manifold);
-    if (this.structuredHookProfile.maxGeometryProbes > 0) {
-      const built = this.structuredGeometryProbe(manifold);
-      for (const [programIndex, probe] of built.layers) {
-        (layers[programIndex].geometryProbes as StructuredGeometryProbe[])[probeIndex] = probe;
-      }
-      return {
-        slots: [],
-        geometry: {
-          name: geometryTarget.name,
-          scoreKeys: geometryTarget.scoreKeys,
-          manifold: manifold.selectorKey,
-          labels: built.labels,
-          topN: geometryTarget.topN,
-          intrinsicDim: built.intrinsicDim,
-          rank: built.rank,
-          shareWeights: built.shareWeights,
-          assignBandwidth: built.assignBandwidth,
-          assignLogVolumeBias: built.assignLogVolumeBias,
-          labelScale: built.labelScale,
-        },
-      };
+    const built = this.structuredGeometryProbe(manifold);
+    for (const [programIndex, probe] of built.layers) {
+      (layers[programIndex].geometryProbes as StructuredGeometryProbe[])[probeIndex] = probe;
     }
-    const slots: StructuredMeasurementSlot[] = [];
-    for (const layer of fittedLayerNumbers(manifold.tensors)) {
-      const programIndex = this.layerMap.indexOf(layer);
-      if (programIndex < 0) continue;
-      const prefix = `layer_${layer}`;
-      if (manifold.tensors.keys.includes(`${prefix}.node_params`)) {
-        throw coreError(
-          "CORE_PACK_CURVED_GATE_UNAVAILABLE",
-          "Curved membership gates need the forthcoming distance-readout ABI",
-        );
-      }
-      const shape = manifold.tensors.description.shapes.get(`${prefix}.basis`);
-      if (!shape || shape[0] !== 1) {
-        throw coreError(
-          "CORE_PACK_GATE_PROBE_UNAVAILABLE",
-          `Probe ${name} is not a scalar affine coordinate`,
-        );
-      }
-      const basis = manifold.tensors.tensor(`${prefix}.basis`, [1, this.hiddenSize]).data;
-      const mean = manifold.tensors.tensor(`${prefix}.mean`, [this.hiddenSize]).data;
-      const whitener = this.whiteners.get(layer);
-      if (
-        !whitener ||
-        this.structuredHookProfile.maxGeometryProbes > 0 &&
-          whitener.rank > this.structuredHookProfile.maxWhitenerRank
-      ) {
-        throw coreError(
-          "CORE_PACK_WHITENER_UNAVAILABLE",
-          `Probe ${name} requires a neutral whitener for layer ${layer}`,
-        );
-      }
-      const inverseBasis = applySerializedInverse(whitener, basis);
-      const gram = dot(basis, inverseBasis);
-      if (!(gram > 1e-12)) {
-        throw coreError("CORE_PACK_METRIC_INVALID", `Probe ${name} has a degenerate metric at layer ${layer}`);
-      }
-      const direction = Float32Array.from(inverseBasis, (value) => value / gram);
-      (layers[programIndex].probes as StructuredProbe[])[probeIndex] = {
-        kind: "linear",
-        direction,
-        bias: -dot(mean, direction),
-      };
-      slots.push({ layer: programIndex, probe: probeIndex });
-    }
-    if (slots.length === 0) {
-      throw coreError(
-        "CORE_PACK_GATE_PROBE_UNAVAILABLE",
-        `Probe ${name} has no layer in the loaded runtime`,
-      );
-    }
-    return { slots, geometry: null };
+    return {
+      slots: [],
+      geometry: {
+        name: geometryTarget.name,
+        scoreKeys: geometryTarget.scoreKeys,
+        manifold: manifold.selectorKey,
+        labels: built.labels,
+        topN: geometryTarget.topN,
+        intrinsicDim: built.intrinsicDim,
+        rank: built.rank,
+        shareWeights: built.shareWeights,
+        assignBandwidth: built.assignBandwidth,
+        assignLogVolumeBias: built.assignLogVolumeBias,
+        labelScale: built.labelScale,
+      },
+    };
   }
 
   private measurementProbe(name: string | undefined): StructuredMeasurementProbe | null {
@@ -2220,241 +2136,6 @@ export class BrowserFeasibilityCorePackCompiler {
     return attached?.family === "lens" ? `jlens/${attached.word}` : name;
   }
 
-  private compileSingleRankOneAblation(
-    resolved: ResolvedCoreTerm,
-  ): RankOneHookProgramBuffers {
-    if (resolved.base.kind !== "manifold") {
-      throw coreError("CORE_PACK_EXPRESSION_UNAVAILABLE", "Instrument ablation requires the structured hook path");
-    }
-    if (this.whiteners.size !== this.layerMap.length) {
-      throw coreError(
-        "CORE_PACK_WHITENER_UNAVAILABLE",
-        "Browser ablation requires the exact neutral whitener",
-      );
-    }
-    const layers = this.layerMap.map(() => disabledLayer(this.hiddenSize));
-    if (Math.abs(resolved.coefficient) <= 1e-12) {
-      return compileRankOneHookProgram(this.hiddenSize, layers);
-    }
-    const fittedLayers = fittedLayerNumbers(resolved.base.manifold.tensors);
-    if (fittedLayers.length === 0) {
-      throw coreError("CORE_PACK_TENSOR_INVALID", "The selected core manifold has no fitted layers");
-    }
-    for (const layer of fittedLayers) {
-      if (!termActsAt(resolved, layer)) continue;
-      const programIndex = this.layerMap.indexOf(layer);
-      if (programIndex < 0) {
-        throw coreError(
-          "CORE_PACK_LAYER_MISMATCH",
-          `Core manifold layer ${layer} is outside the compiled model layer map`,
-        );
-      }
-      const prefix = `layer_${layer}`;
-      if (resolved.base.manifold.tensors.keys.includes(`${prefix}.node_params`)) {
-        throw coreError(
-          "CORE_PACK_CURVED_UNAVAILABLE",
-          "The current browser model library cannot execute curved manifold steering",
-        );
-      }
-      const basis = resolved.base.manifold.tensors.tensor(
-        `${prefix}.basis`,
-        [1, this.hiddenSize],
-      ).data;
-      const mean = this.whiteners.get(layer)!.mean;
-      layers[programIndex] = {
-        enabled: true,
-        basis,
-        neutral: mean,
-        target: 0,
-        along: 1,
-        collapse: resolved.coefficient,
-        probeBasis: basis,
-        probeNeutral: mean,
-      };
-    }
-    return compileRankOneHookProgram(this.hiddenSize, layers);
-  }
-
-  private compileSingleRankOne(resolved: ResolvedCoreTerm): RankOneHookProgramBuffers {
-    const target = resolved.base;
-    if (target.kind !== "manifold") {
-      throw coreError("CORE_PACK_EXPRESSION_UNAVAILABLE", "Instrument steering requires the structured hook path");
-    }
-    const layers = this.layerMap.map(() => disabledLayer(this.hiddenSize));
-    const active: Array<{
-      programIndex: number;
-      basis: Float32Array;
-      mean: Float32Array;
-      target: number;
-      share: number;
-    }> = [];
-    const fittedLayers = fittedLayerNumbers(target.manifold.tensors);
-    if (fittedLayers.length === 0) {
-      throw coreError("CORE_PACK_TENSOR_INVALID", "The selected core manifold has no fitted layers");
-    }
-    for (const layer of fittedLayers) {
-      if (!termActsAt(resolved, layer)) continue;
-      const programIndex = this.layerMap.indexOf(layer);
-      if (programIndex < 0) {
-        throw coreError(
-          "CORE_PACK_LAYER_MISMATCH",
-          `Core manifold layer ${layer} is outside the compiled model layer map`,
-        );
-      }
-      const prefix = `layer_${layer}`;
-      if (target.manifold.tensors.keys.some((key) => key === `${prefix}.node_params`)) {
-        throw coreError(
-          "CORE_PACK_CURVED_UNAVAILABLE",
-          "The current browser model library cannot execute curved manifold steering",
-        );
-      }
-      const mean = target.manifold.tensors.tensor(
-        `${prefix}.mean`,
-        [this.hiddenSize],
-      ).data;
-      const basis = target.manifold.tensors.tensor(
-        `${prefix}.basis`,
-        [1, this.hiddenSize],
-      ).data;
-      const nodeCoordinates = target.manifold.tensors.tensor(
-        `${prefix}.node_coords`,
-        [target.manifold.labels.length, 1],
-      ).data;
-      const storedShare = target.manifold.mahalanobisShares.get(layer);
-      if (storedShare === undefined) {
-        throw coreError(
-          "CORE_PACK_METRIC_MISSING",
-          `Core manifold layer ${layer} has no Mahalanobis share`,
-        );
-      }
-      // A one-node concept is a monopolar fold (`fold_directions_to_subspace`): its node sits at
-      // ‖d‖ from the neutral anchor at coordinate 0 and its share is ‖d‖_M, so its spread is
-      // measured from the anchor rather than from the node mean.
-      const coordinateMean = nodeCoordinates.length === 1
-        ? 0
-        : nodeCoordinates.reduce((sum, value) => sum + value, 0) / nodeCoordinates.length;
-      let coordinateSpreadSquared = 0;
-      for (const value of nodeCoordinates) {
-        coordinateSpreadSquared += (value - coordinateMean) ** 2;
-      }
-      const coordinateSpread = Math.sqrt(coordinateSpreadSquared);
-      if (!Number.isFinite(coordinateSpread) || coordinateSpread <= 1e-9) {
-        throw coreError(
-          "CORE_PACK_METRIC_INVALID",
-          `Core manifold layer ${layer} has degenerate fitted node coordinates`,
-        );
-      }
-      const basisMahalanobisNorm = storedShare / coordinateSpread;
-      const rawTarget = nodeCoordinates[target.labelIndex];
-      const share = Math.abs(resolved.coefficient * rawTarget) * basisMahalanobisNorm;
-      if (share <= 1e-9) continue;
-      active.push({
-        programIndex,
-        basis,
-        mean,
-        target: resolved.coefficient * rawTarget /
-          (Math.abs(rawTarget) * basisMahalanobisNorm),
-        share,
-      });
-    }
-    const totalShare = active.reduce((sum, layer) => sum + layer.share, 0);
-    for (const layer of active) {
-      layers[layer.programIndex] = {
-        enabled: true,
-        basis: layer.basis,
-        neutral: layer.mean,
-        target: layer.target,
-        along: layer.share / totalShare * active.length * 16,
-        collapse: 0,
-        probeBasis: layer.basis,
-        probeNeutral: layer.mean,
-      };
-    }
-    return compileRankOneHookProgram(this.hiddenSize, layers);
-  }
-
-  private compileComposedPurePush(
-    terms: readonly ResolvedCoreTerm[],
-  ): RankOneHookProgramBuffers {
-    if (this.whiteners.size !== this.layerMap.length) {
-      throw coreError(
-        "CORE_PACK_WHITENER_UNAVAILABLE",
-        "Composed browser steering requires the exact neutral whitener",
-      );
-    }
-    const manifolds = new Set<CoreManifold>();
-    for (const term of terms) {
-      if (term.base.kind === "manifold") manifolds.add(term.base.manifold);
-      if (term.projection?.onto.kind === "manifold") manifolds.add(term.projection.onto.manifold);
-    }
-    for (const manifold of manifolds) this.validateAffineManifoldLayers(manifold);
-
-    const layers = this.layerMap.map(() => disabledLayer(this.hiddenSize));
-    const active: Array<{
-      programIndex: number;
-      basis: Float64Array;
-      neutral: Float64Array;
-      target: number;
-      share: number;
-    }> = [];
-    this.layerMap.forEach((layer, programIndex) => {
-      const whitener = this.whiteners.get(layer)!;
-      const fragments: Array<{ coefficient: number; direction: Float64Array }> = [];
-      for (const term of terms) {
-        if (!termActsAt(term, layer)) continue;
-        const direction = this.termDirection(term, layer, whitener);
-        if (direction !== null) fragments.push({ coefficient: term.coefficient, direction });
-      }
-      if (fragments.length === 0) return;
-
-      const worldTarget = new Float64Array(this.hiddenSize);
-      const rawDelta = new Float64Array(this.hiddenSize);
-      const norms: number[] = [];
-      for (const fragment of fragments) {
-        const norm = mahalanobisNorm(whitener, fragment.direction);
-        norms.push(norm);
-        for (let index = 0; index < this.hiddenSize; index += 1) {
-          rawDelta[index] += fragment.coefficient * fragment.direction[index];
-          if (norm > 1e-9) {
-            worldTarget[index] += fragment.coefficient / norm * fragment.direction[index];
-          }
-        }
-      }
-      const target = euclideanNorm(worldTarget);
-      if (target < 1e-9) return;
-      let share = mahalanobisNorm(whitener, rawDelta);
-      if (share < 1e-9) {
-        share = fragments.reduce(
-          (sum, fragment, index) => sum + Math.abs(fragment.coefficient) * norms[index],
-          0,
-        );
-      }
-      if (share < 1e-9) return;
-      active.push({
-        programIndex,
-        basis: Float64Array.from(worldTarget, (value) => value / target),
-        neutral: whitener.mean,
-        target,
-        share,
-      });
-    });
-
-    const totalShare = active.reduce((sum, layer) => sum + layer.share, 0);
-    for (const layer of active) {
-      layers[layer.programIndex] = {
-        enabled: true,
-        basis: layer.basis,
-        neutral: layer.neutral,
-        target: layer.target,
-        along: layer.share / totalShare * active.length * 16,
-        collapse: 0,
-        probeBasis: layer.basis,
-        probeNeutral: layer.neutral,
-      };
-    }
-    return compileRankOneHookProgram(this.hiddenSize, layers);
-  }
-
   private termDirection(
     term: ResolvedCoreTerm,
     layer: number,
@@ -2530,7 +2211,6 @@ export class BrowserFeasibilityCorePackCompiler {
       }
     }
     if (
-      this.structuredHookProfile.maxGeometryProbes > 0 &&
       manifold.labels.length + (manifold.labels.includes("neutral") ? 0 : 1) >
         this.structuredHookProfile.maxGeometryCandidates
     ) {
@@ -4024,19 +3704,6 @@ function encodeVariantIdentity(value: string): string {
   return `_z${output}`;
 }
 
-function disabledLayer(hiddenSize: number): RankOneHookLayer {
-  return {
-    enabled: false,
-    basis: new Float32Array(hiddenSize),
-    neutral: new Float32Array(hiddenSize),
-    target: 0,
-    along: 0,
-    collapse: 0,
-    probeBasis: new Float32Array(hiddenSize),
-    probeNeutral: new Float32Array(hiddenSize),
-  };
-}
-
 function disabledStructuredGroup(hiddenSize: number): StructuredAffineGroup {
   const basis = new Float32Array(hiddenSize);
   basis[0] = 1;
@@ -4120,8 +3787,7 @@ function structuredCurveDomain(
     domain.type === "sphere" && Number.isSafeInteger(domain.dim) &&
     (domain.dim as number) >= 1 &&
     (domain.dim as number) <= profile.maxIntrinsicDim &&
-    (domain.dim as number) + 1 <= profile.maxEmbedDim &&
-    profile.maxGeometryProbes > 0
+    (domain.dim as number) + 1 <= profile.maxEmbedDim
   ) {
     const dim = domain.dim as number;
     const axes = Array.from({ length: dim }, (_, axis): StructuredCurveAxis => ({
