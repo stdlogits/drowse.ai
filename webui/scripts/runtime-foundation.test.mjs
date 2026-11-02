@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
+import { fixtureBlockSites } from "./catalog-fixture.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const server = await createServer({
@@ -221,6 +222,7 @@ function runtimeLockModelsFor(document) {
       convertedRepository: path.slice(0, resolveIndex).join("/"),
       convertedRevision: variant.files[0].revision,
       contextProfiles: variant.contextProfiles.map((profile) => profile.contextTokens),
+      ...fixtureBlockSites(variant.structuredHookProfile),
     };
   }));
 }
@@ -2917,6 +2919,26 @@ try {
       },
     );
     assert.equal(verifiedAlternateOwner.document.models[0].variants[0].files[0].url.includes("/stdlogits/"), true);
+
+    // A v5 variant's lock entry records what its library attests: a standard-v4 one its block
+    // spec (the load request's), a residual one its unit refusal; without it the catalog fails.
+    const lockedVariant = verified.document.models[0].variants[0];
+    assert.equal(lockedVariant.structuredHookProfile, "standard-v4");
+    assert.deepEqual(
+      catalog.lockedBlockSites(policy.runtimeLockModels, lockedVariant),
+      fixtureBlockSites("standard-v4"),
+    );
+    assert.deepEqual(
+      catalog.lockedBlockSites([], lockedVariant),
+      { blockSpec: null, unitRefusal: null },
+    );
+    await rejectsCode(
+      () => catalog.verifyCatalog(signed.exactBytes, signed.signature, verifier, {
+        ...policy,
+        runtimeLockModels: policy.runtimeLockModels.map((model) => ({ ...model, blockSpec: null })),
+      }),
+      "CATALOG_RUNTIME_IDENTITY_UNLOCKED",
+    );
 
     const tampered = signed.exactBytes.slice();
     tampered[tampered.length - 1] ^= 1;

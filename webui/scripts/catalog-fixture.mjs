@@ -130,6 +130,22 @@ export function catalogBytes(overrides = {}) {
   return new TextEncoder().encode(JSON.stringify(catalogFixture(overrides)));
 }
 
+/** A Qwen3-shaped block spec the fixture's standard-v4 lock entries record. */
+export const FIXTURE_BLOCK_SPEC = Object.freeze({
+  dFF: 8, nHeads: 2, nKvHeads: 1, headDim: 2, sandwich: false, normOffset: 0, activation: "silu",
+  embedScale: 1, rmsEps: 1e-6, qkNorm: true, attnScaling: 0.5, attnLogitSoftcap: null,
+  finalLogitSoftcap: null, ropeTheta: 10000, ropeLocalTheta: null, ropeGlobalScale: 1,
+  ropeInGraph: true, slidingWindow: null, slidingPattern: null,
+});
+
+/** The lock entry's block sites for a fixture variant: a standard-v4 library's block spec, a
+ *  residual one's unit refusal. */
+export function fixtureBlockSites(structuredHookProfile) {
+  return structuredHookProfile === "standard-v4"
+    ? { blockSpec: { ...FIXTURE_BLOCK_SPEC }, unitRefusal: null }
+    : { blockSpec: null, unitRefusal: "fixture blocks are not described" };
+}
+
 export function catalogRuntimeLockModels(document = catalogFixture()) {
   return document.models.flatMap((model) => model.variants.map((variant) => ({
     runtimeIdentity: structuredClone(variant.runtimeIdentity),
@@ -138,6 +154,7 @@ export function catalogRuntimeLockModels(document = catalogFixture()) {
     convertedRepository: "a9lim/drowse-web-fixture",
     convertedRevision: FIXTURE_REVISION,
     contextProfiles: variant.contextProfiles.map((profile) => profile.contextTokens),
+    ...fixtureBlockSites(variant.structuredHookProfile),
   })));
 }
 

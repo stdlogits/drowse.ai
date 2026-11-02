@@ -32,7 +32,9 @@ import { assessModelVariant } from "../../lib/runtime/recommendation";
 import { outputTokenLimitForSignals } from "../../../../drowse/webui/src/lib/runtime/outputTokenPolicy";
 import {
   CatalogValidationError,
+  lockedBlockSites,
   runtimeIdentitySha256,
+  type CatalogRuntimeLockModel,
 } from "../../lib/runtime/catalog";
 import { BrowserCapabilityChecker, requestPersistentStorage, storageEstimate } from "./capabilities";
 import type { GpuAdapterLike } from "./capabilities";
@@ -188,6 +190,9 @@ export interface HostedRuntimeWorkerDependencies {
   activationSpool?: ActivationSpool;
   storageEstimator?: () => Promise<RuntimeCapabilities["storage"]>;
   modelBackend?: BrowserModelBackend;
+  /** The runtime lock's models a load takes its library's block sites from (the embedded
+   *  lock's by default, the one the catalog was verified against). */
+  runtimeLockModels?: readonly CatalogRuntimeLockModel[];
   sessionPersistence?: SessionCoordinatorPersistencePort;
   sessionCoordinatorFactory?: SessionCoordinatorFactory;
   clearRuntimeStorage?: () => Promise<void>;
@@ -198,6 +203,7 @@ export class HostedRuntimeWorker {
   private readonly capabilityChecker: CapabilityCheckerLike;
   private readonly contentStore: ContentAddressedStore;
   private readonly catalogRepository: CatalogRepositoryLike;
+  private readonly runtimeLockModels: readonly CatalogRuntimeLockModel[];
   private readonly downloader: ArtifactDownloaderLike;
   private readonly artifactService: ArtifactServicePort;
   private readonly activationSpool: ActivationSpool;
@@ -256,6 +262,7 @@ export class HostedRuntimeWorker {
     this.capabilityChecker = dependencies.capabilityChecker ?? new BrowserCapabilityChecker();
     this.contentStore = dependencies.contentStore ?? new BrowserContentStore();
     this.catalogRepository = dependencies.catalogRepository ?? new VerifiedCatalogRepository();
+    this.runtimeLockModels = dependencies.runtimeLockModels ?? HOSTED_DISTRIBUTION_CONFIG.runtimeLockModels;
     this.downloader = dependencies.downloader ?? new VerifiedArtifactDownloader(
       this.contentStore,
       {
@@ -2418,7 +2425,12 @@ export class HostedRuntimeWorker {
     this.activeBackendLoadController = controller;
     this.activeBackendLoadSettled = settled.promise;
     try {
-      return await this.modelBackend.load({ ...request, signal: controller.signal });
+      // A v5 library attests the lock's block spec (or answers with its unit refusal).
+      return await this.modelBackend.load({
+        ...request,
+        ...lockedBlockSites(this.runtimeLockModels, request.variant),
+        signal: controller.signal,
+      });
     } finally {
       settled.resolve();
       if (this.activeBackendLoadController === controller) {

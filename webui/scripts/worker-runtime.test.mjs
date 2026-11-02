@@ -6,6 +6,8 @@ import {
   FIXTURE_SIGNATURE,
   catalogBytes,
   catalogFixture,
+  catalogRuntimeLockModels,
+  fixtureBlockSites,
 } from "./catalog-fixture.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -373,6 +375,7 @@ try {
         async clear() {},
       },
       modelBackend: overrides.modelBackend,
+      runtimeLockModels: overrides.runtimeLockModels ?? catalogRuntimeLockModels(),
       sessionPersistence: overrides.sessionPersistence ?? {
         async claim() { return { status: "missing" }; },
         async save(input, ownerEpoch) {
@@ -2314,6 +2317,24 @@ try {
       args: [local.namespace, local.name],
     }));
     assert.deepEqual((await response(scope, "fixture-manifold-get-local")).result, local);
+  });
+
+  test("a load carries the runtime lock's block sites for its variant", async () => {
+    const loads = [];
+    const backend = new fakeModelBackendModule.DeterministicBrowserModelBackend();
+    const load = backend.load.bind(backend);
+    backend.load = async (loadRequest) => {
+      loads.push({ blockSpec: loadRequest.blockSpec, unitRefusal: loadRequest.unitRefusal });
+      return load(loadRequest);
+    };
+    const scope = harness({
+      async download() { return result; },
+      cancel() { return false; },
+    }, { modelBackend: backend });
+    await prepareDownload(scope);
+    scope.send(request("load-lock-block-sites", "load", downloadPayload()));
+    assert.equal((await response(scope, "load-lock-block-sites")).ok, true);
+    assert.deepEqual(loads, [fixtureBlockSites(variant.structuredHookProfile)]);
   });
 
   test("the worker fixture serves the units members through its loaded model", async () => {

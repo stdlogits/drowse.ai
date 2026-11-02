@@ -18,6 +18,7 @@ import {
   resolveStructuredHookProfile,
   structuredHookMemoryRequirements,
   WEB_LLM_RUNTIME_MIN_STORAGE_BUFFERS_PER_SHADER_STAGE,
+  type BlockSpec,
 } from "../../hosted/runtime/structuredHookProfile";
 
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -68,6 +69,20 @@ export interface CatalogRuntimeLockModel {
   convertedRepository: string;
   convertedRevision: string;
   contextProfiles: readonly number[];
+  /** The block spec a `standard-v4` library's descriptor is attested against (B1 §8.2). */
+  blockSpec: BlockSpec | null;
+  /** What a `standard-v4-residual` library's unit members answer (native's 422 text). */
+  unitRefusal: string | null;
+}
+
+/** The lock's block sites for a catalog variant (the load request's `blockSpec` and
+ *  `unitRefusal`): the entry whose runtime identity it carries, or nothing locked. */
+export function lockedBlockSites(
+  locks: readonly CatalogRuntimeLockModel[],
+  variant: Pick<ModelVariant, "runtimeIdentity">,
+): { blockSpec: BlockSpec | null; unitRefusal: string | null } {
+  const lock = locks.find((candidate) => sameRuntimeIdentity(candidate.runtimeIdentity, variant.runtimeIdentity));
+  return { blockSpec: lock?.blockSpec ?? null, unitRefusal: lock?.unitRefusal ?? null };
 }
 
 export class CatalogValidationError extends Error {
@@ -282,6 +297,16 @@ function validateRuntimeLockBindings(
         throw new CatalogValidationError(
           "CATALOG_RUNTIME_IDENTITY_UNLOCKED",
           `Catalog variant ${variant.id} is not present in the embedded browser runtime lock`,
+        );
+      }
+      // A v5 library attests its block spec (unit sites) or answers its unit members with the
+      // lock's refusal (residual), so the lock entry must record the one its profile needs.
+      const profile = resolveStructuredHookProfile(variant.structuredHookProfile);
+      const unitSites = isBlockSitesProfile(profile) && profile.unitSites === 1;
+      if (unitSites ? lock.blockSpec === null : !lock.unitRefusal) {
+        throw new CatalogValidationError(
+          "CATALOG_RUNTIME_IDENTITY_UNLOCKED",
+          `The embedded browser runtime lock does not record variant ${variant.id}'s ${unitSites ? "block spec" : "unit refusal"}`,
         );
       }
       if (model.sourceUrl !== `https://huggingface.co/${lock.runtimeIdentity.sourceModel}`) {
