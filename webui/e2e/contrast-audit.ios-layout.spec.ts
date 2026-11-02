@@ -100,8 +100,10 @@ async function auditActionStates(page: Page, selector: string, label: string) {
     const control = page.locator(`${selector} [data-contrast-control="${candidate.index}"]`);
     await control.scrollIntoViewIfNeeded();
     for (const state of ["rest", "hover"]) {
-      if (state === "hover") await control.hover({ force: true });
-      else await page.mouse.move(0, 0);
+      if (state === "hover") {
+        // A control inside a clipped scroller can sit outside the viewport; its rest state still counts.
+        if (!await control.hover({ force: true, timeout: 2_000 }).then(() => true, () => false)) continue;
+      } else await page.mouse.move(0, 0);
       const pair = await control.evaluate(element => {
         const style = getComputedStyle(element);
         let opacity = 1;

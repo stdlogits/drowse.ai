@@ -56,7 +56,10 @@ export async function sendMessage(page: Page, text: string): Promise<void> {
 /** Opens a room: the header's room tabs on a wide screen, the Menu's Rooms group on a phone. */
 export async function selectRoom(page: Page, name: string): Promise<void> {
   const tabs = page.getByRole("navigation", { name: "Rooms", exact: true });
-  if (await tabs.isVisible()) {
+  // App.svelte's phone layout (rooms in the Menu) is (max-width: 720px).
+  const phone = await page.evaluate(() => matchMedia("(max-width: 720px)").matches);
+  if (!phone) {
+    await expect(tabs).toBeVisible();
     await tabs.getByRole("button", { name, exact: true }).click();
   } else {
     await openMenuItem(page, name);
@@ -68,6 +71,7 @@ export async function selectRoom(page: Page, name: string): Promise<void> {
 export async function openMenuItem(page: Page, name: string): Promise<void> {
   const menu = page.getByRole("menu", { name: "Menu", exact: true });
   if (!await menu.isVisible()) await page.getByRole("button", { name: "Menu", exact: true }).click();
+  await expect(menu).toBeVisible();
   await menu.getByRole("menuitem", { name, exact: true }).click();
 }
 
