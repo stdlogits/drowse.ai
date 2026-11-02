@@ -1,7 +1,7 @@
 <script lang="ts">
-  import PageHeader from "../../../../drowse/webui/src/lib/ui/PageHeader.svelte";
+  import { tips } from "@stdlogits/ledger";
+  import SiteHeader from "./SiteHeader.svelte";
   import PageFooter from "./PageFooter.svelte";
-  import TabIdentity from "../../../../drowse/webui/src/lib/ui/TabIdentity.svelte";
   import ContactForm from "../../../../drowse/webui/src/lib/ui/ContactForm.svelte";
   import PwaUpdatePrompt from "./PwaUpdatePrompt.svelte";
   import { CONTACT_ADDRESS, CONTACT_REASONS, contactTopics } from "../../../../drowse/webui/src/lib/contact";
@@ -23,6 +23,7 @@
   let mounted = $state(false);
   onMount(() => {
     mounted = true;
+    document.title = "Contact us · Drowse";
     applyReasonFromUrl();
     let meta = document.head.querySelector<HTMLMetaElement>('meta[name="description"]');
     const created = !meta;
@@ -41,12 +42,11 @@
   });
 </script>
 
-<TabIdentity title="Contact us · Drowse" />
 <!-- The update prompt touches window on teardown, so it only renders in the browser. -->
 {#if mounted}<PwaUpdatePrompt />{/if}
-<div class="contact-page">
+<div class="contact-page" use:tips>
   <a class="skip-link" href="#contact-main">Skip to content</a>
-  <PageHeader current="contact" />
+  <SiteHeader current="contact" />
   <main id="contact-main" tabindex="-1">
     <div class="heading">
       <h1>Contact us.</h1>
@@ -59,24 +59,22 @@
 </div>
 
 <style>
-  .contact-page { min-height: 100svh; display: flex; flex-direction: column; color: var(--fg); background: var(--bg); }
-  main { flex: 1; display: grid; grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr); align-items: start; gap: var(--space-2xl); width: min(100%, var(--page-max)); margin-inline: auto; padding: var(--space-2xl) var(--page-gutter) var(--section-space); }
-  .heading { display: grid; gap: var(--space-md); padding-block: var(--surface-padding); min-width: 0; }
-  h1 { margin: 0; font-family: var(--font-structure); font-weight: var(--weight-display); font-size: var(--text-section-display-compact); line-height: 1.05; letter-spacing: -0.05em; text-wrap: balance; }
-  .intro { margin: 0; max-width: 28ch; font-size: var(--text-lg); color: var(--fg-dim); line-height: 1.5; }
-  .email-option { display: grid; justify-items: start; gap: var(--space-xs); margin-top: var(--space-md); font-size: var(--text); color: var(--fg-dim); }
-  .email-option a { display: inline-flex; align-items: center; min-height: var(--control-target); color: var(--accent); font-family: var(--font-structure); text-underline-offset: 4px; overflow-wrap: anywhere; }
-  .email-option a:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 4px; border-radius: var(--radius-sm); }
-  .form-surface { min-width: 0; padding: var(--surface-padding); border-radius: var(--popup-radius); background: var(--surface-card); box-shadow: var(--shadow-card); }
-  .skip-link { position: fixed; inset: 8px auto auto 8px; z-index: 10; padding: var(--space-sm); background: var(--accent); color: var(--text-on-accent); border-radius: var(--radius); clip-path: inset(50%); transform: translateY(-160%); }
-  .skip-link:focus { clip-path: none; transform: none; }
-  @media (max-width: 1000px) {
-    main { grid-template-columns: minmax(0, 1fr); max-width: 48rem; gap: var(--space-lg); padding-block: var(--space-lg) var(--space-2xl); }
-    .heading { padding-block: 0; gap: var(--space-sm); }
-    .intro { max-width: 36ch; }
-    .email-option { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-sm); margin-top: 0; }
-  }
-  @media (max-width: 480px) {
-    .form-surface { padding: var(--space-sm); }
+  /* Contact: the title and the email beside the form, which sits on a wash. */
+  .contact-page { display: flex; flex-direction: column; min-height: 100svh; }
+  .skip-link { position: fixed; z-index: 60; top: var(--s2); inset-inline-start: var(--s2); padding: var(--s2) var(--s4); border-radius: var(--r-pill); background: var(--ink); color: var(--paper); font: var(--type-control); translate: 0 calc(-100% - var(--s4)); transition: translate var(--fast) var(--ease); }
+  .skip-link:focus { translate: 0 0; }
+  main { flex: 1; display: grid; grid-template-columns: minmax(0, 360px) minmax(0, 1fr); align-items: start; gap: var(--s7); width: 100%; max-width: var(--page); margin: 0 auto; padding: var(--s7) var(--gutter) var(--s9); }
+  main:focus { outline: none; }
+  .heading { position: sticky; top: var(--s5); display: grid; justify-items: start; gap: var(--s4); }
+  h1 { color: var(--ink); font: var(--type-title); letter-spacing: -0.04em; }
+  .intro { color: var(--ink2); font: var(--type-lead); }
+  .email-option { display: flex; flex-wrap: wrap; gap: var(--s2); color: var(--ink3); font: var(--type-small); }
+  .email-option a { color: var(--ink2); text-decoration: underline; text-decoration-color: var(--wash2); text-decoration-thickness: 2px; text-underline-offset: 4px; overflow-wrap: anywhere; transition: color var(--fast) var(--ease); }
+  @media (hover: hover) { .email-option a:hover { color: var(--ink); } }
+  .form-surface { --field: var(--wash2); --field-hover: var(--paper); min-width: 0; padding: var(--s6); border-radius: var(--r-row); background: var(--wash); }
+  @media (max-width: 900px) {
+    main { grid-template-columns: minmax(0, 1fr); gap: var(--s6); padding-top: var(--s5); }
+    .heading { position: static; }
+    .form-surface { padding: var(--s4); }
   }
 </style>

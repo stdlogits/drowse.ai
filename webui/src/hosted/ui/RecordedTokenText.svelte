@@ -1,8 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { flip } from "svelte/animate";
-  import { motionDuration } from "../../../../drowse/webui/src/lib/motion";
-  import MorphText from "../../../../drowse/webui/src/lib/ui/MorphText.svelte";
+  import { GLIDE, IN, MorphText, OUT, reducedMotion } from "@stdlogits/ledger";
   import { tokenProbabilityRows, visibleTokenText } from "../../../../drowse/webui/src/lib/tokenProbabilities";
   import { probabilityScore, scoreToRgb as highlightColor, surpriseScore } from "../../../../drowse/webui/src/lib/tokens";
   import type { TokenScore } from "../../../../drowse/webui/src/lib/types";
@@ -104,8 +103,8 @@
     pinned = false;
     hoverAfter = performance.now() + 250;
     const exit = panel.animate([{ opacity }, { opacity: 0 }], {
-      duration: matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 200,
-      easing: "ease-out",
+      duration: reducedMotion() ? 0 : OUT,
+      easing: "cubic-bezier(0.2, 0, 0, 1)",
     });
     fade = exit;
     exit.onfinish = () => { if (fade === exit) { hidePanel(); fade = null; } };
@@ -124,8 +123,8 @@
     showPanel();
     place();
     fade = panel.animate([{ opacity }, { opacity: 1 }], {
-      duration: matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 200,
-      easing: "ease-out",
+      duration: reducedMotion() ? 0 : IN,
+      easing: "cubic-bezier(0.2, 0, 0, 1)",
     });
     if (focus) panel.focus({ preventScroll: true });
   }
@@ -194,16 +193,7 @@
     onkeydown={move}
   >{#if layout === "inline"}<MorphText {text} numbers={false} duration={240} />{:else}{text}{/if}</button>{/snippet}
 
-<svelte:element this={layout === "message" ? "h1" : "div"} class="message-title" class:inline={layout === "inline"} aria-label={tokens.map(token => token.text).join("").trim()}><span class="recorded-tokens">{#if layout === "inline"}{#each tokens as piece, index (index)}<span class="inline-piece" animate:flip={{ duration: motionDuration(240) }}>{@render tokenButton(piece.text, index)}</span>{/each}{:else}{#each [groups.slice(0, 2), groups.slice(2)] as section, sectionIndex}{sectionIndex === 0 ? "" : " "}<span class={sectionIndex === 0 ? "message-prefix" : "message-body"}>{#each section as group, groupIndex}{groupIndex === 0 ? "" : group.space}<span class="word">{#each group.pieces as piece}{@render tokenButton(piece.text, piece.index, piece.first)}{/each}</span>{/each}</span>{/each}{/if}</span></svelte:element>
-
-<svg class="glass-definitions" width="0" height="0" aria-hidden="true" focusable="false">
-  <defs>
-    <filter id="recorded-token-glass" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
-      <feImage href="/images/landing-glass-map.svg" width="100%" height="100%" preserveAspectRatio="none" result="rim" />
-      <feDisplacementMap in="SourceGraphic" in2="rim" scale="32" xChannelSelector="R" yChannelSelector="G" />
-    </filter>
-  </defs>
-</svg>
+<svelte:element this={layout === "message" ? "h1" : "div"} class="message-title" class:inline={layout === "inline"} aria-label={tokens.map(token => token.text).join("").trim()}><span class="recorded-tokens">{#if layout === "inline"}{#each tokens as piece, index (index)}<span class="inline-piece" animate:flip={{ duration: reducedMotion() ? 0 : GLIDE }}>{@render tokenButton(piece.text, index)}</span>{/each}{:else}{#each [groups.slice(0, 2), groups.slice(2)] as section, sectionIndex}{sectionIndex === 0 ? "" : " "}<span class={sectionIndex === 0 ? "message-prefix" : "message-body"}>{#each section as group, groupIndex}{groupIndex === 0 ? "" : group.space}<span class="word">{#each group.pieces as piece}{@render tokenButton(piece.text, piece.index, piece.first)}{/each}</span>{/each}</span>{/each}{/if}</span></svelte:element>
 
 <div bind:this={panel} id={`${uid}-panel`} class="recorded-token-panel" class:fallback-open={fallbackOpen} popover="manual" role="dialog" tabindex="-1"
   aria-labelledby={`${uid}-title`} aria-hidden={active === null} onpointerenter={cancelTimers} onpointerleave={leave}>
@@ -224,52 +214,65 @@
 </div>
 
 <style>
-  .message-title { margin: 0; font: inherit; letter-spacing: inherit; line-height: inherit; text-wrap: balance; }
+  /* A recorded reply, each token a button tinted by how surprising it was (the dashboard's token
+     tint, from --tint); selecting one opens its alternatives in a frosted panel, Ledger's tip. */
+  .message-title { margin: 0; font: inherit; text-wrap: balance; }
   .recorded-tokens { display: flex; flex-direction: column; white-space: pre-wrap; }
-  .message-prefix { --weight-structure: var(--weight-display); font-size: var(--text-not-found-prefix); display: block; margin-bottom: var(--space-sm); font-family: var(--font-structure); font-weight: var(--weight-display); letter-spacing: -0.075em; white-space: nowrap; }
-  .message-body { display: block; }
-  .word { display: inline-block; white-space: nowrap; max-width: 100%; }
-  .recorded-token { --control-sheen: none; display: inline-block; min-height: 44px; vertical-align: baseline; padding: 0; margin: 0; border: 0; border-radius: var(--data-mark-radius); background: transparent; color: inherit; font: inherit; letter-spacing: inherit; line-height: inherit; cursor: pointer; box-decoration-break: clone; -webkit-box-decoration-break: clone; transition: background-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out); }
+  .message-prefix { display: block; margin-bottom: var(--s2); color: var(--ink); font: var(--type-title); letter-spacing: -0.04em; }
+  .message-body { display: block; color: var(--ink2); font: var(--type-lead); }
+  .word { display: inline-block; max-width: 100%; white-space: nowrap; }
+  .recorded-token { display: inline-block; min-height: 44px; margin: 0; padding: 0; border: 0; border-radius: var(--r-chip); background: transparent; color: inherit; font: inherit; vertical-align: baseline; cursor: pointer; transition: background-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease); }
   .recorded-token.highlighted { background: var(--token-tint); }
-  .recorded-token:hover, .recorded-token.selected { box-shadow: 0 0 0 2px var(--accent); }
-  .recorded-token:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-  .recorded-token:active { transform: none; scale: 1; }
+  .recorded-token.selected { box-shadow: 0 0 0 2px var(--ink); }
+  @media (hover: hover) { .recorded-token:hover { box-shadow: 0 0 0 2px var(--ink); } }
   .inline { text-wrap: pretty; }
   .inline .recorded-tokens { display: inline; }
   .inline-piece { display: inline-block; max-width: 100%; vertical-align: baseline; }
-  .inline .recorded-token { display: inline; min-height: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit !important; font-weight: inherit !important; }
+  .inline .recorded-token { display: inline; min-height: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .inline .recorded-token.whitespace { display: inline-block; min-width: 0.35em; white-space: pre; }
-  .glass-definitions { position: absolute; pointer-events: none; }
-  .recorded-token-panel { --fg: var(--landing-panel-ink); --fg-dim: var(--landing-panel-muted); position: fixed; inset: auto; margin: 0; box-sizing: border-box; width: min(20rem, calc(100vw - 24px)); padding: var(--space-sm); overflow: auto; overscroll-behavior: contain; border: 0; border-radius: var(--radius-lg); background: var(--recorded-token-panel-bg); color: var(--fg); text-shadow: var(--landing-panel-text-shadow); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); font: var(--text-sm)/1.4 var(--font-ui); letter-spacing: normal; }
+
+  .recorded-token-panel {
+    position: fixed;
+    inset: auto;
+    width: min(320px, calc(100vw - 24px));
+    max-height: min(420px, calc(100dvh - 24px));
+    margin: 0;
+    padding: var(--s3) var(--s4);
+    overflow: auto;
+    border: 0;
+    border-radius: var(--r-box);
+    background: color-mix(in oklch, var(--paper) 72%, transparent);
+    -webkit-backdrop-filter: blur(20px) saturate(1.6);
+    backdrop-filter: blur(20px) saturate(1.6);
+    color: var(--ink);
+    font: var(--type-small);
+    white-space: normal;
+    box-shadow: var(--float);
+  }
   .recorded-token-panel[aria-hidden="true"] { pointer-events: none; }
-  .recorded-token-panel { white-space: normal; overflow-wrap: normal; }
-  header { display: flex; justify-content: space-between; align-items: start; gap: var(--space-sm); }
-  header > div { min-width: 0; }
-  .recorded-token-panel h2 { margin: var(--space-xs) 0; font-family: var(--font-mono); font-size: var(--text-md); overflow-wrap: anywhere; text-wrap: balance; }
-  .source, dt { color: var(--fg-dim); font-size: var(--text-xs); }
-  .close { min-width: 44px; min-height: 44px; padding: var(--space-xs) var(--space-sm); border: 0; border-radius: var(--radius); background: var(--bg-hover); color: var(--fg); font: inherit; cursor: pointer; transition: background-color var(--dur-fast) var(--ease-out), scale var(--dur-fast) var(--ease-out); }
-  .close:hover { background: var(--accent-subtle); }
-  .close:active { scale: 0.96; }
-  dl { display: flex; flex-wrap: wrap; gap: var(--space-xs) var(--space-sm); margin: var(--space-xs) 0; font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
-  dl div { display: flex; gap: var(--space-xs); }
+  .recorded-token-panel:focus { outline: none; }
+  header { display: flex; align-items: start; justify-content: space-between; gap: var(--s3); }
+  header > div { display: grid; gap: 2px; min-width: 0; }
+  .recorded-token-panel h2 { color: var(--ink); font: 600 16px/24px var(--display); overflow-wrap: anywhere; }
+  .source, dt { color: var(--ink3); font: var(--type-meta); }
+  .close { height: 32px; padding: 0 var(--s3); border: 0; border-radius: var(--r-pill); background: var(--wash); color: var(--ink); font: var(--type-control); cursor: pointer; transition: background-color var(--fast) var(--ease), scale var(--fast) var(--ease); }
+  .close:active { scale: 0.97; }
+  @media (hover: hover) { .close:hover { background: var(--wash2); } }
+  dl { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s3); margin: var(--s2) 0; font-variant-numeric: tabular-nums; }
+  dl div { display: flex; gap: var(--s1); }
   dd { margin: 0; }
   table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-  th { font-weight: var(--weight-medium); color: var(--fg-dim); text-align: start; }
-  th, td { padding: var(--space-xs); }
+  th { color: var(--ink3); font: var(--type-head); text-align: start; }
+  th, td { padding: var(--s1) var(--s2); }
   th:last-child, td:last-child { width: 6rem; text-align: end; font-variant-numeric: tabular-nums; }
-  td { border-top: 1px solid var(--glass-line); }
-  code { overflow-wrap: anywhere; font-family: var(--font-mono); }
-  .chosen { color: var(--accent); font-weight: var(--weight-medium); background: var(--accent-subtle); }
-  .chosen-label { display: inline-block; margin-inline-start: var(--space-xs); font-family: var(--font-ui); font-size: var(--text-xs); }
-  @supports (backdrop-filter: url("#recorded-token-glass")) and (not (-webkit-touch-callout: none)) {
-    .recorded-token-panel { backdrop-filter: url("#recorded-token-glass") blur(12px); }
-  }
-  @media (prefers-contrast: more), (forced-colors: active), (prefers-reduced-transparency: reduce) {
-    .recorded-token-panel { --fg: CanvasText; --fg-dim: CanvasText; background: Canvas; -webkit-backdrop-filter: none; backdrop-filter: none; text-shadow: none; }
-  }
+  td { color: var(--ink2); }
+  code { overflow-wrap: anywhere; }
+  .chosen td { background: color-mix(in oklch, var(--tint) 14%, transparent); color: var(--ink); }
+  .chosen td:first-child { border-radius: var(--r-chip) 0 0 var(--r-chip); }
+  .chosen td:last-child { border-radius: 0 var(--r-chip) var(--r-chip) 0; }
+  .chosen-label { margin-inline-start: var(--s1); color: var(--ink3); font: var(--type-meta); }
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .recorded-token-panel { background: var(--paper); } }
+  @media (prefers-reduced-transparency: reduce), (prefers-contrast: more) { .recorded-token-panel { background: var(--paper); } }
   .recorded-token-panel.fallback-open { display: block; z-index: 1000; }
-  @supports not selector(:popover-open) {
-    .recorded-token-panel:not(.fallback-open) { display: none; }
-  }
-  @media (prefers-reduced-motion: reduce) { .recorded-token, .close, .recorded-token-panel { transition: none; } .close:active { scale: 1; } }
+  @supports not selector(:popover-open) { .recorded-token-panel:not(.fallback-open) { display: none; } }
 </style>
