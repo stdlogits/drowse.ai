@@ -358,6 +358,11 @@ export function cpuBlockSitesBackend(
       forward,
       async finish(): Promise<BlockSitesReplayResult> {
         open = false;
+        // The bridge's rule: a replay finishes having fed every position it was sized to.
+        const tokenCount = request.tokenCount ?? options.contextTokens;
+        if (sequence.length !== tokenCount) {
+          throw new Error(`REPLAY_INCOMPLETE: ${sequence.length} of ${tokenCount} positions were fed`);
+        }
         let patterns: BlockSitesResident<"pattern_capture"> | null = null;
         if (patternLayers.length && request.anatomyPosition !== null) {
           patterns = resident("pattern_capture", [patternLayers.length, KV, request.anatomyPosition + 1, hd], {

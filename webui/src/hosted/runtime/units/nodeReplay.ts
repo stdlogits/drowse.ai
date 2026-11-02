@@ -174,7 +174,9 @@ export async function driveReplay(
   const program = request.program;
   const segments = replaySegments(program, forward.promptLength, forward.ids.length, options.canThink, forward.positionSpans ?? null);
   const evaluate = program === null ? null : createStructuredHookControlEvaluator(program);
-  const replay = await backend.openReplay(request, options.signal);
+  // The bridge sizes the replay (and its pattern keys) to the positions it will feed, and
+  // refuses to finish one fed fewer.
+  const replay = await backend.openReplay({ ...request, tokenCount: request.tokenCount ?? forward.ids.length }, options.signal);
   try {
     let readback: BlockSitesForwardReadback | null = null;
     for (const segment of segments) {
