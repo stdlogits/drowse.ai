@@ -4,17 +4,39 @@ import type {
   SteeringPhase,
 } from "./steeringExpression";
 import {
+  BLOCK_SITES_HOOK_ABI,
   checkedStructuredHookProduct,
+  isBlockSitesProfile,
   structuredCurveParameterStride,
+  UNIT_POSITIONS_FROM,
   validateStructuredHookProfile,
+  type BlockSitesCapacityProfile,
   type StructuredHookCapacityProfile,
 } from "./structuredHookProfile";
 
 export const STRUCTURED_HOOK_FORMAT_V2 = "drowse-structured-v2" as const;
 export const STRUCTURED_HOOK_FORMAT = "drowse-structured-v3" as const;
+/** v3 plus the unit section (B1 §3.1, §3.4); the only format a `block-sites-v5` library takes. */
+export const STRUCTURED_HOOK_FORMAT_V4 = "drowse-structured-v4" as const;
 export type StructuredHookFormat =
   | typeof STRUCTURED_HOOK_FORMAT_V2
-  | typeof STRUCTURED_HOOK_FORMAT;
+  | typeof STRUCTURED_HOOK_FORMAT
+  | typeof STRUCTURED_HOOK_FORMAT_V4;
+export type StructuredHookAbi = typeof DROWSE_HOOK_ABI | typeof BLOCK_SITES_HOOK_ABI;
+
+/** The hook ABI and format a program compiled under `profile` carries: `standard-v1` takes v2,
+ *  `standard-v2`/`-v3` take v3 (hook ABI v4), and both v4 profiles take v4 (hook ABI v5). */
+export function structuredHookIdentity(
+  profile: StructuredHookCapacityProfile,
+): { hookAbi: StructuredHookAbi; format: StructuredHookFormat } {
+  if (isBlockSitesProfile(profile)) {
+    return { hookAbi: BLOCK_SITES_HOOK_ABI, format: STRUCTURED_HOOK_FORMAT_V4 };
+  }
+  return {
+    hookAbi: DROWSE_HOOK_ABI,
+    format: profile.maxGeometryProbes > 0 ? STRUCTURED_HOOK_FORMAT : STRUCTURED_HOOK_FORMAT_V2,
+  };
+}
 
 export type StructuredProbeKind =
   | "disabled"
@@ -138,12 +160,14 @@ export interface StructuredMeasurementSchema {
   lensReadout?: boolean;
   saeReadout?: boolean;
   saeFeatureMetadata?: Record<string, { label: string | null; maxAct: number | null }>;
+  /** drowse-structured-v4: one entry per unit tap slot (`maxUnitTaps`), null when unused. */
+  unitTaps?: Array<StructuredUnitTap | null>;
 }
 
 export interface StructuredHookProgramBuffers {
   position_spans?: readonly (readonly [number, number])[] | null;
   position_indices?: readonly number[] | null;
-  hookAbi: typeof DROWSE_HOOK_ABI;
+  hookAbi: StructuredHookAbi;
   format: StructuredHookFormat;
   activeRole?: string | null;
   profile: StructuredHookCapacityProfile;
@@ -211,9 +235,29 @@ export interface StructuredHookProgramBuffers {
   jLensReadoutLayerIndices?: Int32Array;
   jLensTokenIds?: Int32Array;
   saeBindingId?: string;
+  /** drowse-structured-v4 unit section (B1 §3.1, §3.4), present together or not at all: a v4
+   *  program without it is v3's buffers exactly and runs the v4-identical structured or curved
+   *  functions; with it, the units pair (`drowse_units_batch_{prefill,decode}`). */
+  unitShape?: StructuredUnitShape;
+  /** u32 CSR tables, `structuredUnitSectionLayout(...).meta` order. */
+  unitMeta?: Uint32Array;
+  /** f32 keep and bias coefficients, `structuredUnitSectionLayout(...).coeff` order. */
+  unitCoeff?: Float32Array;
+  /** f32 [maxUnitGroups]: 1 while a trigger group is active this forward, else 0. */
+  unitActive?: Float32Array;
+  /** f32 [maxHeadTaps, hd, hd]: `G_h` of each tapped head in tap-head CSR order (B1 §2.2),
+   *  zero until the backend binds the program (`drowse_head_write_grams`). */
+  tapGrams?: Float32Array;
   measurementSchema?: StructuredMeasurementSchema;
   controls?: StructuredHookControls;
 }
+
+/** A program for a `post-block-residual-v4` library (`standard-v1`…`-v3`), the shape the v4
+ *  WebLLM bridge takes. Goes with the v1-v3 profiles once v5 libraries exist (B4). */
+export type StructuredHookProgramV3Buffers = StructuredHookProgramBuffers & {
+  hookAbi: typeof DROWSE_HOOK_ABI;
+  format: typeof STRUCTURED_HOOK_FORMAT | typeof STRUCTURED_HOOK_FORMAT_V2;
+};
 
 export interface StructuredMeasurementSlot {
   layer: number;
@@ -236,6 +280,8 @@ export interface StructuredHookControl {
 export interface StructuredHookControls {
   affine: readonly (StructuredHookControl | null)[];
   curve: readonly (StructuredHookControl | null)[];
+  /** drowse-structured-v4: one per unit trigger group (length `maxUnitGroups`). */
+  units?: readonly (StructuredHookControl | null)[];
 }
 
 export interface StructuredHookControlContext {
@@ -249,6 +295,8 @@ export interface StructuredHookControlContext {
 export interface StructuredHookControlState {
   affineActive: Uint32Array;
   curveActive: Uint32Array;
+  /** Present for a program with a unit section: the `unit_active` upload for this forward. */
+  unitActive?: Float32Array;
 }
 
 export interface StructuredHookState {
@@ -375,10 +423,7 @@ export function compileStructuredHookProgram(
     profile.maxCurveNodes,
   );
   const program: StructuredHookProgramBuffers = {
-    hookAbi: DROWSE_HOOK_ABI,
-    format: profile.maxGeometryProbes > 0
-      ? STRUCTURED_HOOK_FORMAT
-      : STRUCTURED_HOOK_FORMAT_V2,
+    ...structuredHookIdentity(profile),
     profile,
     hiddenSize,
     layerCount,
@@ -550,13 +595,17 @@ export function createStructuredHookControlEvaluator(
     profile: { maxProbes: program.profile.maxProbes },
     affineActive: new Uint32Array(program.affineActive),
     curveActive: new Uint32Array(program.curveActive),
+    ...(program.unitActive === undefined
+      ? {}
+      : { unitActive: new Float32Array(program.unitActive) }),
     controls: program.controls === undefined ? undefined : structuredClone(program.controls),
   };
   return (context) => evaluateStructuredHookControls(snapshot, context);
 }
 
 type StructuredControlProgram = Pick<
-  StructuredHookProgramBuffers, "layerCount" | "affineActive" | "curveActive" | "controls"
+  StructuredHookProgramBuffers,
+  "layerCount" | "affineActive" | "curveActive" | "unitActive" | "controls"
 > & { profile: Pick<StructuredHookCapacityProfile, "maxProbes"> };
 
 function evaluateStructuredHookControls(
@@ -565,11 +614,19 @@ function evaluateStructuredHookControls(
 ): StructuredHookControlState {
   const affineActive = new Uint32Array(program.affineActive);
   const curveActive = new Uint32Array(program.curveActive);
+  const unitActive = program.unitActive === undefined
+    ? undefined
+    : new Float32Array(program.unitActive);
+  const state = (): StructuredHookControlState =>
+    unitActive === undefined
+      ? { affineActive, curveActive }
+      : { affineActive, curveActive, unitActive };
   const controls = program.controls;
-  if (controls === undefined) return { affineActive, curveActive };
+  if (controls === undefined) return state();
   if (
     controls.affine.length !== affineActive.length ||
-    controls.curve.length !== curveActive.length
+    controls.curve.length !== curveActive.length ||
+    (unitActive !== undefined && controls.units?.length !== unitActive.length)
   ) {
     throw new TypeError("Structured hook controls do not match the program shape");
   }
@@ -579,7 +636,14 @@ function evaluateStructuredHookControls(
   controls.curve.forEach((control, index) => {
     if (control !== null) curveActive[index] = controlActive(program, control, context) ? 1 : 0;
   });
-  return { affineActive, curveActive };
+  if (unitActive !== undefined) {
+    controls.units!.forEach((control, index) => {
+      if (control !== null && unitActive[index] !== 0) {
+        unitActive[index] = controlActive(program, control, context) ? 1 : 0;
+      }
+    });
+  }
+  return state();
 }
 
 function controlActive(
@@ -693,18 +757,14 @@ export function runStructuredHookLayer(
 }
 
 export function validateStructuredHookProgram(program: StructuredHookProgramBuffers): void {
-  if (program.hookAbi !== DROWSE_HOOK_ABI) {
-    throw new TypeError("Unsupported structured hook program identity");
-  }
   requirePositiveInteger(program.hiddenSize, "Hook hidden size");
   requirePositiveInteger(program.layerCount, "Hook layer count");
   const profile = validateStructuredHookProfile(program.profile);
-  const expectedFormat = profile.maxGeometryProbes > 0
-    ? STRUCTURED_HOOK_FORMAT
-    : STRUCTURED_HOOK_FORMAT_V2;
-  if (program.format !== expectedFormat) {
+  const identity = structuredHookIdentity(profile);
+  if (program.hookAbi !== identity.hookAbi || program.format !== identity.format) {
     throw new TypeError("Unsupported structured hook program identity");
   }
+  validateStructuredUnitSection(program, profile);
   const l = program.layerCount;
   const d = program.hiddenSize;
   const g = profile.maxAffineGroups;
@@ -880,7 +940,11 @@ export function validateStructuredHookProgram(program: StructuredHookProgramBuff
     ) {
       throw new TypeError("Structured hook controls have the wrong length");
     }
-    for (const control of [...program.controls.affine, ...program.controls.curve]) {
+    for (const control of [
+      ...program.controls.affine,
+      ...program.controls.curve,
+      ...(program.controls.units ?? []),
+    ]) {
       if (control === null) continue;
       if (typeof control.enabled !== "boolean") {
         throw new TypeError("Structured hook control enabled state must be boolean");
@@ -2918,4 +2982,752 @@ function requireUnitVector(
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+// ------------------------------------------------- drowse-structured-v4 units ---
+// B1-hook-abi-v5.md §2.2 (the live unit tap), §3.1 (mean-ablation and the table layout) and
+// §3.4 (the host program). browser-runtime/HOOK_ABI.md is the contract.
+
+export type StructuredUnitKind = "neuron" | "head";
+export type StructuredUnitSite = "act" | "z";
+
+/** The unit widths of the model's blocks: neuron site `act [T, dFF]`, head site
+ *  `z [T, nHeads·headDim]` (B1 §1.1). */
+export interface StructuredUnitShape {
+  readonly dFF: number;
+  readonly nHeads: number;
+  readonly headDim: number;
+}
+
+/** One unit term (native `UnitOp`): `x[span] ← x[span]·keep + bias` on the down-projection input
+ *  (neuron `n`, span `[n, n+1)`) or the output-projection input (head `h`, span
+ *  `[h·hd, (h+1)·hd)`), at every row whose absolute position is at least `UNIT_POSITIONS_FROM`,
+ *  while trigger group `group` is active. A head's `bias` has `headDim` values. */
+export interface StructuredUnitAblation {
+  readonly kind: StructuredUnitKind;
+  readonly layer: number;
+  readonly index: number;
+  readonly keep: number;
+  readonly bias: number | ArrayLike<number>;
+  readonly group: number;
+}
+
+/** The soft, floored reading scale the host divides a tap by (B1 §2.2); a neuron's is a
+ *  `[+, −]` pole pair picked by `sign(act)`. Scales never reach the GPU on the live path. */
+export interface StructuredUnitTapScale {
+  readonly source: "neutral";
+  readonly detail: string;
+  readonly top: [number, number] | number;
+  readonly value: [number, number] | number;
+}
+
+/** One live unit tap (B1 §2.2): `unit_taps[slot]` is `act[last, index]` for a neuron and
+ *  `sqrt(max(0, z_hᵀ G_h z_h))·r_ao` for a head, after any ablation. */
+export interface StructuredUnitTap {
+  readonly name: string;
+  /** `neuron/L<layer>n<index>` or `head/L<layer>h<index>`. */
+  readonly unit: string;
+  readonly kind: StructuredUnitKind;
+  readonly layer: number;
+  readonly index: number;
+  readonly slot: number;
+  readonly scale: StructuredUnitTapScale;
+}
+
+/** The unit part of a steering stack, as the browser's compiler lowers it. */
+export interface StructuredUnitProgram {
+  readonly ablations: readonly StructuredUnitAblation[];
+  readonly taps: readonly StructuredUnitTap[];
+  /** One control per trigger group in group order; null keeps the group always on. */
+  readonly controls: readonly (StructuredHookControl | null)[];
+}
+
+export type StructuredUnitErrorCode =
+  | "UNIT_SECTION_UNSUPPORTED"
+  | "UNIT_ABLATION_CAPACITY"
+  | "UNIT_TAP_CAPACITY"
+  | "UNIT_GROUP_CAPACITY"
+  | "UNIT_DUPLICATE"
+  | "UNIT_OUT_OF_RANGE";
+
+/** A unit section the library cannot take as written (422-shaped, fails before generation). */
+export class StructuredUnitProgramError extends Error {
+  readonly status = 422;
+  readonly recoverable = false;
+
+  constructor(readonly code: StructuredUnitErrorCode, message: string) {
+    super(message);
+    this.name = "StructuredUnitProgramError";
+  }
+}
+
+export interface StructuredLayoutField {
+  readonly offset: number;
+  readonly length: number;
+}
+
+/** Where each table sits in `unit_meta` (u32) and `unit_coeff` (f32), B1 §3.1:
+ *
+ *  unit_meta  = neuron_offsets[L+1] | neuron_index[N_ABL] | neuron_group[N_ABL]
+ *             | head_offsets[L+1]   | head_index[H_ABL]   | head_group[H_ABL]
+ *             | tap_offsets_neuron[L+1] | tap_neuron_index[TAP] | tap_neuron_slot[TAP]
+ *             | tap_offsets_head[L+1]   | tap_head_index[TAP_HEADS] | tap_head_slot[TAP_HEADS]
+ *  unit_coeff = neuron_keep[N_ABL] | neuron_bias[N_ABL] | head_keep[H_ABL] | head_bias[H_ABL, hd]
+ */
+export interface StructuredUnitSectionLayout {
+  readonly metaLength: number;
+  readonly coeffLength: number;
+  readonly activeLength: number;
+  readonly tapGramsLength: number;
+  readonly meta: {
+    readonly neuronOffsets: StructuredLayoutField;
+    readonly neuronIndex: StructuredLayoutField;
+    readonly neuronGroup: StructuredLayoutField;
+    readonly headOffsets: StructuredLayoutField;
+    readonly headIndex: StructuredLayoutField;
+    readonly headGroup: StructuredLayoutField;
+    readonly tapNeuronOffsets: StructuredLayoutField;
+    readonly tapNeuronIndex: StructuredLayoutField;
+    readonly tapNeuronSlot: StructuredLayoutField;
+    readonly tapHeadOffsets: StructuredLayoutField;
+    readonly tapHeadIndex: StructuredLayoutField;
+    readonly tapHeadSlot: StructuredLayoutField;
+  };
+  readonly coeff: {
+    readonly neuronKeep: StructuredLayoutField;
+    readonly neuronBias: StructuredLayoutField;
+    readonly headKeep: StructuredLayoutField;
+    readonly headBias: StructuredLayoutField;
+  };
+}
+
+function unitsProfile(input: StructuredHookCapacityProfile): BlockSitesCapacityProfile {
+  const profile = validateStructuredHookProfile(input);
+  if (!isBlockSitesProfile(profile) || profile.unitSites !== 1) {
+    throw new StructuredUnitProgramError(
+      "UNIT_SECTION_UNSUPPORTED",
+      `The ${profile.id} structured hook profile has no unit sites`,
+    );
+  }
+  return profile;
+}
+
+function packLayout<const K extends string>(
+  label: string,
+  fields: readonly (readonly [K, number])[],
+): { fields: Record<K, StructuredLayoutField>; length: number } {
+  const out = {} as Record<K, StructuredLayoutField>;
+  let offset = 0;
+  for (const [name, length] of fields) {
+    out[name] = Object.freeze({ offset, length });
+    offset = checkedStructuredHookProduct(label, offset + length);
+  }
+  return { fields: out, length: offset };
+}
+
+export function structuredUnitSectionLayout(
+  input: StructuredHookCapacityProfile,
+  layerCount: number,
+  headDim: number,
+): StructuredUnitSectionLayout {
+  const profile = unitsProfile(input);
+  requirePositiveInteger(layerCount, "Unit section layer count");
+  requirePositiveInteger(headDim, "Unit section head dimension");
+  const offsets = layerCount + 1;
+  const n = profile.maxNeuronAblations;
+  const h = profile.maxHeadAblations;
+  const tap = profile.maxUnitTaps;
+  const tapHeads = profile.maxHeadTaps;
+  const meta = packLayout("unit meta", [
+    ["neuronOffsets", offsets],
+    ["neuronIndex", n],
+    ["neuronGroup", n],
+    ["headOffsets", offsets],
+    ["headIndex", h],
+    ["headGroup", h],
+    ["tapNeuronOffsets", offsets],
+    ["tapNeuronIndex", tap],
+    ["tapNeuronSlot", tap],
+    ["tapHeadOffsets", offsets],
+    ["tapHeadIndex", tapHeads],
+    ["tapHeadSlot", tapHeads],
+  ] as const);
+  const coeff = packLayout("unit coefficients", [
+    ["neuronKeep", n],
+    ["neuronBias", n],
+    ["headKeep", h],
+    ["headBias", checkedStructuredHookProduct("head bias", h, headDim)],
+  ] as const);
+  return Object.freeze({
+    metaLength: meta.length,
+    coeffLength: coeff.length,
+    activeLength: profile.maxUnitGroups,
+    tapGramsLength: checkedStructuredHookProduct("tap grams", tapHeads, headDim, headDim),
+    meta: Object.freeze(meta.fields),
+    coeff: Object.freeze(coeff.fields),
+  });
+}
+
+/** The unit name native uses: `neuron/L8n344`, `head/L20h3`. */
+export function structuredUnitName(kind: StructuredUnitKind, layer: number, index: number): string {
+  return kind === "neuron" ? `neuron/L${layer}n${index}` : `head/L${layer}h${index}`;
+}
+
+/** Native's lowering of one `α !unit` term (`_lower_unit_terms`, fp32): `keep = 1 − α`,
+ *  `bias = α · mean` (`mean` is `neuron_mean[n]`, or `head_mean[h]` with `headDim` values). */
+export function structuredUnitAblationTerm(
+  kind: StructuredUnitKind,
+  layer: number,
+  index: number,
+  alpha: number,
+  mean: number | ArrayLike<number>,
+  group: number,
+): StructuredUnitAblation {
+  if (!Number.isFinite(alpha)) throw new TypeError("Unit ablation coefficient must be finite");
+  const c = Math.fround(alpha);
+  const scale = (value: number): number => Math.fround(c * Math.fround(value));
+  return {
+    kind,
+    layer,
+    index,
+    keep: Math.fround(1 - alpha),
+    bias: typeof mean === "number" ? scale(mean) : Float32Array.from(mean, scale),
+    group,
+  };
+}
+
+interface EncodedUnitTables {
+  unitMeta: Uint32Array;
+  unitCoeff: Float32Array;
+  unitActive: Float32Array;
+  tapGrams: Float32Array;
+}
+
+/** Encode a unit program into the v4 tables (B1 §3.1). Entries sort by layer (CSR) and keep
+ *  registration order within a layer; unused capacity stays zero; groups referenced by an
+ *  ablation start active. Fails closed on capacity, duplicates and out-of-range units. */
+export function encodeStructuredUnitTables(
+  input: StructuredHookCapacityProfile,
+  layerCount: number,
+  shape: StructuredUnitShape,
+  units: StructuredUnitProgram,
+): EncodedUnitTables {
+  const profile = unitsProfile(input);
+  validateUnitShape(shape);
+  const layout = structuredUnitSectionLayout(profile, layerCount, shape.headDim);
+  const unitMeta = new Uint32Array(layout.metaLength);
+  const unitCoeff = new Float32Array(layout.coeffLength);
+  const unitActive = new Float32Array(layout.activeLength);
+  const tapGrams = new Float32Array(layout.tapGramsLength);
+  if (units.controls.length > profile.maxUnitGroups) {
+    throw new StructuredUnitProgramError(
+      "UNIT_GROUP_CAPACITY",
+      `A steering stack may hold unit terms under at most ${profile.maxUnitGroups} distinct triggers`,
+    );
+  }
+  const seen = new Set<string>();
+  for (const term of units.ablations) {
+    requireUnit(term.kind, term.layer, term.index, layerCount, shape);
+    const key = structuredUnitName(term.kind, term.layer, term.index);
+    if (seen.has(key)) {
+      throw new StructuredUnitProgramError(
+        "UNIT_DUPLICATE",
+        `${key} is ablated twice; a composed stack holds each unit at most once`,
+      );
+    }
+    seen.add(key);
+    if (!Number.isSafeInteger(term.group) || term.group < 0 || term.group >= units.controls.length) {
+      throw new StructuredUnitProgramError(
+        "UNIT_GROUP_CAPACITY",
+        `${key} names trigger group ${term.group}, outside the program's ${units.controls.length}`,
+      );
+    }
+    finiteFloat(term.keep, `${key} keep`);
+  }
+  const neurons = stableByLayer(units.ablations.filter((term) => term.kind === "neuron"));
+  const heads = stableByLayer(units.ablations.filter((term) => term.kind === "head"));
+  if (neurons.length > profile.maxNeuronAblations || heads.length > profile.maxHeadAblations) {
+    throw new StructuredUnitProgramError(
+      "UNIT_ABLATION_CAPACITY",
+      `A steering stack may ablate at most ${profile.maxNeuronAblations} neurons and ` +
+        `${profile.maxHeadAblations} heads`,
+    );
+  }
+  const { meta, coeff } = layout;
+  writeOffsets(unitMeta, meta.neuronOffsets.offset, layerCount, neurons);
+  writeOffsets(unitMeta, meta.headOffsets.offset, layerCount, heads);
+  neurons.forEach((term, entry) => {
+    unitMeta[meta.neuronIndex.offset + entry] = term.index;
+    unitMeta[meta.neuronGroup.offset + entry] = term.group;
+    unitCoeff[coeff.neuronKeep.offset + entry] = term.keep;
+    if (typeof term.bias !== "number") {
+      throw new TypeError(`${structuredUnitName("neuron", term.layer, term.index)} bias is one value`);
+    }
+    unitCoeff[coeff.neuronBias.offset + entry] = finiteFloat(term.bias, "neuron bias");
+    unitActive[term.group] = 1;
+  });
+  heads.forEach((term, entry) => {
+    unitMeta[meta.headIndex.offset + entry] = term.index;
+    unitMeta[meta.headGroup.offset + entry] = term.group;
+    unitCoeff[coeff.headKeep.offset + entry] = term.keep;
+    if (typeof term.bias === "number" || term.bias.length !== shape.headDim) {
+      throw new TypeError(
+        `${structuredUnitName("head", term.layer, term.index)} bias needs ${shape.headDim} values`,
+      );
+    }
+    unitCoeff.set(
+      copyFiniteVector(term.bias, shape.headDim, "head bias"),
+      coeff.headBias.offset + entry * shape.headDim,
+    );
+    unitActive[term.group] = 1;
+  });
+
+  const slots = new Set<number>();
+  const tapped = new Set<string>();
+  for (const tap of units.taps) {
+    requireUnit(tap.kind, tap.layer, tap.index, layerCount, shape);
+    const key = structuredUnitName(tap.kind, tap.layer, tap.index);
+    if (tap.unit !== key) throw new TypeError(`Unit tap ${tap.unit} does not name ${key}`);
+    if (!Number.isSafeInteger(tap.slot) || tap.slot < 0 || tap.slot >= profile.maxUnitTaps) {
+      throw new StructuredUnitProgramError(
+        "UNIT_TAP_CAPACITY",
+        `Unit tap slot ${tap.slot} is outside the library's ${profile.maxUnitTaps}`,
+      );
+    }
+    if (slots.has(tap.slot) || tapped.has(key)) {
+      throw new StructuredUnitProgramError("UNIT_DUPLICATE", `${key} or its slot is tapped twice`);
+    }
+    slots.add(tap.slot);
+    tapped.add(key);
+  }
+  const neuronTaps = stableByLayer(units.taps.filter((tap) => tap.kind === "neuron"));
+  const headTaps = stableByLayer(units.taps.filter((tap) => tap.kind === "head"));
+  if (headTaps.length > profile.maxHeadTaps) {
+    throw new StructuredUnitProgramError(
+      "UNIT_TAP_CAPACITY",
+      `Attached unit probes and gates may read at most ${profile.maxHeadTaps} heads`,
+    );
+  }
+  writeOffsets(unitMeta, meta.tapNeuronOffsets.offset, layerCount, neuronTaps);
+  writeOffsets(unitMeta, meta.tapHeadOffsets.offset, layerCount, headTaps);
+  neuronTaps.forEach((tap, entry) => {
+    unitMeta[meta.tapNeuronIndex.offset + entry] = tap.index;
+    unitMeta[meta.tapNeuronSlot.offset + entry] = tap.slot;
+  });
+  headTaps.forEach((tap, entry) => {
+    unitMeta[meta.tapHeadIndex.offset + entry] = tap.index;
+    unitMeta[meta.tapHeadSlot.offset + entry] = tap.slot;
+  });
+  return { unitMeta, unitCoeff, unitActive, tapGrams };
+}
+
+/** A v4 program with `units` encoded into its unit section. A program with no ablation and no
+ *  tap gets no section: its buffers stay exactly the v3 buffers and it routes to the
+ *  v4-identical structured or curved functions (B1 §3.4). */
+export function withStructuredUnitSection(
+  program: StructuredHookProgramBuffers,
+  shape: StructuredUnitShape,
+  units: StructuredUnitProgram,
+): StructuredHookProgramBuffers {
+  validateStructuredHookProgram(program);
+  if (program.unitMeta !== undefined) {
+    throw new TypeError("The structured hook program already carries a unit section");
+  }
+  if (units.ablations.length === 0 && units.taps.length === 0) return program;
+  const profile = unitsProfile(program.profile);
+  const tables = encodeStructuredUnitTables(profile, program.layerCount, shape, units);
+  const controls = Array.from(
+    { length: profile.maxUnitGroups },
+    (_, group) => units.controls[group] ?? null,
+  );
+  const unitTaps: Array<StructuredUnitTap | null> = Array.from(
+    { length: profile.maxUnitTaps },
+    () => null,
+  );
+  for (const tap of units.taps) unitTaps[tap.slot] = { ...tap };
+  const next: StructuredHookProgramBuffers = {
+    ...program,
+    unitShape: Object.freeze({ dFF: shape.dFF, nHeads: shape.nHeads, headDim: shape.headDim }),
+    ...tables,
+    controls: {
+      affine: program.controls?.affine ?? Array.from(program.affineActive, () => null),
+      curve: program.controls?.curve ?? Array.from(program.curveActive, () => null),
+      units: controls,
+    },
+    ...(program.measurementSchema === undefined
+      ? {}
+      : { measurementSchema: { ...program.measurementSchema, unitTaps } }),
+  };
+  validateStructuredHookProgram(next);
+  return next;
+}
+
+/** Whether the program runs the units entry points (B1 §3.4 routing). */
+export function hasStructuredUnitSection(program: StructuredHookProgramBuffers): boolean {
+  return program.unitMeta !== undefined;
+}
+
+/** The tapped heads in tap-gram order: `tapGrams[i]` must hold `G_h` of entry `i` (B1 §2.2). */
+export function structuredTapGramHeads(
+  program: StructuredHookProgramBuffers,
+): Array<{ layer: number; index: number }> {
+  if (program.unitMeta === undefined || program.unitShape === undefined) return [];
+  const layout = structuredUnitSectionLayout(
+    program.profile,
+    program.layerCount,
+    program.unitShape.headDim,
+  );
+  return csrEntries(program.unitMeta, layout.meta.tapHeadOffsets.offset, program.layerCount).map(
+    ({ layer, entry }) => ({
+      layer,
+      index: program.unitMeta![layout.meta.tapHeadIndex.offset + entry],
+    }),
+  );
+}
+
+/** Native's unit tables (`UnitOp` per module and trigger), as the B3 goldens record them:
+ *  coordinate entries of a site of width `width`, one keep and bias per coordinate. */
+export interface StructuredNativeUnitTable {
+  readonly layer: number;
+  readonly site: StructuredUnitSite;
+  readonly width: number;
+  readonly group: number;
+  readonly entries: readonly number[];
+  readonly keep: readonly number[];
+  readonly bias: readonly number[];
+}
+
+/** Native tables → per-unit ablations. A head's coordinates must be one whole contiguous head
+ *  with one keep; neuron entries are neuron indices. */
+export function structuredUnitAblationsFromTables(
+  tables: readonly StructuredNativeUnitTable[],
+  shape: StructuredUnitShape,
+): StructuredUnitAblation[] {
+  validateUnitShape(shape);
+  const out: StructuredUnitAblation[] = [];
+  for (const table of tables) {
+    if (table.entries.length !== table.keep.length || table.entries.length !== table.bias.length) {
+      throw new TypeError("Native unit table columns differ in length");
+    }
+    if (table.site === "act") {
+      if (table.width !== shape.dFF) throw new TypeError("Native neuron table width is not d_ff");
+      table.entries.forEach((index, at) => {
+        out.push({
+          kind: "neuron",
+          layer: table.layer,
+          index,
+          keep: Math.fround(table.keep[at]),
+          bias: Math.fround(table.bias[at]),
+          group: table.group,
+        });
+      });
+      continue;
+    }
+    const hd = shape.headDim;
+    if (table.width !== shape.nHeads * hd || table.entries.length % hd !== 0) {
+      throw new TypeError("Native head table does not cover whole heads");
+    }
+    for (let start = 0; start < table.entries.length; start += hd) {
+      const head = table.entries[start] / hd;
+      for (let i = 0; i < hd; i += 1) {
+        if (
+          !Number.isSafeInteger(head) ||
+          table.entries[start + i] !== head * hd + i ||
+          table.keep[start + i] !== table.keep[start]
+        ) {
+          throw new TypeError("Native head table entries are not one head with one keep");
+        }
+      }
+      out.push({
+        kind: "head",
+        layer: table.layer,
+        index: head,
+        keep: Math.fround(table.keep[start]),
+        bias: Float32Array.from(table.bias.slice(start, start + hd)),
+        group: table.group,
+      });
+    }
+  }
+  return out;
+}
+
+/** The encoded section → native tables, one per (layer, site, group) in CSR order, with
+ *  coordinates ascending inside each: what B5's compiler output is checked against. */
+export function decodeStructuredUnitTables(
+  program: StructuredHookProgramBuffers,
+): StructuredNativeUnitTable[] {
+  if (program.unitMeta === undefined || program.unitShape === undefined) return [];
+  validateStructuredHookProgram(program);
+  const shape = program.unitShape;
+  const { meta, coeff } = structuredUnitSectionLayout(
+    program.profile,
+    program.layerCount,
+    shape.headDim,
+  );
+  const unitMeta = program.unitMeta;
+  const unitCoeff = program.unitCoeff!;
+  const tables = new Map<string, {
+    layer: number; site: StructuredUnitSite; group: number;
+    rows: Array<[number, number, number]>;
+  }>();
+  const row = (layer: number, site: StructuredUnitSite, group: number) => {
+    const key = `${layer}/${site}/${group}`;
+    if (!tables.has(key)) tables.set(key, { layer, site, group, rows: [] });
+    return tables.get(key)!.rows;
+  };
+  for (const { layer, entry } of csrEntries(unitMeta, meta.neuronOffsets.offset, program.layerCount)) {
+    row(layer, "act", unitMeta[meta.neuronGroup.offset + entry]).push([
+      unitMeta[meta.neuronIndex.offset + entry],
+      unitCoeff[coeff.neuronKeep.offset + entry],
+      unitCoeff[coeff.neuronBias.offset + entry],
+    ]);
+  }
+  for (const { layer, entry } of csrEntries(unitMeta, meta.headOffsets.offset, program.layerCount)) {
+    const head = unitMeta[meta.headIndex.offset + entry];
+    const keep = unitCoeff[coeff.headKeep.offset + entry];
+    const rows = row(layer, "z", unitMeta[meta.headGroup.offset + entry]);
+    for (let i = 0; i < shape.headDim; i += 1) {
+      rows.push([
+        head * shape.headDim + i,
+        keep,
+        unitCoeff[coeff.headBias.offset + entry * shape.headDim + i],
+      ]);
+    }
+  }
+  return [...tables.values()].map(({ layer, site, group, rows }) => {
+    rows.sort((a, b) => a[0] - b[0]);
+    return {
+      layer,
+      site,
+      group,
+      width: site === "act" ? shape.dFF : shape.nHeads * shape.headDim,
+      entries: rows.map((value) => value[0]),
+      keep: rows.map((value) => value[1]),
+      bias: rows.map((value) => value[2]),
+    };
+  });
+}
+
+/** The CPU reference of the ablation kernel at one site of one layer (B1 §3.1): every row `t`
+ *  whose absolute position is at least `UNIT_POSITIONS_FROM` gets `x·keep + bias` on each entry
+ *  of an active group, in fp32; other coordinates are untouched. `rows` is `[T, width]`. */
+export function runStructuredUnitSite(
+  program: StructuredHookProgramBuffers,
+  layer: number,
+  site: StructuredUnitSite,
+  rows: ArrayLike<number>,
+  positions: ArrayLike<number>,
+  unitActive: ArrayLike<number> = program.unitActive ?? [],
+): Float32Array {
+  validateStructuredHookProgram(program);
+  requireLayer(program, layer);
+  const out = Float32Array.from(rows);
+  if (program.unitMeta === undefined || program.unitShape === undefined) return out;
+  const shape = program.unitShape;
+  const width = site === "act" ? shape.dFF : shape.nHeads * shape.headDim;
+  if (out.length !== positions.length * width) {
+    throw new TypeError("Unit site rows do not match the positions and the site width");
+  }
+  const { meta, coeff } = structuredUnitSectionLayout(
+    program.profile,
+    program.layerCount,
+    shape.headDim,
+  );
+  const unitMeta = program.unitMeta;
+  const unitCoeff = program.unitCoeff!;
+  const offsets = site === "act" ? meta.neuronOffsets.offset : meta.headOffsets.offset;
+  const first = unitMeta[offsets + layer];
+  const last = unitMeta[offsets + layer + 1];
+  for (let t = 0; t < positions.length; t += 1) {
+    if (positions[t] < UNIT_POSITIONS_FROM) continue;
+    const base = t * width;
+    for (let entry = first; entry < last; entry += 1) {
+      if (site === "act") {
+        if (unitActive[unitMeta[meta.neuronGroup.offset + entry]] === 0) continue;
+        const at = base + unitMeta[meta.neuronIndex.offset + entry];
+        out[at] = Math.fround(
+          Math.fround(out[at] * unitCoeff[coeff.neuronKeep.offset + entry]) +
+            unitCoeff[coeff.neuronBias.offset + entry],
+        );
+      } else {
+        if (unitActive[unitMeta[meta.headGroup.offset + entry]] === 0) continue;
+        const keep = unitCoeff[coeff.headKeep.offset + entry];
+        const head = unitMeta[meta.headIndex.offset + entry];
+        for (let i = 0; i < shape.headDim; i += 1) {
+          const at = base + head * shape.headDim + i;
+          out[at] = Math.fround(
+            Math.fround(out[at] * keep) +
+              unitCoeff[coeff.headBias.offset + entry * shape.headDim + i],
+          );
+        }
+      }
+    }
+  }
+  return out;
+}
+
+function validateStructuredUnitSection(
+  program: StructuredHookProgramBuffers,
+  profile: StructuredHookCapacityProfile,
+): void {
+  const present = [
+    program.unitShape,
+    program.unitMeta,
+    program.unitCoeff,
+    program.unitActive,
+    program.tapGrams,
+  ].filter((value) => value !== undefined).length;
+  if (present === 0) {
+    if (program.controls?.units !== undefined || program.measurementSchema?.unitTaps !== undefined) {
+      throw new TypeError("Structured hook unit controls need a unit section");
+    }
+    return;
+  }
+  if (present !== 5) throw new TypeError("Structured hook unit section is incomplete");
+  if (!isBlockSitesProfile(profile) || profile.unitSites !== 1) {
+    throw new StructuredUnitProgramError(
+      "UNIT_SECTION_UNSUPPORTED",
+      `A ${profile.id} model library rejects any unit section`,
+    );
+  }
+  const shape = program.unitShape!;
+  validateUnitShape(shape);
+  const layout = structuredUnitSectionLayout(profile, program.layerCount, shape.headDim);
+  const unitMeta = program.unitMeta!;
+  const unitCoeff = program.unitCoeff!;
+  const unitActive = program.unitActive!;
+  const tapGrams = program.tapGrams!;
+  if (
+    !(unitMeta instanceof Uint32Array) || unitMeta.length !== layout.metaLength ||
+    !(unitCoeff instanceof Float32Array) || unitCoeff.length !== layout.coeffLength ||
+    !(unitActive instanceof Float32Array) || unitActive.length !== layout.activeLength ||
+    !(tapGrams instanceof Float32Array) || tapGrams.length !== layout.tapGramsLength
+  ) {
+    throw new TypeError("Structured hook unit tables have the wrong type or length");
+  }
+  for (const value of unitActive) {
+    if (value !== 0 && value !== 1) throw new TypeError("Unit group activity must be zero or one");
+  }
+  for (const value of unitCoeff) finiteFloat(value, "unit coefficient");
+  for (const value of tapGrams) finiteFloat(value, "tap gram");
+  const { meta } = layout;
+  const tables: Array<[StructuredLayoutField, StructuredLayoutField, StructuredLayoutField, number]> = [
+    [meta.neuronOffsets, meta.neuronIndex, meta.neuronGroup, shape.dFF],
+    [meta.headOffsets, meta.headIndex, meta.headGroup, shape.nHeads],
+    [meta.tapNeuronOffsets, meta.tapNeuronIndex, meta.tapNeuronSlot, shape.dFF],
+    [meta.tapHeadOffsets, meta.tapHeadIndex, meta.tapHeadSlot, shape.nHeads],
+  ];
+  const units = new Set<string>();
+  const slots = new Set<number>();
+  tables.forEach(([offsets, index, second, bound], table) => {
+    const entries = csrEntries(unitMeta, offsets.offset, program.layerCount);
+    if (entries.length > index.length) {
+      throw new TypeError("Structured hook unit table exceeds its capacity");
+    }
+    for (const { layer, entry } of entries) {
+      const unit = unitMeta[index.offset + entry];
+      if (unit >= bound) throw new TypeError("Structured hook unit index is out of range");
+      const value = unitMeta[second.offset + entry];
+      if (table < 2) {
+        const key = `${table}/${layer}/${unit}`;
+        if (units.has(key)) throw new TypeError("Structured hook unit is ablated twice");
+        units.add(key);
+        if (value >= profile.maxUnitGroups) {
+          throw new TypeError("Structured hook unit group is out of range");
+        }
+      } else {
+        if (value >= profile.maxUnitTaps || slots.has(value)) {
+          throw new TypeError("Structured hook unit tap slot is out of range or repeated");
+        }
+        slots.add(value);
+      }
+    }
+    for (let entry = entries.length; entry < index.length; entry += 1) {
+      if (unitMeta[index.offset + entry] !== 0 || unitMeta[second.offset + entry] !== 0) {
+        throw new TypeError("Structured hook unit tables must be zero past their last entry");
+      }
+    }
+  });
+  const controls = program.controls?.units;
+  if (controls !== undefined && controls.length !== profile.maxUnitGroups) {
+    throw new TypeError("Structured hook unit controls must have one slot per unit group");
+  }
+  const schema = program.measurementSchema?.unitTaps;
+  if (schema !== undefined) {
+    if (schema.length !== profile.maxUnitTaps) {
+      throw new TypeError("Structured hook unit tap schema must have one entry per tap slot");
+    }
+    schema.forEach((tap, slot) => {
+      if (tap === null) {
+        if (slots.has(slot)) throw new TypeError("Structured hook unit tap slot has no schema entry");
+        return;
+      }
+      if (tap.slot !== slot || !slots.has(slot)) {
+        throw new TypeError("Structured hook unit tap schema does not match the tap tables");
+      }
+    });
+  }
+}
+
+function validateUnitShape(shape: StructuredUnitShape): void {
+  requirePositiveInteger(shape.dFF, "Unit shape d_ff");
+  requirePositiveInteger(shape.nHeads, "Unit shape head count");
+  requirePositiveInteger(shape.headDim, "Unit shape head dimension");
+}
+
+function requireUnit(
+  kind: StructuredUnitKind,
+  layer: number,
+  index: number,
+  layerCount: number,
+  shape: StructuredUnitShape,
+): void {
+  const bound = kind === "neuron" ? shape.dFF : shape.nHeads;
+  if (
+    (kind !== "neuron" && kind !== "head") ||
+    !Number.isSafeInteger(layer) || layer < 0 || layer >= layerCount ||
+    !Number.isSafeInteger(index) || index < 0 || index >= bound
+  ) {
+    throw new StructuredUnitProgramError(
+      "UNIT_OUT_OF_RANGE",
+      `${kind}/L${layer}${kind === "neuron" ? "n" : "h"}${index} is outside the model ` +
+        `(${layerCount} layers, ${bound} ${kind === "neuron" ? "neurons" : "heads"} per layer)`,
+    );
+  }
+}
+
+function stableByLayer<T extends { layer: number }>(values: readonly T[]): T[] {
+  return values
+    .map((value, order) => ({ value, order }))
+    .sort((a, b) => a.value.layer - b.value.layer || a.order - b.order)
+    .map(({ value }) => value);
+}
+
+function writeOffsets(
+  meta: Uint32Array,
+  at: number,
+  layerCount: number,
+  sorted: readonly { layer: number }[],
+): void {
+  let entry = 0;
+  for (let layer = 0; layer <= layerCount; layer += 1) {
+    while (entry < sorted.length && sorted[entry].layer < layer) entry += 1;
+    meta[at + layer] = entry;
+  }
+}
+
+function csrEntries(
+  meta: Uint32Array,
+  at: number,
+  layerCount: number,
+): Array<{ layer: number; entry: number }> {
+  if (meta[at] !== 0) throw new TypeError("Structured hook unit offsets must start at zero");
+  const out: Array<{ layer: number; entry: number }> = [];
+  for (let layer = 0; layer < layerCount; layer += 1) {
+    const first = meta[at + layer];
+    const last = meta[at + layer + 1];
+    if (last < first) throw new TypeError("Structured hook unit offsets must not decrease");
+    for (let entry = first; entry < last; entry += 1) out.push({ layer, entry });
+  }
+  return out;
 }
