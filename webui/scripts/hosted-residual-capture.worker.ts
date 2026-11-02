@@ -7,8 +7,16 @@ import {
 } from "../src/hosted/runtime/webLlmEngine";
 import { compileStructuredHookProgram } from "../src/hosted/runtime/structuredHookProgram";
 import { resolveStructuredHookProfile } from "../src/hosted/runtime/structuredHookProfile";
+import { anatomyTapLayout } from "../src/hosted/runtime/modelBackend";
+import { webLlmBlockSitesBackend } from "../src/hosted/runtime/webLlmBlockSites";
+import { driveReplay } from "../src/hosted/runtime/units/nodeReplay";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
+
+/** Capture schema 5 (browser-runtime/README.md, "production-q4 comparator"): neuron-write static
+ *  reads, top 8 each, at most 64. */
+const STATIC_READ_TOP = 8;
+const MAXIMUM_STATIC_READS = 64;
 
 interface CaptureRequest {
   type: "run";
@@ -148,6 +156,11 @@ self.onmessage = async (event: MessageEvent<CaptureRequest>) => {
     const namedRolePrepared = event.data.namedRoleCheck === undefined
       ? undefined
       : (await runtime.prepareCaptureRows([event.data.namedRoleCheck.row]))[0];
+    // B1 §4.3 item 2 on a units library: the block sites at every captured layer and position,
+    // and neuron-write static reads; a residual library has neither.
+    const units = event.data.structuredHookProfile === "standard-v4"
+      ? await captureUnits(runtime, event.data.inputIds, event.data.positions, event.data.runtimeIdentity.layerMap)
+      : null;
     const bytes = new Uint8Array(
       capture.values.buffer,
       capture.values.byteOffset,
@@ -163,10 +176,14 @@ self.onmessage = async (event: MessageEvent<CaptureRequest>) => {
       control.values.byteOffset,
       control.values.byteLength,
     );
+    const sitesBytes = units === null
+      ? null
+      : new Uint8Array(units.sites.buffer, units.sites.byteOffset, units.sites.byteLength);
     for (const [kind, body] of [
       ["unsteered", bytes],
       ["control-probes", controlBytes],
       ["steered-probes", steeredBytes],
+      ...(sitesBytes === null ? [] : [["sites", sitesBytes] as const]),
     ] as const) {
       const response = await fetch(`/capture?kind=${kind}`, {
         method: "POST",
@@ -198,6 +215,16 @@ self.onmessage = async (event: MessageEvent<CaptureRequest>) => {
         ...(namedRolePrepared === undefined
           ? {}
           : { namedRolePrepared }),
+        ...(units === null || sitesBytes === null
+          ? {}
+          : {
+              units: {
+                block: units.block,
+                sitesSha256: bytesToHex(sha256(sitesBytes)),
+                sitesBytes: sitesBytes.byteLength,
+                staticReads: units.staticReads,
+              },
+            }),
       },
     });
   } catch (error) {
@@ -208,6 +235,81 @@ self.onmessage = async (event: MessageEvent<CaptureRequest>) => {
     });
   }
 };
+
+/** The units member's inputs (capture schema 5): `sites` fp32 `[layers, positions, d_ff + H·hd +
+ *  d]`, each row `act | z | mid` from the block sites' anatomy taps of an unsteered replay of the
+ *  input up to that position (causal, so equal to the full input's sites there); and one
+ *  neuron-write static read per captured layer, `vocabReadoutTopK(unitWeightRows("neuron_write"))`. */
+async function captureUnits(
+  runtime: DrowseWebLlmRuntime,
+  inputIds: readonly number[],
+  positions: readonly number[],
+  layerMap: readonly number[],
+) {
+  const capabilities = runtime.blockSitesCapabilities();
+  if (capabilities === null || capabilities.blockSpec === null) {
+    throw new Error("a standard-v4 capture needs the library's attested unit sites");
+  }
+  const backend = webLlmBlockSitesBackend(capabilities, runtime.blockSitesDevice());
+  const spec = capabilities.blockSpec;
+  const d = capabilities.hiddenSize;
+  const zWidth = spec.nHeads * spec.headDim;
+  const width = spec.dFF + zWidth + d;
+  const layout = anatomyTapLayout(d, spec);
+  const sites = new Float32Array(layerMap.length * positions.length * width);
+  for (const [positionIndex, position] of positions.entries()) {
+    const ids = Int32Array.from(inputIds.slice(0, position + 1));
+    const replay = await driveReplay(
+      backend,
+      { program: null, anatomyPosition: position, activity: null, patternLayers: null },
+      { ids, promptLength: ids.length, rawIds: new Int32Array(0), spans: [] },
+    );
+    const taps = replay.anatomyTaps;
+    if (taps === null || taps.shape[0] !== capabilities.layerCount || taps.shape[1] !== layout.stride) {
+      throw new Error(`the replay at position ${position} returned no anatomy taps`);
+    }
+    for (const [layerIndex, layer] of layerMap.entries()) {
+      const row = taps.data.subarray(layer * layout.stride, (layer + 1) * layout.stride);
+      const out = sites.subarray(
+        (layerIndex * positions.length + positionIndex) * width,
+        (layerIndex * positions.length + positionIndex + 1) * width,
+      );
+      out.set(row.subarray(layout.act, layout.act + spec.dFF), 0);
+      out.set(row.subarray(layout.z, layout.z + zWidth), spec.dFF);
+      out.set(row.subarray(layout.mid, layout.mid + d), spec.dFF + zWidth);
+    }
+  }
+  if (sites.some((value) => !Number.isFinite(value))) {
+    throw new Error("the replayed block sites are not finite");
+  }
+  if (layerMap.length > MAXIMUM_STATIC_READS) {
+    throw new Error(`${layerMap.length} captured layers exceed ${MAXIMUM_STATIC_READS} static reads`);
+  }
+  // A fixed spread of neurons, one per captured layer.
+  const units = layerMap.map((layer) => ({
+    kind: "neuron" as const,
+    layer,
+    index: (layer * 7919 + 13) % spec.dFF,
+  }));
+  const staticReads: Array<{ layer: number; neuron: number; ids: number[]; probabilities: number[] }> = [];
+  for (let start = 0; start < units.length; start += 8) {
+    const batch = units.slice(start, start + 8);
+    const rows = await backend.unitWeightRows("neuron_write", batch);
+    const top = await backend.vocabReadoutTopK(rows, STATIC_READ_TOP);
+    for (const [index, unit] of batch.entries()) {
+      const ids = [...top.ids.data.subarray(index * STATIC_READ_TOP, (index + 1) * STATIC_READ_TOP)];
+      const logSumExp = top.logSumExp.data[index];
+      const probabilities = [...top.logits.data.subarray(index * STATIC_READ_TOP, (index + 1) * STATIC_READ_TOP)]
+        .map((logit) => Math.exp(logit - logSumExp));
+      staticReads.push({ layer: unit.layer, neuron: unit.index, ids, probabilities });
+    }
+  }
+  return {
+    block: { d_ff: spec.dFF, n_heads: spec.nHeads, head_dim: spec.headDim },
+    sites,
+    staticReads,
+  };
+}
 
 /** The q4 gate's steering: a rank-1 affine group at the middle layer (`h += along·(target −
  *  kappa·(h·u))·u`, neutral 0), and linear probes on an orthonormal sketch `D` (`D[0] = u`, the
