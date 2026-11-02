@@ -30,9 +30,9 @@ assert.deepEqual(parseArguments(["mlc-llm-drowse", "/tmp/repo"]), {
   repository: "/tmp/repo",
 });
 assert.equal(manifest.overlays.length, 3);
-assert.equal(manifest.hookAbi, "post-block-residual-v4");
-assert.equal(manifest.structuredHookProfile, "standard-v3");
-assert.equal(manifest.exactReadoutAbi, "exact-readout-v1");
+assert.equal(manifest.hookAbi, "block-sites-v5");
+assert.equal(manifest.structuredHookProfile, "standard-v4");
+assert.equal(manifest.exactReadoutAbi, "exact-readout-v2");
 assert.ok(
   webLlmPatch.includes('"drowse_sae_jump_relu_readout_accumulate"'),
   "the exact JumpReLU VM function must be loaded into the WebLLM registry",
