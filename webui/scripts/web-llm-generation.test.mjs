@@ -68,6 +68,7 @@ try {
     "/src/hosted/runtime/webLlmEngine.ts",
   );
   const {
+    aggregateEnvelope,
     aggregateMeasurements,
     roundReading,
     summaryMeasurements,
@@ -1167,6 +1168,19 @@ try {
   assert.equal(liveOn.tokens[1].measurements.instruments.units.readings["probe-a"].value, -0.5, "a negative act reads over the − pole");
   assert.equal(liveOn.result.measurements.scope, "aggregate");
   assert.deepEqual(Object.keys(liveOn.result.measurements.instruments).sort(), ["lens", "units"]);
+
+  assert.deepEqual(liveOn.result.measurements.instruments.lens.binding.sources, { S: "s-pack" });
+  // An aggregate keeps a token's readings, never its R readout: its binding names the families
+  // those readings come from.
+  const mixed = aggregateEnvelope({
+    version: 2, scope: "token", provenance: "captured",
+    instruments: { lens: {
+      binding: { sources: { R: "r-pack", S: "s-pack" }, steering: null },
+      readings: { "slens/cat": { value: 1, unit: "mean_footprint_z", per_layer: {}, depth: { center: [0], spread: [0], basis: "footprint_z" } } },
+      readout: { layers: [], aggregate: [] },
+    } },
+  });
+  assert.deepEqual(mixed.instruments.lens.binding.sources, { S: "s-pack" });
 
   const liveOff = await liveRun({ unitProbes: new Set(["probe-a"]), unitsLive: false, lensLive: false });
   assert.equal(liveOff.tokens[0].measurements?.instruments.units, undefined, "units off: no per-token units channel");

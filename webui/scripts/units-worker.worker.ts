@@ -13,6 +13,7 @@ import { BrowserDrowseArchiveService } from "../src/hosted/artifacts/service";
 import { createLazyBrowserModelBackend } from "../src/hosted/runtime/browserModelBackend";
 import { BrowserContentStore } from "../src/hosted/runtime/contentStore";
 import { VerifiedArtifactDownloader } from "../src/hosted/runtime/downloader";
+import type { DrowseWebLlmModule } from "../src/hosted/runtime/webLlmEngine";
 import { HostedRuntimeWorker, type WorkerScopeLike } from "../src/hosted/runtime/worker";
 
 interface HarnessConfig {
@@ -22,6 +23,7 @@ interface HarnessConfig {
 }
 
 const FIXTURE_ORIGIN = "https://fixture.invalid/";
+const WEB_LLM_URL = "/webllm.js";
 const config = await (await fetch("/harness/config.json", { cache: "no-store" })).json() as HarnessConfig;
 const catalog: VerifiedCatalog = {
   document: config.document,
@@ -64,7 +66,12 @@ new HostedRuntimeWorker(globalThis as unknown as WorkerScopeLike, {
   contentStore,
   downloader: new VerifiedArtifactDownloader(contentStore, { fetch: harnessFetch }),
   artifactService: artifacts,
-  modelBackend: createLazyBrowserModelBackend(() => import("@drowse/web-llm"), artifacts),
+  // The vendored bridge as the harness serves it (node_modules/@drowse/web-llm/lib/index.js),
+  // outside Vite's dependency optimizer.
+  modelBackend: createLazyBrowserModelBackend(
+    () => import(/* @vite-ignore */ WEB_LLM_URL) as Promise<DrowseWebLlmModule>,
+    artifacts,
+  ),
   runtimeLockModels: config.runtimeLockModels,
 });
 (globalThis as unknown as { postMessage(message: unknown): void }).postMessage({ kind: "harness-ready" });

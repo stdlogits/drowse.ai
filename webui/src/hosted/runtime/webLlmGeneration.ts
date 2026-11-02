@@ -2258,6 +2258,7 @@ function requiresPerTokenMeasurementReads(
   return schema.probes.some((probe) => probe !== null) ||
     hasActiveGeometryMeasurements(program) ||
     schema.unitTaps?.some((tap) => tap !== null) === true ||
+    program.hiddenCapture === true ||
     schema.lensReadout === true || schema.saeReadout === true;
 }
 

@@ -162,7 +162,7 @@ try {
   const page = await browser.newPage();
   page.setDefaultTimeout(900_000);
   page.on("console", (message) => {
-    if (message.type() === "error" && !/vite|Vite server/.test(message.text())) {
+    if ((message.type() === "error" || message.type() === "warning") && !/vite|Vite server/.test(message.text())) {
       process.stderr.write(`browser console: ${message.text()}\n`);
     }
   });
@@ -221,7 +221,8 @@ try {
 
   // ------------------------------------------------------------- the catalog and lock ---
   const catalogFile = (prefix, file, role) => {
-    const path = `${prefix}/${file.path}`;
+    // Hugging Face's layout, which WebLLM keys a model directory on.
+    const path = `${prefix}/resolve/${revision}/${file.path}`;
     served.set(path, file.absolute);
     return { path: file.path, role, url: `https://fixture.invalid/${path}`, revision, bytes: file.bytes, sha256: file.sha256 };
   };
@@ -307,6 +308,8 @@ try {
     throw new Error(run.error);
   }
   check("worker installs and loads the v5 library with its packs", true, run.loaded);
+  check("a plain greedy generation through the worker", JSON.stringify(run.plain) === JSON.stringify(unitProbes.cases[0].tokens.slice(0, 2)),
+    `${JSON.stringify(run.plain)} vs ${JSON.stringify(unitProbes.cases[0].tokens.slice(0, 2))}`);
   compareRun(run, unitProbes);
 } finally {
   await browser.close();
@@ -413,6 +416,7 @@ async function driveWorker(plan) {
   const readyPromise = new Promise((ok, fail) => { ready = ok; broken = fail; });
   let sequence = 0;
   const trail = [];
+  let lastStatus = null;
   worker.onerror = (event) => {
     const error = new Error(`worker error: ${event.message ?? "unknown"} (${event.filename ?? ""}:${event.lineno ?? ""})`);
     broken(error);
@@ -431,6 +435,7 @@ async function driveWorker(plan) {
       }
       return;
     }
+    if (message?.kind === "event" && message.event === "status") lastStatus = message.payload;
     if (message?.kind === "event" && message.requestId !== null && generations.has(message.requestId)) {
       generations.get(message.requestId).push({ ...message.payload, type: message.payload?.type ?? message.event });
     }
@@ -443,8 +448,9 @@ async function driveWorker(plan) {
       promise: new Promise((ok, fail) => {
         const timer = setTimeout(() => {
           pending.delete(requestId);
-          fail(new Error(`${trail.at(-1)} timed out`));
-        }, 300_000);
+          const frames = generations.get(requestId)?.map((frame) => frame.type) ?? [];
+          fail(new Error(`${trail.at(-1)} timed out (frames ${JSON.stringify(frames)}; status ${JSON.stringify(lastStatus?.generation ?? lastStatus?.lifecycle ?? null)})`));
+        }, command === "generate" ? 120_000 : 300_000);
         pending.set(requestId, {
           ok: (value) => { clearTimeout(timer); ok(value); },
           fail: (error) => { clearTimeout(timer); fail(error); },
@@ -475,6 +481,9 @@ async function driveWorker(plan) {
     await send("load", { modelVariantId: plan.variantId, contextTokens: plan.contextTokens, resetSession: true });
     await service("instruments", "setLive", "units", { enabled: true });
     const out = { loaded: `${plan.packIds.length} optional packs`, probeCases: [], generations: [], nodes: [] };
+    // A plain greedy generation first: no program, no probes.
+    const plain = await generate({ input: plan.text, raw: true, stateless: true, steering: null, sampling: greedy(2) });
+    out.plain = plain.tokens.map((frame) => frame.token_id);
 
     for (const unit of plan.unitProbes) await service("probes", "attach", { selector: unit });
     for (const entry of plan.probeCases) {
