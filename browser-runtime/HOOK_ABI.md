@@ -400,6 +400,29 @@ the captures and drops the sequence (`cancel()` drops it unread).
   slots (the full-vocabulary readout of `jLensTokenIds`). Node replays score every gate generation
   scores from that readback (unit taps, geometry, attached `slens/` over `hidden`, J-lens and SAE
   slots); a gate the readback cannot score refuses with native's 422 instead of staying shut.
+- **Prompt ids (bridge .49).** A node replay feeds the ids its generation prefilled:
+  `prepareDrowseGenerationInputIds(request)` takes the chat-completion or completion request a
+  generation sends (`webLlmPromptRequest`: messages, `drowse_generation_seat`,
+  `drowse_generation_role`, `enable_thinking`; or `prompt`) and returns the prefix ids
+  (`system_prefix_token_ids`, or a completion's `drowse_completion_prefix_token_ids`) then each
+  prompt segment encoded on its own, through the conversation, last turn and generated-seat header
+  `prefillStep` appends (`appendDrowseGenerationTurn`, shared), without touching the KV cache or
+  the loaded conversation. Either seat renders (`DrowseWebLlmRuntime.renderPromptTokenIds`); with
+  thinking off only the assistant seat opens with the empty thinking block (native appends
+  `gen_extra` to the assistant seat only). The bridge opens a seat only after the other seat's turn
+  and takes a system message only first; the host refuses a replay needing another order as a
+  recoverable 409 `TOKEN_REPLAY_UNAVAILABLE` (`bridgeRendersTurnOrder`).
+- **Conversation templates.** An empty effective system message renders no system block.
+  `conv_template.drowse_system_fold_sep` folds a non-empty system message into the first turn's
+  text (Gemma: `"\n\n"`); `conv_template.drowse_content_trim` trims each turn's text before the
+  fold with Python's `str.strip()` set (Gemma 3's `| trim`; the folded system text stays as given),
+  as drowse's scene grammar does. Production chat configs carry them
+  (`build-production-webgpu.py` `DROWSE_CONVERSATION_RULES`: qwen3 `system_message ""`, gemma3_instruction
+  fold and trim; `verify_build_manifest` refuses a chat config without them).
+- **Sampling.** Presence and frequency penalties take any finite value (native `FiniteFloat`). A
+  request seed is mixed (`drowseSamplerSeed`: both 32-bit halves through murmur3's finalizer, into
+  `[1, 2^31 - 2]`) before it seeds TVM's Lehmer sampler, which takes its seed as its state: unmixed,
+  a seed below 1000 drew under 0.0225 first and so sampled the top token at any temperature.
 
 ## 8. Static reads and `exact-readout-v2` (§4)
 
@@ -565,7 +588,7 @@ part of the binding the lock alone determines (the weight and vocabulary terms n
 library's `tensor-cache.json` and chat config, which the lock does not record). At load the adapter derives the same
 binding from the verified `tensor-cache.json` and `mlc-chat-config.json` and the lock entry
 (`webLlmEngine.ts`; the variant's declared limits only gate admission), and the bridge
-(0.2.84-drowse.47) asks the device for exactly it (`buffer_size_required_bytes`; WebGPU's defaults
+(since 0.2.84-drowse.47) asks the device for exactly it (`buffer_size_required_bytes`; WebGPU's defaults
 of 128 MiB binding and 256 MiB buffer when they are larger) and refuses an adapter that reports
 less before any weight is read, so every admitted adapter runs the model under the same limits and
 an adapter the catalog admits can load it. (The bridge used to request 1 GiB when offered and
