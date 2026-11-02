@@ -89,7 +89,7 @@ test.afterEach(async ({ page }, testInfo) => {
 
 async function breakCachedShell(page: Page, suppressAutomaticRecovery = false) {
   await page.goto("/");
-  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await expect(page.getByRole("main").getByRole("link", { name: "Open Drowse", exact: true }).first()).toBeVisible();
   await page.evaluate(async suppress => {
     await navigator.serviceWorker.ready;
     const cache = await caches.open(`drowse-hosted-precache-v2-${location.origin}/`);
@@ -104,7 +104,7 @@ test("automatic recovery escapes a stale service worker instead of reloading its
   let navigations = 0;
   page.on("request", request => { if (request.isNavigationRequest() && request.frame() === page.mainFrame()) navigations += 1; });
   await page.reload();
-  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await expect(page.getByRole("main").getByRole("link", { name: "Open Drowse", exact: true }).first()).toBeVisible();
   await expect(page.locator(".bootstrap-error")).toHaveCount(0);
   expect(navigations).toBe(2);
   await expect.poll(() => page.evaluate(() => location.search)).toBe("");
@@ -149,7 +149,7 @@ test("the recovery button repairs a repeat-on-reload failure without removing sa
   expect(await cachedModels()).toEqual(Array(3).fill("keep model"));
   expect(await page.evaluate(async () => (await (await caches.open("drowse-hosted-on-demand-wasm-v1")).match("/stale-app-code.wasm"))?.text())).toBe("stale app code");
   await page.getByRole("button", { name: "Reload Drowse", exact: true }).click();
-  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await expect(page.getByRole("main").getByRole("link", { name: "Open Drowse", exact: true }).first()).toBeVisible();
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("deleted-test-caches") ?? "[]"))).toEqual([
     expect.stringMatching(/^drowse-hosted-precache-v2-/), "drowse-hosted-on-demand-wasm-v1",
   ]);
@@ -181,7 +181,7 @@ test("offline recovery keeps the cached app and gives an actionable retry", asyn
   expect(await page.evaluate(async () => Boolean(await (await caches.open(`drowse-hosted-precache-v2-${location.origin}/`)).match("/__broken_shell__")))).toBe(true);
   await context.setOffline(false);
   await page.getByRole("button", { name: "Try reloading again" }).click();
-  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await expect(page.getByRole("main").getByRole("link", { name: "Open Drowse", exact: true }).first()).toBeVisible();
 });
 
 test("reload guidance matches the OS and the error actions fit narrow widths", async ({ page }, testInfo) => {

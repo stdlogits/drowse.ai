@@ -711,7 +711,7 @@ test("a returning user sees their chat home instead of onboarding", async ({ pag
   await expect(logo).toHaveAttribute("href", "/");
   await logo.click();
   await expect(page).toHaveURL(`${devUrl}/`);
-  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await expect(page.getByRole("main").getByRole("link", { name: "Open Drowse", exact: true }).first()).toBeVisible();
   await page.goto(`${devUrl}/app?fixture=1`);
 
   await continueFromChatHome(page);
