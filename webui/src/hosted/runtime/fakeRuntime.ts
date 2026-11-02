@@ -982,6 +982,7 @@ class DeterministicGenerationPort implements BrowserGenerationPort {
     const maxTokens = plan.sampling?.max_tokens ?? pieces.length;
     const limit = Math.min(pieces.length, maxTokens);
     const forcedPrefix = plan.replay?.forcedPrefixTokenIds ?? [];
+    const returnsAggregate = plan.sampling?.return_probe_readings !== false;
     const alternativeCount = Math.max(
       0,
       Math.min(5, Math.floor(plan.sampling?.return_top_k ?? 0)),
@@ -1006,6 +1007,11 @@ class DeterministicGenerationPort implements BrowserGenerationPort {
       const logprob = topAlts?.find((row) => row.id === tokenId)?.logprob ?? -0.1;
       emitted.push(text);
       const measurements = this.measurements(text, index, "token");
+      // As the WebLLM port: each token offers the reply's aggregate its view while the request
+      // returns probe readings (a stopped reply pools it), and none otherwise.
+      const aggregateMeasurements = returnsAggregate
+        ? this.measurements(text, index, "aggregate")
+        : undefined;
       await plan.onRawToken?.({
         text,
         tokenId,
@@ -1026,6 +1032,7 @@ class DeterministicGenerationPort implements BrowserGenerationPort {
         rawIndex: index,
         topAlts,
         measurements,
+        ...(aggregateMeasurements === undefined ? {} : { aggregateMeasurements }),
       });
       if (this.tokenDelayMs > 0) {
         await new Promise<void>((resolve) => setTimeout(resolve, this.tokenDelayMs));
@@ -1042,8 +1049,11 @@ class DeterministicGenerationPort implements BrowserGenerationPort {
           ? "length"
           : "eos";
     const promptTokens = generationPromptTokens(plan);
-    // drowse's done aggregate: the last token's readings and bindings, no readouts.
-    const last = tokens > 0 ? this.measurements(emitted[tokens - 1], tokens - 1, "aggregate") : undefined;
+    // drowse's done aggregate: the last token's readings and bindings, no readouts (none when the
+    // request returns no probe readings).
+    const last = tokens > 0 && returnsAggregate
+      ? this.measurements(emitted[tokens - 1], tokens - 1, "aggregate")
+      : undefined;
     const aggregate = last === undefined ? undefined : aggregateEnvelope(last);
     return {
       text,
