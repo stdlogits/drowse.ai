@@ -28,9 +28,9 @@ import type {
   BrowserTokenReplayRequest,
 } from "./browserInstrumentRuntime";
 import {
+  foldSteering,
   formatSteering,
   invertSteeringExpression,
-  parseSteering,
   parseSteeringExpression,
   steeringParts,
 } from "./steeringExpression";
@@ -793,15 +793,13 @@ export class BrowserLoomRuntime {
       return clone(this.session);
     }
     if (method === "validateSteering") {
-      // `POST .../steering/validate`: parse, resolve and dry-compile, then answer in-band. A
-      // model operation in flight answers busy (drowse's EngineBusyError, 409) instead of a
-      // verdict; the dashboard asks again rather than showing it.
+      // `POST .../steering/validate`: parse, resolve and dry-compile, then answer in-band. The
+      // empty expression and a syntax error answer before the busy check, as drowse answers them
+      // before taking its lock; past it, a model operation in flight answers busy (drowse's
+      // EngineBusyError, 409) instead of a verdict, and the dashboard asks again.
       const raw = args[0];
       if (typeof raw !== "string") {
         throw loomError("INVALID_STEERING", "Steering expression must be a string");
-      }
-      if (this.generating) {
-        throw loomError("ENGINE_BUSY", "a model operation is in flight; retry shortly");
       }
       const expression = raw.trim();
       type Compiled = {
@@ -810,8 +808,15 @@ export class BrowserLoomRuntime {
         steeringTerms?: import("../../../../drowse/webui/src/lib/types").SteeringTermLayersJSON[];
         steeringDepth?: number;
       };
+      const invalid = (error: unknown) => ({
+        valid: false,
+        expression,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      let options: ReturnType<typeof validateSteeringOptions>;
+      let syntax: ReturnType<typeof parseSteeringExpression> | null = null;
       try {
-        const options = validateSteeringOptions(args[2]);
+        options = validateSteeringOptions(args[2]);
         if (options.tree !== undefined) {
           validateHostedLoomTree(options.tree);
           if (options.tree.model_id !== this.session.model_id) {
@@ -821,21 +826,30 @@ export class BrowserLoomRuntime {
             );
           }
         }
-        const probeRequests = options.probeRequests;
-        if (!expression) {
-          if (probeRequests !== undefined) {
-            await this.preflightGenerationSteering("", probeRequests);
-          }
+        if (expression) syntax = parseSteeringExpression(expression);
+      } catch (error) {
+        return invalid(error);
+      }
+      const probeRequests = options.probeRequests;
+      if (!expression && probeRequests === undefined) {
+        return { valid: true, expression: "", error: null };
+      }
+      if (this.generating) {
+        throw loomError("ENGINE_BUSY", "a model operation is in flight; retry shortly");
+      }
+      try {
+        if (syntax === null) {
+          await this.preflightGenerationSteering("", probeRequests);
           return { valid: true, expression: "", error: null };
         }
-        parseSteeringExpression(expression);
         const compiled = await this.preflightGenerationSteering(expression, probeRequests) as Compiled;
-        const parsed = compiled.steeringExpression === undefined || compiled.steeringParts === undefined
-          ? parseSteering(expression)
+        // A runtime without the core-pack compiler (the fake one) returns no steering fields.
+        const ir = compiled.steeringExpression === undefined || compiled.steeringParts === undefined
+          ? foldSteering(syntax)
           : null;
         return {
           valid: true,
-          expression: compiled.steeringExpression ?? formatSteering(parsed!),
+          expression: compiled.steeringExpression ?? formatSteering(ir!),
           error: null,
           ...(compiled.steeringTerms !== undefined && compiled.steeringDepth !== undefined
             ? {
@@ -848,16 +862,12 @@ export class BrowserLoomRuntime {
                 })),
               }
             : {}),
-          parts: compiled.steeringParts ?? steeringParts(parsed!),
+          parts: compiled.steeringParts ?? steeringParts(ir!),
         };
       } catch (error) {
         const code = (error as { code?: unknown } | null)?.code;
         if (code === "ENGINE_BUSY" || code === "GENERATION_BUSY") throw error;
-        return {
-          valid: false,
-          expression,
-          error: error instanceof Error ? error.message : String(error),
-        };
+        return invalid(error);
       }
     }
     throw loomError("BROWSER_SERVICE_UNAVAILABLE", `sessions.${method} is not implemented`);

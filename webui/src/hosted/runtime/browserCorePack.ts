@@ -72,7 +72,6 @@ import {
   formatLayerClause,
   formatSteering,
   normalizeTrigger,
-  parseSteering,
   parseSteeringExpression,
   RESERVED_NAMESPACES,
   selectTermLayers,
@@ -903,12 +902,10 @@ export class BrowserFeasibilityCorePackCompiler {
   private compileCurrent(expression: string): BrowserCompiledSteering {
     // The grammar's own fold first, so a malformed or ambiguous expression is refused exactly as
     // drowse refuses it, before the compiler's narrower refusals.
-    const ir = expression.trim()
-      ? parseSteering(expression, { manifolds: this.steeringManifolds() })
-      : { terms: [] };
     const parsed = expression.trim()
       ? parseSteeringExpression(expression)
       : { terms: [] };
+    const ir = foldSteering(parsed, { manifolds: this.steeringManifolds() });
     const resolved = this.foldResolvedTerms(
       parsed.terms.map((term) => this.resolveTerm(term)),
     );
@@ -2536,9 +2533,9 @@ export class BrowserFeasibilityCorePackCompiler {
     return fragment === null ? 0 : Math.max(0, mahalanobisNorm(whitener, fragment.direction));
   }
 
-  /** Merge the terms the grammar's fold merges: one IR key, whose triggers and positions
-   *  parseSteering has already checked. A label term and an explicit-position term on one node
-   *  keep different keys (`local/demo%alert`, `demo%alert`), so they stay two terms, as in drowse. */
+  /** Merge the terms that share an IR key, as the grammar's fold (which ran first and checked
+   *  their triggers and positions) merges them. A label term and an explicit-position term on one
+   *  node keep different keys (`local/demo%alert`, `demo%alert`), so they stay two terms. */
   private foldResolvedTerms(
     terms: readonly ResolvedCoreTerm[],
   ): ResolvedCoreTerm[] {

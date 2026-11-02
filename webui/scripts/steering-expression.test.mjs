@@ -269,8 +269,14 @@ try {
     expression: "x{9}",
     error: "steering term 'x{9}' selects layer(s) 9 it is not fitted at; fitted layers: 0-3",
   });
+  // Busy only past the in-band answers: drowse returns the empty expression and a syntax error
+  // before taking its lock.
   runtime.generating = true;
+  const compilesBefore = compiles.length;
   await assert.rejects(validate("0.5 x"), (error) => error.code === "ENGINE_BUSY" && error.status === 409);
+  assert.deepStrictEqual(await validate(""), { valid: true, expression: "", error: null });
+  assert.equal((await validate("honest +")).valid, false);
+  assert.equal(compiles.length, compilesBefore, "nothing compiles while busy");
   runtime.generating = false;
 
   console.log(
