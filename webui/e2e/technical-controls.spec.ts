@@ -72,3 +72,42 @@ test("sampling settings keep large supported values on desktop and phone layouts
     await expect(dialog).toHaveCount(0);
   }
 });
+
+test("Thinking shows only for models that support it and follows model changes", async ({ page }) => {
+  await open(page);
+  const section = await samplingSection(page);
+  // A forced switch sits in an inert row, which the role query would otherwise skip.
+  const thinking = section.getByRole("switch", { name: /^Thinking/, includeHidden: true });
+  // A model change: the in-page runtime's session (what a settings patch answers with) and the
+  // dashboard's copy of it.
+  const setModel = (supported: boolean, optional: boolean) => page.evaluate(async ({ storesUrl, registryUrl, supported, optional }) => {
+    const flags = { supports_thinking: supported, thinking_is_optional: optional };
+    const runtime = (await import(registryUrl)).getRuntimeClient() as { session: object };
+    runtime.session = { ...runtime.session, ...flags };
+    const { sessionState } = await import(storesUrl);
+    sessionState.info = { ...sessionState.info, ...flags };
+  }, { storesUrl, registryUrl, supported, optional });
+  const inert = () => thinking.evaluate(element => element.closest("[inert]") !== null);
+
+  await setModel(false, false);
+  await expect(thinking).toHaveCount(0);
+
+  // Optional: a plain switch the person turns on and off.
+  await setModel(true, true);
+  await expect(thinking).toHaveAccessibleName("Thinking");
+  expect(await inert()).toBe(false);
+  const before = await thinking.getAttribute("aria-checked");
+  await thinking.click();
+  await expect(thinking).toHaveAttribute("aria-checked", before === "true" ? "false" : "true");
+  await thinking.click();
+  await expect(thinking).toHaveAttribute("aria-checked", before ?? "false");
+
+  // Mandatory: shown on, said to be always on, and out of reach.
+  await setModel(true, false);
+  await expect(thinking).toHaveAccessibleName("Thinking, always on");
+  await expect(thinking).toHaveAttribute("aria-checked", "true");
+  expect(await inert()).toBe(true);
+
+  await setModel(false, false);
+  await expect(thinking).toHaveCount(0);
+});

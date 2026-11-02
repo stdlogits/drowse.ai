@@ -9,7 +9,7 @@ const browserChannel = process.env.PLAYWRIGHT_CHANNEL;
 const runCacheRoot = resolve(tmpdir(), `drowse-playwright-vite-${process.pid}`);
 // PLAYWRIGHT_REUSE_SERVERS=1 attaches to dev and preview servers already listening on the fixed
 // ports (fast spec-by-spec runs); without it every run starts and builds its own.
-const reuseServers = Boolean(process.env.PLAYWRIGHT_REUSE_SERVERS);
+const reuseServers = process.env.PLAYWRIGHT_REUSE_SERVERS === "1";
 const desktopFirefox = {
   ...devices["Desktop Firefox"],
   userAgent: undefined,
