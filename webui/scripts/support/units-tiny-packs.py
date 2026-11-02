@@ -19,7 +19,11 @@ from tests.support.browser_units import fixture  # noqa: E402
 
 
 def main() -> None:
+    """``units-tiny-packs.py ARCH OUT [RUNTIME_JSON]``: RUNTIME_JSON (``{modelId,
+    runtimeIdentity, runtimeIdentitySha256}``) binds the packs to a staged fixture library
+    (scripts/browser-units-worker.mjs); without it they bind to a placeholder identity."""
     arch, out = sys.argv[1], Path(sys.argv[2])
+    bound = json.loads(Path(sys.argv[3]).read_text()) if len(sys.argv) > 3 else None
     with fixture(arch) as fx:
         model = NativeModel(fx.session)
         identity = {
@@ -35,7 +39,7 @@ def main() -> None:
             "hiddenSize": model.d_model,
             "layerMap": list(range(model.n_layers)),
         }
-        runtime = {"modelId": "units-tiny", "runtimeIdentity": identity, "runtimeIdentitySha256": "a" * 64}
+        runtime = bound or {"modelId": "units-tiny", "runtimeIdentity": identity, "runtimeIdentitySha256": "a" * 64}
         record = build(model, runtime, out, KINDS, full_depth=False, words=["a", "e", "t"])
         json.dump({
             "runtime": runtime,
