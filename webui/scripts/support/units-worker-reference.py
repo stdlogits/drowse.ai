@@ -164,10 +164,12 @@ def without_underflow(value: Any) -> Any:
     }
 
 
-def ranked(call: Any, candidates: list[dict[str, int]], path: str, ties: list[dict[str, Any]]) -> Any:
+def ranked(call: Any, candidates: list[dict[str, int]], path: str, ties: list[dict[str, Any]],
+           check: Any = None) -> Any:
     """``call(**knobs)`` at the first candidate whose ranked lists keep every boundary (no entry
-    ties the best excluded one deeper, as the goldens choose their knobs), with its near-ties
-    declared; returns ``{"knobs", "result"}``."""
+    ties the best excluded one deeper, as the goldens choose their knobs) and that ``check``
+    (``check(result, found)``, raising FixtureError to refuse) accepts, with its near-ties
+    declared; returns ``{"knobs", "result", "checked"}`` (``checked``: what ``check`` returned)."""
     refusals = []
     for knobs in candidates:
         short = without_underflow(jsonable(call(**knobs)))
@@ -175,11 +177,12 @@ def ranked(call: Any, candidates: list[dict[str, int]], path: str, ties: list[di
         found: list[dict[str, Any]] = []
         try:
             rank_lists(short, long, found, path + ".result")
+            checked = None if check is None else check(short, found)
         except FixtureError as exc:
             refusals.append(f"{knobs}: {exc}")
             continue
         ties.extend(found)
-        return {"knobs": knobs, "result": short}
+        return {"knobs": knobs, "result": short, **({} if check is None else {"checked": checked})}
     raise FixtureError(f"{path}: no knobs keep every boundary: {refusals}")
 
 
@@ -249,15 +252,14 @@ def main() -> None:
                 # traced unit whose peak row has no margin is named, and its row is not compared.
                 full = jsonable(session.unit_activity(node, top=1024, units=_all_units(fx), raw=raw))
                 diag = _activity_diagnostics(full, {full["sink_raw_index"]} - {None})
-                found: list[dict[str, Any]] = []
                 read = ranked(
                     lambda top: session.unit_activity(node, top=top, units=ACTIVITY["units"],
                                                       raw_index=ACTIVITY["raw_index"], layers=ACTIVITY["layers"],
                                                       raw=raw),
-                    around("top", ACTIVITY["top"]), f"nodes.{name}.activity", found)
-                tied = _check_activity(read["result"], diag, name, f"nodes.{name}.activity", found)
-                ties.extend(found)
-                entry["activity"] = {**read, "tied_peak_rows": tied}
+                    [{"top": top} for top in range(ACTIVITY["top"] + 3, 1, -1)], f"nodes.{name}.activity", ties,
+                    check=lambda result, found: _check_activity(result, diag, name, f"nodes.{name}.activity", found))
+                entry["activity"] = {"knobs": read["knobs"], "result": read["result"],
+                                     "tied_peak_rows": read["checked"]}
             return entry
 
         if chat:

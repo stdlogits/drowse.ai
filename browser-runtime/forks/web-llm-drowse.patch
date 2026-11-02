@@ -4104,7 +4104,7 @@ index d583419..9a057a6 100644
    hasModelInCache,
    deleteChatConfigInCache,
 diff --git a/src/llm_chat.ts b/src/llm_chat.ts
-index 616cff4..9e1e68d 100644
+index 616cff4..e56615d 100644
 --- a/src/llm_chat.ts
 +++ b/src/llm_chat.ts
 @@ -1,20 +1,28 @@
@@ -8432,7 +8432,7 @@ index 616cff4..9e1e68d 100644
        // TODO: setting top_p to 1.0 by default might run into issues since
        // top_p masking in relax uses < instead of <=
        // Set default top_p to 1.0 if not set
-@@ -1675,11 +5478,14 @@ export class LLMChatPipeline {
+@@ -1675,26 +5478,24 @@ export class LLMChatPipeline {
        }
      }
      // Check range validity
@@ -8450,7 +8450,27 @@ index 616cff4..9e1e68d 100644
      }
      if (repetition_penalty <= 0) {
        throw new MinValueError("repetition_penalty", 0);
-@@ -1894,13 +5700,38 @@ export class LLMChatPipeline {
+     }
+-    if (
+-      frequency_penalty &&
+-      (frequency_penalty < -2.0 || frequency_penalty > 2.0)
+-    ) {
+-      throw new RangeError("frequency_penalty", -2.0, 2.0);
++    // Drowse: any finite penalty, as drowse's sampler takes (postInitAndCheckGenerationConfigValues).
++    if (_hasValue(frequency_penalty) && !Number.isFinite(frequency_penalty)) {
++      throw new TypeError("frequency_penalty must be finite");
+     }
+-    if (
+-      presence_penalty &&
+-      (presence_penalty < -2.0 || presence_penalty > 2.0)
+-    ) {
+-      throw new RangeError("presence_penalty", -2.0, 2.0);
++    if (_hasValue(presence_penalty) && !Number.isFinite(presence_penalty)) {
++      throw new TypeError("presence_penalty must be finite");
+     }
+ 
+     const outputTokenBegin = performance.now();
+@@ -1894,13 +5695,38 @@ export class LLMChatPipeline {
      // 4. Sample token from logits
      const sampleBegin = performance.now();
  
@@ -8493,7 +8513,7 @@ index 616cff4..9e1e68d 100644
  
      this.tvm.beginScope();
      const temperaturesDevice = this.tvm
-@@ -1913,79 +5744,131 @@ export class LLMChatPipeline {
+@@ -1913,79 +5739,131 @@ export class LLMChatPipeline {
      );
      probs = probs.view([numProbs, this.fullVocabSize]);
  
@@ -8675,7 +8695,7 @@ index 616cff4..9e1e68d 100644
    }
  
    /**
-@@ -2015,34 +5898,90 @@ export class LLMChatPipeline {
+@@ -2015,34 +5893,90 @@ export class LLMChatPipeline {
     *   imageUrl2,
     *   token array for "\nSome user input<|end|>\n"
     */
@@ -8789,7 +8809,7 @@ index 616cff4..9e1e68d 100644
  
      // 1.5. Preload image dimensions to compute per-image embed sizes
      const imageDimensions = new Map<string, [number, number]>();
-@@ -2082,7 +6021,7 @@ export class LLMChatPipeline {
+@@ -2082,7 +6016,7 @@ export class LLMChatPipeline {
  
      // 3. Encode all prompts. Iterate through each message in the prompt array, where each
      // prompt can either be a string, or an array of a mixture of string and ImageURLs.
@@ -8798,7 +8818,7 @@ index 616cff4..9e1e68d 100644
      for (let i = 0; i < prompts.length; i++) {
        const curPrompt = prompts[i];
        if (typeof curPrompt === "string") {
-@@ -2116,6 +6055,26 @@ export class LLMChatPipeline {
+@@ -2116,6 +6050,26 @@ export class LLMChatPipeline {
          }
        }
      }
@@ -8825,7 +8845,7 @@ index 616cff4..9e1e68d 100644
      // Deal with last curTokens
      if (curTokens.length !== 0) {
        ret.push([...curTokens]);
-@@ -2186,50 +6145,51 @@ export class LLMChatPipeline {
+@@ -2186,50 +6140,51 @@ export class LLMChatPipeline {
    }
  
    /**
@@ -8893,7 +8913,7 @@ index 616cff4..9e1e68d 100644
      } as ChatCompletionTokenLogprob;
    }
  
-@@ -2284,3 +6244,10 @@ export class LLMChatPipeline {
+@@ -2284,3 +6239,10 @@ export class LLMChatPipeline {
      log.info(msg);
    }
  }
