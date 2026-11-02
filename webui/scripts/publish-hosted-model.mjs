@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { readRuntimeLock } from "./runtime-lock-document.mjs";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createReadStream } from "node:fs";
@@ -21,13 +22,25 @@ const allowedSidecars = new Set([
   "hosted-artifacts.json",
 ]);
 
+const USAGE = "usage: node publish-hosted-model.mjs MODEL_ID DIRECTORY [--runtime-lock CANDIDATE.json] [--upload]";
+
+/** `--runtime-lock` names a candidate lock (prepare-hosted-candidate-lock.mjs): a v5 library is
+ *  published before its revision is in the repository lock. */
 export function parseArguments(args) {
-  const upload = args.includes("--upload");
-  const values = args.filter((value) => value !== "--upload");
-  if (values.length !== 2 || args.some((value) => value.startsWith("--") && value !== "--upload")) {
-    throw new Error("usage: node publish-hosted-model.mjs MODEL_ID DIRECTORY [--upload]");
+  const values = [];
+  let upload = false;
+  let runtimeLock = null;
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--upload") upload = true;
+    else if (args[index] === "--runtime-lock") {
+      const value = args[++index];
+      if (!value || value.startsWith("--") || runtimeLock !== null) throw new Error(USAGE);
+      runtimeLock = resolve(value);
+    } else if (args[index].startsWith("--")) throw new Error(USAGE);
+    else values.push(args[index]);
   }
-  return { modelId: values[0], directory: resolve(values[1]), upload };
+  if (values.length !== 2) throw new Error(USAGE);
+  return { modelId: values[0], directory: resolve(values[1]), upload, runtimeLock };
 }
 
 export async function validatePublishDirectory(directory, model, runtime, {
@@ -213,7 +226,7 @@ async function validateRuntimeMetadata(directory, manifest, model, runtime, allo
 
 async function main() {
   const options = parseArguments(process.argv.slice(2));
-  const runtimeLock = JSON.parse(await readFile(runtimeLockUrl, "utf8"));
+  const { value: runtimeLock } = await readRuntimeLock(options.runtimeLock ?? fileURLToPath(runtimeLockUrl));
   const model = runtimeLock.models?.find((candidate) => candidate.id === options.modelId);
   if (!model) throw new Error(`unknown runtime model: ${options.modelId}`);
   const manifest = await validatePublishDirectory(options.directory, model, runtimeLock);

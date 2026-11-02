@@ -1206,6 +1206,7 @@
             "runtimeIdentitySha256",
             "structuredHookProfile",
             "contextTokens",
+            "webLlmSha256",
             "checks"
           ],
           "properties": {
@@ -1237,6 +1238,10 @@
               "minItems": 13,
               "maxItems": 13,
               "description": "browser-full-runtime-contract.mjs requiredBrowserFullRuntimeChecks(profile), in order."
+            },
+            "webLlmSha256": {
+              "$ref": "#/$defs/sha256",
+              "description": "The bridge bundle the harness served: the runtime lock's vendored package/lib/index.js."
             }
           }
         }

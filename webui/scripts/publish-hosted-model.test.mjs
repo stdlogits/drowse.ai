@@ -32,10 +32,15 @@ assert.deepEqual(parseArguments(["qwen3-0.6b", "./candidate"]), {
   modelId: "qwen3-0.6b",
   directory: join(process.cwd(), "candidate"),
   upload: false,
+  runtimeLock: null,
 });
 assert.equal(parseArguments(["qwen3-0.6b", "./candidate", "--upload"]).upload, true);
 assert.throws(() => parseArguments(["qwen3-0.6b"]), /usage/);
 assert.throws(() => parseArguments(["qwen3-0.6b", "./candidate", "--force"]), /usage/);
+assert.equal(
+  parseArguments(["qwen3-0.6b", "./candidate", "--runtime-lock", "candidate-lock.json"]).runtimeLock,
+  join(process.cwd(), "candidate-lock.json"),
+);
 
 const directory = await mkdtemp(join(tmpdir(), "drowse-publish-test-"));
 try {

@@ -751,6 +751,7 @@ export async function validateRuntimeGateResults(
         "runtimeIdentitySha256",
         "structuredHookProfile",
         "contextTokens",
+        "webLlmSha256",
         "checks",
       ],
       `${name} results`,
@@ -769,6 +770,9 @@ export async function validateRuntimeGateResults(
     }
     if (model && !model.contextProfiles.includes(results.contextTokens)) {
       throw new Error(`${name} ran a context the lock does not advertise`);
+    }
+    if (runtime === null || results.webLlmSha256 !== vendoredWebLlmBundleSha256(runtime)) {
+      throw new Error(`${name} did not run the runtime lock's vendored WebLLM bridge`);
     }
     const expected = requiredBrowserFullRuntimeChecks(results.structuredHookProfile);
     if (!Array.isArray(results.checks) || JSON.stringify(results.checks) !== JSON.stringify(expected)) {

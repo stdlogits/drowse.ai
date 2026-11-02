@@ -1031,6 +1031,7 @@ test("hook ABI v5 runtime evidence: units goldens per backend and each productio
   // A production library through the physical harness: its locked identity, profile and checks.
   const libraryProducer = requireReleaseEvidenceProducer("productionLibrary");
   const report = fullRuntimeReport();
+  report.environment.observedArtifacts.webLlmSha256 = bridgeSha256;
   report.checks.load.measurements = {
     exactReadoutProfile: report.structuredHookProfile,
     runtimeIdentitySha256: report.environment.runtimeIdentitySha256,
@@ -1047,6 +1048,10 @@ test("hook ABI v5 runtime evidence: units goldens per backend and each productio
   await assert.rejects(
     validateRuntimeGateResults("productionLibrary", { ...libraryResults, structuredHookProfile: "standard-v4-residual" }, identity.root, runtimeLock),
     /another structured hook profile/,
+  );
+  await assert.rejects(
+    validateRuntimeGateResults("productionLibrary", { ...libraryResults, webLlmSha256: "1".repeat(64) }, identity.root, runtimeLock),
+    /vendored WebLLM bridge/,
   );
   await assert.rejects(
     validateRuntimeGateResults("productionLibrary", { ...libraryResults, checks: libraryResults.checks.filter((name) => name !== "units") }, identity.root, runtimeLock),

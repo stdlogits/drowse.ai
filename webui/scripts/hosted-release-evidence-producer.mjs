@@ -251,9 +251,10 @@ function productionLibraryReceipt(report, producer, nonce) {
     load.runtimeIdentitySha256 !== environment.runtimeIdentitySha256 ||
     !SHA256.test(environment.runtimeIdentitySha256 ?? "") ||
     typeof environment.modelId !== "string" ||
-    !Number.isSafeInteger(environment.contextTokens)
+    !Number.isSafeInteger(environment.contextTokens) ||
+    !SHA256.test(environment.observedArtifacts?.webLlmSha256 ?? "")
   ) {
-    throw new Error("productionLibrary report does not bind its loaded profile and runtime identity");
+    throw new Error("productionLibrary report does not bind its loaded profile, runtime identity and bridge");
   }
   return {
     schemaVersion: 1,
@@ -268,6 +269,7 @@ function productionLibraryReceipt(report, producer, nonce) {
       runtimeIdentitySha256: environment.runtimeIdentitySha256,
       structuredHookProfile: report.structuredHookProfile,
       contextTokens: environment.contextTokens,
+      webLlmSha256: environment.observedArtifacts.webLlmSha256,
       checks: Object.keys(report.checks),
     },
   };

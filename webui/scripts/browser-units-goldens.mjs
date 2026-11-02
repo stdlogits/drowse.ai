@@ -38,8 +38,9 @@ const libraryPath = resolve(options.fixtures, "libs", `units-${options.arch}-${o
 const golden = async (name) => JSON.parse(await readFile(resolve(goldens, `${name}-${options.arch}-v1.json`), "utf8"));
 const tiny = JSON.parse(await readFile(resolve(goldens, "units-tiny-models-v1.json"), "utf8")).arches[options.arch];
 const chatConfig = JSON.parse(await readFile(resolve(modelDirectory, "mlc-chat-config.json"), "utf8"));
+const tensorCacheBytes = await readFile(resolve(modelDirectory, "tensor-cache.json"));
 const modelFiles = ["mlc-chat-config.json", "tensor-cache.json", "tokenizer.json",
-  ...JSON.parse(await readFile(resolve(modelDirectory, "tensor-cache.json"), "utf8")).records.map((shard) => shard.dataPath)];
+  ...JSON.parse(tensorCacheBytes.toString("utf8")).records.map((shard) => shard.dataPath)];
 
 const vite = await createViteServer({
   root: webui, configFile: false, appType: "custom", logLevel: "silent",
@@ -500,7 +501,9 @@ const http = createHttpServer(async (request, response) => {
     if (url.pathname.startsWith("/model/")) {
       const name = basename(url.pathname);
       if (!modelFiles.includes(name)) return send("not found", "text/plain", 404);
-      return send(await readFile(resolve(modelDirectory, name)), extname(name) === ".json" ? "application/json" : "application/octet-stream");
+      // tensor-cache.json is the recorded model identity, so the page gets those exact bytes.
+      const body = name === "tensor-cache.json" ? tensorCacheBytes : await readFile(resolve(modelDirectory, name));
+      return send(body, extname(name) === ".json" ? "application/json" : "application/octet-stream");
     }
     // The adapter's own modules (webLlmBlockSites.ts and what it imports), served by Vite.
     if (url.pathname.startsWith("/src/") || url.pathname.startsWith("/@") || url.pathname.startsWith("/node_modules/")) {
@@ -598,7 +601,8 @@ if (failures === 0 && options.report) {
     console.error("--report covers the whole suite (--suite all)");
     process.exit(1);
   }
-  const digest = async (path) => createHash("sha256").update(await readFile(path)).digest("hex");
+  // The bytes that ran: read once before the browser started and served from memory.
+  const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
   process.stdout.write(`${JSON.stringify({
     schemaVersion: 1,
     evidenceType: "webGpuGoldens",
@@ -608,12 +612,12 @@ if (failures === 0 && options.report) {
     results: {
       backend: "webgpu",
       // What actually ran: the bridge bundle served to the page, each fixture library and model.
-      bridgeSha256: await digest(resolve(options.webllm)),
+      bridgeSha256: digest(webllm),
       libraries: {
         [`${options.arch}-${options.quantization}`]: {
           descriptor: descriptorRecord,
-          librarySha256: await digest(libraryPath),
-          modelSha256: await digest(resolve(modelDirectory, "tensor-cache.json")),
+          librarySha256: digest(libraryBytes),
+          modelSha256: digest(tensorCacheBytes),
           suites: Object.fromEntries(Object.entries(suites).sort(([a], [b]) => a.localeCompare(b))),
         },
       },

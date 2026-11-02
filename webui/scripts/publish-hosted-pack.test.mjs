@@ -12,6 +12,7 @@ assert.deepEqual(parseArguments(["qwen3-0.6b", "core", "./core"]), {
   directory: join(process.cwd(), "core"),
   companions: [],
   coreStatistics: null,
+  runtimeLock: null,
   upload: false,
 });
 assert.deepEqual(
@@ -22,6 +23,7 @@ assert.deepEqual(
     directory: join(process.cwd(), "units"),
     companions: [join(process.cwd(), "jlens"), join(process.cwd(), "slens")],
     coreStatistics: join(process.cwd(), "core"),
+    runtimeLock: null,
     upload: false,
   },
 );
@@ -48,6 +50,16 @@ assert.throws(() => targetRepository({}, "core"), /converted repository/);
 assert.deepEqual(
   semanticValidationArguments("fixture", "core", "/tmp/core").slice(1),
   ["fixture", "/tmp/core"],
+);
+// A candidate lock reaches the validators of every kind.
+assert.equal(parseArguments(["qwen3-0.6b", "core", "./core", "--runtime-lock", "c.json"]).runtimeLock, join(process.cwd(), "c.json"));
+assert.deepEqual(
+  semanticValidationArguments("fixture", "core", "/tmp/core", [], null, "/tmp/c.json").slice(1),
+  ["fixture", "/tmp/core", "--runtime-lock", "/tmp/c.json"],
+);
+assert.deepEqual(
+  semanticValidationArguments("fixture", "slens", "/tmp/slens", [], null, "/tmp/c.json").slice(1),
+  ["fixture", "slens", "/tmp/slens", "--release", "--runtime-lock", "/tmp/c.json"],
 );
 // Native lens and units packs (and a provider R lens) publish under the release policy.
 assert.deepEqual(

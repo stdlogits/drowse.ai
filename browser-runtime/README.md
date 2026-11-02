@@ -566,8 +566,8 @@ profiles physically exercised for each model.
    against the candidate. Engineering runs (captures, the physical harness) take the candidate
    with `--runtime-lock`; their reports are marked `override` and are not release evidence.
 3. Publish each model's converted files and core pack (`publish:hosted:model`,
-   `publish:hosted:pack ... core`), then its R, S and units packs and any SAE pack (the
-   publisher runs the release policy); fill each `convertedRevision` (`--converted-revision`;
+   `publish:hosted:pack ... core`, each with `--runtime-lock CANDIDATE.json`), then its R, S and
+   units packs and any SAE pack (the publisher runs the release policy); fill each `convertedRevision` (`--converted-revision`;
    a later recompile clears it) and adopt the candidate (`--adopt`), which writes
    `runtime-lock.json` as `verified` and its identity fixture. Commit it.
 4. At that commit, record each library's `productionLibrary` and, for q4, `productionQ4Parity`
