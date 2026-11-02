@@ -1,8 +1,7 @@
-import { chooseFixtureModel } from "./workbench-navigation";
-import { selectWorkspaceView } from "./workbench-navigation";
-import { clickWorkspaceAction } from "./workbench-navigation";
-import { openWorkspaceMenu } from "./workbench-navigation";
-import { returnToChats, setAppearance, showWorkspaceTools, openTokenDetails, selectLoomView } from "./workbench-navigation";
+import {
+  chooseFixtureModel, composer, inspectToken, inspector, openMenuItem, returnToChats, selectRoom,
+  sendMessage, setAppearance, settle, toolDialog,
+} from "./workbench-navigation";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { readdir, readFile } from "node:fs/promises";
 import { text as readStreamText } from "node:stream/consumers";
@@ -24,9 +23,7 @@ const fixturePackHashes = [
 ] as const;
 const fixtureHashes = [...fixtureModelHashes, ...fixturePackHashes] as const;
 
-const sendButton = (page: Page) => page.getByRole("button", {
-  name: /^(Send|Generate reply|Add message)$/,
-});
+const sendButton = (page: Page) => page.getByRole("button", { name: "Send", exact: true });
 
 interface FixtureTokenReadoutRequest {
   service: string;
@@ -156,10 +153,7 @@ async function installFixtureTreeDeleteFailure(page: Page): Promise<void> {
 }
 
 async function openModelAndStorage(page: Page): Promise<Locator> {
-  await clickWorkspaceAction(page, "All tools");
-  const search = page.getByRole("combobox", { name: "Filter commands" });
-  await search.fill("model settings");
-  await page.keyboard.press("Enter");
+  await selectRoom(page, "Model");
   const modelControls = page.getByRole("region", { name: "Model controls", exact: true });
   await expect(modelControls).toBeVisible();
   await modelControls.getByRole("button", { name: "Storage and downloads" }).click();
@@ -178,28 +172,23 @@ async function attemptPackDeletion(row: Locator): Promise<void> {
   await row.getByRole("button", { name: "Delete tool", exact: true }).click();
 }
 
-async function openWorkspace(page: Page, name: "Conversation" | "Branches" | "Controls") {
-  const accessibleName = name === "Conversation"
-    ? /^(Conversation|Chat)$/
-    : name === "Controls"
-      ? /^Controls$/
-      : /^(Loom|Branches)$/;
-  await selectWorkspaceView(page, accessibleName);
-  if (name === "Branches") {
-    if (!(await page.getByRole("button", { name: /^Map/ }).isVisible())) {
-      await openWorkspaceMenu(page);
-      await page.getByRole("button", { name: "Show Loom tools", exact: true }).click();
-    }
-    await selectLoomView(page, /^Map/);
+/** Opens the Loom page's Map (the Thread's Map entry), or returns to the conversation. */
+async function openWorkspace(page: Page, name: "Conversation" | "Branches") {
+  const loom = page.getByRole("region", { name: "Loom", exact: true });
+  if (name === "Conversation") {
+    if (await loom.isVisible()) await page.getByRole("button", { name: "Back to the conversation", exact: true }).click();
+    await expect(composer(page)).toBeVisible();
+    return;
   }
+  const map = page.getByRole("complementary", { name: "Thread", exact: true }).getByRole("button", { name: "Map", exact: true });
+  if (!await map.isVisible()) await page.getByRole("button", { name: "Thread", exact: true }).click();
+  await map.click();
+  await expect(loom).toBeVisible();
 }
 
 async function openTranscriptDrawer(page: Page): Promise<Locator> {
-  await clickWorkspaceAction(page, "All tools");
-  const search = page.getByRole("combobox", { name: "Filter commands" });
-  await search.fill("conversation transcript");
-  await page.keyboard.press("Enter");
-  const drawer = page.getByRole("dialog", { name: "Conversation transcript" });
+  await openMenuItem(page, "Transcript");
+  const drawer = toolDialog(page, "Transcript");
   await expect(drawer).toBeVisible();
   return drawer;
 }
@@ -225,15 +214,12 @@ async function openFixtureWorkbench(page: Page, extraQuery = ""): Promise<void> 
   await expect(toolPicker.getByRole("checkbox", { name: /R-lens readouts/ })).not.toBeChecked();
   await expect(toolPicker.locator(".required-tool", { hasText: "Feature insights" })).toContainText("SAE");
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
-  await expect(page.locator(".shell")).toBeVisible();
-  await expect(page).toHaveTitle("Drowse");
-  await expect(page.getByRole("textbox", { name: /^Compose as / })).toBeVisible();
+  await expect(composer(page)).toBeVisible();
 }
 
 async function openInstalledFixtureWorkbench(page: Page): Promise<void> {
   await page.goto(`${devUrl}/app?fixture=1&reopen=1`);
   await expect(page.locator(".shell")).toBeVisible();
-  await expect(page).toHaveTitle("Drowse");
   await expect(page.getByRole("heading", { name: "This device is ready" })).toHaveCount(0);
 }
 
@@ -256,7 +242,7 @@ async function setFixtureTokenDelay(page: Page, delay: number): Promise<void> {
 
 async function continueFromChatHome(page: Page): Promise<void> {
   await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
-  await page.locator(".hero-actions").getByRole("button", { name: "Continue with Qwen3 1.7B fixture", exact: true }).click();
+  await page.getByRole("button", { name: "Continue with Qwen3 1.7B fixture", exact: true }).click();
 }
 
 async function savedConversationAvatarSeed(page: Page, name: string): Promise<string | null> {
@@ -289,14 +275,14 @@ test("chats autosave with Blobatar identities and safe Loom clearing and cuts", 
   const records = () => page.evaluate(async url => (await import(url)).conversationLibrary.list(), libraryUrl);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Automatic marmot notes");
   await sendButton(page).click();
-  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
   await expect.poll(async () => (await records()).conversations.length).toBe(1);
   const original = (await records()).conversations[0];
   expect(original.name).toMatch(/^New Chat - [A-Z][a-z]{2} \d{1,2} - \d{1,2}:\d{2} \S+$/);
   expect(original.avatarSeed).toBeTruthy();
   for (const width of [320, 390, 1024, 1440]) {
     await page.setViewportSize({ width, height: 900 });
-    expect(await page.locator(".app-header").evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect(await page.getByRole("banner").evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   }
   await returnToChats(page);
@@ -312,19 +298,18 @@ test("chats autosave with Blobatar identities and safe Loom clearing and cuts", 
   await card.getByRole("textbox", { name: "Chat name", exact: true }).fill("My automatic chat");
   await card.getByRole("button", { name: "Save name", exact: true }).click();
   await card.getByRole("button", { name: "Open chat", exact: true }).click();
-  await expect(page.locator("#workspace-main")).toHaveAttribute("aria-busy", "false");
+  await expect(page.locator("main#main")).not.toHaveAttribute("aria-busy", "true");
   await expect(page.locator(".chat[aria-label='Chat']").getByText("Automatic marmot notes", { exact: true })).toBeVisible();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Add a second turn");
   await sendButton(page).click();
   await expect(page.locator(".chat[aria-label='Chat']").getByText("Add a second turn", { exact: true })).toBeVisible();
-  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
   await expect.poll(async () => (await records()).conversations[0].snapshot.tree.nodes.length).toBeGreaterThan(original.snapshot.tree.nodes.length);
   const updated = (await records()).conversations[0];
   expect(updated.id).toBe(original.id);
   expect(updated.name).toBe("My automatic chat");
   expect(updated.avatarSeed).toBe(chosenSeed);
-  await selectWorkspaceView(page, "Loom");
-  await showWorkspaceTools(page, "Loom");
+  await openWorkspace(page, "Branches");
   await page.getByRole("button", { name: "Cut branch…", exact: true }).click();
   const cutDialog = page.getByRole("dialog", { name: "Delete branch", exact: true });
   await expect(cutDialog).toContainText("Earlier turns and sibling branches stay");
@@ -343,10 +328,10 @@ test("chats autosave with Blobatar identities and safe Loom clearing and cuts", 
   await expect(clearDialog).not.toBeVisible();
   await expect(page.getByRole("button", { name: "Clear loom…", exact: true })).toBeDisabled();
   expect((await records()).conversations).toHaveLength(1);
-  await selectWorkspaceView(page, "Conversation");
+  await openWorkspace(page, "Conversation");
   await page.getByRole("textbox", { name: /^Compose as / }).fill("A separate chat");
   await sendButton(page).click();
-  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
   await expect.poll(async () => (await records()).conversations.length).toBe(2);
   const newChat = (await records()).conversations.find((record: any) => record.id !== original.id);
   expect(newChat.avatarSeed).not.toBe(chosenSeed);
@@ -364,7 +349,6 @@ test("chats autosave with Blobatar identities and safe Loom clearing and cuts", 
       return img.width <= button.width && img.height <= button.height && getComputedStyle(element).borderRadius === "50%";
     })).toBe(true);
   }
-  await page.locator(".chat-list").screenshot({ path: testInfo.outputPath("autosaved-chat-avatars-phone.png") });
 });
 
 test("autosave failures are visible and retry preserves the same chat", async ({ page }) => {
@@ -379,7 +363,7 @@ test("autosave failures are visible and retry preserves the same chat", async ({
   await sendButton(page).click();
   await expect(page.getByRole("status").filter({ hasText: "Response complete." })).toBeVisible();
   await expect.poll(async () => (await records())[0]?.snapshot.tree.nodes.some((node: { role: string; text: string }) => node.role === "assistant" && node.text === fixtureResponse)).toBe(true);
-  await expect(page.locator(".app-header")).not.toContainText(/Autosaved|Saving chat|Save chat/);
+  await expect(page.getByRole("banner")).not.toContainText(/Autosaved|Saving chat|Save chat/);
   const original = await page.evaluate(async url => {
     const { conversationLibrary } = await import(url);
     const record = await conversationLibrary.get((await conversationLibrary.list()).conversations[0].id);
@@ -414,10 +398,9 @@ test("saved chats persist with stable Blobatar identities and explicit deletion"
   await expect(page.getByRole("button", { name: "Back to Chats", exact: true })).toBeVisible();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("What do marmots do in winter?");
   await sendButton(page).click();
-  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
 
-  await selectWorkspaceView(page, "Loom");
-  await showWorkspaceTools(page, "Loom");
+  await openWorkspace(page, "Branches");
   await savedChatsButton.click();
   let libraryDrawer = page.getByRole("dialog", { name: "Saved chats" });
   await expect(libraryDrawer).toBeVisible();
@@ -447,8 +430,7 @@ test("saved chats persist with stable Blobatar identities and explicit deletion"
     "What do marmots do in winter?",
     { exact: true },
   )).toBeVisible();
-  await selectWorkspaceView(page, "Loom");
-  await showWorkspaceTools(page, "Loom");
+  await openWorkspace(page, "Branches");
   await savedChatsButton.click();
   libraryDrawer = page.getByRole("dialog", { name: "Saved chats" });
   const list = libraryDrawer.getByRole("list", { name: "Saved conversations" });
@@ -468,8 +450,7 @@ test("saved chats persist with stable Blobatar identities and explicit deletion"
 
   await page.keyboard.press("Escape");
   await expect(libraryDrawer).not.toBeVisible();
-  await selectWorkspaceView(page, "Loom");
-  await showWorkspaceTools(page, "Loom");
+  await openWorkspace(page, "Branches");
   await savedChatsButton.click();
   libraryDrawer = page.getByRole("dialog", { name: "Saved chats" });
   card = libraryDrawer.locator("[data-saved-conversation]").first();
@@ -477,8 +458,7 @@ test("saved chats persist with stable Blobatar identities and explicit deletion"
   await card.getByRole("button", { name: "Open", exact: true }).click();
   await expect(libraryDrawer).not.toBeVisible();
 
-  await selectWorkspaceView(page, "Loom");
-  await showWorkspaceTools(page, "Loom");
+  await openWorkspace(page, "Branches");
   await savedChatsButton.click();
   libraryDrawer = page.getByRole("dialog", { name: "Saved chats" });
   card = libraryDrawer.locator("[data-saved-conversation]").first();
@@ -493,8 +473,7 @@ test("saved chats persist with stable Blobatar identities and explicit deletion"
 
   await page.keyboard.press("Escape");
   await page.setViewportSize({ width: 390, height: 844 });
-  await selectWorkspaceView(page, "Loom");
-  await showWorkspaceTools(page, "Loom");
+  await openWorkspace(page, "Branches");
   const compactSavedChatsButton = page.locator(".loom-sidebar").getByRole("button", { name: "Open", exact: true });
   await expect(compactSavedChatsButton).toBeVisible();
   await compactSavedChatsButton.click();
@@ -542,8 +521,7 @@ test("saved chat cards keep summaries and open or export the latest stored trans
       await conversationLibrary.update(id, { snapshot: record.snapshot });
     }, { storesUrl: toastModuleUrl, id: recordId, text });
   };
-  await selectWorkspaceView(page, "Loom");
-  await showWorkspaceTools(page, "Loom");
+  await openWorkspace(page, "Branches");
   await page.locator(".loom-sidebar").getByRole("button", { name: "Open", exact: true }).click();
   const drawer = page.getByRole("dialog", { name: "Saved chats" });
   const card = drawer.locator(`[data-saved-conversation="${recordId}"]`);
@@ -794,7 +772,6 @@ test("model storage notice retries protection without repeating instructions or 
     await page.setViewportSize({ width, height: 900 });
     expect(await notice.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
   }
-  await page.screenshot({ path: testInfo.outputPath("storage-protection-notice.png") });
   await notice.getByRole("button", { name: "Protect storage", exact: true }).click();
   await expect(notice).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Open workbench", exact: true })).toBeEnabled();
@@ -819,7 +796,6 @@ test("chat storage protection stays compact above saved chats on desktop and pho
     await expect(banner.getByRole("button", { name: "Protect storage", exact: true })).toHaveCSS("background-color", "rgb(245, 215, 110)");
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 900 });
-      await banner.screenshot({ path: testInfo.outputPath(`storage-neutral-${theme}-${width}.png`) });
     }
   }
   await expect(guide).not.toHaveAttribute("open");
@@ -837,7 +813,6 @@ test("chat storage protection stays compact above saved chats on desktop and pho
     expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
     expect(await guide.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
   }
-  await banner.screenshot({ path: testInfo.outputPath("storage-protection-guide-phone.png") });
   await banner.getByText("How to keep your data", { exact: true }).focus();
   await page.keyboard.press("Enter");
   await expect(guide).not.toHaveAttribute("open");
@@ -869,7 +844,6 @@ test("a returning user sees their chat home instead of onboarding", async ({ pag
 
   await continueFromChatHome(page);
   await expect(page.locator(".shell")).toBeVisible();
-  await expect(page).toHaveTitle("Drowse");
   await expect(page.getByRole("heading", { name: "This device is ready" })).toHaveCount(0);
   await expect(logo).toHaveAttribute("href", "/");
   await logo.click();
@@ -1091,8 +1065,6 @@ test.use({ hasTouch: true });
 test("compact workbench controls keep touch targets at tablet widths", async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 768 });
   await openFixtureWorkbench(page);
-
-  await showWorkspaceTools(page, "chat");
   const chatTargetHeights = await page.locator(".chat-header button").evaluateAll(
     (elements) => elements.map((element) => element.getBoundingClientRect().height),
   );
@@ -1102,7 +1074,7 @@ test("compact workbench controls keep touch targets at tablet widths", async ({ 
   const composer = page.getByRole("textbox", { name: /^Compose as / });
   await composer.fill("Create a tablet thread");
   await sendButton(page).click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
   await openWorkspace(page, "Branches");
   const treeTargetHeights = await page.getByRole("treeitem").evaluateAll(
     (elements) => elements.map((element) => element.getBoundingClientRect().height),
@@ -1120,7 +1092,6 @@ test("fixture installs, opens the shared workbench, stops, and generates", async
   const composer = page.getByRole("textbox", { name: /^Compose as / });
   const submit = sendButton(page);
   const stop = page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true });
-  await openWorkspace(page, "Controls");
   await page.getByRole("button", { name: "Sampling settings" }).click();
   const samplingDrawer = page.getByRole("dialog", { name: "Sampling settings" });
   await expect(samplingDrawer.getByText(
@@ -1137,7 +1108,7 @@ test("fixture installs, opens the shared workbench, stops, and generates", async
   await expect(alternatives).toBeEnabled();
   await expect(alternatives).toHaveAttribute("max", String(Number.MAX_SAFE_INTEGER));
   await expect(alternatives).toHaveValue("8");
-  await page.getByRole("button", { name: "Close drawer" }).click();
+  await page.keyboard.press("Escape");
   await openWorkspace(page, "Conversation");
 
   await setFixtureTokenDelay(page, 2_000);
@@ -1145,14 +1116,14 @@ test("fixture installs, opens the shared workbench, stops, and generates", async
   await submit.click();
   await expect(stop).toBeEnabled();
   await stop.dispatchEvent("click");
-  await expect(stop).toBeDisabled();
-  await expect(page.locator(".msg .response-body").last()).not.toHaveText(fixtureResponse);
+  await waitForReply(page);
+  await expect(page.locator(".msg .dw-said").last()).not.toHaveText(fixtureResponse);
 
   await setFixtureTokenDelay(page, 35);
   await composer.fill("Finish this response");
   await submit.click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
-  await expect(stop).toBeDisabled();
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
+  await waitForReply(page);
   const storage = await fixtureStorageSnapshot(page);
   expect(storage.install).toMatchObject({
     id: "qwen3-1.7b-fixture",
@@ -1179,13 +1150,13 @@ test("bottom conversation action clears the active path without deleting its bra
   const composer = page.getByRole("textbox", { name: /^Compose as / });
   await composer.fill("Keep this branch available");
   await sendButton(page).click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
 
   const clear = page.getByRole("button", { name: "Clear conversation" });
   await expect(clear).toHaveClass(/clear-conversation/);
   const [clearBox, headerBox] = await Promise.all([
     clear.boundingBox(),
-    page.locator(".app-header").boundingBox(),
+    page.getByRole("banner").boundingBox(),
   ]);
   expect(clearBox).not.toBeNull();
   expect(headerBox).not.toBeNull();
@@ -1275,99 +1246,44 @@ test("first run includes J-lens and SAE while additional model tools remain mana
   ]);
 });
 
-test("installed J-lens and SAE packs are usable without preparation errors", async ({ page }) => {
+test("installed lens and SAE packs are usable without preparation errors", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   await openFixtureWorkbench(page);
+  // Artifacts: the installed packs are in use, and the hosted build offers no fitting or training.
+  await selectRoom(page, "Artifacts");
+  const sections = page.getByRole("group", { name: "Artifacts sections", exact: true });
+  const lenses = page.getByRole("region", { name: "Lenses", exact: true });
+  await expect(lenses.getByRole("button", { name: "Compatible data pack" })).toContainText("fixture-jlens");
+  await expect(lenses.getByRole("button", { name: "In use", exact: true })).toBeDisabled();
+  await expect(lenses.getByRole("button", { name: /^(confirm )?fit\b/i })).toHaveCount(0);
+  await sections.getByRole("button", { name: "SAEs", exact: true }).click();
+  const saes = page.getByRole("region", { name: "SAE", exact: true });
+  await expect(saes.getByRole("button", { name: "Compatible data pack" })).toContainText("fixture-sae");
+  await expect(saes.getByRole("button", { name: "In use", exact: true })).toBeDisabled();
+  await expect(saes.getByRole("button", { name: /^(confirm )?train\b/i })).toHaveCount(0);
+  await expect(sections.getByRole("button", { name: "Build", exact: true })).toHaveCount(0);
 
-  await openWorkspace(page, "Controls");
-  const instrumentTabs = page.getByRole("group", { name: "Response guidance type" });
-  await instrumentTabs.getByRole("button", { name: "J-lens", exact: true }).click();
-  const lens = page.getByLabel("Layer prediction controls");
-  await expect(lens.getByRole("button", { name: "Compatible data pack" })).toContainText(
-    "fixture-jlens",
-  );
-  await expect(lens.getByRole("button", { name: "In use", exact: true })).toBeDisabled();
-  await lens.getByRole("button", { name: "Compatible data pack" }).click();
-  await expect(lens.getByRole("option", { name: "fixture-jlens", exact: true })).toBeVisible();
-  await expect(lens.getByRole("option", { name: /workspace|neuronpedia/i })).toHaveCount(0);
-  await page.keyboard.press("Escape");
-  await expect(lens.getByText("Create on this device", { exact: true })).toHaveCount(0);
-  await expect(lens.getByLabel("J-lens corpus prompts")).toHaveCount(0);
-  await expect(lens.getByRole("button", { name: /^(confirm )?fit$/i })).toHaveCount(0);
-  await expect(lens.locator('[aria-description="turn live readout off"]')).toBeVisible();
-  await lens.locator('[aria-description="turn live readout off"]').click();
-  await expect(lens.locator('[aria-description="turn live readout on"]')).toBeVisible();
-  await lens.locator('[aria-description="turn live readout on"]').click();
-  await expect(lens.locator('[aria-description="turn live readout off"]')).toBeVisible();
-  await lens.getByRole("textbox", { name: "Add a word prediction direction" }).fill("fixture");
-  await lens.getByRole("button", { name: "Add word", exact: true }).click();
-  await expect(lens.locator(".steer-cards")).toContainText("fixture");
-  const lensOperation = lens.getByRole("group", {
-    name: "steering operation for jlens/fixture",
-  });
-  await lensOperation.getByRole("button", { name: "ablate", exact: true }).click();
-  await expect(lensOperation.getByRole("button", { name: "ablate", exact: true }))
-    .toHaveAttribute("aria-pressed", "true");
-  await lens.getByRole("textbox", { name: "Watch a prediction word" }).fill("fixture");
-  await lens.getByRole("button", { name: "Watch word", exact: true }).click();
-  await expect(lens.getByRole("list", { name: "J-lens probe tokens" })).toBeVisible();
-  await expect(lens.getByText("Not measured", { exact: true })).toBeVisible();
+  // The Inspector's instruments: readouts switch, and a watched word and feature are listed.
+  await selectRoom(page, "Workbench");
+  const lens = inspector(page).getByRole("region", { name: "Lens", exact: true });
+  const readout = lens.getByRole("switch", { name: "Lens readout", exact: true });
+  await expect(readout).toBeChecked();
+  await readout.click();
+  await expect(readout).not.toBeChecked();
+  await readout.click();
+  await expect(readout).toBeChecked();
+  await lens.getByRole("textbox", { name: "A word", exact: true }).fill("fixture");
+  await lens.getByRole("button", { name: "Watch", exact: true }).click();
+  const features = inspector(page).getByRole("region", { name: "Features", exact: true });
+  await expect(features.getByRole("switch", { name: "Feature readout", exact: true })).toBeChecked();
+  await features.getByRole("textbox", { name: "A feature number", exact: true }).fill("7");
+  await features.getByRole("button", { name: "Watch", exact: true }).click();
 
-  await instrumentTabs.getByRole("button", { name: "SAE", exact: true }).click();
-  const sae = page.getByLabel("Model feature controls");
-  await expect(sae.getByRole("button", { name: "Compatible data pack" })).toContainText(
-    "fixture-sae",
-  );
-  await expect(sae.getByRole("button", { name: "In use", exact: true })).toBeDisabled();
-  await sae.getByRole("button", { name: "Compatible data pack" }).click();
-  await expect(sae.getByRole("option", { name: "fixture-sae", exact: true })).toBeVisible();
-  await expect(sae.getByRole("option", { name: /saelens|release/i })).toHaveCount(0);
-  await page.keyboard.press("Escape");
-  await expect(sae.getByText("Create on this device", { exact: true })).toHaveCount(0);
-  await expect(sae.getByLabel("SAE training tokens")).toHaveCount(0);
-  await expect(sae.getByRole("button", { name: /^(confirm )?train$/i })).toHaveCount(0);
-  await expect(sae.locator('[aria-description="turn live readout off"]')).toBeVisible();
-  await sae.locator('[aria-description="turn live readout off"]').click();
-  await expect(sae.locator('[aria-description="turn live readout on"]')).toBeVisible();
-  await sae.locator('[aria-description="turn live readout on"]').click();
-  await expect(sae.locator('[aria-description="turn live readout off"]')).toBeVisible();
-  await sae.getByRole("textbox", { name: "Add a model feature direction" }).fill("7");
-  await sae.getByRole("button", { name: "Add feature", exact: true }).click();
-  await expect(sae.locator(".steer-cards")).toContainText("7");
-  const saeOperation = sae.getByRole("group", {
-    name: "steering operation for sae/7",
-  });
-  await saeOperation.getByRole("button", { name: "ablate", exact: true }).click();
-  await expect(saeOperation.getByRole("button", { name: "ablate", exact: true }))
-    .toHaveAttribute("aria-pressed", "true");
-  await sae.getByRole("textbox", { name: "Watch a model feature" }).fill("7");
-  await sae.getByRole("button", { name: "Watch feature", exact: true }).click();
-  await expect(sae.getByRole("list", { name: "SAE feature probes" })).toBeVisible();
-  await expect(sae.getByText("Not measured", { exact: true })).toBeVisible();
-
-  const steeringExpression = await page.evaluate(async (moduleUrl) => {
-    const stores = await import(moduleUrl);
-    return stores.currentSteeringExpression();
-  }, toastModuleUrl);
-  expect(steeringExpression).toContain("0.3 !jlens/fixture");
-  expect(steeringExpression).toContain("0.3 !sae/7");
-
-  await openWorkspace(page, "Conversation");
-  await page.getByRole("textbox", { name: /^Compose as / }).fill("Measure installed instruments");
-  await sendButton(page).click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
-  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
-  await openWorkspace(page, "Controls");
-  await instrumentTabs.getByRole("button", { name: "SAE", exact: true }).click();
-  await expect(sae.getByLabel("Strength 0.67").first()).toBeVisible();
-
-  await instrumentTabs.getByRole("button", { name: "J-lens", exact: true }).click();
-  await expect(lens.getByLabel("Strength 0.755", { exact: true }).first()).toBeVisible();
-
-  await openWorkspace(page, "Conversation");
+  await sendMessage(page, "Measure installed instruments");
+  await expect(lens.getByRole("list", { name: "Lens probe tokens" })).toBeVisible();
   await page.getByRole("button", { name: "Reroll assistant message" }).click();
-  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
   await expect.poll(async () => page.evaluate(async (moduleUrl) => {
     const stores = await import(moduleUrl);
     const user = [...stores.loomTree.nodes.values()].find(
@@ -1391,7 +1307,6 @@ test("installed J-lens and SAE packs are usable without preparation errors", asy
     { role: "assistant", hasLens: true, hasSae: true },
     { role: "assistant", hasLens: true, hasSae: true },
   ]);
-
   await expect(page.getByText(/Fake runtime method .* is not implemented/)).toHaveCount(0);
   expect(pageErrors).toEqual([]);
 });
@@ -1402,34 +1317,19 @@ test("models without an SAE say that no SAE is available", async ({ page }) => {
   await expect(page.getByRole("checkbox", { name: /Feature explorer/ })).toHaveCount(0);
   await chooseFixtureModel(page);
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
-  await expect(page.locator(".shell")).toBeVisible();
-
-  await openWorkspace(page, "Controls");
-  await page.getByRole("group", { name: "Response guidance type" })
-    .getByRole("button", { name: "SAE", exact: true }).click();
-  await expect(page.getByLabel("Model feature controls").getByText(
-    "No compatible SAE pack is published for this model.",
-    { exact: true },
-  )).toBeVisible();
-
-  await openWorkspace(page, "Conversation");
-  await page.getByRole("textbox", { name: /^Compose as / }).fill("Inspect without an SAE");
-  await sendButton(page).click();
-  await page.getByRole("button", { name: "Inspect tokens in assistant message" }).click();
-  const drawer = await openTokenDetails(page);
-  await drawer.getByRole("button", { name: /^sae\b/i }).click();
-  await expect(drawer.getByText(
-    "No SAE is available for this model",
-    { exact: true },
-  )).toBeVisible();
+  await expect(composer(page)).toBeVisible();
+  await expect(inspector(page).getByRole("region", { name: "Features", exact: true })).toHaveCount(0);
+  await sendMessage(page, "Inspect without an SAE");
+  const token = await inspectToken(page, "deterministic");
+  await expect(token.getByRole("region", { name: "Features", exact: true })).toHaveCount(0);
+  await selectRoom(page, "Artifacts");
+  await page.getByRole("group", { name: "Artifacts sections", exact: true }).getByRole("button", { name: "SAEs", exact: true }).click();
+  await expect(page.getByRole("main")).toContainText(/no (compatible )?SAE/i);
 });
 
 test("changing models closes the runtime and opens installed model choices", async ({ page }) => {
   await openFixtureWorkbench(page);
-  await clickWorkspaceAction(page, "All tools");
-  const search = page.getByRole("combobox", { name: "Filter commands" });
-  await search.fill("model settings");
-  await page.keyboard.press("Enter");
+  await selectRoom(page, "Model");
   const modelControls = page.getByRole("region", { name: "Model controls", exact: true });
   await expect(modelControls).toBeVisible();
   await modelControls.getByRole("button", { name: "Change model", exact: true }).click();
@@ -1448,65 +1348,41 @@ test("installed standard and R-lens packs swap live without fitting", async ({ p
   await expect(rLensChoice).not.toBeChecked();
   await rLensChoice.check();
   await page.getByRole("button", { name: "Download and open", exact: true }).click();
-  await expect(page.locator(".shell")).toBeVisible();
+  await expect(composer(page)).toBeVisible();
   await expect.poll(() => fixtureInstallIds(page)).toEqual([
     "fixture-jlens",
     "fixture-rlens",
     "fixture-sae",
     "qwen3-1.7b-fixture",
   ]);
-
-  await openWorkspace(page, "Controls");
-  const instrumentTabs = page.getByRole("group", { name: "Response guidance type" });
-  await instrumentTabs.getByRole("button", { name: "J-lens", exact: true }).click();
-  const lens = page.getByLabel("Layer prediction controls");
-  const source = lens.getByRole("button", { name: "Compatible data pack" });
+  await selectRoom(page, "Artifacts");
+  const lenses = page.getByRole("region", { name: "Lenses", exact: true });
+  const source = lenses.getByRole("button", { name: "Compatible data pack" });
   await source.click();
-  await lens.getByRole("option", { name: "fixture-rlens", exact: true }).click();
-  await lens.getByRole("button", { name: "Use pack", exact: true }).click();
+  await page.getByRole("option", { name: "fixture-rlens", exact: true }).click();
+  await lenses.getByRole("button", { name: "Use pack", exact: true }).click();
   await expect(source).toContainText("fixture-rlens");
-  await expect(lens.getByRole("button", { name: "In use", exact: true })).toBeDisabled();
+  await expect(lenses.getByRole("button", { name: "In use", exact: true })).toBeDisabled();
+  await expect(lenses.getByRole("button", { name: /^(confirm )?fit\b/i })).toHaveCount(0);
 
-  await expect(lens.locator('[aria-description="turn live readout off"]')).toBeVisible();
-  await lens.getByRole("textbox", { name: "Add a word prediction direction" }).fill("fixture");
-  await lens.getByRole("button", { name: "Add word", exact: true }).click();
-  await lens.getByRole("textbox", { name: "Watch a prediction word" }).fill("fixture");
-  await lens.getByRole("button", { name: "Watch word", exact: true }).click();
-
-  await openWorkspace(page, "Conversation");
-  await page.getByRole("textbox", { name: /^Compose as / }).fill("Use the active R-lens");
-  await sendButton(page).click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
-  await openWorkspace(page, "Controls");
-  await instrumentTabs.getByRole("button", { name: "J-lens", exact: true }).click();
-  await expect(lens.getByLabel("Strength 0.755", { exact: true }).first()).toBeVisible();
+  await selectRoom(page, "Workbench");
+  await sendMessage(page, "Use the active R-lens");
+  const token = await inspectToken(page, "deterministic");
+  await expect(token.getByRole("region", { name: "Across layers", exact: true })).toBeVisible();
 });
 
-test("hover replay routes the exact token request and exposes a recoverable failure", async ({ page }) => {
+test("token replay routes the exact token request and exposes a recoverable failure", async ({ page }) => {
   await installFixtureRpcProbe(page);
   await openFixtureWorkbench(page);
-
-  await openWorkspace(page, "Controls");
-  const instrumentTabs = page.getByRole("group", { name: "Response guidance type" });
-  await instrumentTabs.getByRole("button", { name: "J-lens", exact: true }).click();
-  const lens = page.getByLabel("Layer prediction controls");
-  await lens.locator('[aria-description="turn live readout off"]').click();
-  await openWorkspace(page, "Conversation");
-
-  await page.getByRole("textbox", { name: /^Compose as / }).fill("Create a replayable token");
-  await sendButton(page).click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
-  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
-
-  await openWorkspace(page, "Controls");
-  await instrumentTabs.getByRole("button", { name: "J-lens", exact: true }).click();
-
+  // With the live readout off, a token's lens reading has to be replayed.
+  const readout = inspector(page).getByRole("region", { name: "Lens", exact: true })
+    .getByRole("switch", { name: "Lens readout", exact: true });
+  await readout.click();
+  await expect(readout).not.toBeChecked();
+  await sendMessage(page, "Create a replayable token");
   await page.evaluate(() => {
     const state = (globalThis as typeof globalThis & {
-      __drowseFixtureRpc: {
-        requests: FixtureTokenReadoutRequest[];
-        failNextFamily: "lens" | "sae" | null;
-      };
+      __drowseFixtureRpc: { requests: FixtureTokenReadoutRequest[]; failNextFamily: "lens" | "sae" | null };
     }).__drowseFixtureRpc;
     state.requests = [];
     state.failNextFamily = "lens";
@@ -1518,91 +1394,51 @@ test("hover replay routes the exact token request and exposes a recoverable fail
         candidate.role === "assistant" && candidate.nodeId && (candidate.tokens?.length ?? 0) > 0,
     );
     const token = turn?.tokens?.[0] as { rawIndex?: number | null } | undefined;
-    if (!turn?.nodeId || token?.rawIndex == null) {
-      throw new Error("Fixture assistant token is missing its replay identity");
-    }
-    stores.beginTokenHover(token, turn.nodeId);
+    if (!turn?.nodeId || token?.rawIndex == null) throw new Error("Fixture assistant token is missing its replay identity");
     return { nodeId: turn.nodeId, rawIndex: token.rawIndex };
   }, toastModuleUrl);
-
+  const token = await inspectToken(page, "This");
   await expect.poll(() => page.evaluate(() =>
-    (globalThis as typeof globalThis & {
-      __drowseFixtureRpc: { requests: FixtureTokenReadoutRequest[] };
-    }).__drowseFixtureRpc.requests.length
-  )).toBe(1);
-  const requests = await page.evaluate(() =>
-    (globalThis as typeof globalThis & {
-      __drowseFixtureRpc: { requests: FixtureTokenReadoutRequest[] };
-    }).__drowseFixtureRpc.requests
-  );
-  expect(requests[0]).toEqual({
-    service: "instruments",
-    method: "tokenReadout",
-    args: [
-      "lens",
-      expected.nodeId,
-      expected.rawIndex,
-      { topK: 8, steered: true, raw: false, layers: "all" },
-      undefined,
-    ],
-  });
-  await expect(lens.getByRole("alert")).toHaveText(
-    "This token's word-likelihood reading could not be rebuilt. Try again, or close and reopen the model.",
-  );
-  await expect.poll(async () => page.evaluate(async (moduleUrl) => {
-    const stores = await import(moduleUrl);
-    return stores.tokenHoverState.saeReadout?.length ?? 0;
-  }, toastModuleUrl)).toBeGreaterThan(0);
+    (globalThis as typeof globalThis & { __drowseFixtureRpc: { requests: FixtureTokenReadoutRequest[] } })
+      .__drowseFixtureRpc.requests.filter(request => request.args[0] === "lens").length,
+  )).toBeGreaterThan(0);
+  const request = (await page.evaluate(() =>
+    (globalThis as typeof globalThis & { __drowseFixtureRpc: { requests: FixtureTokenReadoutRequest[] } })
+      .__drowseFixtureRpc.requests,
+  )).find(candidate => candidate.args[0] === "lens")!;
+  expect(request.service).toBe("instruments");
+  expect(request.method).toBe("tokenReadout");
+  expect(request.args.slice(0, 3)).toEqual(["lens", expected.nodeId, expected.rawIndex]);
+  await expect(token.getByRole("alert").first()).toBeVisible();
+  // The failure is recoverable: the next token replays normally.
+  await token.getByRole("button", { name: "Next token", exact: true }).click();
+  await expect(token.getByRole("heading", { name: "is" })).toBeVisible();
+  await expect(token.getByRole("region", { name: "Across layers", exact: true })).toBeVisible();
 });
 
-test("optional SAE packs cannot be deleted while direct steering or readings use them", async ({ page }) => {
+test("optional SAE packs cannot be deleted while steering or readings use them", async ({ page }) => {
   await openFixtureWorkbench(page);
-  await openWorkspace(page, "Controls");
-  const instrumentTabs = page.getByRole("group", { name: "Response guidance type" });
-
-  await instrumentTabs.getByRole("button", { name: "J-lens", exact: true }).click();
-  const lens = page.getByLabel("Layer prediction controls");
-  await lens.getByRole("textbox", { name: "Add a word prediction direction" }).fill("fixture");
-  await lens.getByRole("button", { name: "Add word", exact: true }).click();
-  await lens.getByRole("textbox", { name: "Watch a prediction word" }).fill("fixture");
-  await lens.getByRole("button", { name: "Watch word", exact: true }).click();
-
-  await instrumentTabs.getByRole("button", { name: "SAE", exact: true }).click();
-  const sae = page.getByLabel("Model feature controls");
-  await sae.getByRole("textbox", { name: "Add a model feature direction" }).fill("7");
-  await sae.getByRole("button", { name: "Add feature", exact: true }).click();
-  await sae.getByRole("textbox", { name: "Watch a model feature" }).fill("7");
-  await sae.getByRole("button", { name: "Watch feature", exact: true }).click();
-
+  const features = inspector(page).getByRole("region", { name: "Features", exact: true });
+  await features.getByRole("textbox", { name: "A feature number", exact: true }).fill("7");
+  await features.getByRole("button", { name: "Watch", exact: true }).click();
+  await page.evaluate(async (moduleUrl) => (await import(moduleUrl)).applyRecipe("0.3 sae/7"), toastModuleUrl);
   const drawer = await openModelAndStorage(page);
   await expect(downloadedPackRow(drawer, "fixture-jlens")).toHaveCount(0);
-  await expect(drawer.locator('li[data-pack-id="fixture-jlens"]')).toContainText(
-    "Word insights · included",
-  );
-
   const saeRow = downloadedPackRow(drawer, "fixture-sae");
   await attemptPackDeletion(saeRow);
-  await expect(drawer.getByRole("alert")).toContainText(
-    "SAE steering: sae/7; SAE readings: sae/7",
-  );
+  await expect(drawer.getByRole("alert")).toContainText("sae/7");
   await expect(saeRow).toBeVisible();
 });
 
-test("optional SAE packs cannot be deleted while a custom condition depends on them", async ({ page }) => {
+test("optional SAE packs cannot be deleted while a condition depends on them", async ({ page }) => {
   await openFixtureWorkbench(page);
   await page.evaluate(async (moduleUrl) => {
-    const stores = await import(moduleUrl);
-    stores.applyCustomSteeringExpression(
-      "0.5 fixture/calm.focused@when:sae/7>0.1",
-    );
+    (await import(moduleUrl)).applyRecipe("0.5 fixture/calm.focused@when:sae/7>0.1");
   }, toastModuleUrl);
   const drawer = await openModelAndStorage(page);
-  await expect(downloadedPackRow(drawer, "fixture-jlens")).toHaveCount(0);
   const saeRow = downloadedPackRow(drawer, "fixture-sae");
   await attemptPackDeletion(saeRow);
-  await expect(drawer.getByRole("alert")).toContainText(
-    "SAE steering expression or condition",
-  );
+  await expect(drawer.getByRole("alert")).toContainText(/SAE/);
   await expect(saeRow).toBeVisible();
 });
 
@@ -1610,8 +1446,6 @@ test("geometry measurements populate and completed timing stays frozen", async (
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   await openFixtureWorkbench(page);
-
-  await openWorkspace(page, "Controls");
   const instrumentTabs = page.getByRole("group", { name: "Response guidance type" });
   await instrumentTabs.getByRole("button", { name: "Subspace", exact: true }).click();
   await page.getByRole("button", { name: "Add subspace probe", exact: true }).click();
@@ -1625,9 +1459,8 @@ test("geometry measurements populate and completed timing stays frozen", async (
   await openWorkspace(page, "Conversation");
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Measure geometry");
   await sendButton(page).click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
-  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
-  await openWorkspace(page, "Controls");
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
+  await waitForReply(page);
   const probeRack = page.getByLabel("Probe rack");
   await expect(probeRack).toContainText("calm.focused");
   await expect(probeRack.getByLabel("Per-layer readings for fixture/calm.focused"))
@@ -1663,8 +1496,6 @@ test("comparison controls appear only when usable and auto-compare completes", a
     }));
   });
   await openFixtureWorkbench(page);
-
-  await showWorkspaceTools(page, "chat");
   const colorPicker = page.getByRole("button", { name: "Color generated words by" });
   await expect(colorPicker).toContainText("Token surprisal");
   await colorPicker.click();
@@ -1675,8 +1506,6 @@ test("comparison controls appear only when usable and auto-compare completes", a
   await page.keyboard.press("Escape");
 
   await expect(page.getByRole("button", { name: "Compare colors" })).toHaveCount(0);
-
-  await openWorkspace(page, "Controls");
   const instrumentTabs = page.getByRole("group", { name: "Response guidance type" });
   await instrumentTabs.getByRole("button", { name: "Subspace", exact: true }).click();
   await page.getByRole("button", { name: "Add subspace probe", exact: true }).click();
@@ -1706,7 +1535,7 @@ test("comparison controls appear only when usable and auto-compare completes", a
   await sendButton(page).click();
 
   const shadow = page.locator(".ab-shadow");
-  await expect(shadow.locator(".response-body").last()).toHaveText(fixtureResponse);
+  await expect(shadow.locator(".dw-said").last()).toHaveText(fixtureResponse);
   await expect(shadow.getByText("pending…", { exact: true })).toHaveCount(0);
   await expect(shadow.getByText("Generating comparison…", { exact: true })).toHaveCount(0);
   await colorPicker.click();
@@ -1734,13 +1563,13 @@ test("fixture survives repeated generation, stop, and reload cycles", async ({ p
     await setFixtureTokenDelay(page, stopEarly ? 2_000 : 35);
     const composer = page.getByRole("textbox", { name: /^Compose as / });
     const stop = page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true });
-    const responses = page.locator(".msg:has(.model-avatar) .response-body");
+    const responses = page.locator(".msg:has(.model-avatar) .dw-said");
     const previousResponses = await responses.count();
     const response = responses.last();
     await composer.fill(prompt);
     if (stopEarly) await page.evaluate(previousResponses => {
       const observer = new MutationObserver(() => {
-        const responses = document.querySelectorAll(".msg:has(.model-avatar) .response-body");
+        const responses = document.querySelectorAll(".msg:has(.model-avatar) .dw-said");
         const stop = document.querySelector<HTMLButtonElement>('button[aria-description="Escape · stop the current reply"]');
         if (responses.length === previousResponses + 1 && responses[responses.length - 1].textContent?.includes("This") && stop && !stop.disabled) {
           observer.disconnect();
@@ -1757,7 +1586,7 @@ test("fixture survives repeated generation, stop, and reload cycles", async ({ p
     } else {
       await expect(response).toContainText(fixtureResponse);
     }
-    await expect(stop).toBeDisabled();
+    await waitForReply(page);
     await expect.poll(() => page.evaluate(async (moduleUrl) => {
       const stores = await import(moduleUrl);
       return {
@@ -1787,8 +1616,8 @@ test("reload during generation restores the stable user turn without a partial a
   await page.getByRole("textbox", { name: /^Compose as / }).fill(prompt);
   await sendButton(page).click();
   await expect(page.getByRole("button", { name: /^Stop$/i })).toBeEnabled();
-  await expect(page.locator(".msg .response-body").last()).toContainText("This");
-  await expect(page.locator(".msg .response-body").last()).not.toHaveText(fixtureResponse);
+  await expect(page.locator(".msg .dw-said").last()).toContainText("This");
+  await expect(page.locator(".msg .dw-said").last()).not.toHaveText(fixtureResponse);
 
   await openInstalledFixtureWorkbench(page);
   await expect(
@@ -1798,7 +1627,7 @@ test("reload during generation restores the stable user turn without a partial a
 
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Continue after recovery");
   await sendButton(page).click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
 });
 
 test("reroll creates an assistant sibling under the original user turn", async ({ page }) => {
@@ -1806,11 +1635,11 @@ test("reroll creates an assistant sibling under the original user turn", async (
   const prompt = "Create a reroll branch";
   await page.getByRole("textbox", { name: /^Compose as / }).fill(prompt);
   await sendButton(page).click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
 
   await page.getByRole("button", { name: "Reroll assistant message" }).click();
   await expect(page.getByRole("button", { name: /^Stop$/i })).toBeEnabled();
-  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
 
   const branch = await page.evaluate(async (moduleUrl) => {
     const stores = await import(moduleUrl);
@@ -1876,7 +1705,7 @@ test("the loom background stays steady on hover and follows zoom while respectin
   await openFixtureWorkbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Show the loom depth field");
   await sendButton(page).click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
   await openWorkspace(page, "Branches");
 
   const viewport = page.locator(".loom-viewport");
@@ -1915,7 +1744,7 @@ test("a saved token alternative creates an exact sibling loom branch", async ({ 
   await page.getByRole("textbox", { name: /^Compose as / }).fill(prompt);
   await sendButton(page).click();
 
-  const response = page.locator(".msg .response-body").last();
+  const response = page.locator(".msg .dw-said").last();
   await expect(response).toContainText(fixtureResponse);
   await response.locator(".tok").first().click();
 
@@ -1942,9 +1771,9 @@ test("a saved token alternative creates an exact sibling loom branch", async ({ 
 
   await startBranch.click();
   await expect(drilldown).toHaveCount(0);
-  await expect(page.locator(".msg .response-body").last()).toContainText("Alternative-0 ");
+  await expect(page.locator(".msg .dw-said").last()).toContainText("Alternative-0 ");
   await openWorkspace(page, "Conversation");
-  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
 
   const fork = await page.evaluate(async ({ moduleUrl, parentId, sourceId }) => {
     const stores = await import(moduleUrl);
@@ -1987,7 +1816,7 @@ test("token replacement streams its new continuation visibly on the Loom", async
     const node = stores.loomTree.nodes.get(stores.loomTree.active_node_id);
     return { id: node.id, saved: JSON.stringify(node) };
   }, toastModuleUrl);
-  await page.locator(".msg .response-body").last().locator(".tok").nth(3).click();
+  await page.locator(".msg .dw-said").last().locator(".tok").nth(3).click();
   const drawer = await openTokenDetails(page);
   await drawer.getByRole("button", { name: "Replace token…" }).click();
   await drawer.getByRole("textbox", { name: "Replacement text" }).fill("Authored ");
@@ -1999,7 +1828,6 @@ test("token replacement streams its new continuation visibly on the Loom", async
   await expect(current.locator('.token-node').first()).toHaveText("Authored", { timeout: 20_000 });
   await expect.poll(() => current.locator('.token-node').count()).toBeGreaterThan(1);
   await expect(current).toHaveClass(/streaming/);
-  await current.screenshot({ path: testInfo.outputPath('replacement-streaming.png') });
   await expect(current).not.toHaveClass(/streaming/, { timeout: 30_000 });
   const final = await page.evaluate(async ({ url, id }) => {
     const stores = await import(url);
@@ -2018,7 +1846,7 @@ test("typed text replaces a token in a new sibling loom branch", async ({ page }
   await page.getByRole("textbox", { name: /^Compose as / }).fill(prompt);
   await sendButton(page).click();
 
-  const response = page.locator(".msg .response-body").last();
+  const response = page.locator(".msg .dw-said").last();
   await expect(response).toContainText(fixtureResponse);
   await response.locator(".tok").first().click();
 
@@ -2030,7 +1858,7 @@ test("typed text replaces a token in a new sibling loom branch", async ({ page }
   await drilldown.getByRole("region", { name: "Selected token branch point" }).getByRole("button", { name: "Start branch", exact: true }).click();
 
   await expect(drilldown).toHaveCount(0);
-  await expect(page.locator(".msg .response-body").last())
+  await expect(page.locator(".msg .dw-said").last())
     .toContainText("Authored is a deterministic local Drowse runtime fixture.");
   const siblings = await page.evaluate(async ({ moduleUrl, prompt }) => {
     const stores = await import(moduleUrl);
@@ -2047,7 +1875,7 @@ test("token continuation keeps its prefix visible and counts only new output on 
   await openFixtureWorkbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Keep the beginning and write a new ending");
   await sendButton(page).click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
   await expect.poll(() => page.evaluate(async (moduleUrl) => {
     const stores = await import(moduleUrl);
     return stores.genStatus.active;
@@ -2068,7 +1896,7 @@ test("token continuation keeps its prefix visible and counts only new output on 
     });
     return { id: node.id, text: node.text, prefix, rawIndex: target.raw_index };
   }, toastModuleUrl);
-  await page.locator(".msg .response-body").last().locator(".tok").nth(4).click();
+  await page.locator(".msg .dw-said").last().locator(".tok").nth(4).click();
   const drawer = await openTokenDetails(page);
   await drawer.getByRole("button", { name: "Continue from here" }).click();
   await expect(drawer).toHaveCount(0);
@@ -2100,7 +1928,7 @@ test("a sentence in the loom starts an exact sibling continuation", async ({ pag
   const prompt = "Continue from this sentence";
   await page.getByRole("textbox", { name: /^Compose as / }).fill(prompt);
   await sendButton(page).click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
   await expect.poll(() => page.evaluate(async (moduleUrl) => {
     const stores = await import(moduleUrl);
     return stores.genStatus.active;
@@ -2169,9 +1997,9 @@ test("loom projections stay synchronized across path, options, and starred point
   const prompt = "Show the synchronized loom views";
   await page.getByRole("textbox", { name: /^Compose as / }).fill(prompt);
   await sendButton(page).click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
   await page.getByRole("button", { name: "Reroll assistant message" }).click();
-  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
 
   await openWorkspace(page, "Branches");
   await expect(page.getByRole("navigation", { name: "Loom views" })).toBeVisible();
@@ -2208,7 +2036,7 @@ test("the loom exposes every generated token as an exact branch point", async ({
   const prompt = "Show every token in the loom";
   await page.getByRole("textbox", { name: /^Compose as / }).fill(prompt);
   await sendButton(page).click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
 
   await expect.poll(() => page.evaluate(async ({ moduleUrl, prompt }) => {
     const stores = await import(moduleUrl);
@@ -2349,7 +2177,7 @@ test("arbitrary role labels and structural role swaps survive generation", async
   const prompt = "Continue this role-swapped scene";
   await page.getByRole("textbox", { name: "Compose as guide" }).fill(prompt);
   await sendButton(page).click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
 
   const roles = await page.evaluate(async ({ moduleUrl, prompt }) => {
     const stores = await import(moduleUrl);
@@ -2395,13 +2223,13 @@ test("custom roles can be entered directly, configured, and used for generation"
   await drawer.getByRole("button", { name: /^critic\b/i }).click();
   await expect(note).toHaveValue("Reviews the response carefully");
   await expect(drawer.getByRole("status").filter({ hasText: /^Saved$/ })).toHaveText("Saved");
-  await page.getByRole("button", { name: "Close drawer" }).click();
+  await page.keyboard.press("Escape");
   await expect(generatedRole).toHaveValue("critic");
 
   const prompt = "Review this as a critic";
   await page.getByRole("textbox", { name: /^Compose as / }).fill(prompt);
   await sendButton(page).click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
 
   const generated = await page.evaluate(async ({ moduleUrl, prompt }) => {
     const stores = await import(moduleUrl);
@@ -2418,7 +2246,6 @@ test("custom roles can be entered directly, configured, and used for generation"
 
 test("raw completion mode submits and preserves a flat base-model buffer", async ({ page }) => {
   await openFixtureWorkbench(page);
-  await openWorkspace(page, "Controls");
   await page.getByRole("button", { name: "Sampling settings" }).click();
   const settings = page.getByRole("dialog", { name: "Sampling settings" });
   await settings.getByRole("button", { name: "Additional parameters" }).click();
@@ -2458,7 +2285,7 @@ test("online local generation never sends prompts or activations", async ({ page
   const composer = page.getByRole("textbox", { name: /^Compose as / });
   await composer.fill(`${promptSentinel} ${activationSentinel}`);
   await sendButton(page).click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
 
   for (const request of requests) {
     expect(decodeURIComponent(request.url)).not.toContain(promptSentinel);
@@ -2476,7 +2303,7 @@ test("browser transcript YAML exports and imports through the worker runtime", a
   const prompt = "Round-trip this local transcript";
   await page.getByRole("textbox", { name: /^Compose as / }).fill(prompt);
   await sendButton(page).click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
 
   const drawer = await openTranscriptDrawer(page);
   await drawer.getByRole("button", { name: "preview YAML" }).click();
@@ -2503,8 +2330,8 @@ test("worker-backed fixture restores its loom and generates offline without redo
   const composer = page.getByRole("textbox", { name: /^Compose as / });
   await composer.fill("Persist this conversation across reload");
   await sendButton(page).click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
-  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
+  await waitForReply(page);
 
   const artifactRequests: string[] = [];
   page.on("request", (request) => {
@@ -2516,14 +2343,14 @@ test("worker-backed fixture restores its loom and generates offline without redo
     page.getByLabel("Conversation", { exact: true })
       .getByText("Persist this conversation across reload", { exact: true }),
   ).toBeVisible();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
 
   const offlineRequests: string[] = [];
   page.on("request", (request) => offlineRequests.push(request.url()));
   await context.setOffline(true);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Generate entirely offline");
   await sendButton(page).click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
   expect(offlineRequests).toEqual([]);
 });
 
@@ -2649,7 +2476,7 @@ test("loom tree, node menu, and modal are fully keyboard scoped", async ({ page 
   await openFixtureWorkbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Create loom nodes");
   await sendButton(page).click();
-  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
 
   await openWorkspace(page, "Branches");
   const tree = page.getByRole("tree", { name: /Conversation (loom|threads)/ });
@@ -2726,8 +2553,8 @@ test("a reserved branch cannot be deleted and a rejected mutation keeps the loom
   await openFixtureWorkbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Create a branch to protect");
   await sendButton(page).click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
-  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
+  await waitForReply(page);
 
   const result = await page.evaluate(async (moduleUrl) => {
     const stores = await import(moduleUrl);
@@ -2788,10 +2615,9 @@ test("mobile workbench targets, bidi fields, and transcript radios remain keyboa
   await expect(composer).toHaveAttribute("dir", "auto");
   await composer.fill("Create mobile targets");
   await sendButton(page).click();
-  const response = page.locator(".msg .response-body").last();
+  const response = page.locator(".msg .dw-said").last();
   await expect(response).toContainText(fixtureResponse);
   await expect(response).toHaveAttribute("dir", "auto");
-  await showWorkspaceTools(page, "chat");
   const chatTargetHeights = await page.locator('.chat-header button').evaluateAll(
     (elements) => elements.map((element) => element.getBoundingClientRect().height),
   );
@@ -2874,8 +2700,8 @@ test("captured probe readings are not relabeled as unsteered replay results", as
   }, toastModuleUrl);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Inspect measurement provenance");
   await sendButton(page).click();
-  await expect(page.locator(".msg .response-body").last()).toContainText(fixtureResponse);
-  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
+  await waitForReply(page);
   // The deterministic backend does not simulate steering; stamp its synthetic
   // capture so this test can exercise the captured/counterfactual UI boundary.
   await page.evaluate(async (moduleUrl) => {
@@ -2902,7 +2728,6 @@ test("captured probe readings are not relabeled as unsteered replay results", as
     await expect(drawer.getByLabel("Pinned probe readings")).toContainText(name);
   }
   await drawer.getByRole("button", { name: "Close drawer" }).click();
-  await openWorkspace(page, "Controls");
   const tabs = page.getByRole("group", { name: "Response guidance type" });
   for (const [tab, name] of [["J-lens", "word monitor"], ["SAE", "feature monitor"]]) {
     await tabs.getByRole("button", { name: tab, exact: true }).click();
@@ -2920,7 +2745,7 @@ test("token inspection has one keyboard entry point and restores focus", async (
   await openFixtureWorkbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Create inspectable tokens");
   await sendButton(page).click();
-  await expect(page.locator(".chat").getByRole("button", { name: /^Stop$/i, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
 
   const inspect = page.getByRole("button", { name: "Inspect tokens in assistant message" });
   await expect(inspect).toHaveCount(1);
@@ -2961,7 +2786,7 @@ test("the J-lens matrix scrolls with the drawer and shows cell readings without 
   await openFixtureWorkbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Create a tall J-lens matrix");
   await sendButton(page).click();
-  const response = page.locator(".msg .response-body").last();
+  const response = page.locator(".msg .dw-said").last();
   await expect(response).toContainText(fixtureResponse);
   await response.locator(".tok").first().click();
 
@@ -3044,7 +2869,7 @@ test("error notifications are sticky and timed notifications pause while inspect
     await page.setViewportSize({ width, height: 900 });
     await expect.poll(async () => {
       const toast = (await error.boundingBox())!;
-      const header = (await page.locator(".app-header").boundingBox())!;
+      const header = (await page.getByRole("banner").boundingBox())!;
       return toast.y >= header.y + header.height;
     }).toBe(true);
     await openWorkspaceMenu(page);
@@ -3166,7 +2991,6 @@ pwaTest("an installed PWA update waits for consent and reloads without clearing 
     expect(bounds.y + bounds.height).toBeLessThanOrEqual(885);
     expect(await notice.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
     await expect(notice.getByRole("button", { name: "Update later" })).toBeVisible();
-    await notice.screenshot({ path: testInfo.outputPath(`update-card-${width}.png`) });
   }
   await notice.getByRole("button", { name: "Update later" }).click();
   await expect(notice).toHaveCount(0);

@@ -41,21 +41,22 @@ export default defineConfig({
     },
     {
       name: "webkit-ios-layout",
-      testMatch: /(base-editor-layout|ios-layout|hosted-onboarding|ui-skill-pass|sae-descriptions|technical-controls|completion-selection|chat-name-stability|loom-search|token-sidebar|mobile-sheet|model-downloads|message-identity|new-chat-start|storage-persistence|theme-default|public-header|saved-chat-menu|contact)\.spec\.ts/,
+      // "ios-layout" also matches every *.ios-layout.spec.ts.
+      testMatch: /(ios-layout|hosted-onboarding|site-pages|chat-library|technical-controls|completion-selection|chat-name-stability|loom-search|token-inspector|mobile-sheet|model-downloads|new-chat-start|storage-persistence|theme-default|public-header|saved-chat-menu|contact|workbench-rooms)\.spec\.ts/,
       use: {
         ...devices["iPhone 13"],
       },
     },
     {
       name: "webkit-macos",
-      testMatch: /(base-editor-layout|desktop-browser-compat|storage-persistence|theme-default|contrast-audit\.ios-layout|public-header|saved-chat-menu|contact|mobile-sheet)\.spec\.ts/,
+      testMatch: /(desktop-browser-compat|storage-persistence|theme-default|contrast-audit\.ios-layout|public-header|saved-chat-menu|contact|mobile-sheet|workbench-rooms)\.spec\.ts/,
       use: {
         ...devices["Desktop Safari"],
       },
     },
     {
       name: "firefox-macos",
-      testMatch: /(base-editor-layout|desktop-browser-compat|storage-persistence|theme-default|contrast-audit\.ios-layout|public-header|saved-chat-menu|contact|mobile-sheet)\.spec\.ts/,
+      testMatch: /(desktop-browser-compat|storage-persistence|theme-default|contrast-audit\.ios-layout|public-header|saved-chat-menu|contact|mobile-sheet|workbench-rooms)\.spec\.ts/,
       use: {
         ...desktopFirefox,
       },
