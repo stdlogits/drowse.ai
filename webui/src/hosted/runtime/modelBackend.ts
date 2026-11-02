@@ -363,6 +363,9 @@ export interface BlockSitesReplayRequest {
   /** Capture post-RoPE keys of every KV head at these layers (≤ `maxPatternLayers`) for every
    *  position, and every head's query at `anatomyPosition`, for `attentionRows` (B1 §6). */
   readonly patternLayers: readonly number[] | null;
+  /** Positions the segments will feed in all (B4: sizes the pattern keys to the replay, and
+   *  the bridge refuses a segment past it); absent, the compiled context. */
+  readonly tokenCount?: number;
 }
 
 export interface BlockSitesReplayResult {

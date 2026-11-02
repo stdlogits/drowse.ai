@@ -2,7 +2,8 @@
 // Hook ABI v5 on WebGPU: drowse's units goldens through a fixture library and the WebLLM bridge.
 //
 //   node scripts/browser-units-goldens.mjs --webllm WEB_LLM/lib/index.js \
-//     --fixtures DIR --arch qwen3|gemma3 --quantization q0f32|q4f32_1 [--headed]
+//     --fixtures DIR --arch qwen3|gemma3 --quantization q0f32|q4f32_1 [--suite all|units|replay]
+//     [--headed]
 //
 // DIR holds build-units-fixtures.py's model directory `units-<arch>-<quantization>` and its
 // library `libs/units-<arch>-<quantization>-v5.wasm`. The bridge's schema-4 descriptor is attested
@@ -10,6 +11,10 @@
 // unit-probes case runs as a raw greedy completion under a drowse-structured-v4 program with eight
 // linear probes per layer (`out[layer, last, 0:8]`): per forward the greedy token, its logprob,
 // the probe readings and the live unit taps are checked against the files' library tolerance.
+// The replay suite drives `drowse_replay_batch_prefill` through the adapter's own block-sites
+// surface (webLlmBlockSites.ts, served to the page by Vite): attention-patterns (every head's row at
+// positions 2, 5, 8), token-anatomy (taps, write norms, the chosen heads' rows) and unit-activity
+// (every unit's device peak, the host ranking, traces, the float16 population).
 import { createServer as createHttpServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { basename, extname, resolve } from "node:path";
@@ -180,7 +185,7 @@ function dequantized(prefix) {
 
 function parseTrigger(text) {
   if (text === undefined || text === null) return null;
-  if (text === "prompt") return { prompt: true, generated: false };
+  if (text === "prompt" || text === "before") return { prompt: true, generated: false };
   if (text === "response") return { prompt: false, generated: true, response: true };
   if (text.startsWith("first:")) return { prompt: false, first_n: Number(text.slice(6)) };
   const gate = /^when:(\S+)\s*(>=|<=|>|<)\s*(\S+)$/.exec(text);
@@ -325,6 +330,142 @@ for (const item of probesGolden.cases) {
   }));
 }
 
+// ---------------------------------------------------------------- replay cases (B4b) ---
+// Each replay runs in the page through the adapter's own `webLlmBlockSitesBackend` over the
+// bridge: `openReplay` (C0's `encodeReplayMeta`), segments of at most 16 positions (so the
+// KV-continuing path is exercised), `finish`, and `attentionRows` on the pattern capture.
+const REPLAY_PIECE = 16;
+const RAW_FIRST_IDS = { qwen3: [45], gemma3: [32] };
+const H = config.num_attention_heads;
+const F = config.intermediate_size;
+const unitScalesData = (() => {
+  const width = 2 * F + H;
+  const out = new Float32Array(L * width);
+  for (let layer = 0; layer < L; layer += 1) {
+    for (let n = 0; n < F; n += 1) {
+      out[layer * width + n] = Math.max(neuronScale[(layer * 2) * F + n], 1e-6);
+      out[layer * width + F + n] = Math.max(neuronScale[(layer * 2 + 1) * F + n], 1e-6);
+    }
+    for (let h = 0; h < H; h += 1) out[layer * width + 2 * F + h] = Math.max(headScale[layer * H + h], 1e-6);
+  }
+  return out;
+})();
+const emptyControls = (() => {
+  const program = baseProgram();
+  return { affine: program.affineActive.length, curve: program.curveActive.length };
+})();
+
+/** A replay case for the page: the program (null: unsteered), the segments as fed (each piece
+ *  ≤ 16 positions, controls held), the request, and the heads whose rows to read. */
+function replayCase({ name, steering = null, affine = null, unitTerms = [], segments, request, heads = [] }) {
+  let program = null;
+  let triggers = [];
+  if (steering !== null || affine !== null || unitTerms.length > 0) {
+    const unit = new UnitTables();
+    for (const term of [...terms(steering), ...unitTerms]) {
+      const mean = term.kind === "neuron"
+        ? neuronMean[term.layer * F + term.index]
+        : headMean.subarray((term.layer * H + term.index) * hd, (term.layer * H + term.index + 1) * hd);
+      const c = Math.fround(term.alpha);
+      const bias = term.bias !== undefined ? term.bias
+        : typeof mean === "number" ? Math.fround(c * mean) : Float32Array.from(mean, (v) => Math.fround(c * v));
+      unit.ablate(term.kind, term.layer, term.index, term.keep ?? Math.fround(1 - term.alpha), bias, term.trigger);
+    }
+    program = serialize({ ...baseProgram(affine), ...unit.section() });
+    triggers = unit.triggers;
+  }
+  const pieces = [];
+  for (const segment of segments) {
+    for (let start = 0; start < segment.ids.length; start += REPLAY_PIECE) {
+      pieces.push({ tokenIds: segment.ids.slice(start, start + REPLAY_PIECE), unitActive: [...segment.active, 0, 0, 0, 0].slice(0, 4) });
+    }
+  }
+  const tokenCount = segments.reduce((sum, segment) => sum + segment.ids.length, 0);
+  return { name, program, triggers, pieces, request: { ...request, tokenCount }, heads, controls: emptyControls };
+}
+
+const anatomyGolden = await golden("token-anatomy");
+const patternsGolden = await golden("attention-patterns");
+const activityGolden = await golden("unit-activity");
+const pushAffine = (expression) => {
+  const term = push.cases.find((c) => c.expression === expression).layers[0];
+  return { layer: term.layer, group: { active: true, basis: [term.basis], neutral: term.neutral, target: [term.target], along: term.along, kappa: [0] } };
+};
+const allLayers = Array.from({ length: L }, (_, layer) => layer);
+const everyHead = allLayers.flatMap((layer) => Array.from({ length: H }, (_, head) => ({ layer, head })));
+const replayCases = [];
+for (const item of patternsGolden.cases) {
+  for (const row of item.rows) {
+    replayCases.push({ ...replayCase({
+      name: `attention-patterns:${item.name}@${row.position}`, steering: item.steering,
+      segments: [{ ids: patternsGolden.ids, active: [true] }],
+      request: { anatomyPosition: row.position, activity: null, patternLayers: allLayers },
+      heads: everyHead,
+    }), check: { kind: "patterns", row } });
+  }
+}
+for (const item of anatomyGolden.cases) {
+  const ids = item.intermediates.ids;
+  const pushTerm = item.steering?.split(" + ").find((t) => t.startsWith("0.3 neuron/")) ?? null;
+  const ablation = item.steering?.split(" + ").filter((t) => !t.startsWith("0.3 neuron/")).join(" + ") || null;
+  const record = item.envelope.measurements.anatomy;
+  replayCases.push({ ...replayCase({
+    name: `token-anatomy:${item.name}`, steering: ablation, affine: pushTerm === null ? null : pushAffine(pushTerm),
+    segments: [{ ids, active: [true] }],
+    request: { anatomyPosition: ids.length - 1, activity: null, patternLayers: allLayers },
+    heads: (record.patterns ?? []).map((p) => ({ layer: p.layer, head: p.head })),
+  }), check: { kind: "anatomy", item } });
+}
+{
+  const first = anatomyGolden.cases[0];
+  const promptLength = first.envelope.measurements.anatomy.token.prompt_length;
+  const chat = first.intermediates.ids.slice(0, promptLength);
+  for (const item of activityGolden.cases) {
+    const args = item.arguments;
+    const tokens = item.result.tokens.map((t) => t.token_id);
+    let ids; let spans; let segments; const unitTerms = [];
+    if (item.name === "generated" || item.name === "segmented") {
+      ids = [...chat, ...tokens.slice(0, -1)];
+      spans = [{ firstRow: 0, rows: tokens.length, firstPosition: promptLength - 1 }];
+      segments = item.result.steering === null
+        ? [{ ids, active: [] }]
+        : [{ ids: ids.slice(0, promptLength), active: [true] }, { ids: ids.slice(promptLength), active: [false] }];
+    } else if (item.name === "sink" || item.name === "sink-population") {
+      ids = [...RAW_FIRST_IDS[options.arch], ...tokens.slice(0, -1)];
+      spans = [{ firstRow: 0, rows: tokens.length, firstPosition: 0 }];
+      segments = [{ ids, active: [] }];
+    } else if (item.name === "authored") {
+      const start = chat.findIndex((_, i) => tokens.every((t, k) => chat[i + k] === t));
+      ids = chat.slice(0, start + tokens.length - 1);
+      spans = [{ firstRow: 0, rows: tokens.length, firstPosition: start - 1 }];
+      segments = [{ ids, active: [] }];
+    } else {
+      ids = args.ids;
+      const runs = args.runs;
+      spans = runs.map(([first, at], i) => ({
+        firstRow: first, rows: (runs[i + 1]?.[0] ?? args.raw_ids.length) - first, firstPosition: at - 1,
+      }));
+      if (item.name === "excluded-and-zero") {
+        unitTerms.push({ kind: "neuron", layer: 1, index: 5, alpha: 1, keep: 0, bias: 0, trigger: null });
+        segments = [{ ids, active: [true] }];
+      } else {
+        segments = [{ ids, active: [] }];
+      }
+    }
+    replayCases.push({ ...replayCase({
+      name: `unit-activity:${item.name}`, steering: item.result.steering, unitTerms, segments,
+      request: {
+        anatomyPosition: null, patternLayers: null,
+        activity: {
+          spans, rowCount: tokens.length,
+          traces: (args.units ?? []).map((u) => parseUnit(u)),
+          populationRow: args.raw_index ?? null,
+        },
+      },
+    }), check: { kind: "activity", item, index: activityGolden.cases.indexOf(item) } });
+  }
+}
+
 // ---------------------------------------------------------------------- the browser ---
 const libraryBytes = await readFile(libraryPath);
 const webllm = await readFile(resolve(options.webllm));
@@ -342,6 +483,10 @@ const http = createHttpServer(async (request, response) => {
       const name = basename(url.pathname);
       if (!modelFiles.includes(name)) return send("not found", "text/plain", 404);
       return send(await readFile(resolve(modelDirectory, name)), extname(name) === ".json" ? "application/json" : "application/octet-stream");
+    }
+    // The adapter's own modules (webLlmBlockSites.ts and what it imports), served by Vite.
+    if (url.pathname.startsWith("/src/") || url.pathname.startsWith("/@") || url.pathname.startsWith("/node_modules/")) {
+      return vite.middlewares(request, response, () => send("not found", "text/plain", 404));
     }
     return send("not found", "text/plain", 404);
   } catch (error) {
@@ -375,10 +520,25 @@ try {
   // The adapter's own attestation: the library's descriptor against the lock-shaped model.
   const attested = engineModule.attestCompiledStructuredHookProfile(profileValue.profile, { variant, blockSpec }, "block-sites-v5");
   console.log(`descriptor attested: ${attested.descriptor.length} fields, unit sites ${attested.unitSites}, units pair ${profileValue.units}`);
-  for (const item of cases) {
-    const result = await page.evaluate(runCase, { item, textIds: gemma ? prompt.slice(1) : prompt });
-    const worst = checkCase(item, result);
-    console.log(`${item.name}: ${result.forwards.length} forwards, worst |Δ| ${worst.toExponential(2)}`);
+  if (options.suite !== "replay") {
+    for (const item of cases) {
+      const result = await page.evaluate(runCase, { item, textIds: gemma ? prompt.slice(1) : prompt });
+      const worst = checkCase(item, result);
+      console.log(`${item.name}: ${result.forwards.length} forwards, worst |Δ| ${worst.toExponential(2)}`);
+    }
+  }
+  if (options.suite !== "units") {
+    const capabilities = engineModule.blockSitesCapabilitiesFor(attested, { variant, blockSpec, unitRefusal: null }, chatConfig.vocab_size);
+    await page.evaluate((scales) => { window.unitScales = scales; }, Array.from(unitScalesData));
+    const worstByGolden = {};
+    for (const item of replayCases) {
+      const result = await page.evaluate(runReplay, { item, capabilities });
+      const worst = checkReplay(item, result);
+      const key = item.name.split(":")[0];
+      worstByGolden[key] = Math.max(worstByGolden[key] ?? 0, worst);
+      console.log(`${item.name}: ${item.pieces.length} forwards, worst |Δ| ${worst.toExponential(2)}`);
+    }
+    console.log(`replay ${options.arch} ${options.quantization}: ${Object.entries(worstByGolden).map(([k, v]) => `${k} ${v.toExponential(2)}`).join(", ")}`);
   }
 } catch (error) {
   failures += 1;
@@ -493,6 +653,223 @@ function checkCase(item, result) {
   return worst;
 }
 
+// In the page: one replay through the adapter's block-sites surface over the bridge.
+async function runReplay({ item, capabilities }) {
+  const engine = window.engine;
+  const { webLlmBlockSitesBackend } = await import("/src/hosted/runtime/webLlmBlockSites.ts");
+  const { f32Tensor } = await import("/src/hosted/runtime/modelBackend.ts");
+  const backend = webLlmBlockSitesBackend(capabilities, {
+    call: (request) => engine.drowseBlockSites(request, "units"),
+    installProgram: (program) => engine.setDrowseStructuredProgram(program, "units"),
+  });
+  let program = null;
+  if (item.program !== null) {
+    program = {};
+    for (const [key, value] of Object.entries(item.program)) {
+      program[key] = value && typeof value === "object" && "type" in value ? new globalThis[value.type](value.values) : value;
+    }
+  }
+  const L = capabilities.layerCount;
+  const scales = item.request.activity === null ? null : await backend.uploadUnitScales(
+    f32Tensor(Float32Array.from(window.unitScales), [L, window.unitScales.length / L]),
+  );
+  const replay = await backend.openReplay({
+    ...item.request,
+    program,
+    activity: item.request.activity === null ? null : { ...item.request.activity, scales },
+  });
+  for (const piece of item.pieces) {
+    await replay.forward({
+      tokenIds: Int32Array.from(piece.tokenIds),
+      controls: {
+        affineActive: program?.affineActive ?? new Uint32Array(item.controls.affine),
+        curveActive: program?.curveActive ?? new Uint32Array(item.controls.curve),
+        unitActive: Float32Array.from(piece.unitActive),
+      },
+    });
+  }
+  const result = await replay.finish();
+  const rows = [];
+  if (result.patterns !== null && item.heads.length > 0) {
+    for (let start = 0; start < item.heads.length; start += 16) {
+      const out = await backend.attentionRows(result.patterns, item.heads.slice(start, start + 16));
+      rows.push(...Array.from(out.data));
+    }
+  }
+  if (result.patterns !== null) await backend.release(result.patterns);
+  if (scales !== null) await backend.release(scales);
+  return {
+    anatomy: result.anatomyTaps === null ? null : Array.from(result.anatomyTaps.data),
+    state: result.activity === null ? null : Array.from(result.activity.state.data),
+    traces: result.activity === null ? null : Array.from(result.activity.traces.data),
+    population: result.activity?.population ? Array.from(result.activity.population.data) : null,
+    rows,
+  };
+}
+
+/** The replay's results against the goldens (the C VM harness's checks, units_goldens.py). */
+function checkReplay(item, result) {
+  let worst = 0;
+  const library = item.check.kind === "patterns" ? patternsGolden.tolerance.library
+    : item.check.kind === "anatomy" ? anatomyGolden.tolerance.library : activityGolden.tolerance.library;
+  const close = (label, expected, actual, atol = library.atol, rtol = library.rtol) => {
+    const error = Math.abs(actual - expected);
+    if (!(error <= atol + rtol * Math.abs(expected))) {
+      throw new Error(`${item.name} ${label}: library ${actual} vs golden ${expected} (|Δ| ${error})`);
+    }
+    worst = Math.max(worst, error);
+  };
+  const d = config.hidden_size;
+  const stride = 6 * d + F + H * hd;
+  const offsets = { block_in: 0, mid: d, out_pre: 2 * d, out: 3 * d, attn_o: 4 * d, mlp_o: 5 * d, act: 6 * d, z: 6 * d + F };
+  if (item.check.kind === "patterns") {
+    const p = item.check.row.position;
+    const width = result.rows.length / item.heads.length;
+    item.heads.forEach(({ layer, head }, at) => {
+      const expected = decode(item.check.row.layers[layer]);
+      for (let j = 0; j < width; j += 1) {
+        const actual = result.rows[at * width + j];
+        if (j <= p) close(`L${layer}h${head}[${j}]`, expected[head * (p + 1) + j], actual, library.probability_atol, 0);
+      }
+    });
+  } else if (item.check.kind === "anatomy") {
+    const inter = item.check.item.intermediates;
+    for (const name of ["block_in", "mid", "out", "act", "z"]) {
+      const value = inter.taps[name];
+      const expected = decode(value);
+      const width = value.shape[1];
+      for (let layer = 0; layer < L; layer += 1) {
+        for (let k = 0; k < width; k += 1) {
+          close(`${name}[L${layer}][${k}]`, expected[layer * width + k], result.anatomy[layer * stride + offsets[name] + k]);
+        }
+      }
+    }
+    const norms = decode(inter.head_write_norms);
+    for (let layer = 0; layer < L; layer += 1) {
+      const o = result.anatomy.slice(layer * stride + offsets.attn_o, layer * stride + offsets.attn_o + d);
+      const r = gemma ? 1 / Math.sqrt(o.reduce((s, v) => s + v * v, 0) / d + config.rms_norm_eps) : 1;
+      for (let head = 0; head < H; head += 1) {
+        const z = result.anatomy.slice(layer * stride + offsets.z + head * hd, layer * stride + offsets.z + (head + 1) * hd);
+        const gram = headGram(layer, head);
+        let q = 0;
+        for (let a = 0; a < hd; a += 1) for (let b = 0; b < hd; b += 1) q += z[a] * gram[a * hd + b] * z[b];
+        close(`write norm L${layer}h${head}`, norms[layer * H + head], Math.sqrt(Math.max(q, 0)) * r);
+      }
+    }
+    const record = item.check.item.envelope.measurements.anatomy;
+    const p = inter.ids.length - 1;
+    const width = result.rows.length / Math.max(1, item.heads.length);
+    (record.patterns ?? []).forEach((pattern, at) => {
+      pattern.weights.forEach((weight, j) => close(`pattern ${pattern.unit}[${j}]`, weight, result.rows[at * width + j],
+        library.probability_atol + anatomyGolden.tolerance.rounded.atol, 0));
+    });
+  } else {
+    const { item: golden, index } = item.check;
+    const z = library.z_atol + activityGolden.tolerance.rounded.atol;
+    const peak = decode(golden.diagnostics.peak);
+    const row = int32s(golden.diagnostics.row);
+    const margin = decode(golden.diagnostics.row_margin);
+    const stateStride = 3 * F + 3 * H;
+    const every = [...allLayers.flatMap((layer) => Array.from({ length: F }, (_, n) => ["neuron", layer, n])),
+      ...allLayers.flatMap((layer) => Array.from({ length: H }, (_, h) => ["head", layer, h]))];
+    const at = (kind, layer, i) => {
+      const base = layer * stateStride + (kind === "neuron" ? 0 : 3 * F);
+      const width = kind === "neuron" ? F : H;
+      return { value: result.state[base + i], row: result.state[base + width + i], rank: result.state[base + 2 * width + i] };
+    };
+    every.forEach(([kind, layer, i], u) => {
+      const device = at(kind, layer, i);
+      const name = `${kind}/L${layer}${kind === "neuron" ? "n" : "h"}${i}`;
+      if (row[u] < 0) {
+        if (device.row !== -1 || device.rank !== -1) throw new Error(`${item.name} ${name}: excluded everywhere, peaked at ${device.row}`);
+        return;
+      }
+      close(`${name} peak`, peak[u], device.value, z, 0);
+      if (device.rank !== Math.abs(device.value)) throw new Error(`${item.name} ${name}: rank ${device.rank} is not |${device.value}|`);
+      const forced = golden.name === "excluded-and-zero" && name === "neuron/L1n5";
+      if ((forced || margin[u] >= 1e-3 * Math.max(1, Math.abs(peak[u]))) && device.row !== row[u]) {
+        throw new Error(`${item.name} ${name}: peak row ${device.row}, golden ${row[u]}`);
+      }
+    });
+    // The host ranking (native `_activity`): per kind, rank desc, flat index asc; rank −1 drops.
+    const flat = allLayers.flatMap((layer) => [
+      ...Array.from({ length: F }, (_, n) => ["neuron", layer, n]),
+      ...Array.from({ length: H }, (_, h) => ["head", layer, h]),
+    ]);
+    const ranked = [];
+    for (const kind of ["neuron", "head"]) {
+      const items = flat.map((unit, position) => ({ unit, position, ...at(...unit) })).filter((x) => x.unit[0] === kind);
+      items.sort((a, b) => b.rank - a.rank || a.position - b.position);
+      ranked.push(...items.slice(0, golden.arguments.top).filter((x) => x.rank >= 0));
+    }
+    const listed = golden.result.top;
+    if (ranked.length !== listed.length) throw new Error(`${item.name}: ${ranked.length} ranked, golden ${listed.length}`);
+    const ties = activityGolden.declared_ties.find((t) => t.path === `cases[${index}].result.top`)?.groups ?? [];
+    ranked.forEach((entry, position) => {
+      const [kind, layer, i] = entry.unit;
+      const name = `${kind}/L${layer}${kind === "neuron" ? "n" : "h"}${i}`;
+      const group = ties.find((g) => g.includes(position));
+      const expected = group ? listed.find((e, j) => group.includes(j) && e.unit === name) : listed[position];
+      if (expected === undefined || expected.unit !== name) throw new Error(`${item.name}: top[${position}] ${name}, golden ${listed[position].unit}`);
+      close(`top ${name}`, expected.peak, entry.value, z, 0);
+      if (!golden.tied_peak_rows.includes(name) && entry.row !== expected.raw_index) {
+        throw new Error(`${item.name}: ${name} peaks at ${entry.row}, golden ${expected.raw_index}`);
+      }
+    });
+    (golden.arguments.units ?? []).forEach((unit, slot) => {
+      const rows = golden.result.tokens.length;
+      golden.result.traces[unit].forEach((value, r) => close(`trace ${unit}[${r}]`, value, result.traces[slot * rows + r], z, 0));
+    });
+    if (golden.arguments.raw_index !== undefined) {
+      for (const layerEntry of golden.result.population.layers) {
+        const width = F + H;
+        const values = result.population.slice(layerEntry.layer * width, (layerEntry.layer + 1) * width);
+        const expected = [...float16s(layerEntry.neurons), ...float16s(layerEntry.heads)];
+        values.forEach((value, k) => {
+          const rounded = toFloat16(value);
+          const ulp = float16Spacing(expected[k]);
+          if (!(Math.abs(rounded - expected[k]) <= ulp)) {
+            throw new Error(`${item.name}: population L${layerEntry.layer}[${k}] ${value} vs ${expected[k]}`);
+          }
+        });
+      }
+    }
+  }
+  return worst;
+}
+
+function int32s(value) {
+  const bytes = Buffer.from(value.data, "base64");
+  return Array.from(new Int32Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)));
+}
+
+function float16s(text) {
+  const bytes = Buffer.from(text, "base64");
+  const halves = new Uint16Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+  return Array.from(halves, fromFloat16Bits);
+}
+
+function fromFloat16Bits(bits) {
+  const sign = bits & 0x8000 ? -1 : 1;
+  const exponent = (bits >> 10) & 0x1f;
+  const fraction = bits & 0x3ff;
+  if (exponent === 0) return sign * fraction * 2 ** -24;
+  if (exponent === 31) return fraction ? Number.NaN : sign * Infinity;
+  return sign * (1 + fraction / 1024) * 2 ** (exponent - 15);
+}
+
+function toFloat16(value) {
+  const halves = new Float16Array(1);
+  halves[0] = value;
+  return halves[0];
+}
+
+function float16Spacing(value) {
+  const magnitude = Math.abs(value);
+  if (magnitude < 2 ** -14) return 2 ** -24;
+  return 2 ** (Math.floor(Math.log2(magnitude)) - 10);
+}
+
 async function loadTensorCache(directory) {
   const cache = JSON.parse(await readFile(resolve(directory, "tensor-cache.json"), "utf8"));
   const out = new Map();
@@ -509,16 +886,17 @@ async function loadTensorCache(directory) {
 }
 
 function parseArguments(args) {
-  const result = { headed: false, port: 0 };
+  const result = { headed: false, port: 0, suite: "all" };
   for (let i = 0; i < args.length; i += 1) {
     const key = args[i];
     if (key === "--headed") result.headed = true;
-    else if (["--webllm", "--fixtures", "--arch", "--quantization", "--port"].includes(key)) result[key.slice(2)] = args[++i];
+    else if (["--webllm", "--fixtures", "--arch", "--quantization", "--port", "--suite"].includes(key)) result[key.slice(2)] = args[++i];
     else throw new Error(`unknown argument ${key}`);
   }
   for (const key of ["webllm", "fixtures", "arch", "quantization"]) {
     if (!result[key]) throw new Error(`--${key} is required`);
   }
+  if (!["all", "units", "replay"].includes(result.suite)) throw new Error("--suite is all, units or replay");
   result.port = Number(result.port);
   return result;
 }

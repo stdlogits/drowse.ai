@@ -40,6 +40,7 @@ import {
   WEB_LLM_RUNTIME_MIN_STORAGE_BUFFERS_PER_SHADER_STAGE,
 } from "./structuredHookProfile";
 import { prepareVerifiedWebLlmArtifacts } from "./verifiedArtifactCache";
+import type { WebLlmBlockSitesDevice, WebLlmBlockSitesRequest } from "./webLlmBlockSites";
 import {
   assertHookFeaturesSupported,
   AFFINE_FEASIBILITY_CAPABILITIES,
@@ -149,6 +150,8 @@ export interface DrowseWebLlmEngineInstance extends WebLlmGenerationEngine {
   ): Promise<void>;
   /** Hook ABI v5: the library compiles unit sites and the units pair (`standard-v4`). */
   supportsDrowseUnitSites?(modelId?: string): Promise<boolean>;
+  /** Hook ABI v5's block-sites device surface (replay, residents, attention rows). */
+  drowseBlockSites?(request: WebLlmBlockSitesRequest, modelId?: string): Promise<unknown>;
   clearDrowseRankOneProgram(modelId?: string): Promise<void>;
   setDrowseJlensDictionary(
     dictionary: DrowseJlensDictionary,
@@ -823,6 +826,18 @@ export class DrowseWebLlmRuntime {
   /** Hook ABI v5's attested surface (B1 §3.5), or null when the library predates it. */
   blockSitesCapabilities(): BlockSitesCapabilities | null {
     return this.blockSites;
+  }
+
+  /** The loaded units library's block-sites bridge, or null (residual library, older bridge). */
+  blockSitesDevice(): WebLlmBlockSitesDevice | null {
+    const engine = this.engine;
+    if (this.blockSites?.profile.unitSites !== 1 || engine?.drowseBlockSites === undefined) {
+      return null;
+    }
+    return {
+      call: (request) => engine.drowseBlockSites!(request),
+      installProgram: (program) => this.installHookProgram(program),
+    };
   }
 
   async updateStructuredControls(

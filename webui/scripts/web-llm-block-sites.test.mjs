@@ -1,7 +1,8 @@
-// Hook ABI v5 in the WebLLM adapter (webLlmEngine.ts, drowseWebLlmBackend.ts,
-// webLlmGeneration.ts): the schema-4 descriptor attested element by element against the lock,
-// the block-sites capabilities a load yields, the bridge surface (unit programs bound on a
-// units library, refused on a residual one), and live unit taps read as gate scores.
+// Hook ABI v5 in the WebLLM adapter (webLlmEngine.ts, webLlmBlockSites.ts, webLlmGeneration.ts):
+// the schema-4 descriptor attested element by element against the lock, the block-sites
+// capabilities a load yields, the bridge surface (unit programs bound on a units library, refused
+// on a residual one; the replay, residents and attention rows over a recording bridge), and live
+// unit taps read as gate scores.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -20,7 +21,7 @@ const server = await createServer({
 try {
   const [engine, backendModule, generation, profiles, programs, modelBackend] = await Promise.all([
     server.ssrLoadModule("/src/hosted/runtime/webLlmEngine.ts"),
-    server.ssrLoadModule("/src/hosted/runtime/drowseWebLlmBackend.ts"),
+    server.ssrLoadModule("/src/hosted/runtime/webLlmBlockSites.ts"),
     server.ssrLoadModule("/src/hosted/runtime/webLlmGeneration.ts"),
     server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts"),
     server.ssrLoadModule("/src/hosted/runtime/structuredHookProgram.ts"),
@@ -163,6 +164,85 @@ try {
     error instanceof modelBackend.UnsupportedBlockError && error.message === refusal);
   await assert.rejects(residualSurface.unitWeightRows("neuron_write", []), modelBackend.UnsupportedBlockError);
   assert.equal(await residualSurface.bindStructuredProgram(plain), plain);
+
+  // ------------------------------------------------- replay over a recording bridge ---
+  const sent = [];
+  let installed = null;
+  const L = 4;
+  const H = spec.nHeads;
+  const anatomyStride = 6 * qwen.hidden_size + spec.dFF + H * spec.headDim;
+  const device = {
+    installProgram: async (program) => { installed = program; },
+    call: async (request) => {
+      sent.push(request);
+      switch (request.op) {
+        case "headGrams": return { id: "head_grams:1", kind: "head_grams", shape: [L, H, spec.headDim, spec.headDim], bytes: 4 };
+        case "uploadUnitScales": return { id: "unit_scales:2", kind: "unit_scales", shape: [L, 2 * spec.dFF + H], bytes: 4 };
+        case "openReplay": return null;
+        case "replayForward": return { measurements: new Float32Array(L * 8).fill(0.5), unitTaps: new Float32Array(64) };
+        case "finishReplay": return {
+          anatomyTaps: new Float32Array(L * anatomyStride),
+          activityState: new Float32Array(L * (3 * spec.dFF + 3 * H)),
+          traces: Float32Array.from({ length: 32 * 3 }, (_, i) => i),
+          population: new Float32Array(L * (spec.dFF + H)),
+          patterns: { id: "pattern_capture:3", kind: "pattern_capture", shape: [8, spec.nKvHeads, 10, spec.headDim], bytes: 4 },
+        };
+        case "attentionRows": return Float32Array.from({ length: 16 * 10 }, (_, i) => i);
+        default: return null;
+      }
+    },
+  };
+  const live = backendModule.webLlmBlockSitesBackend(capabilities, device);
+  const grams = await live.residentHeadGrams();
+  assert.equal(grams.kind, "head_grams");
+  await assert.rejects(live.release(grams), TypeError);
+  const scales = await live.uploadUnitScales(modelBackend.f32Tensor(new Float32Array(L * (2 * spec.dFF + H)).fill(1), [L, 2 * spec.dFF + H]));
+  await assert.rejects(live.uploadUnitScales(modelBackend.f32Tensor(new Float32Array(3), [3])), TypeError);
+  const replay = await live.openReplay({
+    program: null,
+    anatomyPosition: 8,
+    activity: {
+      spans: [{ firstRow: 0, rows: 3, firstPosition: 6 }], rowCount: 3, scales,
+      traces: [{ kind: "neuron", layer: 1, index: 5 }], populationRow: 1,
+    },
+    patternLayers: [1, 3],
+    tokenCount: 10,
+  });
+  // An unsteered replay installs an empty program with an empty unit section (the units superset).
+  assert.equal(installed.unitMeta.length, layout.metaLength);
+  assert.ok(installed.unitMeta.every((value) => value === 0));
+  const opened = sent.find((request) => request.op === "openReplay");
+  assert.equal(opened.unitScales, "unit_scales:2");
+  assert.equal(opened.rowCount, 3);
+  assert.equal(opened.tokenCount, 10);
+  const metaLayout = modelBackend.replayMetaLayout(v4);
+  assert.equal(opened.replayMeta[metaLayout.anatomyPosition], 8);
+  assert.equal(opened.replayMeta[metaLayout.flags], 7);
+  await assert.rejects(live.openReplay({ program: null, anatomyPosition: null, activity: null, patternLayers: null }),
+    (error) => error.code === "REPLAY_BUSY");
+  const controls = { affineActive: new Uint32Array(16), curveActive: new Uint32Array(16), unitActive: Float32Array.of(1, 0, 0, 0) };
+  const readback = await replay.forward({ tokenIds: Int32Array.of(1, 2, 3), controls });
+  assert.deepEqual(readback.measurements.shape, [L, 8]);
+  assert.deepEqual(readback.unitTaps.shape, [64]);
+  assert.deepEqual(sent.at(-1).tokenIds, [1, 2, 3]);
+  assert.deepEqual([...sent.at(-1).unitActive], [1, 0, 0, 0]);
+  const result = await replay.finish();
+  assert.deepEqual(result.anatomyTaps.shape, [L, anatomyStride]);
+  assert.deepEqual(result.activity.traces.shape, [1, 3]);
+  assert.deepEqual([...result.activity.traces.data], [0, 1, 2]);
+  assert.deepEqual(result.activity.population.shape, [L, spec.dFF + H]);
+  assert.equal(result.patterns.kind, "pattern_capture");
+  const rows = await live.attentionRows(result.patterns, [{ layer: 3, head: 1 }, { layer: 1, head: 0 }]);
+  assert.deepEqual(rows.shape, [2, 9]);
+  assert.deepEqual([...rows.data.subarray(0, 3)], [0, 1, 2]);
+  assert.deepEqual([...rows.data.subarray(9, 12)], [10, 11, 12]);
+  const asked = sent.at(-1).rows;
+  assert.deepEqual([...asked.subarray(0, 8)], [1, 3, 1, 8, 0, 1, 0, 8]);
+  assert.ok(asked.subarray(8).every((value) => value === -1));
+  await assert.rejects(live.attentionRows(result.patterns, [{ layer: 2, head: 0 }]), RangeError);
+  await live.release(result.patterns);
+  await assert.rejects(live.attentionRows(result.patterns, [{ layer: 1, head: 0 }]), TypeError);
+  await assert.rejects(live.openReplay({ program: null, anatomyPosition: null, activity: null, patternLayers: [1] }), RangeError);
 
   // ---------------------------------------------------------- unit taps as gate scores ---
   const tapSchema = [
