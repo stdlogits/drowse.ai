@@ -72,6 +72,7 @@ import {
   type SessionCoordinatorPersistencePort,
 } from "./sessionCoordinator";
 import { BrowserSessionPersistence } from "../../../../drowse/webui/src/lib/sessionPersistence";
+import { LegacyStashingSessionStateStore } from "../../lib/runtime/legacyAutosaves";
 import {
   isFittingLifecycleRequest,
   runtimeServiceOperationPolicy,
@@ -250,7 +251,10 @@ export class HostedRuntimeWorker {
     this.artifactService = dependencies.artifactService ?? new BrowserDrowseArchiveService();
     this.activationSpool = dependencies.activationSpool ?? new BrowserActivationSpool();
     this.modelBackend = dependencies.modelBackend ?? new UnavailableBrowserModelBackend();
-    this.sessionPersistence = dependencies.sessionPersistence ?? new BrowserSessionPersistence();
+    // Autosaves this version cannot open are stashed for the old-chats export, not deleted.
+    this.sessionPersistence = dependencies.sessionPersistence ?? new BrowserSessionPersistence({
+      store: new LegacyStashingSessionStateStore(),
+    });
     this.sessionCoordinatorFactory = dependencies.sessionCoordinatorFactory ?? (
       (persistence, execute, options) =>
         new BrowserSessionCoordinator(persistence, execute, options)

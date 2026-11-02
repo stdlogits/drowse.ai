@@ -26,6 +26,8 @@ try {
     validatePersistedHostedSession,
   } = await server.ssrLoadModule("/../drowse/webui/src/lib/sessionPersistence.ts");
   const legacyConversationsModule = await server.ssrLoadModule("/src/lib/runtime/legacyConversations.ts");
+  const { LegacyStashingSessionStateStore, findLegacyAutosaves, clearLegacyAutosaves } =
+    await server.ssrLoadModule("/src/lib/runtime/legacyAutosaves.ts");
 
   test("round-trips one authoritative session per model variant", async () => {
     const store = memoryStore();
@@ -390,7 +392,13 @@ try {
     assert.equal(legacyConversationsModule.isLegacyConversationRow(rows[0].value), true);
     assert.equal(legacyConversationsModule.isLegacyConversationRow(rows[1].value), false);
     assert.equal(legacyConversationsModule.isLegacyConversationRow(rows[3].value), false);
-    const file = await legacyConversationsModule.exportLegacyConversations(store, Date.UTC(2026, 10, 1));
+    const autosave = legacyAutosave("fastest");
+    const stash = memoryStash([{ key: "fastest@500", modelVariantId: "fastest", stashedAt: 500, record: autosave }]);
+    const file = await legacyConversationsModule.exportLegacyConversations({
+      library: store,
+      autosaves: stash,
+      now: Date.UTC(2026, 10, 1),
+    });
     assert.equal(initialized, 1);
     assert.equal(file.filename, "drowse-chats-before-6.0-2026-11-01.json");
     assert.equal(file.mimeType, "application/json");
@@ -406,8 +414,69 @@ try {
       { id: "old-a", record: rows[2].value },
       { id: "old-b", record: rows[0].value },
     ]);
+    assert.deepEqual(document.autosaves, [
+      { model_variant_id: "fastest", stashed_at: "1970-01-01T00:00:00.500Z", record: autosave },
+    ]);
+    assert.deepEqual(file.autosaves, [{ modelVariantId: "fastest", stashedAt: 500, updatedAt: 1_000 }]);
     const empty = { ...store, async list() { return [rows[1]]; } };
-    assert.equal(await legacyConversationsModule.exportLegacyConversations(empty), null);
+    assert.equal(
+      await legacyConversationsModule.exportLegacyConversations({ library: empty, autosaves: memoryStash() }),
+      null,
+    );
+    const onlyAutosaves = await legacyConversationsModule.exportLegacyConversations({ library: empty, autosaves: stash });
+    assert.deepEqual(JSON.parse(onlyAutosaves.json).conversations, []);
+    assert.equal(onlyAutosaves.autosaves.length, 1);
+  });
+
+  test("stashes 5.x autosaves instead of deleting them", async () => {
+    const legacy = legacyAutosave("fastest");
+    const inner = memoryStore(new Map([["fastest", legacy], ["balanced", legacyAutosave("balanced")]]));
+    const stash = memoryStash();
+    let clock = 700;
+    const recovered = [];
+    const persistence = new BrowserSessionPersistence({
+      store: new LegacyStashingSessionStateStore(inner, stash, () => clock++),
+      runExclusive: serialRunner(),
+      onCorrupt: (modelVariantId) => recovered.push(modelVariantId),
+    });
+
+    // claim: the 5.x row fails 6.0 validation, so it leaves the session store but survives in the stash.
+    assert.equal((await persistence.claim(binding("fastest", "owner-a"))).status, "missing");
+    assert.equal(inner.rows.has("fastest"), false);
+    assert.deepEqual(recovered, ["fastest"]);
+    assert.deepEqual(await findLegacyAutosaves(stash), [
+      { key: "fastest@700", modelVariantId: "fastest", stashedAt: 700, record: legacy },
+    ]);
+
+    // reset of a 5.x row stashes it too; a 6.0 row deleted or reset is not stashed.
+    assert.equal((await persistence.claim(binding("balanced", "owner-a"), "reset")).status, "missing");
+    await persistence.save(sessionInput("fastest", "session-a", 1), "owner-a");
+    assert.equal((await persistence.claim(binding("fastest", "owner-b"), "reset")).status, "missing");
+    await persistence.save(sessionInput("fastest", "session-a", 1), "owner-b");
+    assert.equal(await persistence.delete("fastest"), true);
+    assert.deepEqual((await findLegacyAutosaves(stash)).map((entry) => entry.key), ["fastest@700", "balanced@701"]);
+
+    // save over a 5.x row stashes it before replacing it.
+    inner.rows.set("other", legacyAutosave("other"));
+    await persistence.save(sessionInput("other", "session-c", 1), "owner-a");
+    assert.equal(inner.rows.get("other").tree.rev, 1);
+    assert.deepEqual((await findLegacyAutosaves(stash)).map((entry) => entry.modelVariantId), ["fastest", "balanced", "other"]);
+
+    // a failed copy keeps the record and fails the claim.
+    inner.rows.set("kept", legacyAutosave("kept"));
+    const failing = new BrowserSessionPersistence({
+      store: new LegacyStashingSessionStateStore(inner, { ...memoryStash(), async put() { throw new Error("quota"); } }),
+      runExclusive: serialRunner(),
+    });
+    await assert.rejects(() => failing.claim(binding("kept", "owner-a")), /quota/);
+    assert.equal(inner.rows.has("kept"), true);
+
+    await clearLegacyAutosaves(stash);
+    assert.deepEqual(await findLegacyAutosaves(stash), []);
+    stash.entries.set("x@1", { key: "x@1", modelVariantId: "x", stashedAt: 1, record: {} });
+    await persistence.clear();
+    assert.equal(inner.rows.size, 0);
+    assert.equal(stash.entries.size, 0);
   });
 
   test("reopens the IndexedDB state store after versionchange", async () => {
@@ -547,6 +616,31 @@ function memoryStore(initial = new Map()) {
     },
     async clear() {
       rows.clear();
+    },
+  };
+}
+
+// A 5.x hosted autosave: schemaVersion 2 like 6.0, with 5.x token rows and no prompt_capture.
+function legacyAutosave(modelVariantId) {
+  const record = persistedRecord(modelVariantId, "session-5x", 7);
+  for (const entry of record.tree.nodes) delete entry.prompt_capture;
+  record.tree.nodes[1].tokens = [{ token_id: 1, text: "Hello", probes: { a: 0.5 }, per_layer_scores: {} }];
+  return record;
+}
+
+function memoryStash(initial = []) {
+  const entries = new Map(initial.map((entry) => [entry.key, structuredClone(entry)]));
+  return {
+    entries,
+    async initialize() {},
+    async put(entry) {
+      entries.set(entry.key, structuredClone(entry));
+    },
+    async list() {
+      return [...entries.values()].map((entry) => structuredClone(entry));
+    },
+    async clear() {
+      entries.clear();
     },
   };
 }

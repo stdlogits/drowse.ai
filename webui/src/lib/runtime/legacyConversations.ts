@@ -1,8 +1,14 @@
 // Saved chats from before drowse 6.0. The conversation snapshot is v8, and the
 // library refuses an earlier one (exact-format rule), so a 5.x chat no longer
 // opens. This is the data side of offering those chats as one downloaded file:
-// find the stored rows whose snapshot predates v8 and serialize them as they
-// are, without validating, migrating or opening them.
+// find the stored rows whose snapshot predates v8, and the hosted autosaves the
+// worker stashed instead of deleting (legacyAutosaves.ts), and serialize them as
+// they are, without validating, migrating or opening them.
+import {
+  findLegacyAutosaves,
+  type HostedAutosaveStash,
+  type StashedHostedAutosave,
+} from "./legacyAutosaves";
 import {
   BrowserSavedConversationStore,
   type SavedConversationStore,
@@ -22,12 +28,20 @@ export interface LegacyConversationSummary {
   updatedAt: number | null;
 }
 
-/** The download: one JSON document holding every pre-v8 row verbatim. */
+/** What the offer can say about one stashed autosave. */
+export interface LegacyAutosaveSummary {
+  modelVariantId: string;
+  stashedAt: number;
+  updatedAt: number | null;
+}
+
+/** The download: one JSON document holding every pre-v8 row and stashed autosave verbatim. */
 export interface LegacyConversationsFile {
   filename: string;
   mimeType: "application/json";
   json: string;
   conversations: LegacyConversationSummary[];
+  autosaves: LegacyAutosaveSummary[];
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -71,9 +85,19 @@ export async function findLegacyConversations(
     .sort((a, b) => (summary(a).updatedAt ?? 0) - (summary(b).updatedAt ?? 0));
 }
 
-/** One JSON file with `rows` exactly as stored. */
+function autosaveSummary(entry: StashedHostedAutosave): LegacyAutosaveSummary {
+  const updatedAt = isObject(entry.record) ? entry.record.updatedAt : null;
+  return {
+    modelVariantId: entry.modelVariantId,
+    stashedAt: entry.stashedAt,
+    updatedAt: typeof updatedAt === "number" && Number.isFinite(updatedAt) ? updatedAt : null,
+  };
+}
+
+/** One JSON file with `rows` and `autosaves` exactly as stored. */
 export function legacyConversationsFile(
   rows: readonly SavedConversationStoreRow[],
+  autosaves: readonly StashedHostedAutosave[] = [],
   now = Date.now(),
 ): LegacyConversationsFile {
   const exportedAt = new Date(now).toISOString();
@@ -81,22 +105,33 @@ export function legacyConversationsFile(
     format: LEGACY_CONVERSATIONS_FORMAT,
     format_version: LEGACY_CONVERSATIONS_FORMAT_VERSION,
     exported_at: exportedAt,
-    note: "Saved chats from a drowse.ai build before 6.0. This version cannot open them; they are kept here as stored.",
+    note: "Saved chats and autosaves from a drowse.ai build before 6.0. This version cannot open them; they are kept here as stored.",
     conversations: rows.map((row) => ({ id: row.key, record: row.value })),
+    autosaves: autosaves.map((entry) => ({
+      model_variant_id: entry.modelVariantId,
+      stashed_at: new Date(entry.stashedAt).toISOString(),
+      record: entry.record,
+    })),
   };
   return {
     filename: `drowse-chats-before-6.0-${exportedAt.slice(0, 10)}.json`,
     mimeType: "application/json",
     json: JSON.stringify(document, null, 2),
     conversations: rows.map(summary),
+    autosaves: autosaves.map(autosaveSummary),
   };
 }
 
-/** The offer's one call: the file of every pre-v8 saved chat, or null when there is none. */
+/**
+ * The offer's one call: the file of every pre-v8 saved chat and stashed
+ * autosave, or null when there is none.
+ */
 export async function exportLegacyConversations(
-  store?: SavedConversationStore,
-  now = Date.now(),
+  options: { library?: SavedConversationStore; autosaves?: HostedAutosaveStash; now?: number } = {},
 ): Promise<LegacyConversationsFile | null> {
-  const rows = await findLegacyConversations(store);
-  return rows.length === 0 ? null : legacyConversationsFile(rows, now);
+  const rows = await findLegacyConversations(options.library);
+  const autosaves = await findLegacyAutosaves(options.autosaves);
+  return rows.length === 0 && autosaves.length === 0
+    ? null
+    : legacyConversationsFile(rows, autosaves, options.now ?? Date.now());
 }
