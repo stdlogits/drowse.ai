@@ -112,12 +112,16 @@ export class BrowserInstrumentRuntime {
     return this.compiler.selectorDirections(selector);
   }
 
-  /** A pack change under a configured service (the R source): its resident reads go and the
-   *  compiler takes a unit source over the new packs. */
+  /** A pack change under a configured service (the R source): its resident reads go, the
+   *  compiler takes a unit source over the new packs, and the attached `slens/` probes are
+   *  prepared again over it (their directions and identity, which their probe hash reads). */
   private async resetUnits(): Promise<void> {
     if (this.units === null) return;
-    this.units.reset();
+    await this.units.reset();
     this.compiler.setUnitSource(await this.units.programSource());
+    for (const probe of this.compiler.listProbes()) {
+      if (probe.family === "lens" && probe.namespace === "slens") await this.compiler.prepareUnitProbe(`slens/${probe.word}`);
+    }
   }
 
   hasLiveReadout(): boolean {

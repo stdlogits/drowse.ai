@@ -30,6 +30,8 @@ try {
     listProbes: () => attached,
     setInstrumentLive() {},
     setUnitSource(source) { this.unitSource = source; },
+    prepared: [],
+    async prepareUnitProbe(selector) { this.prepared.push(selector); },
   };
   const arch = "gemma3";
   const fx = await unitsFixture(server, arch);
@@ -57,9 +59,32 @@ try {
       };
     },
   };
+  // The service's residents, counted: a reset releases every one it uploaded.
+  const uploaded = new Set();
+  const released = new Set();
+  const counted = new Proxy(fx.backend, {
+    get(target, key) {
+      const value = target[key];
+      if (typeof value !== "function") return value;
+      if (typeof key === "string" && key.startsWith("upload")) {
+        return async (...args) => {
+          const resident = await value.apply(target, args);
+          uploaded.add(resident.id);
+          return resident;
+        };
+      }
+      if (key === "release") {
+        return async (resident) => {
+          released.add(resident.id);
+          return value.call(target, resident);
+        };
+      }
+      return value.bind(target);
+    },
+  });
   const units = new service.BrowserUnitsService({
     modelId: "units-tiny",
-    blockSites: () => fx.backend,
+    blockSites: () => counted,
     packs: () => packs,
     tokenTexts: async (ids) => ids.map((id) => fx.tokenizer.decode([id])),
     resolveToken: async (word) => (word.startsWith("#") ? Number(word.slice(1)) : fx.tokenizer.encode(word)[0]),
@@ -171,6 +196,24 @@ try {
   const { node_id: _node, population: _population, ...rest } = activity;
   const { population: _expected, ...expected } = generated.result;
   assert.deepEqual(compareRecord(rest, expected, { root: "cases[0].result", ties: activityGolden.declared_ties, numberTol }), []);
+
+  // ------------------------------------------- a pack change (the R-source switch) ---
+  // The reset releases every lens matrix and the embedding statistics the session uploaded
+  // (the replays release their own scale tables), takes a unit source over the new session and
+  // prepares the attached slens/ probes again, so their probe hash survives the switch.
+  const sessionUploads = new Set([...uploaded].filter((id) => !released.has(id)));
+  assert.ok(sessionUploads.size > 0, "the reads above uploaded residents");
+  const sourceBefore = stubCompiler.unitSource;
+  attached = [{ family: "lens", namespace: "slens", name: "slens/e", word: "e" }];
+  stubCompiler.prepared = [];
+  await instruments.resetUnits();
+  attached = [];
+  assert.deepEqual([...sessionUploads].filter((id) => !released.has(id)), [], "every session resident is released");
+  assert.notEqual(stubCompiler.unitSource, sourceBefore);
+  assert.deepEqual(stubCompiler.prepared, ["slens/e"]);
+  // The service reopens over the packs after a reset.
+  const again = reads.reads[0];
+  assert.deepEqual(compareRecord(await call("unitRead", again.unit, { k: again.k, hideHubs: again.hide_hubs }), again.read, { root: "reads[0].read", ties: reads.declared_ties, numberTol }), []);
 
   // ------------------------------------------------------- a residual library (422) ---
   const residualBackend = cpu.cpuBlockSitesBackend(fx.model, { profile: profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL, contextTokens: 64 });

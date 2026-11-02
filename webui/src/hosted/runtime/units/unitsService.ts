@@ -9,6 +9,7 @@ import {
   u32Tensor,
   UnsupportedBlockError,
   type BlockSitesLensLayer,
+  type BlockSitesResident,
   type BrowserBlockSitesBackend,
   type LensSite,
 } from "../modelBackend";
@@ -151,8 +152,15 @@ export function routeLayerSelector(value: unknown): LayerSelector {
   return layerRequest(() => parseLayerSelector(value, true));
 }
 
-/** Resident lens matrices over a pack lens (each uploaded once, on first read). */
-export function residentLens(backend: BrowserBlockSitesBackend, family: LensFamilyName, lens: UnitsPackLens, d: number): UnitsLens {
+/** Resident lens matrices over a pack lens (each uploaded once, on first read); `track` sees
+ *  every upload, so the owner can release them. */
+export function residentLens(
+  backend: BrowserBlockSitesBackend,
+  family: LensFamilyName,
+  lens: UnitsPackLens,
+  d: number,
+  track: (upload: Promise<BlockSitesResident>) => void = () => undefined,
+): UnitsLens {
   const resident = new Map<string, Promise<BlockSitesLensLayer>>();
   return {
     family,
@@ -165,6 +173,7 @@ export function residentLens(backend: BrowserBlockSitesBackend, family: LensFami
         found = lens.fetch(site, layer).then((matrix) =>
           backend.uploadLensLayer(family === "R" ? "r" : "s", site, layer, f32Tensor(matrix, [d, d])));
         resident.set(key, found);
+        track(found);
         found.catch(() => resident.delete(key));
       }
       return found;
@@ -182,13 +191,23 @@ export class BrowserUnitsService {
     spec: BlockSpec;
     scales: UnitScales | null;
     sources: Record<LensFamilyName, string | null>;
+    /** Every resident this session uploaded (lens matrices, embedding statistics). */
+    residents: Set<Promise<BlockSitesResident>>;
   } | null = null;
 
   constructor(private readonly options: BrowserUnitsServiceOptions) {}
 
-  /** Drop every resident and cached read (a model or pack change). */
-  reset(): void {
+  /** Drop every cached read and release the session's residents (a model or pack change). */
+  async reset(): Promise<void> {
+    const session = this.session;
     this.session = null;
+    if (session === null) return;
+    const settled = await Promise.allSettled(session.residents);
+    for (const result of settled) {
+      if (result.status !== "fulfilled") continue;
+      // A release that fails (the model went with its residents) has nothing left to free.
+      await session.backend.release(result.value).catch(() => undefined);
+    }
   }
 
   /** Native's 422 for a library without unit sites, or the unavailable surface. */
@@ -218,9 +237,13 @@ export class BrowserUnitsService {
     const { statistics, absent } = await packs.statistics();
     const scales = statistics === null ? null : readingScales(statistics, spec, capabilities.layerCount);
     const means = await packs.means();
+    const residents = new Set<Promise<BlockSitesResident>>();
+    const track = (upload: Promise<BlockSitesResident>) => {
+      residents.add(upload);
+    };
     const lensOf = (family: LensFamilyName) => {
       const lens = packs.lens(family);
-      return lens === null ? null : residentLens(backend, family, lens, d);
+      return lens === null ? null : residentLens(backend, family, lens, d, track);
     };
     let embeddings: Promise<UnitsEmbeddings> | null = null;
     const context: UnitsReadContext = {
@@ -246,8 +269,10 @@ export class BrowserUnitsService {
           const keep = new Uint8Array(capabilities.vocabSize);
           for (let v = 0; v < keep.length; v += 1) keep[v] = (value.mask[v >>> 5] >>> (v & 31)) & 1;
           const kept = Int32Array.from([...keep.keys()].filter((v) => keep[v]));
+          const upload = backend.uploadEmbeddingStatistics(statistics);
+          track(upload);
           return {
-            resident: await backend.uploadEmbeddingStatistics(statistics),
+            resident: await upload,
             statistics,
             kept,
             keep,
@@ -283,6 +308,7 @@ export class BrowserUnitsService {
       spec,
       scales,
       sources: { R: packs.lens("R")?.source ?? null, S: packs.lens("S")?.source ?? null },
+      residents,
     };
     return this.session;
   }
