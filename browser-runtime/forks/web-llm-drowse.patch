@@ -478,7 +478,7 @@ index 6c45add..1a5f839 100644
  
  export function getCacheBackend(appConfig: AppConfig): CacheBackend {
 diff --git a/src/conversation.ts b/src/conversation.ts
-index 122e933..8ee7100 100644
+index 122e933..83964fe 100644
 --- a/src/conversation.ts
 +++ b/src/conversation.ts
 @@ -1,6 +1,7 @@
@@ -489,10 +489,33 @@ index 122e933..8ee7100 100644
    MessagePlaceholders,
    Role,
  } from "./config";
-@@ -25,6 +26,34 @@ import {
- } from "./error";
+@@ -26,6 +27,58 @@ import {
  
  type ImageURL = ChatCompletionContentPartImage.ImageURL;
+ 
++/**
++ * Python's `str.strip()` (what the Jinja `trim` filter and drowse's scene grammar run): the
++ * characters `str.isspace()` accepts. JavaScript's `trim()` differs on U+0085 and U+001C-U+001F
++ * (Python strips them) and U+FEFF (JavaScript strips it).
++ */
++const PYTHON_WHITESPACE = new Set([
++  0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x85, 0xa0,
++  0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007,
++  0x2008, 0x2009, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000,
++]);
++
++export function pythonStrip(text: string): string {
++  let start = 0;
++  let end = text.length;
++  while (start < end && PYTHON_WHITESPACE.has(text.charCodeAt(start))) {
++    start += 1;
++  }
++  while (end > start && PYTHON_WHITESPACE.has(text.charCodeAt(end - 1))) {
++    end -= 1;
++  }
++  return text.slice(start, end);
++}
++
 +const DROWSE_SYSTEM_ROLE = "drowse_system" as const;
 +type ConversationRole = Role | typeof DROWSE_SYSTEM_ROLE;
 +
@@ -521,10 +544,11 @@ index 122e933..8ee7100 100644
 +    `Drowse named ${role} headers require a supported role-prefixed conversation template`,
 +  );
 +}
- 
++
  /**
   * Helper to keep track of history conversations.
-@@ -35,7 +64,11 @@ export class Conversation {
+  */
+@@ -35,7 +88,11 @@ export class Conversation {
     *  string or an array of contentPart for possible image input.
     */
    public messages: Array<
@@ -537,7 +561,7 @@ index 122e933..8ee7100 100644
    > = [];
    readonly config: ConvTemplateConfig;
  
-@@ -79,10 +112,21 @@ export class Conversation {
+@@ -79,10 +136,21 @@ export class Conversation {
      if (this.override_system_message !== undefined) {
        system_message = this.override_system_message;
      }
@@ -563,7 +587,7 @@ index 122e933..8ee7100 100644
      const ret: Array<string | Array<string | ImageURL>> =
        addSystem && system_prompt !== "" ? [system_prompt] : [];
  
-@@ -93,6 +137,21 @@ export class Conversation {
+@@ -93,6 +161,21 @@ export class Conversation {
        const role_str = item[1];
        const messageContent = item[2];
  
@@ -585,19 +609,19 @@ index 122e933..8ee7100 100644
        // 1. Message from `appendReplyHeader()`, message is empty; not much processing is needed.
        if (messageContent === undefined) {
          if (i !== this.messages.length - 1) {
-@@ -149,6 +208,11 @@ export class Conversation {
+@@ -149,6 +232,11 @@ export class Conversation {
          // 2.2 content is just a string
          textContentPart = messageContent;
        }
 +      if (this.config.drowse_content_trim === true) {
-+        textContentPart = textContentPart.trim();
++        textContentPart = pythonStrip(textContentPart);
 +      }
 +      textContentPart = pendingFold + textContentPart;
 +      pendingFold = "";
  
        // 3. Format textContentPart with role and sep to get message_str and role_prefix
        let message_str;
-@@ -299,10 +363,56 @@ export class Conversation {
+@@ -299,10 +387,56 @@ export class Conversation {
      return this.config.stop_token_ids;
    }
  
@@ -654,7 +678,7 @@ index 122e933..8ee7100 100644
    ) {
      if (this.isTextCompletion) {
        throw new TextCompletionConversationError("appendMessage");
-@@ -316,28 +426,47 @@ export class Conversation {
+@@ -316,28 +450,47 @@ export class Conversation {
      if (!(role in this.config.roles)) {
        throw Error("Role is not supported: " + role);
      }
@@ -707,7 +731,7 @@ index 122e933..8ee7100 100644
    }
  
    finishReply(message: string) {
-@@ -360,6 +489,45 @@ export class Conversation {
+@@ -360,6 +513,49 @@ export class Conversation {
    }
  }
  
@@ -718,9 +742,10 @@ index 122e933..8ee7100 100644
 + * Append a generation's last input and the generated seat's header to `conversation`, as a
 + * prefill does (`LLMChatPipeline.prefillStep`, `prepareDrowseGenerationInputIds`): a text
 + * completion takes the input as its prompt; a chat appends the last message, then the header
-+ * of the seat being generated (`drowse_generation_seat`, under `drowse_generation_role`), with
-+ * an empty thinking block when thinking is off. Returns the reply's output prefix (that block,
-+ * or "").
++ * of the seat being generated (`drowse_generation_seat`, under `drowse_generation_role`). An
++ * assistant seat with thinking off opens with an empty thinking block; a user seat never does
++ * (drowse's scene grammar appends the generation scaffold to the assistant seat only). Returns
++ * the reply's output prefix (that block, or "").
 + */
 +export function appendDrowseGenerationTurn(
 +  conversation: Conversation,
@@ -737,7 +762,10 @@ index 122e933..8ee7100 100644
 +  const generationSeat =
 +    genConfig?.drowse_generation_seat === "user" ? Role.user : Role.assistant;
 +  const roleName = genConfig?.drowse_generation_role ?? undefined;
-+  if (genConfig?.enable_thinking === false) {
++  if (
++    genConfig?.enable_thinking === false &&
++    generationSeat === Role.assistant
++  ) {
 +    conversation.appendEmptyThinkingReplyHeader(
 +      generationSeat,
 +      DROWSE_EMPTY_THINKING_BLOCK,
@@ -753,7 +781,7 @@ index 122e933..8ee7100 100644
  export function getConversation(
    conv_template: ConvTemplateConfig,
    conv_config?: Partial<ConvTemplateConfig>,
-@@ -488,9 +656,17 @@ export function getConversationFromChatCompletionRequest(
+@@ -488,9 +684,17 @@ export function getConversationFromChatCompletionRequest(
    // 2. Populate conversation.messages
    const input = request.messages;
    const lastId = input.length - 1;
@@ -10197,10 +10225,18 @@ index 074f5e7..58997b9 100644
    const indexedConfig: AppConfig = {
      ...baseAppConfig,
 diff --git a/tests/conversation.test.ts b/tests/conversation.test.ts
-index 8fa04b2..92911d3 100644
+index 8fa04b2..3470b69 100644
 --- a/tests/conversation.test.ts
 +++ b/tests/conversation.test.ts
-@@ -53,6 +53,72 @@ describe("Test basic conversation loading and getPromptArray", () => {
+@@ -3,6 +3,7 @@ import {
+   compareConversationObject,
+   getConversation,
+   getConversationFromChatCompletionRequest,
++  pythonStrip,
+ } from "../src/conversation";
+ import { describe, expect, test } from "@jest/globals";
+ import {
+@@ -53,6 +54,72 @@ describe("Test basic conversation loading and getPromptArray", () => {
  });
  
  describe("Test getConversationFromChatCompletionRequest with Qwen3", () => {
@@ -10273,7 +10309,7 @@ index 8fa04b2..92911d3 100644
    test("Test Qwen3 appendEmptyThinkingReplyHeader", () => {
      const config_json = JSON.parse(qwen3ChatConfigJSONString);
      const config = { ...config_json } as ChatConfig;
-@@ -84,6 +150,270 @@ describe("Test getConversationFromChatCompletionRequest with Qwen3", () => {
+@@ -84,6 +151,288 @@ describe("Test getConversationFromChatCompletionRequest with Qwen3", () => {
    });
  });
  
@@ -10447,6 +10483,24 @@ index 8fa04b2..92911d3 100644
 +      "<start_of_turn>user\n  Be brief.\n\nHi there<end_of_turn>\n" +
 +        "<start_of_turn>model\nHello.<end_of_turn>\n" +
 +        "<start_of_turn>user\n",
++    );
++  });
++
++  test("the trim is Python's str.strip(), as the template's trim filter", () => {
++    const conversation = getConversation({
++      ...gemma().config,
++      drowse_content_trim: true,
++    });
++    conversation.appendMessage(Role.user, "\u0085\u001c Hi \u3000");
++    conversation.appendMessage(Role.assistant, "\ufeffHello\ufeff");
++    conversation.appendReplyHeader(Role.user);
++    expect(conversation.getPromptArray().join("")).toEqual(
++      "<start_of_turn>user\nHi<end_of_turn>\n" +
++        "<start_of_turn>model\n\ufeffHello\ufeff<end_of_turn>\n" +
++        "<start_of_turn>user\n",
++    );
++    expect(pythonStrip("\t\n\v\f\r\u001f x \u2028\u2029\u202f\u205f")).toBe(
++      "x",
 +    );
 +  });
 +
@@ -11496,10 +11550,10 @@ index 0000000..dea121b
 +});
 diff --git a/tests/drowse_pipeline.test.ts b/tests/drowse_pipeline.test.ts
 new file mode 100644
-index 0000000..f0fcf15
+index 0000000..fd6bb44
 --- /dev/null
 +++ b/tests/drowse_pipeline.test.ts
-@@ -0,0 +1,1227 @@
+@@ -0,0 +1,1238 @@
 +import { jest, test, expect } from "@jest/globals";
 +
 +import {
@@ -12689,6 +12743,17 @@ index 0000000..f0fcf15
 +      { enable_thinking: false },
 +      "<7><start_of_turn>user\nHi<e>\n<start_of_turn>model\n<think>\n\n</think>\n\n",
 +    ],
++    [
++      "user seat, thinking off",
++      false,
++      (conv) => {
++        conv.appendMessage(Role.user, "Hi");
++      },
++      "Hello",
++      Role.assistant,
++      { enable_thinking: false, drowse_generation_seat: "user" },
++      "<7><start_of_turn>user\nHi<e>\n<start_of_turn>model\nHello<e>\n<start_of_turn>user\n",
++    ],
 +    ["completion", true, () => {}, "Once", Role.user, {}, "<5>Once"],
 +  ];
 +  for (const [
@@ -13652,7 +13717,7 @@ index 0000000..2febdb6
 +  expect(fixture.requestDevice).not.toHaveBeenCalled();
 +});
 diff --git a/tests/llm_chat_pipeline.test.ts b/tests/llm_chat_pipeline.test.ts
-index 5138c4e..493c4ae 100644
+index 5138c4e..2f6727e 100644
 --- a/tests/llm_chat_pipeline.test.ts
 +++ b/tests/llm_chat_pipeline.test.ts
 @@ -1,4 +1,23 @@
@@ -13861,7 +13926,7 @@ index 5138c4e..493c4ae 100644
  test("prefillStep appends standard reply header when thinking enabled", async () => {
    const pipeline = preparePrefillPipeline();
    pipeline["tokenizer"].encode = jest.fn(() => Int32Array.from([2]));
-@@ -236,6 +385,121 @@ test("prefillStep appends standard reply header when thinking enabled", async ()
+@@ -236,6 +385,136 @@ test("prefillStep appends standard reply header when thinking enabled", async ()
    ).not.toHaveBeenCalled();
  });
  
@@ -13891,6 +13956,21 @@ index 5138c4e..493c4ae 100644
 +    Role.user,
 +    "curious_user",
 +  );
++});
++
++test("a user generation seat with thinking off opens without the thinking scaffold", async () => {
++  const pipeline = preparePrefillPipeline();
++  await pipeline.prefillStep("Where next?", Role.assistant, undefined, {
++    enable_thinking: false,
++    drowse_generation_seat: "user",
++  });
++  expect(pipeline["conversation"].appendReplyHeader).toHaveBeenCalledWith(
++    Role.user,
++  );
++  expect(
++    pipeline["conversation"].appendEmptyThinkingReplyHeader,
++  ).not.toHaveBeenCalled();
++  expect(pipeline["outputPrefix"]).toBe("");
 +});
 +
 +test("Drowse tokenizer preserves leading-space and subword IDs verbatim", () => {
@@ -13983,7 +14063,7 @@ index 5138c4e..493c4ae 100644
  test("prefillStep reuses grammar matcher when schema unchanged", async () => {
    const pipeline = preparePrefillPipeline();
    const matcher = { reset: jest.fn(), dispose: jest.fn() };
-@@ -273,18 +537,83 @@ test("prefillStep compiles custom grammar when response type is grammar", async
+@@ -273,18 +552,83 @@ test("prefillStep compiles custom grammar when response type is grammar", async
    expect(compileGrammarMock).toHaveBeenCalledWith("root ::= WORD");
  });
  
@@ -14012,8 +14092,8 @@ index 5138c4e..493c4ae 100644
 +  ).not.toHaveBeenCalled();
 +  pipeline["contextWindowSize"] = 5;
 +  await expect((pipeline as any).getInputData()).rejects.toThrow();
-+});
-+
+ });
+ 
 +test.each([[2, 99], [2], null, [2, 10, 20]])(
 +  "chat reuse resets for a changed, untracked, or nonextending prefix %j",
 +  async (cached) => {
@@ -14051,8 +14131,8 @@ index 5138c4e..493c4ae 100644
 +  expect(pipeline["config"].drowse_completion_prefix_token_ids).toEqual([2]);
 +  pipeline["contextWindowSize"] = 3;
 +  await expect((pipeline as any).getInputData()).rejects.toThrow();
- });
- 
++});
++
 +test("chat prefix tokens count toward the context window too", async () => {
 +  const pipeline = createPipeline();
 +  pipeline["conversation"].config.system_prefix_token_ids = [2];
@@ -14076,7 +14156,7 @@ index 5138c4e..493c4ae 100644
  test("processNextToken ignores eos when requested", () => {
    const pipeline = createPipeline();
    pipeline["stopTokens"] = [1];
-@@ -370,3 +699,40 @@ describe("computeImageEmbedSize", () => {
+@@ -370,3 +714,40 @@ describe("computeImageEmbedSize", () => {
      );
    });
  });
