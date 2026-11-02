@@ -870,6 +870,9 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
 
     let curveSelector = "";
     let curveLabel = "";
+    // Named roles (nearest-node role selection, role-prefixed headers) need a chat template; a
+    // base model fits and steers its curve on raw text.
+    const baseModel = runtime!.runtimeCapabilities().baseModel === true;
     await check("curved_fitting", async () => {
       currentCheck = "curved_fitting";
       for (const family of gatedFamiliesFor(has("jlens"), has("sae"))) {
@@ -946,7 +949,8 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
                     "I am overflowing with joyful enthusiasm.",
                   ],
                 },
-              ],
+              // A base model has no chat template to name a role in: its nodes are plain voices.
+              ].map(({ role, ...node }) => (baseModel ? node : { ...node, role })),
             },
           ],
         },
@@ -1066,12 +1070,12 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
       );
       const expression = `0.05 ${curveSelector}%${curveLabel}@generated`;
       const program = requireStructured(compiler!.compile(expression));
-      if (program.activeRole !== "distant_voice") {
+      if (program.activeRole !== (baseModel ? null : "distant_voice")) {
         throw new Error(
           `curved manifold selected the wrong nearest-node role ${String(program.activeRole)}`,
         );
       }
-      if (!runtime!.runtimeCapabilities().namedRoles) {
+      if (!baseModel && !runtime!.runtimeCapabilities().namedRoles) {
         throw new Error("the physical model chat template does not support named roles");
       }
       if (!program.curveRank.some((rank) => rank > 0)) {
@@ -1110,16 +1114,18 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
       try {
         result = await runtime!.streamGeneration(
           {
-            input: {
-              kind: "chat",
-              messages: [{
-                role: "user",
-                content: "The feeling slowly changes as",
-              }],
-            },
+            input: baseModel
+              ? { kind: "raw", prompt: "The feeling slowly changes as" }
+              : {
+                  kind: "chat",
+                  messages: [{
+                    role: "user",
+                    content: "The feeling slowly changes as",
+                  }],
+                },
             sampling: deterministicSampling(event.data.maxTokens),
             thinking: false,
-            generationSeat: "assistant",
+            generationSeat: baseModel ? null : "assistant",
             generationRoleName: program.activeRole,
             replay: { forcedPrefixTokenIds: ordinaryRawTokens.slice(0, 2) },
             steeringExpression: expression,
@@ -1160,7 +1166,7 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
         finiteGeometryRows,
         geometryReadElements: geometryReads,
         activeRole: program.activeRole,
-        namedRoleSupported: true,
+        namedRoleSupported: !baseModel,
       };
     });
 
