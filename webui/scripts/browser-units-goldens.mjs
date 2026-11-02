@@ -86,15 +86,17 @@ const headMean = decode(stats.head_mean);
 const neuronScale = decode(stats.scales.neuron);
 const headScale = decode(stats.scales.head);
 
-// A zero v4 program (no affine, no curves) with linear probes e_0…e_7 at every layer.
-function baseProgram(affine = null) {
+// A zero v4 program (no curves; the given affine groups, one per layer at most) with linear
+// probes e_0…e_7 at every layer.
+function baseProgram(affines = []) {
   const layers = Array.from({ length: L }, (_, layer) => ({
     probes: Array.from({ length: 8 }, (_, k) => {
       const direction = new Array(d).fill(0);
       direction[k] = 1;
       return { kind: "linear", direction, bias: 0 };
     }),
-    ...(affine?.layer === layer ? { affineGroups: [affine.group] } : {}),
+    ...(affines.some((a) => a.layer === layer)
+      ? { affineGroups: affines.filter((a) => a.layer === layer).map((a) => a.group) } : {}),
   }));
   return programs.compileStructuredHookProgram(d, layers, profile);
 }
@@ -216,7 +218,7 @@ const scaleOf = (kind, layer, index) => kind === "neuron"
 
 // A case for the page: the program, the triggers (gates resolved to tap slots and scales), and
 // what each forward must read.
-function pageCase({ name, tables, steering, gates, taps, affine, forwards, tolerance }) {
+function pageCase({ name, tables, steering, gates, taps, affines = [], forwards, tolerance }) {
   const unit = new UnitTables();
   if (tables !== undefined) {
     for (const table of tables) {
@@ -243,7 +245,7 @@ function pageCase({ name, tables, steering, gates, taps, affine, forwards, toler
     const parsed = parseUnit(unitName);
     slots[unitName] = { ...parsed, slot: unit.tap(parsed.kind, parsed.layer, parsed.index), scale: scaleOf(parsed.kind, parsed.layer, parsed.index) };
   }
-  const program = { ...baseProgram(affine), ...unit.section() };
+  const program = { ...baseProgram(affines), ...unit.section() };
   return {
     name,
     program: serialize(program),
@@ -279,6 +281,21 @@ const sites = await golden("block-sites");
 const ablation = await golden("unit-ablation");
 const probesGolden = await golden("unit-probes");
 const push = await golden("neuron-push");
+// The `mixed` case's push, lowered by drowse (browser-runtime/fixtures, build-mixed-affine.py).
+const mixedAffineDoc = JSON.parse(await readFile(resolve(webui, "../browser-runtime/fixtures/unit-ablation-mixed-affine-v1.json"), "utf8"));
+if (mixedAffineDoc.fixtureModels.sha256 !== ablation.fixtureModels.sha256) {
+  throw new Error("unit-ablation-mixed-affine-v1.json names another fixture model file: regenerate it");
+}
+const mixedAffine = mixedAffineDoc.arches[options.arch];
+// An always-on push's recorded affine groups (neuron-push's case shape), one per layer.
+function affineTerms(doc, expression) {
+  const found = doc.cases.find((c) => c.expression === expression);
+  if (found.trigger.gate !== null || !found.trigger.prompt) throw new Error("affineTerms handles always-on pushes only");
+  return found.layers.map((term) => ({
+    layer: term.layer,
+    group: { active: true, basis: [term.basis], neutral: term.neutral, target: [term.target], along: term.along, kappa: [0] },
+  }));
+}
 const library = sites.tolerance.library;
 const prompt = sites.ids;
 const cases = [];
@@ -294,24 +311,20 @@ cases.push(pageCase({
   }], tolerance: library,
 }));
 for (const item of ablation.cases) {
-  if (item.name === "mixed") continue;
-  const affineTerm = item.name === "push-and-ablate"
-    ? push.cases.find((c) => c.expression === "0.3 neuron/L2n7").layers[0]
-    : null;
+  const affines = item.name === "push-and-ablate" ? affineTerms(push, "0.3 neuron/L2n7")
+    : item.name === "mixed" ? affineTerms(mixedAffine, item.steering.split(" + ")[0])
+      : [];
   cases.push(pageCase({
     name: `unit-ablation:${item.name}`,
     tables: item.tables,
     gates: item.tables.flatMap((t) => t.trigger.gate ? [t.trigger.gate.probe] : []),
-    affine: affineTerm === null ? null : {
-      layer: affineTerm.layer,
-      group: { active: true, basis: [affineTerm.basis], neutral: affineTerm.neutral, target: [affineTerm.target], along: affineTerm.along, kappa: [0] },
-    },
+    affines,
     forwards: item.forwards.map((forward, number) => {
       const lastRow = forward.out_rows.indexOf(forward.ids.length - 1);
       const out = outRows(forward.out, lastRow);
-      if (affineTerm !== null) {
+      for (const { layer, group } of affines) {
         // Probes read after the post-block hook, which adds the push at its layer.
-        out[affineTerm.layer] = out[affineTerm.layer].map((value, k) => Math.fround(value + affineTerm.along * affineTerm.target * affineTerm.basis[k]));
+        out[layer] = out[layer].map((value, k) => Math.fround(value + group.along * group.target[0] * group.basis[0][k]));
       }
       return { token: item.forwards[number + 1]?.ids[0] ?? null, logprobs: logSoftmax(decode(forward.logits)), out };
     }),
@@ -360,10 +373,10 @@ const emptyControls = (() => {
 
 /** A replay case for the page: the program (null: unsteered), the segments as fed (each piece
  *  ≤ 16 positions, controls held), the request, and the heads whose rows to read. */
-function replayCase({ name, steering = null, affine = null, unitTerms = [], segments, request, heads = [] }) {
+function replayCase({ name, steering = null, affines = [], unitTerms = [], segments, request, heads = [] }) {
   let program = null;
   let triggers = [];
-  if (steering !== null || affine !== null || unitTerms.length > 0) {
+  if (steering !== null || affines.length > 0 || unitTerms.length > 0) {
     const unit = new UnitTables();
     for (const term of [...terms(steering), ...unitTerms]) {
       const mean = term.kind === "neuron"
@@ -374,7 +387,7 @@ function replayCase({ name, steering = null, affine = null, unitTerms = [], segm
         : typeof mean === "number" ? Math.fround(c * mean) : Float32Array.from(mean, (v) => Math.fround(c * v));
       unit.ablate(term.kind, term.layer, term.index, term.keep ?? Math.fround(1 - term.alpha), bias, term.trigger);
     }
-    program = serialize({ ...baseProgram(affine), ...unit.section() });
+    program = serialize({ ...baseProgram(affines), ...unit.section() });
     triggers = unit.triggers;
   }
   const pieces = [];
@@ -390,10 +403,7 @@ function replayCase({ name, steering = null, affine = null, unitTerms = [], segm
 const anatomyGolden = await golden("token-anatomy");
 const patternsGolden = await golden("attention-patterns");
 const activityGolden = await golden("unit-activity");
-const pushAffine = (expression) => {
-  const term = push.cases.find((c) => c.expression === expression).layers[0];
-  return { layer: term.layer, group: { active: true, basis: [term.basis], neutral: term.neutral, target: [term.target], along: term.along, kappa: [0] } };
-};
+const pushAffine = (expression) => affineTerms(push, expression);
 const allLayers = Array.from({ length: L }, (_, layer) => layer);
 const everyHead = allLayers.flatMap((layer) => Array.from({ length: H }, (_, head) => ({ layer, head })));
 const replayCases = [];
@@ -413,7 +423,7 @@ for (const item of anatomyGolden.cases) {
   const ablation = item.steering?.split(" + ").filter((t) => !t.startsWith("0.3 neuron/")).join(" + ") || null;
   const record = item.envelope.measurements.anatomy;
   replayCases.push({ ...replayCase({
-    name: `token-anatomy:${item.name}`, steering: ablation, affine: pushTerm === null ? null : pushAffine(pushTerm),
+    name: `token-anatomy:${item.name}`, steering: ablation, affines: pushTerm === null ? [] : pushAffine(pushTerm),
     segments: [{ ids, active: [true] }],
     request: { anatomyPosition: ids.length - 1, activity: null, patternLayers: allLayers },
     heads: (record.patterns ?? []).map((p) => ({ layer: p.layer, head: p.head })),

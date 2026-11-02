@@ -191,6 +191,8 @@ def convert(args, mlc_repository: Path, tvm_repository: Path) -> None:
         complete_config(stage, source)
         if args.architecture == "gemma3_text":
             validate_gemma_attention_config(source, stage)
+        if args.architecture == "qwen3":
+            validate_qwen3_attention_config(source, stage)
         copy_notices(source, stage, args.source_repository)
         write_build_manifest(args, source, stage)
         stage.rename(output)
@@ -438,6 +440,22 @@ def validate_gemma_attention_config(source: Path, output: Path) -> None:
     ):
         if source_key in source_text and compiled_text.get(compiled_key) != source_text[source_key]:
             raise SystemExit(f"Gemma conversion changed source attention setting {source_key}")
+
+
+def validate_qwen3_attention_config(source: Path, output: Path) -> None:
+    """MLC's Qwen3 reads neither RoPE scaling nor a sliding window: its KV cache rotates every key
+    with rope_freq_default at scale 1 over the whole context, and the block descriptor (and the
+    pattern capture, which re-applies that rotation to the keys it stores, B1 §6) attests
+    rope_global_scale 1 and no window. A source that scales RoPE or slides its window would compile
+    silently wrong, so it is refused here, and the compiled config must not window the cache."""
+    source_config = json.loads((source / "config.json").read_text(encoding="utf-8"))
+    if source_config.get("rope_scaling") is not None:
+        raise SystemExit("Qwen3 sources with rope_scaling are not supported (MLC rotates at scale 1)")
+    if source_config.get("use_sliding_window") is True:
+        raise SystemExit("Qwen3 sources with use_sliding_window are not supported")
+    compiled = json.loads((output / "mlc-chat-config.json").read_text(encoding="utf-8"))
+    if compiled.get("sliding_window_size", -1) != -1:
+        raise SystemExit("a Qwen3 library must keep sliding_window_size -1 (B40 §7.2)")
 
 
 def base_special_token_config(tokenizer, eos_ids):

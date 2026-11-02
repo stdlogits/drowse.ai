@@ -254,6 +254,29 @@ def test_gemma_conversion_preserves_source_attention_settings(tmp_path: Path, wr
         TOOL.validate_gemma_attention_config(tmp_path, tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("source_patch", "compiled_patch", "message"),
+    [
+        ({"rope_scaling": {"rope_type": "yarn", "factor": 4.0}}, {}, "rope_scaling"),
+        ({"use_sliding_window": True, "sliding_window": 4096}, {}, "use_sliding_window"),
+        ({}, {"sliding_window_size": 4096}, "sliding_window_size"),
+    ],
+)
+def test_validate_qwen3_attention_config_refuses_scaled_or_windowed_rope(
+    tmp_path: Path, source_patch: dict, compiled_patch: dict, message: str
+):
+    source = {"rope_theta": 1000000, "rope_scaling": None, "use_sliding_window": False,
+              "sliding_window": None}
+    (tmp_path / "config.json").write_text(json.dumps(source))
+    (tmp_path / "mlc-chat-config.json").write_text(json.dumps({"sliding_window_size": -1}))
+    TOOL.validate_qwen3_attention_config(tmp_path, tmp_path)
+    (tmp_path / "config.json").write_text(json.dumps({**source, **source_patch}))
+    (tmp_path / "mlc-chat-config.json").write_text(
+        json.dumps({"sliding_window_size": -1, **compiled_patch}))
+    with pytest.raises(SystemExit, match=message):
+        TOOL.validate_qwen3_attention_config(tmp_path, tmp_path)
+
+
 def test_validate_source_closes_sharded_weights_and_optional_tokenizer_inputs(tmp_path: Path):
     revision = "c" * 40
     metadata = tmp_path / ".cache/huggingface/download"

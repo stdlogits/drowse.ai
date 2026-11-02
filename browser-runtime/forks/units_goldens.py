@@ -551,14 +551,11 @@ def verify_arch(env, fixtures: Path, goldens: Path, arch: str, quantization: str
     # unit-ablation: every case from its own lowered tables.
     ablation = json.loads((goldens / f"unit-ablation-{arch}-v1.json").read_text())
     push = json.loads((goldens / f"neuron-push-{arch}-v1.json").read_text())
-    skipped = []
+    mixed = mixed_affine(ablation, arch)
     for case in ablation["cases"]:
         affine = None
         if case["name"] == "mixed":
-            # Its fixture direction lowers through the host's structured compiler, which the
-            # files do not record; the WebGPU harness covers it end to end.
-            skipped.append(case["name"])
-            continue
+            affine = push_affine(vm, mixed, case["steering"].split(" + ")[0])
         if case["name"] == "push-and-ablate":
             affine = push_affine(vm, push, "0.3 neuron/L2n7")
         unit = program()
@@ -662,8 +659,19 @@ def verify_arch(env, fixtures: Path, goldens: Path, arch: str, quantization: str
         import static_reads
 
         static_reads.verify(env, vm, tensors, goldens, arch, tolerance.check)
-    tolerance.worst["skipped"] = skipped
     return tolerance.worst
+
+
+MIXED_AFFINE = Path(__file__).resolve().parents[1] / "fixtures" / "unit-ablation-mixed-affine-v1.json"
+
+
+def mixed_affine(ablation: dict, arch: str) -> dict:
+    """The `mixed` case's push lowered to affine groups (browser-runtime/fixtures, recorded by
+    build-mixed-affine.py from drowse's own lowering), bound to the goldens' model file."""
+    doc = json.loads(MIXED_AFFINE.read_text())
+    if doc["fixtureModels"]["sha256"] != ablation["fixtureModels"]["sha256"]:
+        raise SystemExit(f"{MIXED_AFFINE.name} names another fixture model file: regenerate it")
+    return doc["arches"][arch]
 
 
 def push_affine(vm, push: dict, expression: str) -> dict:
@@ -716,8 +724,7 @@ def verify(env, fixtures: Path, goldens: Path) -> dict:
             results[f"{arch}-{quantization}"] = verify_arch(env, fixtures, goldens, arch, quantization)
             worst = results[f"{arch}-{quantization}"]
             print(f"units goldens {arch} {quantization}: "
-                  + ", ".join(f"{k} {v:.2e}" for k, v in sorted(worst.items()) if k != "skipped")
-                  + f"; skipped {worst['skipped']}", flush=True)
+                  + ", ".join(f"{k} {v:.2e}" for k, v in sorted(worst.items())), flush=True)
     return results
 
 

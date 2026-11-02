@@ -331,15 +331,53 @@ class Reader:
         return ids, values
 
 
-def _check_tokens(check, label: str, tokens: list, ids, values, atol: float) -> None:
+def declared_groups(doc: dict, path: str) -> list:
+    """The golden's declared tie groups (positions) for the token list at `path`."""
+    return [g for tie in doc.get("declared_ties", []) if tie["path"] == path for g in tie["groups"]]
+
+
+def _tie_blocks(values: list, window: float, groups: list) -> list:
+    """Positions whose order may differ: runs of golden values within `window` of each other,
+    joined with the declared tie groups."""
+    parent = list(range(len(values)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(len(values) - 1):
+        if abs(values[i] - values[i + 1]) <= window:
+            parent[find(i + 1)] = find(i)
+    for group in groups:
+        for p in group[1:]:
+            parent[find(p)] = find(group[0])
+    blocks: dict = {}
+    for i in range(len(values)):
+        blocks.setdefault(find(i), []).append(i)
+    return list(blocks.values())
+
+
+def _check_tokens(check, label: str, tokens: list, ids, values, atol: float,
+                  groups: list = ()) -> None:
     """A golden token list against the device's: the same ids, each id's value within `atol`
-    (+ the 6-decimal rounding), in non-increasing order (ties are matched by identity)."""
+    (+ the 6-decimal rounding), the device's values non-increasing, and each position holding the
+    golden's id except inside a tie (a declared group, or golden values within the tolerance)."""
     golden = {int(t["token_id"]): float(t["value"]) for t in tokens}
     got = {int(i): float(v) for i, v in zip(ids, values)}
     if set(golden) != set(got):
         raise SystemExit(f"{label}: ids {sorted(got)} are not the golden's {sorted(golden)}")
     order = [golden[int(t["token_id"])] for t in tokens]
     check(label, order, [got[int(t["token_id"])] for t in tokens], atol=atol + 2e-6, rtol=0.0)
+    device = [float(v) for v in values]
+    if any(device[i] < device[i + 1] for i in range(len(device) - 1)):
+        raise SystemExit(f"{label}: the device's values are not non-increasing: {device}")
+    golden_ids = [int(t["token_id"]) for t in tokens]
+    for block in _tie_blocks(order, 2 * (atol + 2e-6), list(groups)):
+        if {golden_ids[p] for p in block} != {int(ids[p]) for p in block}:
+            raise SystemExit(f"{label}: positions {block} hold {[int(ids[p]) for p in block]}, "
+                             f"the golden {[golden_ids[p] for p in block]}")
 
 
 def verify_goldens(dev: Device, w: Weights, check, goldens: Path, arch: str, statistics) -> None:
@@ -437,15 +475,16 @@ def verify_goldens(dev: Device, w: Weights, check, goldens: Path, arch: str, sta
             got = dev("drowse_batched_matmul_nt", e[None], lenses[("S", "out", int(layer))][None],
                       packed=False)[0, 0]
             check("slens:atom", decode(vector), got)
-    for footprint in slens["footprints"]:
+    for f, footprint in enumerate(slens["footprints"]):
         ids, z = reader.s_read(decode(footprint["u"]), footprint["k"])
         for row, top in enumerate(footprint["top"]):
             _check_tokens(check, "slens:footprint", [{"token_id": t["token_id"], "value": t["z"]}
-                                                      for t in top], ids[row], z[row], tol["z_atol"])
+                                                      for t in top], ids[row], z[row], tol["z_atol"],
+                          declared_groups(slens, f"footprints[{f}].top[{row}]"))
 
     # lens-reads: every present half.
     lens_reads = json.loads((goldens / f"lens-reads-{arch}-v1.json").read_text())
-    for request in lens_reads["requests"]:
+    for q, request in enumerate(lens_reads["requests"]):
         if request.get("lens") is not None:
             continue  # a session with no S lens prepared: the absent text only
         rows, layer, site, k = decode(request["rows"]), request["layer"], request["site"], request["k"]
@@ -466,7 +505,8 @@ def verify_goldens(dev: Device, w: Weights, check, goldens: Path, arch: str, sta
                     raise SystemExit(f"lens-reads: a present {half} half at L{layer} {site} "
                                      "has no fixture lens")
                 _check_tokens(check, f"lens-reads:{half}", golden["tokens"], ids[i][: len(golden["tokens"])],
-                              values[i][: len(golden["tokens"])], atol)
+                              values[i][: len(golden["tokens"])], atol,
+                              declared_groups(lens_reads, f"requests[{q}].reads[{i}].{half}.tokens"))
 
 
 def verify(env, vm, tensors: dict, goldens: Path, arch: str, check) -> None:

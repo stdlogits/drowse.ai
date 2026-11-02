@@ -54,7 +54,10 @@ export async function verifyReads({ call, f32, i32, u32, weights, golden, decode
     const key = label.split(":")[0];
     worst[key] = Math.max(worst[key] ?? 0, most);
   };
-  const tokens = (label, golden, ids, values, atol) => {
+  // A golden token list against the device's: the same ids, each id's value within `atol`,
+  // the device's values non-increasing, and each position holding the golden's id except inside a
+  // tie (a declared group, or golden values within the tolerance of each other).
+  const tokens = (label, golden, ids, values, atol, groups = []) => {
     const expect = new Map(golden.map((t) => [t.token_id, t.value]));
     const got = new Map(Array.from(ids).map((id, i) => [id, values[i]]));
     const want = [...expect.keys()].sort((a, b) => a - b).join(",");
@@ -62,7 +65,26 @@ export async function verifyReads({ call, f32, i32, u32, weights, golden, decode
       throw new Error(`${label}: ids ${[...got.keys()]} are not ${want}`);
     }
     check(label, golden.map((t) => t.value), golden.map((t) => got.get(t.token_id)), atol + 2e-6, 0);
+    for (let i = 0; i + 1 < values.length; i += 1) {
+      if (values[i] < values[i + 1]) throw new Error(`${label}: the device's values are not non-increasing at ${i}`);
+    }
+    const parent = golden.map((_, i) => i);
+    const find = (i) => { while (parent[i] !== i) i = parent[i] = parent[parent[i]]; return i; };
+    const window = 2 * (atol + 2e-6);
+    for (let i = 0; i + 1 < golden.length; i += 1) {
+      if (Math.abs(golden[i].value - golden[i + 1].value) <= window) parent[find(i + 1)] = find(i);
+    }
+    for (const group of groups) for (const p of group.slice(1)) parent[find(p)] = find(group[0]);
+    const blocks = new Map();
+    golden.forEach((_, i) => blocks.set(find(i), [...(blocks.get(find(i)) ?? []), i]));
+    for (const block of blocks.values()) {
+      const a = block.map((p) => golden[p].token_id).sort((x, y) => x - y).join(",");
+      const b = block.map((p) => ids[p]).sort((x, y) => x - y).join(",");
+      if (a !== b) throw new Error(`${label}: positions ${block} hold ${b}, the golden ${a}`);
+    }
   };
+  const declared = (doc, path) =>
+    (doc.declared_ties ?? []).filter((tie) => tie.path === path).flatMap((tie) => tie.groups);
 
   // Residents: the fixture lenses and the S embedding statistics.
   const lenses = fixtureLenses(d);
@@ -266,17 +288,19 @@ export async function verifyReads({ call, f32, i32, u32, weights, golden, decode
     const out = await call("footprintDirections", layersOf.map((l) => resident.get(`S:out:${l}`)), Int32Array.of(token), stats);
     layersOf.forEach((l, i) => check("slens:atom", decode(atom.layers[String(l)]), out.data.subarray(i * d, (i + 1) * d)));
   }
-  for (const footprint of slens.footprints) {
+  for (const [f, footprint] of slens.footprints.entries()) {
     const u = Float32Array.from(decode(footprint.u));
     const n = u.length / d;
     const out = await call("footprintTopK", f32(u, [n, d]), footprint.k, stats);
     footprint.top.forEach((top, r) => tokens("slens:footprint", top.map((t) => ({ token_id: t.token_id, value: t.z })),
-      out.ids.data.subarray(r * footprint.k, (r + 1) * footprint.k), out.z.data.subarray(r * footprint.k, (r + 1) * footprint.k), tolerance.z_atol));
+      out.ids.data.subarray(r * footprint.k, (r + 1) * footprint.k), out.z.data.subarray(r * footprint.k, (r + 1) * footprint.k), tolerance.z_atol,
+      declared(slens, `footprints[${f}].top[${r}]`)));
   }
 
   const stats3 = await golden("unit-stats");
   const means = { out: decode(stats3.out_mean), mid: decode(stats3.mid_mean) };
-  for (const request of (await golden("lens-reads")).requests) {
+  const lensReads = await golden("lens-reads");
+  for (const [q, request] of lensReads.requests.entries()) {
     if (request.lens !== undefined && request.lens !== null) continue;
     const rowsData = Float32Array.from(decode(request.rows));
     const n = rowsData.length / d;
@@ -302,7 +326,8 @@ export async function verifyReads({ call, f32, i32, u32, weights, golden, decode
         if (want === null || want === undefined || want.absent !== null) continue;
         if (got === null) throw new Error(`lens-reads: a present ${half} half at L${layer} ${site} has no fixture lens`);
         const m = want.tokens.length;
-        tokens(`lens-reads:${half}`, want.tokens, got.ids.subarray(i * k, i * k + m), got.p.subarray(i * k, i * k + m), atol);
+        tokens(`lens-reads:${half}`, want.tokens, got.ids.subarray(i * k, i * k + m), got.p.subarray(i * k, i * k + m), atol,
+          declared(lensReads, `requests[${q}].reads[${i}].${half}.tokens`));
       }
     });
   }
