@@ -27,6 +27,11 @@ def main() -> None:
     tvm_repository = args.tvm_repository.resolve(strict=True)
     output = args.output.resolve()
     validate_output(output)
+    fixture_config = (
+        json.loads(args.model_config.read_text(encoding="utf-8"))
+        if args.model_config is not None
+        else None
+    )
     verify_sources(mlc_repository, tvm_repository)
     emcc = verify_emcc()
     verify_wasm_runtime(mlc_repository)
@@ -85,6 +90,7 @@ def main() -> None:
             QUANTIZATION,
             make_quantization_functions,
             args.context_window_size,
+            fixture_config,
         )
         module, named_params, ext_mods = model.export_tvm(
             spec=model.get_default_spec(),
@@ -164,7 +170,7 @@ def main() -> None:
             {
                 "architecture": args.architecture,
                 "bytes": output.stat().st_size,
-                "contextWindowSize": args.context_window_size,
+                "contextWindowSize": config.context_window_size,
                 "output": str(output),
                 "quantization": args.quantization,
                 "sha256": digest,
@@ -188,6 +194,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--context-window-size", type=int, choices=[16, 2048, 4096], default=16)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--model-config",
+        type=Path,
+        help="mlc-chat-config.json of a build-units-fixtures.py model to compile instead of the "
+        "synthetic tiny config (its context window replaces --context-window-size)",
+    )
     parser.add_argument("--ir-stats-only", action="store_true")
     return parser.parse_args()
 
@@ -260,7 +272,26 @@ def create_model(
     quantization_registry,
     make_quantization_functions,
     context_window_size,
+    fixture_config=None,
 ):
+    if fixture_config is not None:
+        # A converted fixture model (build-units-fixtures.py): compile exactly its config.
+        if (
+            fixture_config["model_type"] != architecture
+            or fixture_config["quantization"] != quantization_name
+            or architecture not in ("qwen3", "gemma3_text")
+        ):
+            raise SystemExit("--model-config does not describe this architecture and quantization")
+        config_class, model_class = (
+            (qwen_config_class, qwen_model_class)
+            if architecture == "qwen3"
+            else (gemma_config_class, gemma_model_class)
+        )
+        config = config_class.from_dict(fixture_config["model_config"])
+        quantization = quantization_registry[quantization_name]
+        quantize = make_quantization_functions(model_class)[quantization.kind]
+        model, _ = quantize(config, quantization)
+        return model, architecture, config
     common = {
         "hidden_size": 64,
         "intermediate_size": 128,

@@ -73,7 +73,7 @@ def main() -> None:
     mlc_repository = args.mlc_repository.resolve(strict=True)
     tvm_repository = args.tvm_repository.resolve(strict=True)
     validate_toolchain(mlc_repository, tvm_repository)
-    bootstrap_mlc_package(mlc_repository, "production")
+    bootstrap_mlc_package(mlc_repository, "production", model_registry=True)
     if args.architecture in BASE_MODEL_SOURCE_DIGESTS:
         verify_files(mlc_repository, BASE_MODEL_SOURCE_DIGESTS[args.architecture], "base model source")
         verify_files(Path(__file__).resolve().parent, adapter_digests(args.architecture), "base model adapter")

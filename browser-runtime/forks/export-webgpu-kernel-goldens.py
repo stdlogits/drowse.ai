@@ -2,10 +2,12 @@
 """Export numerical WebGPU fixtures with the pinned MLC/TVM overlay."""
 
 import argparse
-import importlib.util
 import json
 import pathlib
 import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from overlay_checks import bootstrap_mlc_package, verify_sources  # noqa: E402
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--mlc-repository", required=True, type=pathlib.Path)
@@ -15,19 +17,12 @@ args = parser.parse_args()
 mlc = args.mlc_repository.resolve(strict=True)
 tvm_root = args.tvm_repository.resolve(strict=True)
 sys.path[:0] = [str(tvm_root / "python"), str(mlc / "python")]
-verification_spec = importlib.util.spec_from_file_location(
-    "verify_mlc", pathlib.Path(__file__).with_name("verify-mlc-hook.py")
-)
-verify_mlc = importlib.util.module_from_spec(verification_spec)
-verification_spec.loader.exec_module(verify_mlc)
-verify_mlc.require_commit(mlc, verify_mlc.MLC_BASE_COMMIT, "MLC-LLM")
-verify_mlc.require_commit(tvm_root, verify_mlc.TVM_COMMIT, "TVM")
-verify_mlc.verify_result_files(mlc)
+verify_sources(mlc, tvm_root)
 import tvm
 from tvm.relax.frontend import nn
 from tvm.relax.frontend.nn import spec
 
-verify_mlc.bootstrap_mlc_package(mlc)
+bootstrap_mlc_package(mlc, "kernel-golden")
 from mlc_llm.model.drowse_hooks import (
     apply_structured_affine_hook,
     exact_readout_topk,

@@ -154,14 +154,18 @@ def ensure_import_roots(mlc_repository: Path, tvm_repository: Path) -> None:
         )
 
 
-def bootstrap_mlc_package(mlc_repository: Path, purpose: str) -> None:
-    """Import `mlc_llm` from the checkout's sources only (no compiled `libmlc_llm`)."""
+def bootstrap_mlc_package(mlc_repository: Path, purpose: str, *, model_registry: bool = False) -> None:
+    """Import `mlc_llm` from the checkout's sources only (no compiled `libmlc_llm`). Without
+    `model_registry`, `mlc_llm.model` is a bare namespace too, so importing one model module does
+    not import every model (and `mlc_llm.model.MODELS` is unavailable)."""
     if "mlc_llm" in sys.modules:
         raise SystemExit(f"mlc_llm was imported before the source-only {purpose} bootstrap")
     package = types.ModuleType("mlc_llm")
     package.__path__ = [str(mlc_repository / "python/mlc_llm")]
     package.__package__ = "mlc_llm"
     sys.modules["mlc_llm"] = package
+    if model_registry:
+        return
     model_package = types.ModuleType("mlc_llm.model")
     model_package.__path__ = [str(mlc_repository / "python/mlc_llm/model")]
     model_package.__package__ = "mlc_llm.model"
