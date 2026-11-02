@@ -14,13 +14,7 @@
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
 
-/video/*
-  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
-
 /icons/*
-  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
-
-/images/*
   Cache-Control: public, max-age=86400, stale-while-revalidate=604800
 
 /social/*

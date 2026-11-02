@@ -347,7 +347,7 @@ export default defineConfig({
         clientsClaim: true,
         cleanupOutdatedCaches: true,
         ignoreURLParametersMatching: [/^utm_/, /^fbclid$/, /^v$/],
-        globPatterns: ["**/*.{css,html,js,json,mp4,png,svg,wasm,woff2}", "images/ethereal-orb.jpg", "LICENSE"],
+        globPatterns: ["**/*.{css,html,js,json,png,svg,wasm,woff2}", "LICENSE"],
         globIgnores: [
           "_worker.js", "_routes.json", "404.html", "skills/**", ".well-known/**",
           // Prerendered pages are network-first documents (see the page route below), not precache entries.
@@ -368,9 +368,7 @@ export default defineConfig({
           "assets/fitting.worker-*.js",
           // Runtime registries are shared with the app shell and must remain available offline.
           "assets/drowse-web-llm-*.js",
-          "assets/typescript-*.js",
           "social/**",
-          "video/**",
           "wasm/**",
         ],
         maximumFileSizeToCacheInBytes: 1024 * 1024,
@@ -414,15 +412,6 @@ export default defineConfig({
               matchOptions: { ignoreVary: true },
               // Bounds superseded releases. Files stored directly by offline setup are not evicted.
               expiration: { maxEntries: 64, purgeOnQuotaError: true },
-              cacheableResponse: { statuses: [200] },
-            },
-          },
-          {
-            urlPattern: /\/assets\/(?:heroShaderRuntime|typescript)-[^/]+\.js$/,
-            handler: "CacheFirst",
-            options: {
-              cacheName: "drowse-hosted-landing-shader-v1",
-              expiration: { maxEntries: 8, purgeOnQuotaError: true },
               cacheableResponse: { statuses: [200] },
             },
           },
