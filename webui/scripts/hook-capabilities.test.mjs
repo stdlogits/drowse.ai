@@ -12,11 +12,12 @@ const server = await createServer({
 });
 
 try {
+  const hookCapabilities = await server.ssrLoadModule("/src/hosted/runtime/hookCapabilities.ts");
   const {
     assertHookFeaturesSupported,
     requiredHookFeatures,
     AFFINE_FEASIBILITY_CAPABILITIES,
-  } = await server.ssrLoadModule("/src/hosted/runtime/hookCapabilities.ts");
+  } = hookCapabilities;
   const features = (expression) => [...requiredHookFeatures(expression)].sort();
 
   assert.deepEqual(features("0.5 deceptive"), ["rank_one"]);
@@ -140,10 +141,22 @@ try {
   ]) {
     assert.doesNotThrow(() => assertHookFeaturesSupported(expression, structured), expression);
   }
+  // units and slens follow the library's block-sites profile: standard-v4 offers both,
+  // standard-v4-residual and a pre-v5 library neither.
+  const { blockSitesHookCapabilities } = hookCapabilities;
+  const v4 = blockSitesHookCapabilities(structured, { profile: { unitSites: 1 } });
+  assert.equal(v4.units, true);
+  assert.equal(v4.slens, true);
+  assert.equal(v4.probe_gate, true, "the other features are the base's");
+  for (const capabilities of [{ profile: { unitSites: 0 } }, null]) {
+    const off = blockSitesHookCapabilities({ ...structured, units: true, slens: true }, capabilities);
+    assert.equal(off.units, false);
+    assert.equal(off.slens, false);
+  }
   // A library that offers them (Half B) passes the same expressions.
   assert.doesNotThrow(() => assertHookFeaturesSupported(
     "0.2 neuron/L8n344 + !head/L3h2 + 0.3 slens/Owl@when:slens/Owl>3",
-    { ...structured, units: true, slens: true },
+    v4,
   ));
   // The affine library also lacks the gate hooks; a unit atom's refusal still speaks first.
   assert.throws(

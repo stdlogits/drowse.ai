@@ -41,3 +41,60 @@ export async function unitsFixture(server, arch, options = {}) {
   });
   return { file, record, model, tokenizer, backend, keep, means, lenses, context: readContext, stats };
 }
+
+/** The fixture as B6's packs would serve it (`UnitsPackSource`): unit-stats, unit-artifacts,
+ *  slens statistics, the hand-built lenses and the exported fixture whitener. */
+export function unitsPackSource(fx, arch, whiteners, options = {}) {
+  const stats = fx.stats;
+  const artifacts = archGolden("unit-artifacts", arch);
+  const slens = archGolden("slens", arch);
+  const tables = new Map(artifacts.layers.map((entry) => [
+    entry.layer,
+    new Map(Object.entries(entry.tensors).map(([key, value]) => [key, Float32Array.from(decode(value))])),
+  ]));
+  const mask = new Uint32Array(Math.ceil(fx.model.vocabSize / 32));
+  for (const v of slens.mask.kept) mask[v >>> 5] |= 1 << (v & 31);
+  const lens = (family) => {
+    const sites = ["out", "mid"].filter((site) => fx.lenses.has(`${family}:${site}`) && !(options.drop ?? []).includes(`${family}:${site}`));
+    if (sites.length === 0) return null;
+    return {
+      source: `local:${family.toLowerCase()}`,
+      sites,
+      layers: (site) => [...(fx.lenses.get(`${family}:${site}`)?.keys() ?? [])].sort((a, b) => a - b),
+      fetch: async (site, layer) => fx.lenses.get(`${family}:${site}`).get(layer),
+    };
+  };
+  return {
+    band: { lo: fx.file.band[0], hi: fx.file.band[1] },
+    statistics: async () => ({
+      statistics: {
+        documents: stats.n_documents,
+        neuronMean: Float32Array.from(decode(stats.neuron_mean)),
+        neuronScale: Float32Array.from(decode(stats.neuron_scale)),
+        headMean: Float32Array.from(decode(stats.head_mean)),
+        headScale: Float32Array.from(decode(stats.head_scale)),
+      },
+      absent: null,
+    }),
+    means: async () => fx.means,
+    lens,
+    embeddingStatistics: async () => ({
+      meanE: Float32Array.from(decode(slens.mean_E)),
+      sigmaE: Float32Array.from(decode(slens.sigma_E)),
+      mask,
+      source: slens.mask.source,
+      detail: slens.mask.detail,
+    }),
+    layerArtifacts: async (layer) => tables.get(layer),
+    nullProjector: async () => Float32Array.from(decode(artifacts.null.projector)),
+    headKeptIds: async () => Int32Array.from(artifacts.head_kept_ids),
+    whitener: async (layer) => {
+      const entry = whiteners?.arches[arch].find((row) => row.layer === layer);
+      return entry ? {
+        columns: fx.model.hiddenSize, rank: entry.eigenvalues.length, ridge: entry.ridge,
+        mean: Float64Array.from(entry.mean), basis: Float64Array.from(entry.basis.flat()),
+        eigenvalues: Float64Array.from(entry.eigenvalues), inverseScales: new Float64Array(entry.eigenvalues.length),
+      } : null;
+    },
+  };
+}

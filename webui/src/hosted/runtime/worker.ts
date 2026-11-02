@@ -20,6 +20,7 @@ import type {
   WorkerRequest,
   WorkerSuccessResponse,
 } from "../../../../drowse/webui/src/lib/runtime/contracts";
+import { isUnitsServiceMethod } from "./units/unitsService";
 import {
   isRuntimeServiceMethod,
   RUNTIME_PROTOCOL_VERSION,
@@ -1489,8 +1490,7 @@ export class HostedRuntimeWorker {
       (progress) => {
         this.emitBackendRequestEvent(progress, requestId);
       },
-      concurrentTreeMutation ||
-          (request.service === "instruments" && request.method === "tokenReadout")
+      concurrentTreeMutation || waitsForModelUse(request)
         ? { waitForActiveRequest: true, requireReadyAfterWait: true }
         : undefined,
     );
@@ -3294,4 +3294,11 @@ function capabilitiesWithoutStorageAdmission(
       availableBytes: Number.MAX_SAFE_INTEGER,
     },
   };
+}
+
+/** Requests that queue behind the model task in flight, as drowse's session lock queues them:
+ *  a token readout, and the units members (node replays and static reads on the device). */
+function waitsForModelUse(request: RuntimeServiceRequest): boolean {
+  return request.service === "instruments" &&
+    (request.method === "tokenReadout" || isUnitsServiceMethod(request.method));
 }

@@ -1,3 +1,4 @@
+import type { UnitsNodeReplay, UnitsNodeReplayPort } from "./units/unitsService";
 import type { RuntimeProgressEvent, RuntimeServiceRequest } from "../../../../drowse/webui/src/lib/runtime/contracts";
 import {
   clampOutputTokenCount,
@@ -80,6 +81,11 @@ function holdsTokens(node: LoomNodeJSON): boolean {
 
 type BrowserHookProgram = RankOneHookProgramBuffers | StructuredHookProgramBuffers;
 
+/** A drowse-structured-v4 program: the only kind a block-sites replay runs. */
+function isStructuredHookProgram(program: BrowserHookProgram): program is StructuredHookProgramBuffers {
+  return (program as StructuredHookProgramBuffers).format === "drowse-structured-v4";
+}
+
 interface GenerationReservation {
   anchorId: string;
   rootId: string | null;
@@ -100,6 +106,11 @@ export interface BrowserGenerationPort {
   runtimeCapabilities?(): WebLlmRuntimeCapabilities;
   tokenizeText?(text: string): Promise<number[]>;
   decodeTokens?(tokenIds: readonly number[]): Promise<string>;
+  /** The token ids the engine prefills for a generation plan's input (its chat template, roles
+   *  and thinking state), so a node replays on the block-sites backend exactly as it ran. */
+  renderPromptTokenIds?(
+    plan: Pick<WebLlmGenerationPlan, "input" | "thinking" | "generationSeat" | "generationRoleName">,
+  ): Promise<number[]>;
 }
 
 export interface BrowserLoomOptions {
@@ -1521,6 +1532,66 @@ export class BrowserLoomRuntime {
       );
     }
     return node;
+  }
+
+  /** The units members' node replays (B5), or null when the engine cannot render a prompt to
+   *  token ids or the session has no steering compiler. */
+  unitsNodeReplay(): UnitsNodeReplayPort | null {
+    if (!this.generation.renderPromptTokenIds || !this.compileSteering) return null;
+    return { nodeForward: (nodeId, rawIndex, options) => this.unitsNodeForward(nodeId, rawIndex, options) };
+  }
+
+  private async unitsNodeForward(
+    nodeId: string,
+    rawIndex: number | null,
+    options: { steered: boolean; raw: boolean; label: string; produced: boolean },
+  ): Promise<UnitsNodeReplay> {
+    return this.withReplayLock(async () => {
+      const node = this.replayableNode(nodeId);
+      const raw = node.raw_token_ids!;
+      const anchor = rawIndex ?? raw.length - 1;
+      if (!(Number.isSafeInteger(anchor) && anchor >= 0 && anchor < raw.length)) {
+        throw loomError("INVALID_NODE_OPERATION", `Raw token index ${anchor} is outside node ${node.id}`);
+      }
+      const settings = replaySettings(this.session, node, anchor + 1, options.steered, this.maxOutputTokens);
+      if (settings.positionSpans !== undefined && settings.positionSpans !== null) {
+        throw loomError(
+          "TOKEN_REPLAY_UNAVAILABLE",
+          `${options.label} cannot replay position-targeted steering yet; replay with steered=false`,
+        );
+      }
+      let program: StructuredHookProgramBuffers | null = null;
+      if (settings.steering) {
+        const compiled = await this.compileRequiredSteering(settings.steering);
+        if (!isStructuredHookProgram(compiled)) {
+          throw loomError(
+            "TOKEN_REPLAY_UNAVAILABLE",
+            "The node's steering did not lower to a structured hook program the replay can run",
+          );
+        }
+        program = compiled;
+      }
+      const raw_ = this.session.is_base_model || options.raw;
+      const promptIds = await this.generation.renderPromptTokenIds!({
+        input: generationInput({ type: "generate", input: null, raw: raw_ }, this.tree, node.parent_id!, settings.systemPrompt),
+        thinking: settings.thinking,
+        generationSeat: raw_ ? null : node.role as ChatRole,
+        generationRoleName: raw_ ? null : node.role_label,
+      });
+      const ids = Int32Array.from([...promptIds, ...raw.slice(0, anchor)]);
+      return {
+        forward: {
+          ids,
+          promptLength: promptIds.length,
+          rawIds: Int32Array.from(raw),
+          rawIndex: anchor,
+          spans: [{ firstRow: 0, stopRow: raw.length, at: promptIds.length - 1 }],
+        },
+        program,
+        steering: settings.steering ?? null,
+        canThink: settings.thinking === true,
+      };
+    });
   }
 
   private async withReplayLock<T>(operation: () => Promise<T>): Promise<T> {

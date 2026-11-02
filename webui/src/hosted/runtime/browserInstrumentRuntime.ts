@@ -16,6 +16,8 @@ import type { BrowserFeasibilityCorePackCompiler } from "./browserCorePack";
 import type { BrowserJlensRuntimeResolver } from "./browserInstrumentPacks";
 import { BROWSER_EXACT_READOUT_TOP_K_CAPACITY } from "./webLlmGeneration";
 import { loadSaeDescription } from "../../../../drowse/webui/src/lib/saeDescriptions";
+import { UnsupportedBlockError } from "./modelBackend";
+import { isUnitsServiceMethod, type BrowserUnitsService } from "./units/unitsService";
 
 type TokenLookup = (
   nodeId: string,
@@ -37,6 +39,7 @@ type TokenReplay = (
 export class BrowserInstrumentRuntime {
   private readonly preparation = new Map<string, PreparationStatusJSON>();
   private tokenReplay: TokenReplay | null = null;
+  private units: BrowserUnitsService | null = null;
 
   constructor(
     private compiler: BrowserFeasibilityCorePackCompiler,
@@ -78,6 +81,13 @@ export class BrowserInstrumentRuntime {
 
   configureTokenReplay(replay: TokenReplay | null): void {
     this.tokenReplay = replay;
+  }
+
+  /** The units members (`tokenAnatomy`, `unitActivity`, `unitRead`, `unitTop`, `unitFind`,
+   *  `unitCatalog`, `unitLabels`) over the loaded library's block sites; without a service every
+   *  one answers native's 422 for a library that has none. */
+  configureUnits(service: BrowserUnitsService | null): void {
+    this.units = service;
   }
 
   hasLiveReadout(): boolean {
@@ -170,6 +180,12 @@ export class BrowserInstrumentRuntime {
     if (method === "validateLensToken") return this.validateLensToken(args);
     if (method === "validateSaeFeature") return this.validateSaeFeature(args);
     if (method === "saeFeaturesMetadata") return this.saeFeaturesMetadata(args);
+    if (isUnitsServiceMethod(method)) {
+      if (this.units === null) {
+        return Promise.reject(new UnsupportedBlockError("the loaded model library predates hook ABI block-sites-v5"));
+      }
+      return this.units.request(method, args);
+    }
     throw instrumentError(
       "BROWSER_SERVICE_UNAVAILABLE",
       `Browser runtime service instruments.${method} is not implemented`,

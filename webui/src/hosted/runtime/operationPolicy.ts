@@ -101,13 +101,13 @@ export const RUNTIME_SERVICE_ROUTES = Object.freeze({
     validateLensToken: "model",
     validateSaeFeature: "model",
     saeFeaturesMetadata: "model",
-    tokenAnatomy: "unavailable",
-    unitActivity: "unavailable",
-    unitRead: "unavailable",
-    unitTop: "unavailable",
-    unitFind: "unavailable",
-    unitCatalog: "unavailable",
-    unitLabels: "unavailable",
+    tokenAnatomy: "model",
+    unitActivity: "model",
+    unitRead: "model",
+    unitTop: "model",
+    unitFind: "model",
+    unitCatalog: "model",
+    unitLabels: "model",
   }),
 }) satisfies {
   [Service in RuntimeServiceName]: Readonly<
@@ -156,8 +156,9 @@ export function runtimeServiceOperationPolicy(
 
 /**
  * Whether this runtime offers a contract method. An `"unavailable"` route is
- * one the worker answers with a refusal: the browser runtime does not compute
- * it yet (units, token anatomy). The client the shared UI holds omits these
+ * one the worker answers with a refusal (none today: the units members and
+ * token anatomy run on hook ABI v5, and a library without unit sites answers
+ * native's 422 as drowse does). The client the shared UI holds omits such
  * members, because the UI decides availability by `typeof member ===
  * "function"` (`replayCapabilities`, `unitReadsAvailable`).
  */

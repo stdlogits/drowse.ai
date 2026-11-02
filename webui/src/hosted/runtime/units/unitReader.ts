@@ -34,6 +34,21 @@ export const CATALOG_REPO = "stdlogits/neuron-lens";
 export const CATALOG_REVISION = "b5bf11a2b9e35c9100a0fa0995ff7a4e57f5b777";
 export const NO_CATALOG = `no neuron-lens catalog for this model (catalogued: ${CATALOGUED_MODELS})`;
 
+/** `units/catalog`: native `catalog_status` for an uncatalogued model (disk only). */
+export function unitCatalogStatus(modelId: string): Record<string, unknown> {
+  return {
+    model_id: modelId,
+    available: false,
+    bound: false,
+    slug: null,
+    repo: CATALOG_REPO,
+    revision: CATALOG_REVISION,
+    credit: null,
+    reason: NO_CATALOG,
+    binding: null,
+  };
+}
+
 /** Native `RequestError` (400) with its text verbatim. */
 export class UnitRequestError extends Error {
   readonly status = 400;
@@ -242,17 +257,7 @@ export class UnitReader {
 
   /** `units/catalog`: native `catalog_status` for an uncatalogued model. */
   catalogStatus(): Record<string, unknown> {
-    return {
-      model_id: this.context.modelId,
-      available: false,
-      bound: false,
-      slug: null,
-      repo: CATALOG_REPO,
-      revision: CATALOG_REVISION,
-      credit: null,
-      reason: NO_CATALOG,
-      binding: null,
-    };
+    return unitCatalogStatus(this.context.modelId);
   }
 
   /** `units/labels`: no catalog, so no rows; each unit is still parsed and checked. */
