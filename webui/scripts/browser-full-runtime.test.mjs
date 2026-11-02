@@ -11,6 +11,7 @@ import {
   parseBrowserFullRuntimeArguments,
   validateBrowserFullRuntimeAudit,
   validateBrowserFullRuntimeModelClosure,
+  validateBrowserFullRuntimePackSets,
   validateBrowserFullRuntimeTranscript,
   validatePairedSteeringControls,
 } from "./browser-full-runtime-contract.mjs";
@@ -72,6 +73,12 @@ test("parses the complete real-browser E2E input contract", () => {
     "17",
     "--jlens-word",
     " blue ",
+    "--slens-word",
+    " sky ",
+    "--slens-directory",
+    "/tmp/slens",
+    "--units-directory",
+    "/tmp/units",
     "--browser-channel",
     "msedge",
     "--browser-flags",
@@ -89,6 +96,9 @@ test("parses the complete real-browser E2E input contract", () => {
   assert.equal(parsed.timeoutMs, 120000);
   assert.equal(parsed.saeFeature, 17);
   assert.equal(parsed.jlensWord, "blue");
+  assert.equal(parsed.slensWord, "sky");
+  assert.equal(parsed.slensDirectory, "/tmp/slens");
+  assert.equal(parsed.unitsDirectory, "/tmp/units");
   assert.equal(parsed.browserChannel, "msedge");
   assert.equal(parsed.browserFlags, "normal");
   assert.equal(parsed.headed, true);
@@ -96,11 +106,17 @@ test("parses the complete real-browser E2E input contract", () => {
   assert.equal(parsed.runtimeLock, "/tmp/candidate-runtime-lock.json");
 });
 
-test("requires every physical artifact family and rejects bypass flags", () => {
+test("requires the model and core artifacts and rejects bypass flags", () => {
+  const core = requiredArgs.indexOf("--core-directory");
   assert.throws(
-    () => parseBrowserFullRuntimeArguments(requiredArgs.slice(0, -2)),
-    /--sae-directory is required/,
+    () => parseBrowserFullRuntimeArguments([...requiredArgs.slice(0, core), ...requiredArgs.slice(core + 2)]),
+    /--core-directory is required/,
   );
+  // The instrument packs past the core are optional at parse time (their rule is the profile's).
+  const bare = parseBrowserFullRuntimeArguments(requiredArgs.slice(0, core + 2));
+  assert.equal(bare.jlensDirectory, null);
+  assert.equal(bare.saeDirectory, null);
+  assert.equal(bare.slensWord, "ocean");
   assert.throws(
     () => parseBrowserFullRuntimeArguments([...requiredArgs, "--skip-fitting"]),
     /unexpected argument --skip-fitting/,
@@ -114,6 +130,34 @@ test("requires every physical artifact family and rejects bypass flags", () => {
       ]),
     /may be supplied only once/,
   );
+});
+
+test("a standard-v4 run carries its R, S and units packs; a residual run no S or units pack", () => {
+  const all = { jlens: "/r", slens: "/s", units: "/u", sae: "/sae" };
+  assert.deepEqual(validateBrowserFullRuntimePackSets("standard-v4", all), ["jlens", "slens", "units", "sae"]);
+  assert.deepEqual(
+    validateBrowserFullRuntimePackSets("standard-v4", { ...all, sae: null }),
+    ["jlens", "slens", "units"],
+  );
+  for (const [kind, flag] of [["jlens", "--jlens-directory"], ["slens", "--slens-directory"], ["units", "--units-directory"]]) {
+    assert.throws(
+      () => validateBrowserFullRuntimePackSets("standard-v4", { ...all, [kind]: null }),
+      new RegExp(`${flag} is required`),
+    );
+  }
+  const none = { jlens: null, slens: null, units: null, sae: null };
+  assert.deepEqual(validateBrowserFullRuntimePackSets("standard-v4-residual", none), []);
+  assert.deepEqual(
+    validateBrowserFullRuntimePackSets("standard-v4-residual", { ...none, jlens: "/r", sae: "/sae" }),
+    ["jlens", "sae"],
+  );
+  for (const [kind, flag] of [["slens", "--slens-directory"], ["units", "--units-directory"]]) {
+    assert.throws(
+      () => validateBrowserFullRuntimePackSets("standard-v4-residual", { ...none, [kind]: "/x" }),
+      new RegExp(`${flag} is refused`),
+    );
+  }
+  assert.throws(() => validateBrowserFullRuntimePackSets("standard-v3", none), /predates hook ABI v5/);
 });
 
 test("rejects invalid browser, token, timeout, and feature controls", () => {
@@ -489,8 +533,12 @@ test("transforms the real-browser orchestration worker through the production mo
       transformed?.code.includes("exact full-vocabulary J-lens readout"),
     );
     assert.ok(transformed?.code.includes("exact full-dictionary SAE readout"));
-    assert.ok(transformed?.code.includes("browser_e2e_jlens_reload"));
-    assert.ok(transformed?.code.includes("browser_e2e_sae_offline"));
+    assert.ok(transformed?.code.includes("browser_e2e_slens_reload"));
+    assert.ok(transformed?.code.includes("browser_e2e_slens_offline"));
+    // The units check (ablation, taps, anatomy, static read, S readout) and the residual refusal.
+    for (const marker of ["tokenAnatomy", "unitRead", "did not move the next-token logprob", "UNIT_SITES_UNAVAILABLE", "unitCatalog", "packFileResidency"]) {
+      assert.ok(transformed?.code.includes(marker), marker);
+    }
     assert.match(
       transformed?.code ?? "",
       /REQUIRED_STORAGE_BUFFERS_PER_SHADER_STAGE\s*=\s*10/u,

@@ -13,6 +13,7 @@ import {
   parseBrowserFullRuntimeArguments,
   validateBrowserFullRuntimeAudit,
   validateBrowserFullRuntimeModelClosure,
+  validateBrowserFullRuntimePackSets,
   validateBrowserFullRuntimeTranscript,
 } from "./browser-full-runtime-contract.mjs";
 import { validateBrowserArtifactAudit } from "./browser-full-runtime-artifact-audit.mjs";
@@ -48,14 +49,43 @@ if (options.fitLayer !== null && !lock.layerMap.includes(options.fitLayer)) {
 }
 const modelLibrary = resolve(options.modelLibrary);
 const webLlm = resolve(options.webLlm);
+const modelSet = await artifactSet(
+  resolve(options.modelDirectory),
+  "hosted-artifacts.json",
+  {
+    modelLibrary,
+  },
+);
+validateBrowserFullRuntimeModelClosure({
+  lock,
+  runtimeLock,
+  manifest: modelSet.manifest,
+  files: modelSet.files,
+  contextTokens: options.contextTokens,
+});
+const executionProfiles = lockedModelExecutionProfiles(
+  lock,
+  modelSet.manifest,
+);
+// The packs the library's profile runs with: core always; R, S and units on standard-v4; an R
+// pack optional and no S or units on standard-v4-residual; SAE optional.
+const packKinds = validateBrowserFullRuntimePackSets(
+  executionProfiles.structuredHookProfile,
+  {
+    jlens: options.jlensDirectory,
+    slens: options.slensDirectory,
+    units: options.unitsDirectory,
+    sae: options.saeDirectory,
+  },
+);
+const packDirectories = {
+  jlens: options.jlensDirectory,
+  slens: options.slensDirectory,
+  units: options.unitsDirectory,
+  sae: options.saeDirectory,
+};
 const sets = {
-  model: await artifactSet(
-    resolve(options.modelDirectory),
-    "hosted-artifacts.json",
-    {
-      modelLibrary,
-    },
-  ),
+  model: modelSet,
   core: await artifactSet(
     resolve(options.coreDirectory),
     "hosted-pack-artifacts.json",
@@ -63,36 +93,21 @@ const sets = {
       role: "core_pack",
     },
   ),
-  jlens: await artifactSet(
-    resolve(options.jlensDirectory),
-    "hosted-pack-artifacts.json",
-    {
-      role: "instrument",
-    },
-  ),
-  sae: await artifactSet(
-    resolve(options.saeDirectory),
-    "hosted-pack-artifacts.json",
-    {
-      role: "instrument",
-    },
-  ),
 };
+for (const kind of packKinds) {
+  sets[kind] = await artifactSet(
+    resolve(packDirectories[kind]),
+    "hosted-pack-artifacts.json",
+    {
+      role: "instrument",
+    },
+  );
+}
+const OPTIONAL_SETS = ["jlens", "slens", "units", "sae"];
 await requireFile(webLlm, "WebLLM bundle");
 const webLlmBytes = (await stat(webLlm)).size;
 if (webLlmBytes === 0) throw new Error("WebLLM bundle is empty");
 const webLlmSha256 = await sha256File(webLlm);
-validateBrowserFullRuntimeModelClosure({
-  lock,
-  runtimeLock,
-  manifest: sets.model.manifest,
-  files: sets.model.files,
-  contextTokens: options.contextTokens,
-});
-const executionProfiles = lockedModelExecutionProfiles(
-  lock,
-  sets.model.manifest,
-);
 const runtimeIdentity = {
   sourceModel: lock.sourceRepository,
   sourceRevision: lock.sourceRevision,
@@ -111,10 +126,10 @@ const localMeasurements = {
   modelBytes: sumBytes(sets.model.files),
   coreFiles: sets.core.files.length,
   coreBytes: sumBytes(sets.core.files),
-  jlensFiles: sets.jlens.files.length,
-  jlensBytes: sumBytes(sets.jlens.files),
-  saeFiles: sets.sae.files.length,
-  saeBytes: sumBytes(sets.sae.files),
+  ...Object.fromEntries(OPTIONAL_SETS.flatMap((kind) => [
+    [`${kind}Files`, sets[kind]?.files.length ?? 0],
+    [`${kind}Bytes`, sumBytes(sets[kind]?.files ?? [])],
+  ])),
   webLlmBytes,
   webLlmSha256,
   runtimeIdentitySha256: digestCanonical(runtimeIdentity),
@@ -122,8 +137,10 @@ const localMeasurements = {
   convertedManifestSha256: roleSha256(sets.model.files, "converted_manifest"),
   modelLibrarySha256: roleSha256(sets.model.files, "model_library"),
   coreArtifactManifestSha256: sets.core.manifestSha256,
-  jlensArtifactManifestSha256: sets.jlens.manifestSha256,
-  saeArtifactManifestSha256: sets.sae.manifestSha256,
+  ...Object.fromEntries(OPTIONAL_SETS.map((kind) => [
+    `${kind}ArtifactManifestSha256`,
+    sets[kind]?.manifestSha256 ?? null,
+  ])),
   allManifestSizesAndHashesVerified: true,
 };
 let offlineArmed = false;
@@ -429,12 +446,15 @@ try {
         contextProfiles: lock.contextProfiles,
         modelFiles: sets.model.files,
         coreFiles: sets.core.files,
-        jlensFiles: sets.jlens.files,
-        saeFiles: sets.sae.files,
+        jlensFiles: sets.jlens?.files ?? [],
+        slensFiles: sets.slens?.files ?? [],
+        unitsFiles: sets.units?.files ?? [],
+        saeFiles: sets.sae?.files ?? [],
         maxTokens: options.maxTokens,
         stopMaxTokens: options.stopMaxTokens,
         fitLayer: options.fitLayer,
         jlensWord: options.jlensWord,
+        slensWord: options.slensWord,
         saeFeature: options.saeFeature,
       },
     },
@@ -515,8 +535,10 @@ try {
         convertedManifestSha256: localMeasurements.convertedManifestSha256,
         modelLibrarySha256: localMeasurements.modelLibrarySha256,
         coreArtifactManifestSha256: sets.core.manifestSha256,
-        jlensArtifactManifestSha256: sets.jlens.manifestSha256,
-        saeArtifactManifestSha256: sets.sae.manifestSha256,
+        ...Object.fromEntries(OPTIONAL_SETS.map((kind) => [
+          `${kind}ArtifactManifestSha256`,
+          sets[kind]?.manifestSha256 ?? null,
+        ])),
       },
       ...browserResult.mainThreadResponsiveness,
     },

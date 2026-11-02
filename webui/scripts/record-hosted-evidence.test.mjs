@@ -926,6 +926,8 @@ function fullRuntimeReport() {
     modelLibrarySha256: model.librarySha256,
     coreArtifactManifestSha256: "3".repeat(64),
     jlensArtifactManifestSha256: "4".repeat(64),
+    slensArtifactManifestSha256: "6".repeat(64),
+    unitsArtifactManifestSha256: "7".repeat(64),
     saeArtifactManifestSha256: "5".repeat(64),
   };
   const checks = Object.fromEntries(
