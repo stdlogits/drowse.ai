@@ -311,3 +311,24 @@ test("reply motion resizes the unchanged panel and honors reduced motion", async
   await expect(demo.locator("[data-morph-active]")).toHaveCount(0);
   await expect(panel).toHaveCSS("background-color", background);
 });
+
+test("the example announces a committed setting after a key press or a pointer drag", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("http://127.0.0.1:4176/");
+  const demo = page.getByRole("region", { name: "Recorded Drowse example" });
+  const live = demo.locator('[aria-live="polite"]');
+  const slider = demo.getByRole("slider");
+  await slider.scrollIntoViewIfNeeded();
+  await expect(live).toHaveText("");
+  await slider.focus();
+  await slider.press("End");
+  await expect(live).toHaveText(`More welcoming, strength 0.15. Reply: ${recording.runs[6].text.trim()}`);
+  // drowse's Slider runs the drag itself and fires no change event; the drag's end still announces.
+  const box = (await slider.boundingBox())!;
+  await page.mouse.move(box.x + box.width - 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 2, box.y + box.height / 2, { steps: 8 });
+  await expect(live).toHaveText(`More welcoming, strength 0.15. Reply: ${recording.runs[6].text.trim()}`);
+  await page.mouse.up();
+  await expect(live).toHaveText(`Less welcoming, strength -0.15. Reply: ${recording.runs[0].text.trim()}`);
+});

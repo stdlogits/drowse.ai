@@ -248,7 +248,6 @@
     font: var(--type-small);
     white-space: normal;
   }
-  .recorded-token-panel[aria-hidden="true"] { pointer-events: none; }
   .recorded-token-panel:focus { outline: none; }
   header { display: flex; align-items: start; justify-content: space-between; gap: var(--s3); }
   header > div { display: grid; gap: 2px; min-width: 0; }
