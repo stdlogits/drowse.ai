@@ -19,33 +19,20 @@ const source = JSON.parse(await readFile(
   resolve(repositoryRoot, "browser-runtime/release-corpus/wikitext-103-raw-test.candidate.json"),
   "utf8",
 ));
-const lockedTokenizerClosure = [...runtimeLock.models]
-  .sort((left, right) => left.id.localeCompare(right.id))
-  .map((model) => ({
-    id: model.id,
-    sourceRepository: model.sourceRepository,
-    sourceRevision: model.sourceRevision,
-    tokenizerSha256: model.tokenizerSha256,
-    tokenizerConfigSha256: model.chatTemplateSha256,
-  }));
-assert.ok(source.tokenizers.length > 0);
-for (const tokenizer of source.tokenizers) {
-  assert.deepEqual(tokenizer, lockedTokenizerClosure.find(model => model.id === tokenizer.id));
-}
+// The release corpus feeds only the SAE builder (schema 2): no lens corpus, words or tokenizers.
 for (const manifestName of [
   "fineweb-sample-10bt-train.approved.json",
   "fineweb-sample-10bt-train.candidate.json",
+  "wikitext-103-raw-test.candidate.json",
 ]) {
   const manifest = JSON.parse(await readFile(
     resolve(repositoryRoot, "browser-runtime/release-corpus", manifestName),
     "utf8",
   ));
-  assert.ok(manifest.tokenizers.length > 0);
-  for (const tokenizer of manifest.tokenizers) {
-    assert.deepEqual(tokenizer, lockedTokenizerClosure.find(model => model.id === tokenizer.id));
-  }
+  assert.equal(manifest.schemaVersion, 2);
+  for (const retired of ["wordSeeds", "tokenizers"]) assert.equal(retired in manifest, false, `${manifestName} ${retired}`);
+  for (const retired of ["jlensDocuments", "minimumSharedWords"]) assert.equal(retired in manifest.selection, false);
 }
-source.tokenizers = lockedTokenizerClosure;
 source.selection.algorithm = "drowse-release-corpus-v1";
 source.status = "approved";
 source.blockers = [];
@@ -63,41 +50,20 @@ const licenseEvidenceBytes = Buffer.from("release-policy license evidence fixtur
 source.license.evidence.sha256 = sha256(licenseEvidenceBytes);
 source.license.evidence.bytes = licenseEvidenceBytes.byteLength;
 const updatedSourceBytes = Buffer.from(`${JSON.stringify(source, null, 2)}\n`);
-const seedWords = (await readFile(
-  resolve(repositoryRoot, "browser-runtime/release-corpus/jlens-word-seeds.txt"),
-  "utf8",
-)).trim().split("\n").slice(0, 80);
 const saeBytes = Buffer.from(JSON.stringify(
   Array.from({ length: source.selection.saeDocuments }, (_, index) => `sae document ${index}`),
 ));
-const jlensBytes = Buffer.from(JSON.stringify(
-  Array.from({ length: source.selection.jlensDocuments }, (_, index) => `jlens document ${index}`),
-));
-const wordBytes = Buffer.from(JSON.stringify(seedWords));
 const release = {
-  $schema: "https://polythetic.ai/schemas/release-corpus-v1.json",
-  schemaVersion: 1,
+  $schema: "https://polythetic.ai/schemas/release-corpus-v2.json",
+  schemaVersion: 2,
   algorithm: "drowse-release-corpus-v1",
   generatorSha256: sha256(generatorBytes),
   sourceManifestSha256: sha256(updatedSourceBytes),
   source: source.source,
   license: source.license,
-  wordSeeds: source.wordSeeds,
   selection: source.selection,
   outputs: {
     sae: output("sae-corpus.json", saeBytes, source.selection.saeDocuments),
-    jlens: output("jlens-corpus.json", jlensBytes, source.selection.jlensDocuments),
-    words: {
-      path: "jlens-words.json",
-      sha256: sha256(wordBytes),
-      bytes: wordBytes.byteLength,
-      count: seedWords.length,
-      candidateCount: 123,
-      tokenIds: Object.fromEntries(runtimeLock.models.map((model) => [
-        model.id,
-        seedWords.map((_, index) => index + 1),
-      ])),
-    },
   },
 };
 const releaseBytes = Buffer.from(`${JSON.stringify(release, null, 2)}\n`);
@@ -114,10 +80,7 @@ const inputClosure = await validateReleaseCorpusInputs({
   releaseManifestPath,
   sourceManifestPath,
   licenseEvidencePath: join(root, "license-evidence"),
-  kind: "sae",
   corpusBytes: saeBytes,
-  runtimeLock,
-  modelLock,
 });
 assert.deepEqual(inputClosure, {
   releaseBytes,
@@ -129,13 +92,9 @@ await assert.rejects(
     releaseManifestPath,
     sourceManifestPath,
     licenseEvidencePath: join(root, "license-evidence"),
-    kind: "jlens",
-    corpusBytes: jlensBytes,
-    wordsBytes: Buffer.from("[]"),
-    runtimeLock,
-    modelLock,
+    corpusBytes: Buffer.from("[]"),
   }),
-  /word bytes differ/,
+  /sae corpus bytes differ/,
 );
 
 const saeDirectory = join(root, "sae");
@@ -384,37 +343,26 @@ for (const kind of ["slens", "units"]) {
   );
 }
 
-for (const scenario of [
-  "scoped", "missing-target", "unknown-model", "duplicate-model", "wrong-tokenizer",
-  "missing-token-model", "short-token-list", "negative-token", "duplicate-token", "fractional-token",
+// A release corpus that still names the retired lens outputs or words is refused.
+for (const [label, edit] of [
+  ["a lens output", (value) => { value.outputs.jlens = value.outputs.sae; }],
+  ["word seeds", (value) => { value.wordSeeds = {}; }],
+  ["schema 1", (value) => { value.schemaVersion = 1; }],
 ]) {
-  const scopedSource = structuredClone(source);
-  scopedSource.tokenizers = source.tokenizers.filter(tokenizer => tokenizer.id === modelLock.id);
-  const scopedRelease = structuredClone(release);
-  scopedRelease.outputs.words.tokenIds = { [modelLock.id]: [...release.outputs.words.tokenIds[modelLock.id]] };
-  if (scenario === "missing-target") scopedSource.tokenizers = source.tokenizers.filter(tokenizer => tokenizer.id !== modelLock.id);
-  if (scenario === "unknown-model") scopedSource.tokenizers.push({ ...scopedSource.tokenizers[0], id: "unlocked-model" });
-  if (scenario === "duplicate-model") scopedSource.tokenizers.push({ ...scopedSource.tokenizers[0] });
-  if (scenario === "wrong-tokenizer") scopedSource.tokenizers[0].tokenizerSha256 = "0".repeat(64);
-  if (scenario === "missing-token-model") scopedRelease.outputs.words.tokenIds = {};
-  const tokenIds = scopedRelease.outputs.words.tokenIds[modelLock.id];
-  if (scenario === "short-token-list") tokenIds.pop();
-  if (scenario === "negative-token") tokenIds[0] = -1;
-  if (scenario === "duplicate-token") tokenIds[0] = tokenIds[1];
-  if (scenario === "fractional-token") tokenIds[0] = 0.5;
-  const sourceBytes = Buffer.from(JSON.stringify(scopedSource));
-  scopedRelease.sourceManifestSha256 = sha256(sourceBytes);
-  await writeFile(sourceManifestPath, sourceBytes);
-  await writeFile(releaseManifestPath, JSON.stringify(scopedRelease));
-  const validate = () => validateReleaseCorpusInputs({
-    releaseManifestPath, sourceManifestPath, licenseEvidencePath: join(root, "license-evidence"),
-    kind: "sae", corpusBytes: saeBytes, runtimeLock, modelLock,
-  });
-  if (scenario === "scoped") await validate();
-  else await assert.rejects(validate(), /token.*closure/);
+  const retired = structuredClone(release);
+  edit(retired);
+  await writeFile(releaseManifestPath, JSON.stringify(retired));
+  await assert.rejects(
+    validateReleaseCorpusInputs({
+      releaseManifestPath, sourceManifestPath, licenseEvidencePath: join(root, "license-evidence"),
+      corpusBytes: saeBytes,
+    }),
+    /release corpus (manifest has|manifest identity|outputs)/,
+    label,
+  );
 }
 
-console.log("Hosted instrument release-policy checks passed: scoped model identities, exact word token IDs, malformed closures, native full-depth lenses and units, and provider packs");
+console.log("Hosted instrument release-policy checks passed: the SAE release corpus, malformed closures, native full-depth lenses and units with their attribution, and provider packs");
 
 function output(path, bytes, documents) {
   return {
