@@ -295,7 +295,8 @@
         "hiddenSize",
         "layerMap",
         "quantization",
-        "contextProfiles"
+        "contextProfiles",
+        "prefillChunkSize"
       ],
       "properties": {
         "id": {
@@ -421,6 +422,12 @@
             ]
           },
           "uniqueItems": true
+        },
+        "prefillChunkSize": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096,
+          "description": "The library's compiled prefill chunk (mlc-chat-config prefill_chunk_size): the most rows one forward carries, which its descriptor attests as PREFILL_CHUNK_SIZE. No larger than the smallest context profile (validateRuntimeLock)."
         },
         "blockSpec": {
           "$ref": "#/$defs/blockSpec"

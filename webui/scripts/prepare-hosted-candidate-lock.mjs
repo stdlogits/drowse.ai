@@ -125,8 +125,14 @@ export function deriveCandidateRuntimeLock(runtimeLock, modelId, {
   differs("quantization", manifest.quantization, model.quantization);
   differs("modelType", manifest.modelType ?? "chat", model.modelType ?? "chat");
   differs("contextWindowSize", manifest.contextWindowSize, Math.max(...model.contextProfiles));
-  // The descriptor attests the prefill chunk the browser expects: the smallest context profile.
-  differs("prefillChunkSize", manifest.prefillChunkSize, Math.min(...model.contextProfiles));
+  // The descriptor attests the library's compiled prefill chunk, which the lock records
+  // (HOOK_ABI.md §6); the chat config WebLLM runs the library with must carry the same value.
+  differs("prefillChunkSize", manifest.prefillChunkSize, model.prefillChunkSize);
+  differs("mlc-chat-config prefill_chunk_size", chatConfig?.prefill_chunk_size, model.prefillChunkSize);
+  const configModel = chatConfig?.model_config?.text_config ?? chatConfig?.model_config;
+  if (configModel && "prefill_chunk_size" in configModel) {
+    differs("mlc-chat-config model_config prefill_chunk_size", configModel.prefill_chunk_size, model.prefillChunkSize);
+  }
   if (model.hiddenSize !== null) differs("hiddenSize", manifest.hiddenSize, model.hiddenSize);
   if (model.layerMap !== null) differs("layerMap", manifest.layerMap, model.layerMap);
   const tokenizer = unique(manifest, "tokenizer", "tokenizer.json");

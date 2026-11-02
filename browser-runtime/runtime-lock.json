@@ -117,7 +117,8 @@
       "contextProfiles": [
         2048,
         4096
-      ]
+      ],
+      "prefillChunkSize": 2048
     },
     {
       "id": "gemma3-1b-instruct",
@@ -186,7 +187,8 @@
       "contextProfiles": [
         2048,
         4096
-      ]
+      ],
+      "prefillChunkSize": 2048
     },
     {
       "id": "gemma3-4b-instruct",
@@ -263,7 +265,8 @@
       "contextProfiles": [
         2048,
         4096
-      ]
+      ],
+      "prefillChunkSize": 2048
     },
     {
       "id": "qwen3-4b",
@@ -352,7 +355,8 @@
       "contextProfiles": [
         2048,
         4096
-      ]
+      ],
+      "prefillChunkSize": 2048
     },
     {
       "id": "qwen3-1.7b",
@@ -433,7 +437,8 @@
       "contextProfiles": [
         2048,
         4096
-      ]
+      ],
+      "prefillChunkSize": 2048
     },
     {
       "id": "gpt2-base",
@@ -468,7 +473,8 @@
       "quantization": "q0f32",
       "contextProfiles": [
         1024
-      ]
+      ],
+      "prefillChunkSize": 1024
     },
     {
       "id": "pythia-70m-base",
@@ -497,7 +503,8 @@
       "quantization": "q0f32",
       "contextProfiles": [
         2048
-      ]
+      ],
+      "prefillChunkSize": 1024
     },
     {
       "id": "gemma3-1b-pt",
@@ -566,7 +573,8 @@
       "quantization": "q4f32_1",
       "contextProfiles": [
         2048
-      ]
+      ],
+      "prefillChunkSize": 1024
     },
     {
       "id": "qwen35-2b-base",
@@ -613,7 +621,8 @@
       "quantization": "q4f32_1",
       "contextProfiles": [
         2048
-      ]
+      ],
+      "prefillChunkSize": 1024
     }
   ]
 }

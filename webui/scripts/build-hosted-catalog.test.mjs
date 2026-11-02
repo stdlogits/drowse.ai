@@ -187,6 +187,7 @@ try {
     layerMap: [0, 1],
     quantization: "q4f16_1",
     contextProfiles: [2048, 4096],
+    prefillChunkSize: 2048,
     structuredHookProfile: "standard-v4",
     thinkingProfile,
   };

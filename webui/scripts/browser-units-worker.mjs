@@ -41,7 +41,7 @@ const options = parseArguments(process.argv.slice(2));
 const webui = fileURLToPath(new URL("..", import.meta.url));
 const repository = resolve(webui, "..");
 const stage = await stageUnitsFixture(options);
-const { artifacts: modelFiles, blockSpec, contextTokens, runtimeIdentity, modelDirectory } = stage;
+const { artifacts: modelFiles, blockSpec, contextTokens, prefillChunkSize, runtimeIdentity, modelDirectory } = stage;
 const modelId = `units-${options.arch}`;
 const variantId = `${modelId}-${options.quantization}`;
 const revision = "a".repeat(40);
@@ -188,6 +188,7 @@ try {
     baselinePrompts: ["Hi.", "Go on.", "Say it."], contexts: [contextTokens], rows: [],
     nativeNeutralRows: true, runtimeIdentity, quantization: options.quantization, requiredFeatures: [],
     structuredHookProfile: "standard-v4", thinkingProfile: null, blockSpec, unitRefusal: null,
+    prefillChunkSize,
     artifactProducer: { drowseVersion: "0.0.0-fixture", producerVersion: "browser-units-worker" },
     manifolds,
   });
@@ -285,7 +286,7 @@ try {
     runtimeLockModels: [{
       modelType: "base", runtimeIdentity, structuredHookProfile: "standard-v4", thinkingProfile: null,
       convertedRepository: "drowse/units-tiny", convertedRevision: revision, contextProfiles: [contextTokens],
-      blockSpec, unitRefusal: null,
+      prefillChunkSize, blockSpec, unitRefusal: null,
     }],
   };
 

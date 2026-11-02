@@ -32,7 +32,7 @@ import { assessModelVariant } from "../../lib/runtime/recommendation";
 import { outputTokenLimitForSignals } from "../../../../drowse/webui/src/lib/runtime/outputTokenPolicy";
 import {
   CatalogValidationError,
-  lockedBlockSites,
+  lockedLibraryContract,
   runtimeIdentitySha256,
   type CatalogRuntimeLockModel,
 } from "../../lib/runtime/catalog";
@@ -2425,10 +2425,11 @@ export class HostedRuntimeWorker {
     this.activeBackendLoadController = controller;
     this.activeBackendLoadSettled = settled.promise;
     try {
-      // A v5 library attests the lock's block spec (or answers with its unit refusal).
+      // A v5 library attests the lock's block spec and prefill chunk (or answers with its unit
+      // refusal).
       return await this.modelBackend.load({
         ...request,
-        ...lockedBlockSites(this.runtimeLockModels, request.variant),
+        ...lockedLibraryContract(this.runtimeLockModels, request.variant),
         signal: controller.signal,
       });
     } finally {

@@ -69,20 +69,27 @@ export interface CatalogRuntimeLockModel {
   convertedRepository: string;
   convertedRevision: string;
   contextProfiles: readonly number[];
+  /** The library's compiled prefill chunk, which its descriptor attests (HOOK_ABI.md §6). */
+  prefillChunkSize: number;
   /** The block spec a `standard-v4` library's descriptor is attested against (B1 §8.2). */
   blockSpec: BlockSpec | null;
   /** What a `standard-v4-residual` library's unit members answer (native's 422 text). */
   unitRefusal: string | null;
 }
 
-/** The lock's block sites for a catalog variant (the load request's `blockSpec` and
- *  `unitRefusal`): the entry whose runtime identity it carries, or nothing locked. */
-export function lockedBlockSites(
+/** What the lock records about a catalog variant's compiled library (the load request's
+ *  `blockSpec`, `unitRefusal` and `prefillChunkSize`): the entry whose runtime identity it carries,
+ *  or nothing locked (a load then fails attestation with `HOOK_ABI_MISMATCH`). */
+export function lockedLibraryContract(
   locks: readonly CatalogRuntimeLockModel[],
   variant: Pick<ModelVariant, "runtimeIdentity">,
-): { blockSpec: BlockSpec | null; unitRefusal: string | null } {
+): { blockSpec: BlockSpec | null; unitRefusal: string | null; prefillChunkSize: number | null } {
   const lock = locks.find((candidate) => sameRuntimeIdentity(candidate.runtimeIdentity, variant.runtimeIdentity));
-  return { blockSpec: lock?.blockSpec ?? null, unitRefusal: lock?.unitRefusal ?? null };
+  return {
+    blockSpec: lock?.blockSpec ?? null,
+    unitRefusal: lock?.unitRefusal ?? null,
+    prefillChunkSize: lock?.prefillChunkSize ?? null,
+  };
 }
 
 export class CatalogValidationError extends Error {

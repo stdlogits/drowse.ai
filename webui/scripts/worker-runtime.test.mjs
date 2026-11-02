@@ -7,7 +7,7 @@ import {
   catalogBytes,
   catalogFixture,
   catalogRuntimeLockModels,
-  fixtureBlockSites,
+  fixtureLibraryContract,
 } from "./catalog-fixture.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -2319,12 +2319,16 @@ try {
     assert.deepEqual((await response(scope, "fixture-manifold-get-local")).result, local);
   });
 
-  test("a load carries the runtime lock's block sites for its variant", async () => {
+  test("a load carries the runtime lock's library contract for its variant", async () => {
     const loads = [];
     const backend = new fakeModelBackendModule.DeterministicBrowserModelBackend();
     const load = backend.load.bind(backend);
     backend.load = async (loadRequest) => {
-      loads.push({ blockSpec: loadRequest.blockSpec, unitRefusal: loadRequest.unitRefusal });
+      loads.push({
+        blockSpec: loadRequest.blockSpec,
+        unitRefusal: loadRequest.unitRefusal,
+        prefillChunkSize: loadRequest.prefillChunkSize,
+      });
       return load(loadRequest);
     };
     const scope = harness({
@@ -2334,7 +2338,7 @@ try {
     await prepareDownload(scope);
     scope.send(request("load-lock-block-sites", "load", downloadPayload()));
     assert.equal((await response(scope, "load-lock-block-sites")).ok, true);
-    assert.deepEqual(loads, [fixtureBlockSites(variant.structuredHookProfile)]);
+    assert.deepEqual(loads, [fixtureLibraryContract(variant)]);
   });
 
   test("the worker fixture serves the units members through its loaded model", async () => {

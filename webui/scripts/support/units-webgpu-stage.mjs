@@ -82,7 +82,8 @@ export async function stageUnitsFixture({ fixtures, arch, quantization, work }) 
   };
   return {
     fixture, modelDirectory, roles, artifacts, blockSpec, layerCount, hiddenSize,
-    contextTokens: chatConfig.context_window_size, runtimeIdentity,
+    contextTokens: chatConfig.context_window_size, prefillChunkSize: chatConfig.prefill_chunk_size,
+    runtimeIdentity,
   };
 }
 

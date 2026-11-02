@@ -130,13 +130,15 @@ try {
     unitSites: 0,
     descriptor: Array.from(expectedHookProfileDescriptor(
       STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL,
-      hookProfileDescriptorModel({ variant: forVariant }),
+      hookProfileDescriptorModel({ variant: forVariant, prefillChunkSize: 1024 }),
     )),
     ...overrides,
   });
+  // The lock's prefill chunk (1024, below the variant's one 2048 context, as on the base models).
   const loadRequest = (overrides = {}) => ({
     model: { id: "smollm2-360m-instruct" },
     variant,
+    prefillChunkSize: 1024,
     contextTokens: 2048,
     adapter,
     artifacts,
@@ -785,6 +787,28 @@ try {
     await assert.rejects(mismatchedProfile.load(loadRequest()), (error) => error.code === code);
     assert.equal(MismatchedProfileEngine.instances.at(-1).unloaded, 1);
   }
+  // The descriptor's PREFILL_CHUNK_SIZE is the lock's: a load whose lock entry records none, or a
+  // library compiled at the context (2048) under a lock recording 1024, fails attestation.
+  await assert.rejects(
+    new DrowseWebLlmRuntime({ DROWSE_HOOK_ABI: "block-sites-v5", MLCEngine: FixtureEngine })
+      .load(loadRequest({ prefillChunkSize: null })),
+    (error) => error.code === "HOOK_ABI_MISMATCH" && /prefill chunk/u.test(error.message),
+  );
+  class ContextPrefillEngine extends FixtureEngine {
+    async getDrowseStructuredHookProfile() {
+      return compiledProfile({
+        descriptor: Array.from(expectedHookProfileDescriptor(
+          STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL,
+          hookProfileDescriptorModel({ variant, prefillChunkSize: 2048 }),
+        )),
+      });
+    }
+  }
+  await assert.rejects(
+    new DrowseWebLlmRuntime({ DROWSE_HOOK_ABI: "block-sites-v5", MLCEngine: ContextPrefillEngine })
+      .load(loadRequest()),
+    (error) => error.code === "HOOK_ABI_MISMATCH" && /PREFILL_CHUNK_SIZE/u.test(error.message),
+  );
   await assert.rejects(
     new DrowseWebLlmRuntime({ DROWSE_HOOK_ABI: "block-sites-v5", MLCEngine: FixtureEngine })
       .load(loadRequest({ variant: { ...variant, structuredHookProfile: "standard-v3" } })),
@@ -810,7 +834,7 @@ try {
         unitSites: 1,
         descriptor: Array.from(expectedHookProfileDescriptor(
           STANDARD_STRUCTURED_HOOK_PROFILE_V4,
-          hookProfileDescriptorModel({ variant: unitsVariant, blockSpec }),
+          hookProfileDescriptorModel({ variant: unitsVariant, blockSpec, prefillChunkSize: 1024 }),
         )),
       };
     }

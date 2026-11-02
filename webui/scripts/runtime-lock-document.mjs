@@ -192,6 +192,7 @@ function validateRuntimeModel(value) {
     "layerMap",
     "quantization",
     "contextProfiles",
+    "prefillChunkSize",
     ...("modelType" in value ? ["modelType"] : []),
   ], `runtime lock model ${String(value?.id)}`);
   if (
@@ -252,6 +253,12 @@ function validateRuntimeModel(value) {
     (value.architecture === "gpt2" && value.contextProfiles.some((context) => context > 1024)) ||
     new Set(value.contextProfiles).size !== value.contextProfiles.length
   ) throw new Error(`runtime lock model ${value.id} context profiles are invalid`);
+  // The library's compiled prefill chunk, which its descriptor attests (HOOK_ABI.md §6): no forward
+  // carries more rows, so it never exceeds the smallest context the model is offered at.
+  if (
+    !Number.isSafeInteger(value.prefillChunkSize) || value.prefillChunkSize < 1 ||
+    value.prefillChunkSize > Math.min(...value.contextProfiles)
+  ) throw new Error(`runtime lock model ${value.id} prefill chunk size is invalid`);
 }
 
 function exactKeys(value, expected, label) {

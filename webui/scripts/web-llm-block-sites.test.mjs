@@ -56,13 +56,22 @@ try {
     contextProfiles: [{ contextTokens: 128 }, { contextTokens: 64 }],
     runtimeIdentity: { layerMap: [0, 1, 2, 3], hiddenSize: 64 },
   });
-  const request = (profile, extra = {}) => ({ variant: variant(profile), ...extra });
+  // The lock's prefill chunk (32) is below the smallest context (64), as on the base models
+  // (1024 against 2048): the descriptor attests the lock's value, not a context.
+  const request = (profile, extra = {}) => ({ variant: variant(profile), prefillChunkSize: 32, ...extra });
 
   // ------------------------------------------------ descriptor model and attestation ---
   const model = engine.hookProfileDescriptorModel(request("standard-v4", { blockSpec: spec }));
   assert.deepEqual(model, {
-    layerCount: 4, hiddenSize: 64, contextTokens: 128, prefillChunkSize: 64, blockSpec: spec,
+    layerCount: 4, hiddenSize: 64, contextTokens: 128, prefillChunkSize: 32, blockSpec: spec,
   });
+  for (const prefillChunkSize of [null, undefined, 0, 65, 1.5]) {
+    assert.throws(
+      () => engine.hookProfileDescriptorModel(request("standard-v4", { blockSpec: spec, prefillChunkSize })),
+      (error) => error.code === "HOOK_ABI_MISMATCH" && /prefill chunk/.test(error.message),
+      String(prefillChunkSize),
+    );
+  }
   const v4 = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4;
   const residual = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL;
   const descriptor = Array.from(profiles.expectedHookProfileDescriptor(v4, model));
@@ -102,6 +111,13 @@ try {
     () => engine.attestCompiledStructuredHookProfile(bridgeProfile(), request("standard-v4", { blockSpec: spec }), "post-block-residual-v4"),
     (error) => error.code === "HOOK_ABI_MISMATCH",
   );
+  // A library compiled with the smallest context as its prefill chunk does not attest under a
+  // lock recording 32 (the old adoption rule's value is refused).
+  const contextPrefill = Array.from(profiles.expectedHookProfileDescriptor(v4, { ...model, prefillChunkSize: 64 }));
+  assert.throws(
+    () => attest(bridgeProfile({ descriptor: contextPrefill })),
+    (error) => error.code === "HOOK_ABI_MISMATCH" && /PREFILL_CHUNK_SIZE/.test(error.message),
+  );
   // A standard-v4 library cannot be attested without the lock's block spec.
   assert.throws(() => attest(bridgeProfile(), {}), (error) =>
     error.code === "HOOK_ABI_MISMATCH" && /block spec/.test(error.message));
@@ -120,7 +136,7 @@ try {
   assert.equal(capabilities.profile.id, "standard-v4");
   assert.equal(capabilities.vocabSize, 259);
   assert.equal(capabilities.contextTokens, 128);
-  assert.equal(capabilities.prefillChunkSize, 64);
+  assert.equal(capabilities.prefillChunkSize, 32);
   assert.equal(capabilities.blockSpec, spec);
   assert.equal(capabilities.unitRefusal, null);
   const refusal = "drowse units need a dense gated MLP block; gpt2 fuses q/k/v";

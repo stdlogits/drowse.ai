@@ -32,8 +32,18 @@ assert.deepEqual(executionProfiles, {
   requiredFeatures: [],
   blockSpec: qwen4b.blockSpec,
   unitRefusal: null,
+  prefillChunkSize: 2048,
 });
 assert.ok(qwen4b.blockSpec, "the lock records qwen3-4b's block spec");
+// The lock's prefill chunk travels with the profiles; a closure that says otherwise is refused.
+assert.throws(
+  () => lockedModelExecutionProfiles({ ...qwen4b, prefillChunkSize: undefined }, executionProfiles),
+  /prefill chunk does not match/,
+);
+assert.throws(
+  () => lockedModelExecutionProfiles(qwen4b, { ...executionProfiles, prefillChunkSize: 1024 }),
+  /prefill chunk does not match/,
+);
 // A v5 library: the block spec travels with standard-v4, the refusal with -residual.
 const blockSpec = { dFF: 9728, nHeads: 32 };
 const { blockSpec: _lockedSpec, unitRefusal: _lockedRefusal, ...bareQwen4b } = qwen4b;

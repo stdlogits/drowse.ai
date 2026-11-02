@@ -34,6 +34,7 @@ interface Request {
   /** The runtime lock's block spec (standard-v4) and unit refusal (standard-v4-residual). */
   blockSpec: BlockSpec | null;
   unitRefusal: string | null;
+  prefillChunkSize: number;
   thinkingProfile: ModelVariant["thinkingProfile"];
   quantization: "q4f16_1" | "q4f32_1" | "q0f32";
   requiredFeatures: GPUFeatureName[];
@@ -173,6 +174,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
       contextTokens: event.data.contextTokens,
       blockSpec: event.data.blockSpec,
       unitRefusal: event.data.unitRefusal,
+      prefillChunkSize: event.data.prefillChunkSize,
       adapter,
       artifacts: [...modelArtifacts, ...coreArtifacts],
       optionalPacks,

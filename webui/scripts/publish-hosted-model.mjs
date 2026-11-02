@@ -76,8 +76,8 @@ export async function validatePublishDirectory(directory, model, runtime, {
     !Array.isArray(contextProfiles) || contextProfiles.length === 0 ||
     contextProfiles.some((value) => !Number.isSafeInteger(value) || value < 1) ||
     manifest.contextWindowSize !== Math.max(...contextProfiles) ||
-    !Number.isSafeInteger(manifest.prefillChunkSize) || manifest.prefillChunkSize < 1 ||
-    manifest.prefillChunkSize > manifest.contextWindowSize
+    // The library's compiled prefill chunk is the lock's (its descriptor attests it).
+    manifest.prefillChunkSize !== model.prefillChunkSize
   ) {
     throw new Error("hosted model context configuration differs from the runtime lock");
   }

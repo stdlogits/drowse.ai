@@ -58,6 +58,10 @@ export interface BrowserModelLoadRequest {
   /** The runtime lock's `unitRefusal` for a residual variant (native `UnsupportedBlockError`'s
    *  text, B1 §7): what its unit members answer (422). */
   unitRefusal?: string | null;
+  /** The runtime lock's `prefillChunkSize`: the library's compiled prefill chunk, which its
+   *  descriptor attests as PREFILL_CHUNK_SIZE (HOOK_ABI.md §6). Absent or null fails the load
+   *  with `HOOK_ABI_MISMATCH`. */
+  prefillChunkSize?: number | null;
   requiredCorePack: CatalogInstrumentPack;
   contextTokens: number;
   runtimeClass?: BrowserRuntimeClass;
