@@ -1158,16 +1158,21 @@ export class BrowserFeasibilityCorePackCompiler {
 
     const curveMaps = curved.map((term) => this.structuredCurves(term));
     const curvedBasisByLayer = new Map<number, ArrayLike<number>[]>();
+    // drowse's `OverlappingManifoldError` (steering/hooks.py), naming the layer's first curved
+    // manifold and the one that overlaps it.
+    const curvedOwner = new Map<number, string>();
     curveMaps.forEach((curves, curveIndex) => {
+      const name = (curved[curveIndex].base as ResolvedManifoldAtom).manifold.name;
       for (const [programIndex, curve] of curves) {
         const previous = curvedBasisByLayer.get(programIndex) ?? [];
         const overlap = maximumBasisOverlap(curve.basis, previous);
         if (overlap > 1e-3) {
-          throw coreError(
+          throw Object.assign(coreError(
             "CORE_PACK_CURVED_OVERLAP",
-            `Curved terms ${curveIndex} and an earlier term overlap at model layer ${this.layerMap[programIndex]} (max |cosine| ${overlap.toFixed(3)}); curved terms sharing a layer must be orthogonal`,
-          );
+            `manifolds '${curvedOwner.get(programIndex)}' and '${name}' both cover layer ${this.layerMap[programIndex]} with non-orthogonal subspaces (max |cosine| = ${overlap.toFixed(3)} > 0.001); curved manifolds sharing a layer must be orthogonal`,
+          ), { status: 422, recoverable: false });
         }
+        if (!curvedOwner.has(programIndex)) curvedOwner.set(programIndex, name);
         curvedBasisByLayer.set(programIndex, [...previous, ...curve.basis]);
       }
     });
