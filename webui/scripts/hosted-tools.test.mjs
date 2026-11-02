@@ -531,53 +531,8 @@ assert.throws(
   ),
   /runtime-locked Drowse WebLLM archive/,
 );
-const longPrefill = {
-  fixturePath: fixtureRelativePath,
-  fixtureSha256,
-  modelId: "gemma3-270m-instruct",
-  webLlmBaselineVersion: "0.2.84",
-  prompt2048Passed: true,
-  prompt4096Passed: true,
-  shapeCacheHangObserved: false,
-};
-await runtimeLockValidators.validateRuntimeGateResults(
-  "gemmaLongPrefill",
-  longPrefill,
-  fixtureRepository,
-);
-await assert.rejects(
-  runtimeLockValidators.validateRuntimeGateResults(
-    "gemmaLongPrefill",
-    { ...longPrefill, webLlmBaselineVersion: "0.2.85" },
-    fixtureRepository,
-  ),
-  /long-prefill evidence did not rule out/,
-);
-const qwenTinyParity = {
-  fixturePath: fixtureRelativePath,
-  fixtureSha256,
-  architecture: "qwen3",
-  maxAbsoluteLogitError: 0.0001,
-  maxRelativeLogitError: 0.001,
-  maxAbsoluteCaptureError: 0.0001,
-  maxRelativeCaptureError: 0.001,
-  probePassed: true,
-  steeringPassed: true,
-};
-await runtimeLockValidators.validateRuntimeGateResults(
-  "qwenTinyFp32Parity",
-  qwenTinyParity,
-  fixtureRepository,
-);
-await assert.rejects(
-  runtimeLockValidators.validateRuntimeGateResults(
-    "qwenTinyFp32Parity",
-    { ...qwenTinyParity, architecture: "gemma3_text" },
-    fixtureRepository,
-  ),
-  /fixture binding is invalid/,
-);
-const qwenProductionParity = {
+// The q4 parity gate names any q4 model of the lock (the record binds its runtime identity).
+const productionQ4Parity = {
   fixturePath: fixtureRelativePath,
   fixtureSha256,
   modelId: "qwen3-1.7b",
@@ -588,17 +543,30 @@ const qwenProductionParity = {
   steeringDirectionCosine: 0.99,
 };
 await runtimeLockValidators.validateRuntimeGateResults(
-  "qwenProductionQ4Parity",
-  qwenProductionParity,
+  "productionQ4Parity",
+  productionQ4Parity,
   fixtureRepository,
 );
 await assert.rejects(
   runtimeLockValidators.validateRuntimeGateResults(
-    "qwenProductionQ4Parity",
-    { ...qwenProductionParity, modelId: "qwen3-0.6b" },
+    "productionQ4Parity",
+    { ...productionQ4Parity, steeringDirectionCosine: 0.98 },
     fixtureRepository,
   ),
-  /fixture binding is invalid/,
+  /production q4 parity thresholds/,
+);
+await assert.rejects(
+  runtimeLockValidators.validateRuntimeGateResults(
+    "productionQ4Parity",
+    { ...productionQ4Parity, modelId: "gemma3-270m-instruct" },
+    fixtureRepository,
+    filledRuntimeLock,
+  ),
+  /names no q4 model of the runtime lock/,
+);
+await assert.rejects(
+  runtimeLockValidators.validateRuntimeGateResults("gemmaLongPrefill", {}, fixtureRepository),
+  /unknown runtime evidence gate/,
 );
 const activationCapture = {
   fixturePath: fixtureRelativePath,

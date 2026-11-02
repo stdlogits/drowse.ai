@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { parse as parseYaml } from "yaml";
-import runtimeLock from "../../browser-runtime/runtime-lock.json" with { type: "json" };
+import repositoryRuntimeLock from "../../browser-runtime/runtime-lock.json" with { type: "json" };
 import {
   createBenchmarkRunRecord,
   createGateEvidenceRecord,
@@ -39,6 +39,13 @@ import {
 } from "./verify-hosted-evidence-attestations.mjs";
 
 const repositoryRoot = resolve(import.meta.dirname, "../..");
+// The repository lock with the library-bound fields W4 fills (each model's digests and revision).
+const runtimeLock = structuredClone(repositoryRuntimeLock);
+for (const [index, model] of runtimeLock.models.entries()) {
+  model.convertedRevision ??= String(index + 1).repeat(40);
+  model.manifestSha256 ??= "c".repeat(64);
+  model.librarySha256 ??= "d".repeat(64);
+}
 const revision = "a".repeat(40);
 const producedAt = "2026-08-29T10:00:00.000Z";
 const now = Date.parse("2026-08-29T10:01:00.000Z");
@@ -48,14 +55,10 @@ const producerConfig = resolve(
   "browser-runtime/evidence-configs/fitting-kernel-parity.json",
 );
 const evidenceTypes = [
-  "gemmaTinyFp32Parity",
-  "llamaTinyFp32Parity",
-  "qwenTinyFp32Parity",
-  "gemmaProductionQ4Parity",
-  "smolProductionQ4Parity",
-  "qwenProductionQ4Parity",
-  "gemmaLongPrefill",
-  "runtimeLifecycle",
+  "cVmGoldens",
+  "webGpuGoldens",
+  "productionLibrary",
+  "productionQ4Parity",
   "activationCapture",
   "fittingKernelParity",
   "topologyOrchestration",
@@ -85,19 +88,19 @@ test("every release gate and benchmark has a pinned executable producer", () => 
 
 test("producer tool identity covers its exact checked-in source closure", async () => {
   const first = await releaseEvidenceProducerToolVersion(
-    "gemmaTinyFp32Parity",
+    "cVmGoldens",
     repositoryRoot,
     producerConfig,
   );
   const second = await releaseEvidenceProducerToolVersion(
-    "gemmaTinyFp32Parity",
+    "cVmGoldens",
     repositoryRoot,
     producerConfig,
   );
   assert.equal(first, second);
   assert.match(
     first,
-    /^gemma-tiny-fp32-parity-v1\+sha256\.[0-9a-f]{64}$/,
+    /^browser-cvm-units-goldens-v1\+sha256\.[0-9a-f]{64}$/,
   );
 
   const temporaryConfig = resolve(
@@ -108,13 +111,13 @@ test("producer tool identity covers its exact checked-in source closure", async 
   try {
     await writeFile(temporaryConfig, '{"fixture":1}\n', { flag: "wx" });
     const before = await releaseEvidenceProducerToolVersion(
-      "gemmaTinyFp32Parity",
+      "cVmGoldens",
       repositoryRoot,
       temporaryConfig,
     );
     await writeFile(temporaryConfig, '{"fixture":2}\n');
     const after = await releaseEvidenceProducerToolVersion(
-      "gemmaTinyFp32Parity",
+      "cVmGoldens",
       repositoryRoot,
       temporaryConfig,
     );
@@ -131,17 +134,17 @@ test("an executed receipt is invalidated when its producer config changes", asyn
     `binding-recheck-${process.pid}-${Date.now()}.json`,
   );
   const fixture = await trackedFixture(
-    "drowse/tests/fixtures/browser/post-block-rank-one-v2.json",
+    "drowse/tests/fixtures/browser/units-tiny-models-v1.json",
   );
   try {
     await writeFile(temporaryConfig, '{"fixture":1}\n', { flag: "wx" });
     const receipt = await runReleaseEvidenceProducer({
-      evidenceType: "gemmaTinyFp32Parity",
+      evidenceType: "cVmGoldens",
       configPath: temporaryConfig,
       repositoryRoot,
       nonce,
       async execute() {
-        return { stdout: JSON.stringify(gemmaReceipt()), stderr: "" };
+        return { stdout: JSON.stringify(cVmReceipt()), stderr: "" };
       },
     });
     await writeFile(temporaryConfig, '{"fixture":2}\n');
@@ -164,18 +167,18 @@ test("an executed receipt is invalidated when its producer config changes", asyn
 
 test("recorder executes the registered producer with a fresh nonce", async () => {
   const fixture = await trackedFixture(
-    "drowse/tests/fixtures/browser/post-block-rank-one-v2.json",
+    "drowse/tests/fixtures/browser/units-tiny-models-v1.json",
   );
   let invocation;
   try {
     const receipt = await runReleaseEvidenceProducer({
-      evidenceType: "gemmaTinyFp32Parity",
+      evidenceType: "cVmGoldens",
       configPath: producerConfig,
       repositoryRoot,
       nonce,
       async execute(command, args, options) {
         invocation = { command, args, options };
-        return { stdout: JSON.stringify(gemmaReceipt()), stderr: "" };
+        return { stdout: JSON.stringify(cVmReceipt()), stderr: "" };
       },
     });
     assert.equal(invocation.command, process.execPath);
@@ -191,19 +194,19 @@ test("recorder executes the registered producer with a fresh nonce", async () =>
       drowseRevision: revision,
       now,
     });
-    assert.equal(record.evidenceType, "gemmaTinyFp32Parity");
+    assert.equal(record.evidenceType, "cVmGoldens");
     assert.equal(record.schemaVersion, 4);
-    assert.equal(record.producerId, "gemma-tiny-fp32-parity-v1");
+    assert.equal(record.producerId, "browser-cvm-units-goldens-v1");
     assert.equal(
       record.producerConfigPath,
       "browser-runtime/evidence-configs/fitting-kernel-parity.json",
     );
     assert.match(record.producerConfigSha256, /^[0-9a-f]{64}$/);
     assert.equal(record.producedAt, producedAt);
-    assert.match(record.toolVersion, /^gemma-tiny-fp32-parity-v1\+sha256\./);
+    assert.match(record.toolVersion, /^browser-cvm-units-goldens-v1\+sha256\./);
     assert.equal(
       record.results.fixturePath,
-      "drowse/tests/fixtures/browser/post-block-rank-one-v2.json",
+      "drowse/tests/fixtures/browser/units-tiny-models-v1.json",
     );
     assert.match(record.results.fixtureSha256, /^[0-9a-f]{64}$/);
   } finally {
@@ -214,7 +217,7 @@ test("recorder executes the registered producer with a fresh nonce", async () =>
 test("caller-authored gate and benchmark objects cannot cross the recorder boundary", async () => {
   await assert.rejects(
     createGateEvidenceRecord({
-      receipt: gemmaReceipt(),
+      receipt: cVmReceipt(),
       runtimeLock,
       fixtureRoot: repositoryRoot,
       drowseRevision: revision,
@@ -234,30 +237,30 @@ test("caller-authored gate and benchmark objects cannot cross the recorder bound
 });
 
 test("producer receipts are exact, nonce-bound, and pinned to their fixture", () => {
-  const producer = requireReleaseEvidenceProducer("gemmaTinyFp32Parity");
+  const producer = requireReleaseEvidenceProducer("cVmGoldens");
   assert.throws(
     () => validateProducerReceipt(
-      { ...gemmaReceipt(), nonce: "c".repeat(64) },
+      { ...cVmReceipt(), nonce: "c".repeat(64) },
       producer,
-      "gemmaTinyFp32Parity",
+      "cVmGoldens",
       nonce,
     ),
     /identity is invalid/,
   );
   assert.throws(
     () => validateProducerReceipt(
-      { ...gemmaReceipt(), fixturePath: "LICENSE" },
+      { ...cVmReceipt(), fixturePath: "LICENSE" },
       producer,
-      "gemmaTinyFp32Parity",
+      "cVmGoldens",
       nonce,
     ),
     /fixture is not pinned/,
   );
   assert.throws(
     () => validateProducerReceipt(
-      { ...gemmaReceipt(), callerClaim: true },
+      { ...cVmReceipt(), callerClaim: true },
       producer,
-      "gemmaTinyFp32Parity",
+      "cVmGoldens",
       nonce,
     ),
     /unknown or missing fields/,
@@ -307,46 +310,46 @@ test("benchmark producer output is re-bound to the locked runtime identity", asy
 
 test("configured producer can execute only a registered observer closure", async () => {
   const root = await mkdtemp(join(tmpdir(), "drowse-evidence-producer-"));
-  const observer = "webui/scripts/browser-runtime-feasibility.mjs";
+  const observer = "browser-runtime/record-cvm-goldens.py";
   const configPath = join(root, "config.json");
-  await mkdir(join(root, "webui", "scripts"), { recursive: true });
+  await mkdir(join(root, "browser-runtime"), { recursive: true });
   await writeFile(join(root, observer), "// fixture observer\n");
   await writeFile(configPath, JSON.stringify({
     $schema: "../evidence-config.schema.json",
     schemaVersion: 1,
-    evidenceType: "gemmaTinyFp32Parity",
+    evidenceType: "cVmGoldens",
     observer,
     arguments: ["--fixture-mode"],
   }));
   try {
     let invocation;
     const receipt = await runConfiguredObserver({
-      evidenceType: "gemmaTinyFp32Parity",
+      evidenceType: "cVmGoldens",
       configPath,
       nonce,
       root,
       async execute(command, args) {
         invocation = { command, args };
-        const value = gemmaReceipt();
+        const value = cVmReceipt();
         delete value.producerId;
         delete value.nonce;
         return { stdout: JSON.stringify(value), stderr: "" };
       },
     });
-    assert.equal(invocation.command, process.execPath);
+    assert.equal(invocation.command, "python3");
     assert.equal(invocation.args.at(-1), "--fixture-mode");
-    assert.equal(receipt.producerId, "gemma-tiny-fp32-parity-v1");
+    assert.equal(receipt.producerId, "browser-cvm-units-goldens-v1");
 
     await writeFile(configPath, JSON.stringify({
       $schema: "../evidence-config.schema.json",
       schemaVersion: 1,
-      evidenceType: "gemmaTinyFp32Parity",
+      evidenceType: "cVmGoldens",
       observer: "webui/scripts/unregistered.mjs",
       arguments: [],
     }));
     await assert.rejects(
       runConfiguredObserver({
-        evidenceType: "gemmaTinyFp32Parity",
+        evidenceType: "cVmGoldens",
         configPath,
         nonce,
         root,
@@ -525,14 +528,14 @@ test("producer CLI parser is exact", () => {
   assert.deepEqual(
     parseProducerArguments([
       "--evidence-type",
-      "runtimeLifecycle",
+      "productionLibrary",
       "--config",
       "browser-runtime/evidence-configs/runtime.json",
       "--nonce",
       nonce,
     ]),
     {
-      evidenceType: "runtimeLifecycle",
+      evidenceType: "productionLibrary",
       config: "browser-runtime/evidence-configs/runtime.json",
       nonce,
     },
@@ -540,7 +543,7 @@ test("producer CLI parser is exact", () => {
   assert.throws(
     () => parseProducerArguments([
       "--evidence-type",
-      "runtimeLifecycle",
+      "productionLibrary",
       "--config",
       "config.json",
       "--nonce",
@@ -576,14 +579,14 @@ test("recorder CLI removes arbitrary measurement input and keeps worktree policy
   const parsed = parseArguments([
     "gate",
     "--evidence-type",
-    "qwenTinyFp32Parity",
+    "webGpuGoldens",
     "--producer-config",
     "browser-runtime/evidence-configs/qwen-tiny.json",
     "--output",
     "browser-runtime/evidence/qwen.json",
   ]);
   assert.equal(parsed.kind, "gate");
-  assert.equal(parsed.evidenceType, "qwenTinyFp32Parity");
+  assert.equal(parsed.evidenceType, "webGpuGoldens");
   assert.throws(
     () => parseArguments([
       "gate",
@@ -598,7 +601,7 @@ test("recorder CLI removes arbitrary measurement input and keeps worktree policy
     () => parseArguments([
       "benchmark",
       "--evidence-type",
-      "qwenTinyFp32Parity",
+      "webGpuGoldens",
       "--producer-config",
       "config.json",
       "--output",
@@ -751,8 +754,12 @@ async function attestationFixture() {
   const gateBytes = `${JSON.stringify(gate)}\n`;
   await writeFile(gatePath, gateBytes);
   await writeFile(
-    join(path, "browser-runtime", "runtime-feasibility-evidence.json"),
-    JSON.stringify({ drowseRevision: null, gates: { runtimeLifecycle: null } }),
+    join(path, "browser-runtime", "runtime-evidence.json"),
+    JSON.stringify({
+      drowseRevision: null,
+      gates: { cVmGoldens: null, webGpuGoldens: null },
+      libraries: { "qwen3-1.7b": { productionLibrary: null } },
+    }),
   );
   await writeFile(
     join(path, "browser-runtime", "authoring-evidence.json"),
@@ -785,23 +792,25 @@ async function attestationFixture() {
   };
 }
 
-function gemmaReceipt() {
+function cVmReceipt() {
+  const suites = Object.fromEntries([
+    "attention-patterns", "block-sites", "formula", "lens-reads", "neuron-push", "slens",
+    "token-anatomy", "unit-ablation", "unit-activity", "unit-artifacts", "unit-probes", "unit-reads",
+  ].map((suite, index) => [suite, (index + 1) * 1e-6]));
   return {
     schemaVersion: 1,
-    evidenceType: "gemmaTinyFp32Parity",
-    producerId: "gemma-tiny-fp32-parity-v1",
+    evidenceType: "cVmGoldens",
+    producerId: "browser-cvm-units-goldens-v1",
     nonce,
     producedAt,
     passed: true,
-    fixturePath: "drowse/tests/fixtures/browser/post-block-rank-one-v2.json",
+    fixturePath: "drowse/tests/fixtures/browser/units-tiny-models-v1.json",
     results: {
-      architecture: "gemma3_text",
-      maxAbsoluteLogitError: 0.00001,
-      maxRelativeLogitError: 0.0001,
-      maxAbsoluteCaptureError: 0.00001,
-      maxRelativeCaptureError: 0.0001,
-      probePassed: true,
-      steeringPassed: true,
+      backend: "c-tvm-vm",
+      defaultGoldensPassed: true,
+      libraries: Object.fromEntries(
+        ["gemma3-q0f32", "gemma3-q4f32_1", "qwen3-q0f32", "qwen3-q4f32_1"].map((key) => [key, { suites }]),
+      ),
     },
   };
 }
@@ -872,6 +881,7 @@ function fullRuntimeReport() {
       "flat_gated_instruments",
       "curved_fitting",
       "curved_generation",
+      "units",
       "stop",
       "unload_reload",
       "offline_reuse",
@@ -900,7 +910,8 @@ function fullRuntimeReport() {
     $schema: "drowse-real-browser-e2e-measurement-v1",
     schemaVersion: 1,
     evidenceType: "realBrowserEndToEnd",
-    toolVersion: "drowse-real-browser-e2e-v4",
+    toolVersion: "drowse-real-browser-e2e-v5",
+    structuredHookProfile: model.structuredHookProfile,
     // The observer-report freshness check reads the real clock (the producer
     // runs as a subprocess), so this report is minted now, not at `producedAt`.
     producedAt: new Date(Date.now() - 60 * 1000).toISOString(),
@@ -941,3 +952,90 @@ async function trackedFixture(path) {
     remove: () => rm(root, { recursive: true, force: true }),
   };
 }
+
+test("hook ABI v5 runtime evidence: units goldens per backend and each production library", async () => {
+  const { validateRuntimeGateResults } = await import("./check-runtime-lock.mjs");
+  const fixtureSha256 = createHash("sha256").update('{"fixture":true}\n').digest("hex");
+  const units = await trackedFixture("drowse/tests/fixtures/browser/units-tiny-models-v1.json");
+  const fixtureRoot = units.root;
+  const bound = (receipt) => ({ fixturePath: receipt.fixturePath, fixtureSha256, ...receipt.results });
+  // The C TVM VM record covers all four fixture libraries and every golden suite.
+  const cvm = cVmReceipt();
+  await validateRuntimeGateResults("cVmGoldens", bound(cvm), fixtureRoot, runtimeLock);
+  const missing = structuredClone(cvm);
+  delete missing.results.libraries["qwen3-q4f32_1"];
+  await assert.rejects(validateRuntimeGateResults("cVmGoldens", bound(missing), fixtureRoot, runtimeLock), /four fixture libraries/);
+  const short = structuredClone(cvm);
+  delete short.results.libraries["gemma3-q0f32"].suites["token-anatomy"];
+  await assert.rejects(validateRuntimeGateResults("cVmGoldens", bound(short), fixtureRoot, runtimeLock), /lacks a units golden suite/);
+  const broken = structuredClone(cvm);
+  broken.results.libraries["gemma3-q0f32"].suites.slens = 0.5;
+  await assert.rejects(validateRuntimeGateResults("cVmGoldens", bound(broken), fixtureRoot, runtimeLock), /exceeds/);
+
+  // WebGPU runs once per library (browser-units-goldens.mjs --report); the producer joins them.
+  const producer = requireReleaseEvidenceProducer("webGpuGoldens");
+  const observation = (key) => ({
+    schemaVersion: 1,
+    evidenceType: "webGpuGoldens",
+    fixturePath: producer.fixturePath,
+    passed: true,
+    producedAt,
+    results: {
+      backend: "webgpu",
+      libraries: { [key]: { descriptor: { schema: 4, fields: 67, unitSites: 1, unitsPair: true }, suites: cvm.results.libraries[key].suites } },
+    },
+  });
+  const keys = Object.keys(cvm.results.libraries);
+  const merged = adaptObserverReports({
+    evidenceType: "webGpuGoldens", nonce, producer, observer: "webui/scripts/browser-units-goldens.mjs",
+    reports: keys.map(observation),
+  });
+  assert.deepEqual(Object.keys(merged.results.libraries).sort(), keys);
+  await validateRuntimeGateResults("webGpuGoldens", bound(merged), fixtureRoot, runtimeLock);
+  assert.throws(
+    () => adaptObserverReports({
+      evidenceType: "webGpuGoldens", nonce, producer, observer: "webui/scripts/browser-units-goldens.mjs",
+      reports: [observation(keys[0]), observation(keys[0])],
+    }),
+    /observed twice/,
+  );
+  const residual = structuredClone(merged);
+  residual.results.libraries[keys[1]].descriptor.unitSites = 0;
+  await assert.rejects(validateRuntimeGateResults("webGpuGoldens", bound(residual), fixtureRoot, runtimeLock), /schema-4 units descriptor/);
+
+  // A production library through the physical harness: its locked identity, profile and checks.
+  const libraryProducer = requireReleaseEvidenceProducer("productionLibrary");
+  const report = fullRuntimeReport();
+  report.checks.load.measurements = {
+    exactReadoutProfile: report.structuredHookProfile,
+    runtimeIdentitySha256: report.environment.runtimeIdentitySha256,
+  };
+  const receipt = adaptObserverReports({
+    evidenceType: "productionLibrary", nonce, producer: libraryProducer,
+    observer: "webui/scripts/browser-full-runtime.mjs", reports: [report],
+  });
+  assert.equal(receipt.results.modelId, "gemma3-270m-instruct");
+  assert.equal(receipt.results.structuredHookProfile, "standard-v4");
+  const identity = await trackedFixture("browser-runtime/runtime-lock-identity-v1.json");
+  const libraryResults = { fixturePath: receipt.fixturePath, fixtureSha256, ...receipt.results };
+  await validateRuntimeGateResults("productionLibrary", libraryResults, identity.root, runtimeLock);
+  await assert.rejects(
+    validateRuntimeGateResults("productionLibrary", { ...libraryResults, structuredHookProfile: "standard-v4-residual" }, identity.root, runtimeLock),
+    /another structured hook profile/,
+  );
+  await assert.rejects(
+    validateRuntimeGateResults("productionLibrary", { ...libraryResults, checks: libraryResults.checks.filter((name) => name !== "units") }, identity.root, runtimeLock),
+    /every physical runtime check/,
+  );
+  const unbound = structuredClone(report);
+  unbound.checks.load.measurements.exactReadoutProfile = "standard-v3";
+  assert.throws(
+    () => adaptObserverReports({
+      evidenceType: "productionLibrary", nonce, producer: libraryProducer,
+      observer: "webui/scripts/browser-full-runtime.mjs", reports: [unbound],
+    }),
+    /does not bind its loaded profile/,
+  );
+  await units.remove();
+  await identity.remove();
+});

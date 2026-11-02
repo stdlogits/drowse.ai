@@ -1,19 +1,35 @@
-export const BROWSER_FULL_RUNTIME_TOOL_VERSION = "drowse-real-browser-e2e-v4";
+export const BROWSER_FULL_RUNTIME_TOOL_VERSION = "drowse-real-browser-e2e-v5";
 
-export const REQUIRED_BROWSER_FULL_RUNTIME_CHECKS = Object.freeze([
-  "local_artifacts",
-  "webgpu_adapter",
-  "load",
-  "ordinary_generation",
-  "forced_replay",
-  "explicit_capture",
-  "flat_gated_instruments",
-  "curved_fitting",
-  "curved_generation",
-  "stop",
-  "unload_reload",
-  "offline_reuse",
-]);
+/** The physical harness's checks for a hook ABI v5 library, in order. `load` attests the
+ *  library's schema-4 descriptor against the lock (profile, block spec, capacities); a
+ *  `standard-v4` library then runs `units` (a unit ablation that moves the next-token
+ *  distribution, finite unit taps, one token-anatomy replay, one static unit read and the S
+ *  readout), a `standard-v4-residual` one `unit_refusal` (each unit call answers the lock's
+ *  `unitRefusal`, and the library exports no unit function). */
+export function requiredBrowserFullRuntimeChecks(structuredHookProfile) {
+  const unitCheck = {
+    "standard-v4": "units",
+    "standard-v4-residual": "unit_refusal",
+  }[structuredHookProfile];
+  if (unitCheck === undefined) {
+    throw new Error(`structured hook profile ${JSON.stringify(structuredHookProfile)} predates hook ABI v5`);
+  }
+  return Object.freeze([
+    "local_artifacts",
+    "webgpu_adapter",
+    "load",
+    "ordinary_generation",
+    "forced_replay",
+    "explicit_capture",
+    "flat_gated_instruments",
+    "curved_fitting",
+    "curved_generation",
+    unitCheck,
+    "stop",
+    "unload_reload",
+    "offline_reuse",
+  ]);
+}
 
 export function validatePairedSteeringControls(logprobs) {
   const names = ["baseline", "zero", "positive", "negative"];
@@ -263,12 +279,12 @@ export function validateBrowserFullRuntimeAudit(audit) {
   return structuredClone(audit);
 }
 
-export function validateBrowserFullRuntimeTranscript(events) {
+export function validateBrowserFullRuntimeTranscript(events, structuredHookProfile) {
   if (!Array.isArray(events))
     throw new Error("browser check transcript must be an array");
   const checks = {};
   let eventIndex = 0;
-  for (const expected of REQUIRED_BROWSER_FULL_RUNTIME_CHECKS) {
+  for (const expected of requiredBrowserFullRuntimeChecks(structuredHookProfile)) {
     const started = events[eventIndex++];
     if (
       !started ||
@@ -309,9 +325,10 @@ export function validateBrowserFullRuntimeTranscript(events) {
 export function createBrowserFullRuntimeReport({
   events,
   environment,
+  structuredHookProfile,
   producedAt = new Date(),
 }) {
-  const checks = validateBrowserFullRuntimeTranscript(events);
+  const checks = validateBrowserFullRuntimeTranscript(events, structuredHookProfile);
   if (!isRecord(environment) || Object.keys(environment).length === 0) {
     throw new Error("browser E2E environment is required");
   }
@@ -328,6 +345,7 @@ export function createBrowserFullRuntimeReport({
     producedAt: timestamp,
     passed: true,
     releaseEvidence: false,
+    structuredHookProfile,
     environment: structuredClone(environment),
     checks,
   };

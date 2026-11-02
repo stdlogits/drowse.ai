@@ -4,6 +4,7 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { thinkingProfile } from "./hosted-model-profiles.mjs";
+import { requiredBrowserFullRuntimeChecks } from "./browser-full-runtime-contract.mjs";
 import { OVERLAY_VM_FUNCTIONS } from "./overlay-vm-functions.mjs";
 import { validateRuntimeLock } from "./runtime-lock-document.mjs";
 import {
@@ -645,73 +646,111 @@ export async function validateBenchmarkProducerBindings(
   }
 }
 
+/** The four fixture libraries B4's units goldens run on (`build-units-fixtures.py`). */
+export const UNITS_FIXTURE_LIBRARIES = Object.freeze([
+  "gemma3-q0f32",
+  "gemma3-q4f32_1",
+  "qwen3-q0f32",
+  "qwen3-q4f32_1",
+]);
+/** Golden files every units evidence run reports (worst |Δ| per file); a backend may add more. */
+export const UNITS_GOLDEN_SUITES = Object.freeze([
+  "attention-patterns",
+  "block-sites",
+  "lens-reads",
+  "slens",
+  "token-anatomy",
+  "unit-ablation",
+  "unit-activity",
+  "unit-probes",
+  "unit-reads",
+]);
+// Every golden file carries its own library tolerance and the harnesses enforce it; the record
+// keeps the worst error as observed, bounded here only against a broken harness.
+const UNITS_GOLDEN_CEILING = 1e-3;
+
+function validateUnitsGoldenLibraries(name, libraries, webgpu) {
+  if (!sameStringSet(Object.keys(libraries ?? {}), UNITS_FIXTURE_LIBRARIES)) {
+    throw new Error(`${name} must cover the four fixture libraries ${UNITS_FIXTURE_LIBRARIES.join(", ")}`);
+  }
+  for (const [library, record] of Object.entries(libraries)) {
+    exactKeys(record, webgpu ? ["descriptor", "suites"] : ["suites"], `${name} ${library}`);
+    if (webgpu) {
+      exactKeys(record.descriptor, ["schema", "fields", "unitSites", "unitsPair"], `${name} ${library} descriptor`);
+      if (
+        record.descriptor.schema !== 4 || !Number.isSafeInteger(record.descriptor.fields) ||
+        record.descriptor.fields < 1 || record.descriptor.unitSites !== 1 || record.descriptor.unitsPair !== true
+      ) {
+        throw new Error(`${name} ${library} did not attest a schema-4 units descriptor`);
+      }
+    }
+    const suites = record.suites ?? {};
+    if (UNITS_GOLDEN_SUITES.some((suite) => !Object.hasOwn(suites, suite))) {
+      throw new Error(`${name} ${library} lacks a units golden suite`);
+    }
+    for (const [suite, worst] of Object.entries(suites)) {
+      if (!/^[a-z][a-z-]*$/.test(suite)) throw new Error(`${name} ${library} names an invalid suite`);
+      requireBoundedError(worst, UNITS_GOLDEN_CEILING, `${name} ${library} ${suite}`);
+    }
+  }
+}
+
 export async function validateRuntimeGateResults(
   name,
   results,
   fixtureRoot = repositoryRoot,
   runtime = null,
 ) {
-  if (
-    [
-      "gemmaTinyFp32Parity",
-      "llamaTinyFp32Parity",
-      "qwenTinyFp32Parity",
-    ].includes(name)
-  ) {
+  if (name === "cVmGoldens" || name === "webGpuGoldens") {
+    const webgpu = name === "webGpuGoldens";
+    exactKeys(
+      results,
+      ["fixturePath", "fixtureSha256", "backend", "libraries", ...(webgpu ? [] : ["defaultGoldensPassed"])],
+      `${name} results`,
+    );
+    await validateFixtureBinding(results, name, fixtureRoot);
+    if (results.backend !== (webgpu ? "webgpu" : "c-tvm-vm") || (!webgpu && results.defaultGoldensPassed !== true)) {
+      throw new Error(`${name} did not run on its backend with every golden`);
+    }
+    validateUnitsGoldenLibraries(name, results.libraries, webgpu);
+    return;
+  }
+  if (name === "productionLibrary") {
     exactKeys(
       results,
       [
         "fixturePath",
         "fixtureSha256",
-        "architecture",
-        "maxAbsoluteLogitError",
-        "maxRelativeLogitError",
-        "maxAbsoluteCaptureError",
-        "maxRelativeCaptureError",
-        "probePassed",
-        "steeringPassed",
+        "modelId",
+        "runtimeIdentitySha256",
+        "structuredHookProfile",
+        "contextTokens",
+        "checks",
       ],
       `${name} results`,
     );
     await validateFixtureBinding(results, name, fixtureRoot);
-    const expectedArchitecture = {
-      gemmaTinyFp32Parity: "gemma3_text",
-      llamaTinyFp32Parity: "llama",
-      qwenTinyFp32Parity: "qwen3",
-    }[name];
-    if (results.architecture !== expectedArchitecture) {
-      throw new Error(`${name} fixture binding is invalid`);
+    const model = runtime?.models?.find((candidate) => candidate.id === results.modelId);
+    if (runtime !== null && !model) throw new Error(`${name} names a model outside the runtime lock`);
+    if (!SHA256.test(results.runtimeIdentitySha256 ?? "")) {
+      throw new Error(`${name} observed runtime identity is invalid`);
     }
-    for (const field of ["maxAbsoluteLogitError", "maxAbsoluteCaptureError"]) {
-      if (
-        !Number.isFinite(results[field]) ||
-        results[field] < 0 ||
-        results[field] > 1e-4
-      ) {
-        throw new Error(`${name} exceeds the fp32 absolute tolerance`);
-      }
+    if (model && results.runtimeIdentitySha256 !== lockedRuntimeIdentitySha256(runtime, model)) {
+      throw new Error(`${name} observed runtime identity does not match the locked model`);
     }
-    for (const field of ["maxRelativeLogitError", "maxRelativeCaptureError"]) {
-      if (
-        !Number.isFinite(results[field]) ||
-        results[field] < 0 ||
-        results[field] > 1e-3
-      ) {
-        throw new Error(`${name} exceeds the fp32 relative tolerance`);
-      }
+    if (model && results.structuredHookProfile !== model.structuredHookProfile) {
+      throw new Error(`${name} attested another structured hook profile than the lock's`);
     }
-    if (results.probePassed !== true || results.steeringPassed !== true) {
-      throw new Error(`${name} did not pass probe and steering checks`);
+    if (model && !model.contextProfiles.includes(results.contextTokens)) {
+      throw new Error(`${name} ran a context the lock does not advertise`);
+    }
+    const expected = requiredBrowserFullRuntimeChecks(results.structuredHookProfile);
+    if (!Array.isArray(results.checks) || JSON.stringify(results.checks) !== JSON.stringify(expected)) {
+      throw new Error(`${name} did not pass every physical runtime check for ${results.structuredHookProfile}`);
     }
     return;
   }
-  if (
-    [
-      "gemmaProductionQ4Parity",
-      "smolProductionQ4Parity",
-      "qwenProductionQ4Parity",
-    ].includes(name)
-  ) {
+  if (name === "productionQ4Parity") {
     exactKeys(
       results,
       [
@@ -727,23 +766,15 @@ export async function validateRuntimeGateResults(
       `${name} results`,
     );
     await validateFixtureBinding(results, name, fixtureRoot);
-    const expectedModel = {
-      gemmaProductionQ4Parity: "gemma3-270m-instruct",
-      smolProductionQ4Parity: "smollm2-360m-instruct",
-      qwenProductionQ4Parity: "qwen3-1.7b",
-    }[name];
-    if (results.modelId !== expectedModel) {
-      throw new Error(`${name} fixture binding is invalid`);
-    }
     if (!SHA256.test(results.runtimeIdentitySha256 ?? "")) {
       throw new Error(`${name} observed runtime identity is invalid`);
     }
     if (runtime !== null) {
-      const model = runtime.models?.find((candidate) => candidate.id === expectedModel);
-      const expectedIdentity = model
-        ? lockedRuntimeIdentitySha256(runtime, model)
-        : null;
-      if (expectedIdentity === null || results.runtimeIdentitySha256 !== expectedIdentity) {
+      const model = runtime.models?.find((candidate) => candidate.id === results.modelId);
+      if (!model || !["q4f16_1", "q4f32_1"].includes(model.quantization)) {
+        throw new Error(`${name} names no q4 model of the runtime lock`);
+      }
+      if (results.runtimeIdentitySha256 !== lockedRuntimeIdentitySha256(runtime, model)) {
         throw new Error(`${name} observed runtime identity does not match the locked model`);
       }
     }
@@ -758,65 +789,12 @@ export async function validateRuntimeGateResults(
       !Number.isFinite(results.steeringDirectionCosine) ||
       results.steeringDirectionCosine < 0.99 ||
       results.steeringDirectionCosine > 1
-    )
-      throw new Error(
-        `${name} does not satisfy the production q4 parity thresholds`,
-      );
+    ) {
+      throw new Error(`${name} does not satisfy the production q4 parity thresholds`);
+    }
     return;
   }
-  if (name === "gemmaLongPrefill") {
-    exactKeys(
-      results,
-      [
-        "fixturePath",
-        "fixtureSha256",
-        "modelId",
-        "webLlmBaselineVersion",
-        "prompt2048Passed",
-        "prompt4096Passed",
-        "shapeCacheHangObserved",
-      ],
-      `${name} results`,
-    );
-    await validateFixtureBinding(results, name, fixtureRoot);
-    if (
-      results.modelId !== "gemma3-270m-instruct" ||
-      results.webLlmBaselineVersion !== "0.2.84" ||
-      results.prompt2048Passed !== true ||
-      results.prompt4096Passed !== true ||
-      results.shapeCacheHangObserved !== false
-    )
-      throw new Error(
-        "Gemma long-prefill evidence did not rule out the shape-cache hang",
-      );
-    return;
-  }
-  if (name !== "runtimeLifecycle")
-    throw new Error(`unknown runtime evidence gate ${name}`);
-  exactKeys(
-    results,
-    [
-      "fixturePath",
-      "fixtureSha256",
-      "stopPassed",
-      "unloadPassed",
-      "repeatedLoadPassed",
-      "adapterLossPassed",
-      "workerRestartPassed",
-    ],
-    `${name} results`,
-  );
-  await validateFixtureBinding(results, name, fixtureRoot);
-  if (
-    [
-      "stopPassed",
-      "unloadPassed",
-      "repeatedLoadPassed",
-      "adapterLossPassed",
-      "workerRestartPassed",
-    ].some((field) => results[field] !== true)
-  )
-    throw new Error("browser runtime lifecycle evidence is incomplete");
+  throw new Error(`unknown runtime evidence gate ${name}`);
 }
 
 export async function validateAuthoringResults(
@@ -1777,7 +1755,7 @@ function isAllowedEvidencePromotionPath(path) {
   return (
     new Set([
       "browser-runtime/benchmark-evidence.json",
-      "browser-runtime/runtime-feasibility-evidence.json",
+      "browser-runtime/runtime-evidence.json",
       "browser-runtime/authoring-evidence.json",
       "browser-runtime/runtime-lock.json",
       "browser-runtime/distribution-lock.json",

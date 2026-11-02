@@ -17,29 +17,77 @@ const COMMON_CLOSURE = Object.freeze([
   "browser-runtime/release-evidence-record.schema.json",
 ]);
 
-const runtimeFeasibilityClosure = Object.freeze([
+// Hook ABI v5's runtime evidence (browser-runtime/README.md, "Release evidence"): drowse's units,
+// replay and read goldens over the four fixture libraries on the C TVM VM and on WebGPU, then each
+// production library through the physical runtime harness, and each q4 library's parity gate.
+const UNITS_GOLDENS = Object.freeze([
+  "drowse/tests/fixtures/browser/units-tiny-models-v1.json",
+  ...["qwen3", "gemma3"].flatMap((arch) => [
+    "block-sites", "unit-ablation", "unit-probes", "attention-patterns", "token-anatomy",
+    "unit-activity", "unit-reads", "lens-reads", "slens", "unit-artifacts", "neuron-push",
+  ].map((name) => `drowse/tests/fixtures/browser/${name}-${arch}-v1.json`)),
+  "browser-runtime/fixtures/unit-ablation-mixed-affine-v1.json",
+]);
+
+const cVmGoldensClosure = Object.freeze([
   ...COMMON_CLOSURE,
-  "webui/scripts/browser-runtime-feasibility.mjs",
+  "browser-runtime/record-cvm-goldens.py",
+  "browser-runtime/forks/verify-mlc-hook.py",
+  "browser-runtime/forks/units_goldens.py",
+  "browser-runtime/forks/static_reads.py",
+  "browser-runtime/forks/overlay_checks.py",
+  "browser-runtime/forks/compile-tiny-webgpu.py",
+  "browser-runtime/forks/build-units-fixtures.py",
+  "browser-runtime/forks/manifest.json",
+  "browser-runtime/forks/mlc-llm-drowse.patch",
+  "browser-runtime/forks/tvm-webgpu-readonly.patch",
+  ...UNITS_GOLDENS,
+]);
+
+const webGpuGoldensClosure = Object.freeze([
+  ...COMMON_CLOSURE,
+  "webui/scripts/browser-units-goldens.mjs",
+  "webui/scripts/browser-units-reads.mjs",
+  "webui/scripts/release-tool-storage-quota.mjs",
+  "webui/src/hosted/runtime/structuredHookProfile.ts",
+  "webui/src/hosted/runtime/structuredHookProgram.ts",
+  "webui/src/hosted/runtime/webLlmEngine.ts",
+  "webui/src/hosted/runtime/webLlmBlockSites.ts",
+  "webui/src/hosted/runtime/webLlmStaticReads.ts",
+  "browser-runtime/forks/manifest.json",
+  "browser-runtime/forks/web-llm-drowse.patch",
+  "browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.41.tgz",
+  ...UNITS_GOLDENS,
+]);
+
+const productionLibraryClosure = Object.freeze([
+  ...COMMON_CLOSURE,
   "webui/scripts/browser-full-runtime.mjs",
   "webui/scripts/browser-full-runtime-contract.mjs",
   "webui/scripts/browser-full-runtime-artifact-audit.mjs",
+  "webui/scripts/hosted-full-runtime.worker.ts",
+  "webui/scripts/hosted-model-profiles.mjs",
+  "webui/scripts/overlay-vm-functions.mjs",
+  "webui/scripts/runtime-lock-block-spec.mjs",
+  "webui/scripts/runtime-lock-document.mjs",
+  "webui/scripts/publish-hosted-model.mjs",
+  "webui/scripts/hosted-model-closure.mjs",
+  "webui/src/hosted/runtime/structuredHookProfile.ts",
+  "webui/src/hosted/runtime/webLlmEngine.ts",
+  "browser-runtime/forks/overlay_checks.py",
+  "browser-runtime/forks/manifest.json",
+  "browser-runtime/runtime-lock-identity-v1.json",
+]);
+
+const q4ParityClosure = Object.freeze([
+  ...COMMON_CLOSURE,
   "webui/scripts/hosted-model-profiles.mjs",
   "webui/scripts/runtime-lock-document.mjs",
   "webui/scripts/publish-hosted-model.mjs",
   "webui/scripts/hosted-model-closure.mjs",
-  "webui/scripts/hugging-face-upload.mjs",
-  "webui/scripts/hosted-full-runtime.worker.ts",
   "webui/scripts/capture-hosted-residuals.mjs",
   "webui/scripts/hosted-residual-capture.worker.ts",
-  "browser-runtime/forks/create-tiny-webgpu-model.py",
-  "browser-runtime/forks/compile-tiny-webgpu.py",
-  "browser-runtime/forks/overlay_checks.py",
-  "browser-runtime/forks/manifest.json",
-  "drowse/tests/fixtures/browser/post-block-rank-one-v2.json",
-  "drowse/tests/fixtures/browser/structured-program-parity-v1.json",
-  "drowse/tests/fixtures/browser/sampling-parity-v1.json",
   "browser-runtime/fixtures/production-q4-parity-input-v1.json",
-  "browser-runtime/fixtures/smollm2-q4-parity-input-v3.json",
   "browser-runtime/mlc_q4_torch.py",
   "browser-runtime/validate_mlc_q4_parity.py",
 ]);
@@ -135,75 +183,39 @@ function descriptor(id, kind, closure, fixturePath) {
 
 const RELEASE_EVIDENCE_PRODUCERS = new Map([
   [
-    "gemmaTinyFp32Parity",
+    "cVmGoldens",
     descriptor(
-      "gemma-tiny-fp32-parity-v1",
+      "browser-cvm-units-goldens-v1",
       "gate",
-      runtimeFeasibilityClosure,
-      "drowse/tests/fixtures/browser/post-block-rank-one-v2.json",
+      cVmGoldensClosure,
+      "drowse/tests/fixtures/browser/units-tiny-models-v1.json",
     ),
   ],
   [
-    "llamaTinyFp32Parity",
+    "webGpuGoldens",
     descriptor(
-      "llama-tiny-fp32-parity-v1",
+      "browser-webgpu-units-goldens-v1",
       "gate",
-      runtimeFeasibilityClosure,
-      "drowse/tests/fixtures/browser/post-block-rank-one-v2.json",
+      webGpuGoldensClosure,
+      "drowse/tests/fixtures/browser/units-tiny-models-v1.json",
     ),
   ],
   [
-    "qwenTinyFp32Parity",
+    "productionLibrary",
     descriptor(
-      "qwen-tiny-fp32-parity-v1",
+      "browser-production-library-v1",
       "gate",
-      runtimeFeasibilityClosure,
-      "drowse/tests/fixtures/browser/post-block-rank-one-v2.json",
-    ),
-  ],
-  [
-    "gemmaProductionQ4Parity",
-    descriptor(
-      "gemma-production-q4-parity-v1",
-      "gate",
-      runtimeFeasibilityClosure,
-      "browser-runtime/fixtures/production-q4-parity-input-v1.json",
-    ),
-  ],
-  [
-    "smolProductionQ4Parity",
-    descriptor(
-      "smol-production-q4-parity-v1",
-      "gate",
-      runtimeFeasibilityClosure,
-      "browser-runtime/fixtures/smollm2-q4-parity-input-v3.json",
-    ),
-  ],
-  [
-    "qwenProductionQ4Parity",
-    descriptor(
-      "qwen-production-q4-parity-v1",
-      "gate",
-      runtimeFeasibilityClosure,
-      "browser-runtime/fixtures/production-q4-parity-input-v1.json",
-    ),
-  ],
-  [
-    "gemmaLongPrefill",
-    descriptor(
-      "gemma-long-prefill-v1",
-      "gate",
-      runtimeFeasibilityClosure,
+      productionLibraryClosure,
       "browser-runtime/runtime-lock-identity-v1.json",
     ),
   ],
   [
-    "runtimeLifecycle",
+    "productionQ4Parity",
     descriptor(
-      "browser-runtime-lifecycle-v1",
+      "browser-production-q4-parity-v2",
       "gate",
-      runtimeFeasibilityClosure,
-      "browser-runtime/runtime-lock-identity-v1.json",
+      q4ParityClosure,
+      "browser-runtime/fixtures/production-q4-parity-input-v1.json",
     ),
   ],
   [
