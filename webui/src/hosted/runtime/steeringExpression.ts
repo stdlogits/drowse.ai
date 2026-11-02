@@ -1233,25 +1233,59 @@ export function formatSteeringTerm(term: SteeringIrTerm): string {
           formatLayerClause(term.layers),
         term.trigger,
       );
-    case "manifold": {
-      // `onto` renders relative to `along`'s sign bit, which the parser applies to the whole run.
-      const negative = term.along < 0 || Object.is(term.along, -0);
-      const coefficients = term.onto === 0
-        ? formatSteeringNumber(term.along)
-        : `${formatSteeringNumber(term.along)},${formatSteeringNumber(negative ? -term.onto : term.onto)}`;
+    case "manifold":
       return withTrigger(
-        `${coefficients} ${term.manifold}%${formatPosition(term.position)}${formatLayerClause(term.layers)}`,
+        `${formatAlongOnto(term.along, term.onto)} ${term.manifold}%${formatPosition(term.position)}` +
+          formatLayerClause(term.layers),
         term.trigger,
       );
-    }
   }
+}
+
+/** A `%` term's `along[,onto]`: `onto` renders relative to `along`'s sign bit, which the parser
+ *  applies to the whole run. */
+function formatAlongOnto(along: number, onto: number): string {
+  const negative = along < 0 || Object.is(along, -0);
+  return onto === 0
+    ? formatSteeringNumber(along)
+    : `${formatSteeringNumber(along)},${formatSteeringNumber(negative ? -onto : onto)}`;
+}
+
+/** The loom's `inverted` regen (`Recipe.invert_steering`): every term's coefficient negated (a
+ *  `%` term's `along`, a zero staying `+0`; its `onto` carried), each term written back with its
+ *  clause and trigger. It inverts the written terms without the installed manifolds, so it keeps
+ *  bare labels and repeats where drowse resolves and folds them: the text can differ, the
+ *  steering does not. */
+export function invertSteeringExpression(text: string): string {
+  if (!text.trim()) return "";
+  return joinSteeringTerms(parseSteeringExpression(text).terms.map((term) => {
+    const selector = term.selector;
+    if (
+      term.coefficients.length > 1 && selector.manifoldPosition === null &&
+      selector.projection === null && !term.ablation
+    ) {
+      // A bare label with `along,onto`: a `%` term once its manifold resolves.
+      return withTrigger(
+        `${formatAlongOnto(-term.coefficients[0] || 0, term.coefficients[1])} ` +
+          `${resolveAtomKey(selector.base)}${formatLayerClause(scopeOf(term))}`,
+        normalizeTrigger(term.trigger),
+      );
+    }
+    const ir = foldSteering({ terms: [term] }).terms[0];
+    return formatSteeringTerm(
+      ir.kind === "manifold" ? { ...ir, along: -ir.along || 0 } : { ...ir, coeff: -ir.coeff },
+    );
+  }));
 }
 
 /** `format_expr`: the canonical text, its terms joined by ` + ` or ` - `. */
 export function formatSteering(ir: SteeringIr): string {
+  return joinSteeringTerms(ir.terms.map(formatSteeringTerm));
+}
+
+function joinSteeringTerms(texts: readonly string[]): string {
   let output = "";
-  ir.terms.forEach((term, index) => {
-    const text = formatSteeringTerm(term);
+  texts.forEach((text, index) => {
     if (index === 0) output = text;
     else if (text.startsWith("-")) output += ` - ${text.slice(1).trimStart()}`;
     else output += ` + ${text}`;

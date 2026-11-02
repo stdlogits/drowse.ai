@@ -29,6 +29,7 @@ import type {
 } from "./browserInstrumentRuntime";
 import {
   formatSteering,
+  invertSteeringExpression,
   parseSteering,
   parseSteeringExpression,
   steeringParts,
@@ -2865,67 +2866,7 @@ function randomSeed(): number {
 }
 
 function invertSteering(value: string | null): string {
-  if (!value?.trim()) return "";
-  const parsed = parseSteeringExpression(value);
-  return formatParsedSteering({
-    ...parsed,
-    terms: parsed.terms.map((term) => ({
-    ...term,
-    coefficients: term.coefficients.map((coefficient, index) =>
-      index === 0 ? -coefficient : coefficient
-    ),
-    })),
-  });
-}
-
-function formatParsedSteering(
-  parsed: ReturnType<typeof parseSteeringExpression>,
-): string {
-  return parsed.terms.map(formatSteeringTerm).join(" + ").replaceAll("+ -", "- ");
-}
-
-function formatSteeringTerm(term: ReturnType<typeof parseSteeringExpression>["terms"][number]): string {
-  const leadingSign = term.coefficients[0] < 0 ? -1 : 1;
-  const coefficients = term.coefficients
-    .map((coefficient, index) =>
-      formatSteeringNumber(index === 0 ? coefficient : coefficient * leadingSign)
-    )
-    .join(",");
-  const selector = term.selector;
-  let output = `${coefficients} ${term.ablation ? "!" : ""}${formatSteeringAtom(selector.base)}`;
-  if (selector.manifoldPosition !== null) {
-    output += `%${Array.isArray(selector.manifoldPosition)
-      ? selector.manifoldPosition.map(formatSteeringNumber).join(",")
-      : selector.manifoldPosition}`;
-  } else if (selector.projection !== null && selector.onto !== null) {
-    output += `${selector.projection}${formatSteeringAtom(selector.onto)}`;
-  }
-  if (term.trigger !== null) output += formatSteeringTrigger(term.trigger);
-  return output;
-}
-
-function formatSteeringAtom(atom: ReturnType<typeof parseSteeringExpression>["terms"][number]["selector"]["base"]): string {
-  return `${atom.namespace === null ? "" : `${atom.namespace}/`}${atom.concept}${
-    atom.variant === "raw" ? "" : `:${atom.variant}`
-  }`;
-}
-
-function formatSteeringTrigger(trigger: NonNullable<ReturnType<typeof parseSteeringExpression>["terms"][number]["trigger"]>): string {
-  const gate = trigger.gate === null
-    ? ""
-    : `when:${trigger.gate.probe}${trigger.gate.operator}${formatSteeringNumber(trigger.gate.threshold)}`;
-  if (gate && trigger.phase.kind === "generated_only") return `@${gate}`;
-  const phase = trigger.phase.kind === "both" ? "both"
-    : trigger.phase.kind === "after_thinking" ? "after"
-    : trigger.phase.kind === "prompt_only" ? "prompt"
-    : trigger.phase.kind === "thinking_only" ? "thinking"
-    : trigger.phase.kind === "generated_only" ? "response"
-    : `${trigger.phase.kind}:${trigger.phase.tokens}`;
-  return `@${phase}${gate ? `&${gate}` : ""}`;
-}
-
-function formatSteeringNumber(value: number): string {
-  return Object.is(value, -0) ? "0" : String(value);
+  return value?.trim() ? invertSteeringExpression(value) : "";
 }
 
 function nodeSteering(node: LoomNodeJSON): string | null {

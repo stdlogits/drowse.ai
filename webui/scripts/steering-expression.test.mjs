@@ -181,6 +181,27 @@ try {
     /selects the workspace band \(layers 5-9\) but is fitted at layers 0-1/,
   );
 
+  // The `inverted` regen, against drowse 6.0's Recipe.invert_steering where no bare label
+  // resolves; a bare label keeps its written name (drowse resolves it, which changes only text).
+  for (const [written, inverted] of [
+    ["0.5,0.3 demo%alert", "-0.5,-0.3 demo%alert"],
+    ["-0.6,0.3 demo%alert{1-2}", "0.6,-0.3 demo%alert{1-2}"],
+    ["0 demo%alert", "0 demo%alert"],
+    ["!x", "-!x"],
+    ["-!x{0}", "!x{0}"],
+    ["0.25 !neuron/L8n344@prompt", "-0.25 !neuron/L8n344@before"],
+    ["0.3 a~b{1-2}@response", "-0.3 a~b{1-2}@response"],
+    ["0.1 x|y - 0.2 !z{workspace}", "-0.1 x|y + 0.2 !z{workspace}"],
+    ["0.5 sae/3@response&when:sae/2>0.5", "-0.5 sae/3@when:sae/2>0.5"],
+    ["0.5 calm:sae", "-0.5 calm:sae"],
+    ["0.5 calm{0}@response", "-0.5 calm{0}@response"],
+    ["1e-7 calm@both", "-1e-07 calm"],
+    ["0.5,0.3 alert{1}", "-0.5,-0.3 alert{1}"],
+  ]) {
+    assert.equal(grammar.invertSteeringExpression(written), inverted, written);
+  }
+  assert.equal(grammar.invertSteeringExpression("  "), "");
+
   // sessions.validateSteering answers as `POST .../steering/validate` does.
   const { BrowserLoomRuntime } = await server.ssrLoadModule("/src/hosted/runtime/browserLoom.ts");
   // drowse's tree golden, with the hosted tree's inline token fields.
