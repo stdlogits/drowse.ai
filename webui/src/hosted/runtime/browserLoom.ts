@@ -17,6 +17,7 @@ import type {
   RecipeJSON,
   RecipeSamplingJSON,
   SessionInfo,
+  SteeringValidationResponse,
   WSGenerateRequest,
   WSInputMessage,
   WSSampling,
@@ -36,6 +37,7 @@ import {
   invertSteeringExpression,
   parseSteeringExpression,
   steeringParts,
+  type SteeringExpression,
 } from "./steeringExpression";
 import { validateHostedLoomTree } from "../../../../drowse/webui/src/lib/sessionPersistence";
 import { filterBrowserTree } from "./browserTreeFilter";
@@ -829,49 +831,21 @@ export class BrowserLoomRuntime {
     }
     if (method === "validateSteering") {
       // `POST .../steering/validate`: parse, resolve and dry-compile, then answer in-band. The
-      // empty expression and a syntax error answer before the busy check, as drowse answers them
-      // before taking its lock; past it, a model operation in flight answers busy (drowse's
-      // EngineBusyError, 409) instead of a verdict, and the dashboard asks again.
-      const raw = args[0];
-      if (typeof raw !== "string") {
-        throw loomError("INVALID_STEERING", "Steering expression must be a string");
-      }
-      const expression = raw.trim();
+      // checks that need no model answer first (preflightSteeringValidation), as drowse answers
+      // the empty expression and a syntax error before taking its lock; past them, a model
+      // operation in flight answers busy (drowse's EngineBusyError, 409) instead of a verdict,
+      // and the dashboard asks again. The worker refuses the same way, without queueing, while
+      // it has a generation or a fit admitted.
+      const preflight = preflightSteeringValidation(args, this.session.model_id);
+      if ("response" in preflight) return preflight.response;
+      const { expression, syntax, probeRequests } = preflight;
       type Compiled = {
         steeringExpression?: string;
         steeringParts?: import("../../../../drowse/webui/src/lib/types").SteeringPartJSON[];
         steeringTerms?: import("../../../../drowse/webui/src/lib/types").SteeringTermLayersJSON[];
         steeringDepth?: number;
       };
-      const invalid = (error: unknown) => ({
-        valid: false,
-        expression,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      let options: ReturnType<typeof validateSteeringOptions>;
-      let syntax: ReturnType<typeof parseSteeringExpression> | null = null;
-      try {
-        options = validateSteeringOptions(args[2]);
-        if (options.tree !== undefined) {
-          validateHostedLoomTree(options.tree);
-          if (options.tree.model_id !== this.session.model_id) {
-            throw loomError(
-              "LOOM_SESSION_MISMATCH",
-              "Restored conversation belongs to another model",
-            );
-          }
-        }
-        if (expression) syntax = parseSteeringExpression(expression);
-      } catch (error) {
-        return invalid(error);
-      }
-      const probeRequests = options.probeRequests;
-      if (!expression && probeRequests === undefined) {
-        return { valid: true, expression: "", error: null };
-      }
-      if (this.generating) {
-        throw loomError("ENGINE_BUSY", "a model operation is in flight; retry shortly");
-      }
+      if (this.generating) throw engineBusy();
       try {
         if (syntax === null) {
           await this.preflightGenerationSteering("", probeRequests);
@@ -902,7 +876,7 @@ export class BrowserLoomRuntime {
       } catch (error) {
         const code = (error as { code?: unknown } | null)?.code;
         if (code === "ENGINE_BUSY" || code === "GENERATION_BUSY") throw error;
-        return invalid(error);
+        return invalidSteeringValidation(expression, error);
       }
     }
     throw loomError("BROWSER_SERVICE_UNAVAILABLE", `sessions.${method} is not implemented`);
@@ -3283,6 +3257,59 @@ function clampSessionOutputTokens(
     max_tokens: typeof config.max_tokens === "number"
       ? clampOutputTokenCount(config.max_tokens, limit)
       : config.max_tokens,
+  };
+}
+
+/** What `sessions.validateSteering` decides before it needs the model: a non-string expression
+ *  throws; malformed options, a tree for another model and a syntax error answer in-band
+ *  (`valid: false`); the empty expression without a probe roster answers valid. Anything else
+ *  needs the compiler (`expression`, its syntax tree, the staged probe roster). Pure, so the
+ *  worker can answer a validation that arrives during a generation or fit without queueing it. */
+export function preflightSteeringValidation(
+  args: readonly unknown[],
+  modelId: string,
+):
+  | { response: SteeringValidationResponse }
+  | {
+      expression: string;
+      syntax: SteeringExpression | null;
+      probeRequests: ProbeRequest[] | undefined;
+    } {
+  const raw = args[0];
+  if (typeof raw !== "string") {
+    throw loomError("INVALID_STEERING", "Steering expression must be a string");
+  }
+  const expression = raw.trim();
+  let options: ReturnType<typeof validateSteeringOptions>;
+  let syntax: SteeringExpression | null = null;
+  try {
+    options = validateSteeringOptions(args[2]);
+    if (options.tree !== undefined) {
+      validateHostedLoomTree(options.tree);
+      if (options.tree.model_id !== modelId) {
+        throw loomError("LOOM_SESSION_MISMATCH", "Restored conversation belongs to another model");
+      }
+    }
+    if (expression) syntax = parseSteeringExpression(expression);
+  } catch (error) {
+    return { response: invalidSteeringValidation(expression, error) };
+  }
+  if (!expression && options.probeRequests === undefined) {
+    return { response: { valid: true, expression: "", error: null } };
+  }
+  return { expression, syntax, probeRequests: options.probeRequests };
+}
+
+/** drowse's EngineBusyError (409): a validation that will not wait behind a model operation. */
+export function engineBusy(): Error & { code: string; status: number; recoverable: boolean } {
+  return loomError("ENGINE_BUSY", "a model operation is in flight; retry shortly");
+}
+
+function invalidSteeringValidation(expression: string, error: unknown): SteeringValidationResponse {
+  return {
+    valid: false,
+    expression,
+    error: error instanceof Error ? error.message : String(error),
   };
 }
 
