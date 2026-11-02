@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import {
-  composer, devUrl, openFixtureWorkbench, openLayoutWorkbench, openMenuItem, selectRoom, sendMessage, toolDialog,
+  composer, devUrl, openFixtureWorkbench, openLayoutWorkbench, openMenuItem, returnToChats, selectRoom, sendMessage,
+  toolDialog,
 } from "./workbench-navigation";
 
 // drowse 6.0's rooms under the hosted shell: the header's tabs (the Menu on a phone), the model
@@ -76,16 +77,23 @@ test("the landing and workbench mirror without clipping in RTL", async ({ page }
   await contained();
 });
 
-test("the workbench's tab title names the app, not the last shell view", async ({ page }) => {
+test("the workbench's tab title names the app, not the last shell view", async ({ page, browserName }) => {
+  test.skip(browserName === "webkit", "The worker fixture needs OPFS, which headless WebKit rejects.");
   // The chooser's "Models · Drowse" and Continue's "Opening your chat… · Drowse" give way to the app.
   await openFixtureWorkbench(page);
   await expect(page).toHaveTitle("Drowse");
   await page.reload();
   await expect(composer(page)).toBeVisible();
   await expect(page).toHaveTitle("Drowse");
+  await returnToChats(page);
+  await expect(page).toHaveTitle("Your chats · Drowse");
+  await page.getByRole("button", { name: /^Continue with / }).click();
+  await expect(composer(page)).toBeVisible();
+  await expect(page).toHaveTitle("Drowse");
 });
 
-test("Back and Forward move between rooms without leaving the workbench", async ({ page }) => {
+test("Back and Forward move between rooms without leaving the workbench", async ({ page, browserName }) => {
+  test.skip(browserName === "webkit", "The worker fixture needs OPFS, which headless WebKit rejects.");
   // Rooms are hash routes: a history step that keeps the path and query stays in the workbench.
   await openFixtureWorkbench(page);
   await selectRoom(page, "Lens");
@@ -94,4 +102,20 @@ test("Back and Forward move between rooms without leaving the workbench", async 
   await expect(composer(page)).toBeVisible();
   await page.goForward();
   await expect(page.locator("main h1")).toHaveText("Lens");
+});
+
+test("Back from the workbench's first room returns to the shell view before it", async ({ page, browserName }) => {
+  test.skip(browserName === "webkit", "The worker fixture needs OPFS, which headless WebKit rejects.");
+  await openFixtureWorkbench(page);
+  await returnToChats(page);
+  // Your chats > Models adds a history entry; opening the workbench from it replaces that one.
+  await page.getByRole("navigation", { name: "Primary navigation" }).getByRole("link", { name: "Models", exact: true }).click();
+  await page.getByRole("button", { name: "Open workbench", exact: true }).click();
+  await expect(composer(page)).toBeVisible();
+  await selectRoom(page, "Lens");
+  await page.goBack();
+  await expect(page.locator("main h1")).toHaveText("Workbench");
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toBeVisible();
+  await expect(composer(page)).toHaveCount(0);
 });
