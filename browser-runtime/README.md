@@ -345,8 +345,13 @@ worker's `fetchFile`); the registry keeps recently read layers decoded
 | model | R pack (installs) | S pack (installs) | units | core statistics |
 |---|---|---|---|---|
 | gemma3-270m-instruct | 55.0 MiB (12.8) | 57.9 MiB (1.6) | 230 MiB (0.1) | 0.6 MiB |
+| gemma3-1b-instruct, gemma3-1b-pt | 259 MiB (41.1) | 268 MiB (5.1) | 339 MiB (0.1) | 2.4 MiB |
+| qwen3-1.7b | 881 MiB (129) | 912 MiB (16) | 240 MiB (0.2) | 2.6 MiB |
 
-The other models' rows are in the parity handoff (`lanes/B6.md`) as their fits land.
+One lens layer is `d² · 4` bytes (1.6, 5.1, 16 and 25 MiB for d = 640, 1152, 2048, 2560); a
+units layer is about 11.4 MiB of contrast statistics on Gemma's 262k vocabulary (6 MiB on
+Qwen's 152k) plus its reads. The 4B models' rows follow their fits (the parity handoff's
+`lanes/B6.md`).
 
 After building a model, core pack, and R-lens pack, the physical instrument
 harness loads all three through the same browser loaders, enables live R-lens
