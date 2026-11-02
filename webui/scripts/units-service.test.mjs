@@ -59,8 +59,8 @@ try {
     modelId: "units-tiny",
     blockSites: () => fx.backend,
     packs: () => packs,
-    decode: (id) => fx.tokenizer.decode([id]),
-    resolveToken: (word) => (word.startsWith("#") ? Number(word.slice(1)) : fx.tokenizer.encode(word)[0]),
+    tokenTexts: async (ids) => ids.map((id) => fx.tokenizer.decode([id])),
+    resolveToken: async (word) => (word.startsWith("#") ? Number(word.slice(1)) : fx.tokenizer.encode(word)[0]),
     replay: () => replay,
   });
   const instruments = new runtime.BrowserInstrumentRuntime(stubCompiler, null, null, false);
@@ -173,8 +173,8 @@ try {
     modelId: "units-tiny",
     blockSites: () => residualBackend,
     packs: () => packs,
-    decode: (id) => fx.tokenizer.decode([id]),
-    resolveToken: () => 0,
+    tokenTexts: async (ids) => ids.map((id) => fx.tokenizer.decode([id])),
+    resolveToken: async () => 0,
     replay: () => replay,
   });
   const refusal = residualBackend.capabilities().unitRefusal;

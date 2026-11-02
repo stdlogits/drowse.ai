@@ -211,7 +211,7 @@ export async function tokenAnatomy(
       contribution: round6(entry.value),
       weights: Array.from(rows[i], round6),
     }));
-    contextTokens = Array.from(forward.ids, (id) => context.decode(id));
+    contextTokens = await context.tokenTexts(Array.from(forward.ids));
   }
 
   const layers = Array.from({ length: n }, (_, layer) => {
@@ -233,7 +233,7 @@ export async function tokenAnatomy(
     token: {
       raw_index: forward.rawIndex,
       token_id: tokenId,
-      token: context.decode(tokenId),
+      token: (await context.tokenTexts([tokenId]))[0],
       position,
       prompt_length: forward.promptLength,
       probability: round6(probability),

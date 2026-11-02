@@ -33,8 +33,8 @@ export async function unitsCompiler(server, fx, arch) {
     modelId: "units-tiny",
     blockSites: () => fx.backend,
     packs: () => unitsPackSource(fx, arch, fixtureWhiteners),
-    decode: (id) => fx.tokenizer.decode([id]),
-    resolveToken: (word) => fx.tokenizer.encode(word)[0],
+    tokenTexts: async (ids) => ids.map((id) => fx.tokenizer.decode([id])),
+    resolveToken: async (word) => fx.tokenizer.encode(word)[0],
     replay: () => null,
   });
   compiler.setUnitSource(await units.programSource());

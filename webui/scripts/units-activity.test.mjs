@@ -86,7 +86,7 @@ try {
       const layers = args.layers ? String(args.layers).split(",").map(Number) : null;
       const actual = await replayModule.unitActivity(fx.backend, { nLayers: 4, spec: fx.model.spec }, scales, forward, program, {
         top: args.top ?? 32, units, rawIndex: args.raw_index ?? null, layers,
-      }, (id) => fx.tokenizer.decode([id]));
+      }, async (ids) => ids.map((id) => fx.tokenizer.decode([id])));
       // unitActivity never names the steering (the service adds the loom node's); the program
       // this test lowered by hand stands for the case's recorded expression.
       assert.equal(entry.result.steering, entry.name === "segmented" ? "!neuron/L1n5@before" : null);
@@ -157,7 +157,7 @@ try {
     const units = [readerModule.parseUnit("neuron/L1n5", fx.model.spec, 4)];
     const run = (forward, program) => replayModule.unitActivity(fx.backend, { nLayers: 4, spec: fx.model.spec }, scales, forward, program, {
       top: 4, units, rawIndex: null, layers: null,
-    }, (id) => fx.tokenizer.decode([id]));
+    }, async (ids) => ids.map((id) => fx.tokenizer.decode([id])));
     const p = chat.length + 1;
     assert.deepEqual(
       replayModule.replaySegments(ablate(), base.promptLength, base.ids.length, false, [[p, p + 2]]).map((seg) => [seg.start, seg.stop, seg.inSpan]),

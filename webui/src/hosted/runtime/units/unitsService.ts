@@ -75,8 +75,10 @@ export interface UnitsPackSource {
      *  (int64 LE) and `|{min_count}`, or `"tokenizer"` without counts. */
     maskDigest: string;
   }>;
-  layerArtifacts(layer: number): Promise<UnitLayerArtifacts>;
-  nullProjector(): Promise<Float32Array>;
+  /** One layer's `reads` or `contrast` artifacts (the contrast only `hide_hubs` reads). */
+  layerArtifacts(layer: number, part: "reads" | "contrast"): Promise<UnitLayerArtifacts>;
+  /** `‖Nᵀ w‖²` over the null basis. */
+  nullProjection(w: Float32Array): Promise<number>;
   headKeptIds(): Promise<Int32Array>;
   whitener(layer: number): Promise<SerializedMahalanobisWhitener | null>;
 }
@@ -103,9 +105,10 @@ export interface BrowserUnitsServiceOptions {
   readonly modelId: string;
   readonly blockSites: () => BrowserBlockSitesBackend;
   readonly packs: () => UnitsPackSource | null;
-  readonly decode: (tokenId: number) => string;
+  /** Each id's own text (native `tokenizer.decode([id])`). */
+  readonly tokenTexts: (tokenIds: readonly number[]) => Promise<string[]>;
   /** `slens/`-family token resolution (`resolve_token(word, family="S")`). */
-  readonly resolveToken: (word: string) => number;
+  readonly resolveToken: (word: string) => Promise<number>;
   /** A steerable selector to its per-layer directions (`find`'s selector). */
   readonly resolveSelector?: (selector: string) => Promise<ReadonlyMap<number, Float32Array>>;
   readonly replay: () => UnitsNodeReplayPort | null;
@@ -230,7 +233,7 @@ export class BrowserUnitsService {
       s: lensOf("S"),
       noLens: { R: noLensText("R", this.options.modelId), S: noLensText("S", this.options.modelId) },
       means,
-      decode: this.options.decode,
+      tokenTexts: this.options.tokenTexts,
       embeddings() {
         embeddings ??= (async () => {
           const value = await packs.embeddingStatistics();
@@ -263,8 +266,8 @@ export class BrowserUnitsService {
         statistics,
         statisticsAbsent: absent,
         scales,
-        layer: (layer) => packs.layerArtifacts(layer),
-        nullProjector: () => packs.nullProjector(),
+        layer: (layer, part) => packs.layerArtifacts(layer, part),
+        nullProjection: (w) => packs.nullProjection(w),
         headKeptIds: () => packs.headKeptIds(),
         whitener: (layer) => packs.whitener(layer),
       },
@@ -312,7 +315,7 @@ export class BrowserUnitsService {
     const d = session.context.hiddenSize;
     const prepareSlens = async (word: string) => {
       if (!atoms.has(word)) {
-        const tokenId = this.options.resolveToken(word);
+        const tokenId = await this.options.resolveToken(word);
         atoms.set(word, { tokenId, directions: await slensAtomDirections(session.context, word, tokenId) });
       }
       if (identity === null) {
@@ -517,7 +520,7 @@ export class BrowserUnitsService {
     }
     const result = await unitActivity(session.backend, { nLayers: session.context.nLayers, spec: session.spec }, session.scales, node.forward, node.program, {
       top, units, rawIndex, layers,
-    }, this.options.decode, { canThink: node.canThink, ...(this.options.gateScores ? { gateScores: this.options.gateScores } : {}) });
+    }, this.options.tokenTexts, { canThink: node.canThink, ...(this.options.gateScores ? { gateScores: this.options.gateScores } : {}) });
     return { ...result, node_id: nodeId, steering: node.steering };
   }
 }

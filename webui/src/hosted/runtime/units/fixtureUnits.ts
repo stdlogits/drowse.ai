@@ -185,7 +185,7 @@ function synthesizedPacks(file: TinyModelFile & { neutral: { statements: string[
     lens: lensOf,
     embeddingStatistics: async () => ({ ...stats, source: "tokenizer", detail: "the fixture's byte vocabulary", maskDigest: "tokenizer" }),
     layerArtifacts: async (layer) => artifacts(layer),
-    nullProjector: async () => new Float32Array(d * d),
+    nullProjection: async () => 0,
     headKeptIds: async () => kept,
     whitener: async () => ({
       columns: d, rank: 0, ridge: 1, mean: new Float64Array(d), basis: new Float64Array(0),
@@ -291,8 +291,8 @@ export function createFixtureUnitsService(modelId: string, tree: () => LoomTreeJ
         modelId,
         blockSites: () => backend,
         packs: () => packs,
-        decode: (id) => tokenizer.decode([id]),
-        resolveToken: (word) => {
+        tokenTexts: async (ids) => ids.map((id) => tokenizer.decode([id])),
+        resolveToken: async (word) => {
           if (word.startsWith("#")) return Number(word.slice(1));
           const ids = tokenizer.encode(word.trim());
           if (ids.length !== 1) {

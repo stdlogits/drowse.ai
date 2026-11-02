@@ -280,7 +280,7 @@ export async function unitActivity(
   forward: NodeReplayForward,
   program: StructuredHookProgramBuffers | null,
   options: UnitActivityOptions,
-  decode: (tokenId: number) => string,
+  tokenTexts: (tokenIds: readonly number[]) => Promise<string[]>,
   replayOptions: { canThink?: boolean; gateScores?: ReplayGateScores; signal?: AbortSignal } = {},
 ): Promise<Record<string, unknown>> {
   checkActivityOptions(options);
@@ -359,12 +359,13 @@ export async function unitActivity(
       })),
     };
   }
+  const texts = await tokenTexts(Array.from(forward.rawIds));
   const sink = atSink.indexOf(true);
   // The node's id and steering are the caller's (the service adds the loom node's).
   return {
     unit: UNIT_ACTIVITY_UNIT,
     scale: { source: scales.source, detail: scales.detail },
-    tokens: Array.from(forward.rawIds, (id, i) => ({ raw_index: i, token_id: id, token: decode(id) })),
+    tokens: Array.from(forward.rawIds, (id, i) => ({ raw_index: i, token_id: id, token: texts[i] })),
     sink_raw_index: sink >= 0 ? sink : null,
     top,
     traces: tracesOut,

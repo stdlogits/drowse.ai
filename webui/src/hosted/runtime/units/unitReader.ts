@@ -85,9 +85,11 @@ export interface UnitsArtifacts {
   /** Why `statistics` is null (native `UnitsUnavailableError`'s text). */
   readonly statisticsAbsent: string | null;
   readonly scales: UnitScales | null;
-  layer(layer: number): Promise<UnitLayerArtifacts>;
-  /** The null basis's projector `N Nᵀ` `[d, d]`. */
-  nullProjector(): Promise<Float32Array>;
+  /** One layer's artifacts: `reads` (population scalars, norm derivatives, write norms) or
+   *  `contrast` (the `[V]` statistics only `hide_hubs` reads, fetched on that first read). */
+  layer(layer: number, part: "reads" | "contrast"): Promise<UnitLayerArtifacts>;
+  /** `‖Nᵀ w‖²`: `w`'s energy in the null basis (native `(null.T @ w).pow(2).sum()`). */
+  nullProjection(w: Float32Array): Promise<number>;
   /** The head-read vocabulary (`head_kept_ids`). */
   headKeptIds(): Promise<Int32Array>;
   /** The neutral whitener at `layer` (eigen form), or null. */
@@ -204,7 +206,7 @@ export interface UnitReaderOptions {
   /** Resolve a steerable selector to its per-layer directions (`find`'s selector target). */
   readonly resolveSelector?: (selector: string) => Promise<ReadonlyMap<number, Float32Array>>;
   /** A single-token word (or `#<id>`) to its id, for `top` (S family, the input embedding). */
-  readonly resolveToken: (word: string) => number;
+  readonly resolveToken: (word: string) => Promise<number>;
 }
 
 export class UnitReader {
@@ -277,8 +279,8 @@ export class UnitReader {
     return { catalog: this.catalogSummary(), labels: [] };
   }
 
-  private async layerArtifacts(layer: number): Promise<UnitLayerArtifacts> {
-    return this.artifacts.layer(layer);
+  private async layerArtifacts(layer: number, part: "reads" | "contrast" = "reads"): Promise<UnitLayerArtifacts> {
+    return this.artifacts.layer(layer, part);
   }
 
   private artifact(table: UnitLayerArtifacts, key: string): Float32Array {
@@ -323,16 +325,16 @@ export class UnitReader {
   }
 
   /** Top `k` of `values` (`[n, width]`, value desc, index asc; −∞ skipped), one host pass. */
-  private topTokens(values: Float64Array | Float32Array, rows: number, k: number, ids?: Int32Array): { token_id: number; token: string; value: number }[][] {
+  private async topTokens(values: Float64Array | Float32Array, rows: number, k: number, ids?: Int32Array): Promise<{ token_id: number; token: string; value: number }[][]> {
     const width = values.length / rows;
-    return Array.from({ length: rows }, (_, r) => {
+    const picks = Array.from({ length: rows }, (_, r) => {
       const order = Array.from({ length: width }, (_, i) => i).filter((i) => Number.isFinite(values[r * width + i]));
       order.sort((a, b) => values[r * width + b] - values[r * width + a] || a - b);
-      return order.slice(0, Math.min(k, width)).map((i) => {
-        const id = ids ? ids[i] : i;
-        return { token_id: id, token: this.context.decode(id), value: round6(values[r * width + i]) };
-      });
+      return order.slice(0, Math.min(k, width)).map((i) => ({ id: ids ? ids[i] : i, value: round6(values[r * width + i]) }));
     });
+    const texts = await this.context.tokenTexts(picks.flat().map((pick) => pick.id));
+    let at = 0;
+    return picks.map((row) => row.map(({ id, value }) => ({ token_id: id, token: texts[at++], value })));
   }
 
   // ----------------------------------------------------------------- neurons
@@ -370,16 +372,9 @@ export class UnitReader {
     }
     const embeddings = await this.context.embeddings();
     const moments = await this.context.backend.vocabLogitMoments(f32Tensor(w, [1, d]), embeddings.resident);
-    const projector = await this.artifacts.nullProjector();
     let wNorm = 0;
-    let quad = 0;
-    for (let i = 0; i < d; i += 1) {
-      wNorm += w[i] ** 2;
-      let row = 0;
-      for (let j = 0; j < d; j += 1) row += projector[i * d + j] * w[j];
-      quad += w[i] * row;
-    }
-    const nullShare = quad / Math.max(wNorm, 1e-30);
+    for (let i = 0; i < d; i += 1) wNorm += w[i] ** 2;
+    const nullShare = (await this.artifacts.nullProjection(w)) / Math.max(wNorm, 1e-30);
     const skew = moments.data[0];
     const kurt = moments.data[1];
     const firing = this.neuronFiring(ref);
@@ -421,7 +416,7 @@ export class UnitReader {
     const { layer, site } = places[0];
     const d = this.d;
     const n = places.length;
-    const table = await this.layerArtifacts(layer);
+    const table = await this.layerArtifacts(layer, "contrast");
     const embeddings = await this.context.embeddings();
     const V = this.context.vocabSize;
     const masked = (z: Float64Array) => {
@@ -443,7 +438,7 @@ export class UnitReader {
           const std = this.artifact(table, `R.${rNames[r]}.std`);
           for (let v = 0; v < V; v += 1) z[r * V + v] = (logits[r * V + v] - signs[r] * mean[v]) / std[v];
         }
-        const lists = this.topTokens(masked(z), n, k);
+        const lists = await this.topTokens(masked(z), n, k);
         rHalves = rHalves.map((h, r) => h.absent === null ? { family: "R", weight: h.weight, unit: "layer_z", lens: h.lens ?? label, tokens: lists[r], absent: null } : h);
       }
     }
@@ -466,7 +461,7 @@ export class UnitReader {
           const std = this.artifact(table, `S.${sNames[r]}.std`);
           for (let v = 0; v < V; v += 1) z[r * V + v] = (scores[v * n + r] - signs[r] * mean[v]) / std[v];
         }
-        const lists = this.topTokens(masked(z), n, k);
+        const lists = await this.topTokens(masked(z), n, k);
         sHalves = sHalves.map((h, r) => h.absent === null ? { family: "S", weight: h.weight, unit: "layer_z", lens: h.lens, tokens: lists[r], absent: null } : h);
       }
     }
@@ -671,7 +666,7 @@ export class UnitReader {
       const stacked = new Float64Array(2 * z.length);
       stacked.set(z, 0);
       stacked.set(z.map((x) => -x), z.length);
-      const [up, down] = this.topTokens(stacked, 2, k, ids);
+      const [up, down] = await this.topTokens(stacked, 2, k, ids);
       copies.set(family, { family, weight: round6(weight), unit, lens: label, tokens: up, absent: null });
       suppresses.set(family, { family, weight: round6(weight), unit, lens: label, tokens: down.map((t) => ({ ...t, value: round6(-t.value) })), absent: null });
     }
@@ -694,8 +689,9 @@ export class UnitReader {
 
   /** `_head_contrast`: mean and unbiased std across the layer's heads of each token's own-token z. */
   private async headContrast(layer: number, family: LensFamilyName, table: UnitLayerArtifacts, ids: Int32Array): Promise<{ mean: ArrayLike<number>; std: ArrayLike<number> }> {
-    const mean = table.get(`${family}.heads.ov.mean`);
-    const std = table.get(`${family}.heads.ov.std`);
+    const contrast = await this.layerArtifacts(layer, "contrast");
+    const mean = contrast.get(`${family}.heads.ov.mean`);
+    const std = contrast.get(`${family}.heads.ov.std`);
     if (mean !== undefined && std !== undefined) return { mean, std };
     const heads = Array.from({ length: this.spec.nHeads }, (_, h) => h);
     const b = await this.bFactor(layer, heads, table);
@@ -743,7 +739,7 @@ export class UnitReader {
       R: this.context.r === null || at < 0 ? null : lensLabel("R", "out"),
     };
     const out: Record<string, PlaceReadJSON> = {};
-    HEAD_ROLES.forEach((role, index) => {
+    for (const [index, role] of HEAD_ROLES.entries()) {
       const halves = {} as Record<LensFamilyName, UnitHalfJSON>;
       for (const [family, weight] of [["S", ws], ["R", wr]] as const) {
         const energy = energies.get(family);
@@ -755,10 +751,10 @@ export class UnitReader {
           continue;
         }
         const z = energy.subarray(index * ids.length, (index + 1) * ids.length);
-        halves[family] = { family, weight: round6(weight), unit: "energy_z", lens: labels[family], tokens: this.topTokens(z, 1, k, ids)[0], absent: null };
+        halves[family] = { family, weight: round6(weight), unit: "energy_z", lens: labels[family], tokens: (await this.topTokens(z, 1, k, ids))[0], absent: null };
       }
       out[role] = { layer: siteLayer, site: "out", depth, hubs: "shown", s: halves.S, r: halves.R };
-    });
+    }
     return out;
   }
 
@@ -823,7 +819,7 @@ export class UnitReader {
         throw new UnitRequestError("RequestError", `layer ${layer} is outside the model's ${this.nLayers} layers`);
       }
     }
-    const tokenId = this.options.resolveToken(token);
+    const tokenId = await this.options.resolveToken(token);
     const embeddings = await this.context.embeddings();
     if (!embeddings.keep[tokenId]) {
       throw new UnitRequestError(
@@ -842,7 +838,7 @@ export class UnitReader {
     candidates.sort((a, b) => b.score - a.score);
     return {
       token_id: tokenId,
-      token: this.context.decode(tokenId),
+      token: (await this.context.tokenTexts([tokenId]))[0],
       by,
       hits: candidates.slice(0, k).map((row) => ({
         unit: `neuron/L${row.layer}n${row.index}`,
