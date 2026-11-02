@@ -828,10 +828,11 @@ export class DrowseWebLlmRuntime {
     return this.blockSites;
   }
 
-  /** The loaded units library's block-sites bridge, or null (residual library, older bridge). */
+  /** The loaded v5 library's block-sites bridge (a residual library runs the readout and
+   *  utility reads), or null before a v5 library or bridge is loaded. */
   blockSitesDevice(): WebLlmBlockSitesDevice | null {
     const engine = this.engine;
-    if (this.blockSites?.profile.unitSites !== 1 || engine?.drowseBlockSites === undefined) {
+    if (this.blockSites === null || engine?.drowseBlockSites === undefined) {
       return null;
     }
     return {

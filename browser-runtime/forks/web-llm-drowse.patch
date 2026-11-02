@@ -906,10 +906,10 @@ index 0000000..74d754a
 +}
 diff --git a/src/drowse.ts b/src/drowse.ts
 new file mode 100644
-index 0000000..7fdc966
+index 0000000..0a53894
 --- /dev/null
 +++ b/src/drowse.ts
-@@ -0,0 +1,1689 @@
+@@ -0,0 +1,1880 @@
 +export const DROWSE_HOOK_ABI = "block-sites-v5" as const;
 +export const DROWSE_EXACT_READOUT_ABI = "exact-readout-v2" as const;
 +
@@ -926,20 +926,31 @@ index 0000000..7fdc966
 +): DrowsePositionSpan[] | undefined {
 +  const { position_spans: spans, position_indices: indices } = selection;
 +  if (spans != null && indices != null) {
-+    throw new TypeError("position_spans and position_indices are mutually exclusive");
++    throw new TypeError(
++      "position_spans and position_indices are mutually exclusive",
++    );
 +  }
 +  const value = spans ?? indices;
 +  if (value == null) return undefined;
 +  if (!Array.isArray(value) || value.length > 4096) {
-+    throw new TypeError("Steering positions must be an array of at most 4096 entries");
++    throw new TypeError(
++      "Steering positions must be an array of at most 4096 entries",
++    );
 +  }
 +  const ranges: DrowsePositionSpan[] = [];
 +  for (const item of value) {
 +    const pair = spans != null ? item : [item, (item as number) + 1];
-+    if (!Array.isArray(pair) || pair.length !== 2 ||
-+      !Number.isSafeInteger(pair[0]) || !Number.isSafeInteger(pair[1]) ||
-+      pair[0] < 0 || pair[1] <= pair[0]) {
-+      throw new TypeError("Steering positions must be non-negative integers with start < end");
++    if (
++      !Array.isArray(pair) ||
++      pair.length !== 2 ||
++      !Number.isSafeInteger(pair[0]) ||
++      !Number.isSafeInteger(pair[1]) ||
++      pair[0] < 0 ||
++      pair[1] <= pair[0]
++    ) {
++      throw new TypeError(
++        "Steering positions must be non-negative integers with start < end",
++      );
 +    }
 +    ranges.push([pair[0], pair[1]]);
 +  }
@@ -1099,7 +1110,8 @@ index 0000000..7fdc966
 +export const DROWSE_STRUCTURED_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE = 8;
 +export const DROWSE_STRUCTURED_PROFILE_SCHEMA_VERSION = 4 as const;
 +export const DROWSE_STRUCTURED_PROFILE_ID = "standard-v4" as const;
-+export const DROWSE_STRUCTURED_RESIDUAL_PROFILE_ID = "standard-v4-residual" as const;
++export const DROWSE_STRUCTURED_RESIDUAL_PROFILE_ID =
++  "standard-v4-residual" as const;
 +export const DROWSE_STRUCTURED_PROFILE_MAGIC = 0x53414b4c;
 +/** Descriptor schema 4: v3's 31 fields, then the block spec and unit capacities (HOOK_ABI.md §6). */
 +export const DROWSE_STRUCTURED_PROFILE_DESCRIPTOR_LENGTH = 67;
@@ -1147,13 +1159,23 @@ index 0000000..7fdc966
 +  populationRow: 2 + 4 * DROWSE_UNIT_MAX_ACTIVITY_SPANS,
 +  traceCount: 3 + 4 * DROWSE_UNIT_MAX_ACTIVITY_SPANS,
 +  traces: 4 + 4 * DROWSE_UNIT_MAX_ACTIVITY_SPANS,
-+  patternLayerCount: 4 + 4 * DROWSE_UNIT_MAX_ACTIVITY_SPANS + 3 * DROWSE_UNIT_MAX_ACTIVITY_TRACES,
-+  patternLayers: 5 + 4 * DROWSE_UNIT_MAX_ACTIVITY_SPANS + 3 * DROWSE_UNIT_MAX_ACTIVITY_TRACES,
++  patternLayerCount:
++    4 +
++    4 * DROWSE_UNIT_MAX_ACTIVITY_SPANS +
++    3 * DROWSE_UNIT_MAX_ACTIVITY_TRACES,
++  patternLayers:
++    5 +
++    4 * DROWSE_UNIT_MAX_ACTIVITY_SPANS +
++    3 * DROWSE_UNIT_MAX_ACTIVITY_TRACES,
 +  flags:
-+    5 + 4 * DROWSE_UNIT_MAX_ACTIVITY_SPANS + 3 * DROWSE_UNIT_MAX_ACTIVITY_TRACES +
++    5 +
++    4 * DROWSE_UNIT_MAX_ACTIVITY_SPANS +
++    3 * DROWSE_UNIT_MAX_ACTIVITY_TRACES +
 +    DROWSE_UNIT_MAX_PATTERN_LAYERS,
 +  length:
-+    6 + 4 * DROWSE_UNIT_MAX_ACTIVITY_SPANS + 3 * DROWSE_UNIT_MAX_ACTIVITY_TRACES +
++    6 +
++    4 * DROWSE_UNIT_MAX_ACTIVITY_SPANS +
++    3 * DROWSE_UNIT_MAX_ACTIVITY_TRACES +
 +    DROWSE_UNIT_MAX_PATTERN_LAYERS,
 +});
 +
@@ -1180,14 +1202,106 @@ index 0000000..7fdc966
 +    }
 +  | { op: "finishReplay" }
 +  | { op: "cancelReplay" }
-+  | { op: "attentionRows"; capture: string; rows: Int32Array };
++  | { op: "attentionRows"; capture: string; rows: Int32Array }
++  | {
++      op: "uploadResident";
++      kind: "lens_layer" | "embedding_statistics";
++      /** `lens_layer`: `[1, d, d]` fp32. `embedding_statistics`: `mean_E [d]`, `Σ_E [d, d]` fp32
++       *  and the token mask `[ceil(V / 32)]` uint32. */
++      tensors: DrowseTensorInput[];
++    }
++  | { op: "read"; steps: DrowseReadStep[]; read: string[] };
 +
 +export interface DrowseResidentHandle {
 +  id: string;
-+  kind: "head_grams" | "unit_scales" | "pattern_capture";
++  kind:
++    | "head_grams"
++    | "unit_scales"
++    | "pattern_capture"
++    | "lens_layer"
++    | "embedding_statistics";
 +  shape: number[];
 +  bytes: number;
 +}
++
++/** A host tensor crossing into the bridge; its dtype follows the array type. */
++export interface DrowseTensorInput {
++  data: Float32Array | Int32Array | Uint32Array;
++  shape: number[];
++}
++
++/** A tensor read back from the device. */
++export interface DrowseTensorOutput {
++  data: Float32Array | Int32Array | Uint32Array;
++  shape: number[];
++}
++
++/** One argument of a static-read step: a host tensor uploaded for the call, a resident buffer
++ *  (`index` picks a tensor of a multi-tensor resident; head grams by their resident id), or an
++ *  earlier step's output; `shape` views it (same element count). */
++export type DrowseReadArg =
++  | { tensor: DrowseTensorInput }
++  | { resident: string; index?: number; shape?: number[] }
++  | { ref: string; shape?: number[] };
++
++/** One static-read call (HOOK_ABI.md §8): `fn` from `DROWSE_READOUT_FUNCTIONS` or (units
++ *  libraries) `DROWSE_UNIT_READ_FUNCTIONS`, its outputs named for later steps and the readback. */
++export interface DrowseReadStep {
++  fn: string;
++  args: DrowseReadArg[];
++  out: string | string[];
++}
++
++export interface DrowseReadOutputs {
++  tensors: Record<string, DrowseTensorOutput>;
++}
++
++/** `exact-readout-v2`: every block-sites-v5 library exports these. */
++export const DROWSE_READOUT_FUNCTIONS = Object.freeze([
++  "drowse_embedding_rows",
++  "drowse_unembedding_rows",
++  "drowse_vocab_logits",
++  "drowse_footprint_scores",
++  "drowse_logit_moments",
++  "drowse_log_sum_exp",
++  "drowse_topk",
++  "drowse_batched_matmul",
++  "drowse_batched_matmul_nt",
++  "drowse_quadratic_form",
++  "drowse_grouped_row_norms",
++  "drowse_chan_merge",
++] as const);
++
++/** The unit static reads: exactly the libraries with unit sites export these. */
++export const DROWSE_UNIT_READ_FUNCTIONS = Object.freeze([
++  "drowse_neuron_rows",
++  "drowse_head_rows",
++  "drowse_layer_write_scores",
++  "drowse_layer_read_scores",
++  "drowse_neuron_contributions",
++  "drowse_head_contributions",
++  "drowse_head_write_norms",
++  "drowse_gather_head_grams",
++  "drowse_unembed_cotangent",
++] as const);
++
++/** Static reads that take the model parameters (the others are weight-free). */
++export const DROWSE_PACKED_READ_FUNCTIONS: ReadonlySet<string> = new Set([
++  "drowse_embedding_rows",
++  "drowse_unembedding_rows",
++  "drowse_vocab_logits",
++  "drowse_footprint_scores",
++  "drowse_neuron_rows",
++  "drowse_head_rows",
++  "drowse_layer_write_scores",
++  "drowse_layer_read_scores",
++  "drowse_neuron_contributions",
++  "drowse_head_contributions",
++  "drowse_unembed_cotangent",
++]);
++
++/** At most this many steps per read request. */
++export const DROWSE_MAX_READ_STEPS = 256;
 +
 +export interface DrowseReplayForwardReadback {
 +  /** `[L, maxProbes]` probe slots of the segment's last forward. */
@@ -1208,6 +1322,7 @@ index 0000000..7fdc966
 +}
 +
 +export type DrowseBlockSitesResult =
++  | DrowseReadOutputs
 +  | DrowseResidentHandle
 +  | DrowseReplayForwardReadback
 +  | DrowseReplayCaptures
@@ -1235,32 +1350,61 @@ index 0000000..7fdc966
 +  };
 +  const flags = meta[m.flags];
 +  if (flags < 0 || flags > 7) fail("flags");
-+  const { layerCount, dFF, nHeads, contextTokens, rowCount, tokenCount } = model;
-+  if (!Number.isSafeInteger(tokenCount) || tokenCount < 1 || tokenCount > contextTokens) {
++  const { layerCount, dFF, nHeads, contextTokens, rowCount, tokenCount } =
++    model;
++  if (
++    !Number.isSafeInteger(tokenCount) ||
++    tokenCount < 1 ||
++    tokenCount > contextTokens
++  ) {
 +    fail("token count");
 +  }
 +  const anatomy = meta[m.anatomyPosition];
-+  if ((flags & DROWSE_REPLAY_FLAG_ANATOMY) !== 0 ? anatomy < 0 || anatomy >= tokenCount : anatomy !== -1) {
++  if (
++    (flags & DROWSE_REPLAY_FLAG_ANATOMY) !== 0
++      ? anatomy < 0 || anatomy >= tokenCount
++      : anatomy !== -1
++  ) {
 +    fail("anatomy position");
 +  }
 +  const spans = meta[m.spanCount];
 +  const traces = meta[m.traceCount];
 +  if ((flags & DROWSE_REPLAY_FLAG_ACTIVITY) !== 0) {
-+    if (!Number.isSafeInteger(rowCount) || rowCount < 1 || rowCount > contextTokens) fail("row count");
++    if (
++      !Number.isSafeInteger(rowCount) ||
++      rowCount < 1 ||
++      rowCount > contextTokens
++    )
++      fail("row count");
 +    if (spans < 1 || spans > DROWSE_UNIT_MAX_ACTIVITY_SPANS) fail("span count");
 +    for (let i = 0; i < spans; i += 1) {
-+      const [first, rows, position, unproduced] = meta.subarray(m.spans + 4 * i, m.spans + 4 * i + 4);
-+      if (first < 0 || rows < 1 || first + rows > rowCount) fail(`span ${i} rows`);
-+      if (position <= -contextTokens || position + rows > contextTokens) fail(`span ${i} position`);
-+      if (unproduced !== (position < 0 ? 1 : 0)) fail(`span ${i} unproduced flag`);
++      const [first, rows, position, unproduced] = meta.subarray(
++        m.spans + 4 * i,
++        m.spans + 4 * i + 4,
++      );
++      if (first < 0 || rows < 1 || first + rows > rowCount)
++        fail(`span ${i} rows`);
++      if (position <= -contextTokens || position + rows > contextTokens)
++        fail(`span ${i} position`);
++      if (unproduced !== (position < 0 ? 1 : 0))
++        fail(`span ${i} unproduced flag`);
 +    }
 +    const population = meta[m.populationRow];
 +    if (population < -1 || population >= rowCount) fail("population row");
-+    if (traces < 0 || traces > DROWSE_UNIT_MAX_ACTIVITY_TRACES) fail("trace count");
++    if (traces < 0 || traces > DROWSE_UNIT_MAX_ACTIVITY_TRACES)
++      fail("trace count");
 +    for (let i = 0; i < traces; i += 1) {
-+      const [layer, kind, index] = meta.subarray(m.traces + 3 * i, m.traces + 3 * i + 3);
-+      if (layer < 0 || layer >= layerCount || (kind !== 0 && kind !== 1) ||
-+          index < 0 || index >= (kind === 0 ? dFF : nHeads)) {
++      const [layer, kind, index] = meta.subarray(
++        m.traces + 3 * i,
++        m.traces + 3 * i + 3,
++      );
++      if (
++        layer < 0 ||
++        layer >= layerCount ||
++        (kind !== 0 && kind !== 1) ||
++        index < 0 ||
++        index >= (kind === 0 ? dFF : nHeads)
++      ) {
 +        fail(`trace ${i}`);
 +      }
 +    }
@@ -1270,11 +1414,17 @@ index 0000000..7fdc966
 +  const patternLayers = meta[m.patternLayerCount];
 +  if ((flags & DROWSE_REPLAY_FLAG_PATTERNS) !== 0) {
 +    // Queries are captured at the anatomy position only.
-+    if ((flags & DROWSE_REPLAY_FLAG_ANATOMY) === 0) fail("patterns need the anatomy position");
-+    if (patternLayers < 1 || patternLayers > DROWSE_UNIT_MAX_PATTERN_LAYERS) fail("pattern layer count");
++    if ((flags & DROWSE_REPLAY_FLAG_ANATOMY) === 0)
++      fail("patterns need the anatomy position");
++    if (patternLayers < 1 || patternLayers > DROWSE_UNIT_MAX_PATTERN_LAYERS)
++      fail("pattern layer count");
 +    for (let i = 0; i < patternLayers; i += 1) {
 +      const layer = meta[m.patternLayers + i];
-+      if (layer < 0 || layer >= layerCount || (i > 0 && layer <= meta[m.patternLayers + i - 1])) {
++      if (
++        layer < 0 ||
++        layer >= layerCount ||
++        (i > 0 && layer <= meta[m.patternLayers + i - 1])
++      ) {
 +        fail("pattern layers must ascend within the model");
 +      }
 +    }
@@ -1381,9 +1531,10 @@ index 0000000..7fdc966
 +  }
 +  return {
 +    schemaVersion: DROWSE_STRUCTURED_PROFILE_SCHEMA_VERSION,
-+    id: unitSites === 1
-+      ? DROWSE_STRUCTURED_PROFILE_ID
-+      : DROWSE_STRUCTURED_RESIDUAL_PROFILE_ID,
++    id:
++      unitSites === 1
++        ? DROWSE_STRUCTURED_PROFILE_ID
++        : DROWSE_STRUCTURED_RESIDUAL_PROFILE_ID,
 +    unitSites,
 +    descriptor,
 +    hookAbi: DROWSE_HOOK_ABI,
@@ -1514,7 +1665,9 @@ index 0000000..7fdc966
 +}
 +
 +/** Whether a program carries a unit section (validated by `validateDrowseUnitSection`). */
-+export function drowseProgramHasUnits(program: DrowseStructuredProgram): boolean {
++export function drowseProgramHasUnits(
++  program: DrowseStructuredProgram,
++): boolean {
 +  return program.unitMeta !== undefined;
 +}
 +
@@ -1527,17 +1680,39 @@ index 0000000..7fdc966
 +  dFF: number,
 +  nHeads: number,
 +): void {
-+  const fields = [program.unitMeta, program.unitCoeff, program.unitActive, program.tapGrams];
++  const fields = [
++    program.unitMeta,
++    program.unitCoeff,
++    program.unitActive,
++    program.tapGrams,
++  ];
 +  const present = fields.filter((value) => value !== undefined).length;
 +  if (present === 0) return;
 +  if (present !== fields.length) {
-+    throw new TypeError("A Drowse unit section carries all four tables or none");
++    throw new TypeError(
++      "A Drowse unit section carries all four tables or none",
++    );
 +  }
 +  const lengths = drowseUnitSectionLengths(layerCount, headDim);
 +  requireTypedLength(program.unitMeta!, Uint32Array, lengths.meta, "unitMeta");
-+  requireTypedLength(program.unitCoeff!, Float32Array, lengths.coeff, "unitCoeff");
-+  requireTypedLength(program.unitActive!, Float32Array, lengths.active, "unitActive");
-+  requireTypedLength(program.tapGrams!, Float32Array, lengths.tapGrams, "tapGrams");
++  requireTypedLength(
++    program.unitCoeff!,
++    Float32Array,
++    lengths.coeff,
++    "unitCoeff",
++  );
++  requireTypedLength(
++    program.unitActive!,
++    Float32Array,
++    lengths.active,
++    "unitActive",
++  );
++  requireTypedLength(
++    program.tapGrams!,
++    Float32Array,
++    lengths.tapGrams,
++    "tapGrams",
++  );
 +  const meta = program.unitMeta!;
 +  let offset = 0;
 +  const table = (
@@ -1556,20 +1731,36 @@ index 0000000..7fdc966
 +      }
 +    }
 +    const count = offsets[layerCount];
-+    const index = meta.subarray(offset + layerCount + 1, offset + layerCount + 1 + capacity);
++    const index = meta.subarray(
++      offset + layerCount + 1,
++      offset + layerCount + 1 + capacity,
++    );
 +    const extra = meta.subarray(
 +      offset + layerCount + 1 + capacity,
 +      offset + layerCount + 1 + 2 * capacity,
 +    );
 +    for (let entry = 0; entry < count; entry += 1) {
-+      if (index[entry] >= bound || (second !== null && extra[entry] >= second)) {
++      if (
++        index[entry] >= bound ||
++        (second !== null && extra[entry] >= second)
++      ) {
 +        throw new TypeError(`Drowse ${label} entry ${entry} is out of range`);
 +      }
 +    }
 +    offset += layerCount + 1 + 2 * capacity;
 +  };
-+  table(DROWSE_UNIT_MAX_NEURON_ABLATIONS, dFF, DROWSE_UNIT_MAX_GROUPS, "neuron ablation");
-+  table(DROWSE_UNIT_MAX_HEAD_ABLATIONS, nHeads, DROWSE_UNIT_MAX_GROUPS, "head ablation");
++  table(
++    DROWSE_UNIT_MAX_NEURON_ABLATIONS,
++    dFF,
++    DROWSE_UNIT_MAX_GROUPS,
++    "neuron ablation",
++  );
++  table(
++    DROWSE_UNIT_MAX_HEAD_ABLATIONS,
++    nHeads,
++    DROWSE_UNIT_MAX_GROUPS,
++    "head ablation",
++  );
 +  table(DROWSE_UNIT_MAX_TAPS, dFF, DROWSE_UNIT_MAX_TAPS, "neuron tap");
 +  table(DROWSE_UNIT_MAX_HEAD_TAPS, nHeads, DROWSE_UNIT_MAX_TAPS, "head tap");
 +  if (program.unitCoeff!.some((value) => !Number.isFinite(value))) {
@@ -3769,7 +3960,7 @@ index d583419..ffbb0df 100644
    hasModelInCache,
    deleteChatConfigInCache,
 diff --git a/src/llm_chat.ts b/src/llm_chat.ts
-index 616cff4..ac287ca 100644
+index 616cff4..3409844 100644
 --- a/src/llm_chat.ts
 +++ b/src/llm_chat.ts
 @@ -1,4 +1,6 @@
@@ -3802,7 +3993,7 @@ index 616cff4..ac287ca 100644
    RangeError,
    WindowSizeConfigurationError,
    WindowSizeSpecificationError,
-@@ -30,6 +35,79 @@ import {
+@@ -30,6 +35,87 @@ import {
    TextCompletionExpectsKVEmptyError,
    CannotFindImageEmbedError,
  } from "./error";
@@ -3866,6 +4057,14 @@ index 616cff4..ac287ca 100644
 +  DrowseReplayCaptures,
 +  DrowseReplayForwardReadback,
 +  DrowseResidentHandle,
++  DrowseReadArg,
++  DrowseReadOutputs,
++  DrowseReadStep,
++  DrowseTensorInput,
++  DROWSE_MAX_READ_STEPS,
++  DROWSE_PACKED_READ_FUNCTIONS,
++  DROWSE_READOUT_FUNCTIONS,
++  DROWSE_UNIT_READ_FUNCTIONS,
 +  validateDrowseReplayMeta,
 +  DROWSE_UNIT_MAX_GROUPS,
 +  DROWSE_UNIT_MAX_TAPS,
@@ -3882,7 +4081,7 @@ index 616cff4..ac287ca 100644
  
  type ImageURL = ChatCompletionContentPartImage.ImageURL;
  
-@@ -47,6 +125,425 @@ type VMFunctionAvailability = {
+@@ -47,6 +133,425 @@ type VMFunctionAvailability = {
  
  type VMFunctionRegistry = Record<string, tvmjs.PackedFunc | undefined>;
  
@@ -4308,7 +4507,7 @@ index 616cff4..ac287ca 100644
  type ResolvedModelABI = {
    kvStateKind: Exclude<KVStateKind, "none">;
    prefillABI: ComputeABIKind;
-@@ -67,6 +564,25 @@ export class LLMChatPipeline {
+@@ -67,6 +572,25 @@ export class LLMChatPipeline {
    private vm: tvmjs.VirtualMachine;
    private prefill: tvmjs.PackedFunc;
    private decoding: tvmjs.PackedFunc;
@@ -4334,7 +4533,7 @@ index 616cff4..ac287ca 100644
    private resolvedModelABI!: ResolvedModelABI;
    private kvStateKind: KVStateKind = "kv_cache";
    private image_embed: tvmjs.PackedFunc | undefined;
-@@ -94,7 +610,79 @@ export class LLMChatPipeline {
+@@ -94,7 +618,81 @@ export class LLMChatPipeline {
    private prefillLogitPositionHost = new Int32Array(1);
    private maxHistorySize = 1;
    private logitsOnCPU?: tvmjs.Tensor = undefined;
@@ -4358,6 +4557,8 @@ index 616cff4..ac287ca 100644
 +  private drowseReplayPrefill?: tvmjs.PackedFunc;
 +  private drowseAttentionRows?: tvmjs.PackedFunc;
 +  private drowseHeadWriteGrams?: tvmjs.PackedFunc;
++  /** The static reads (`exact-readout-v2` and, on a units library, the unit reads). */
++  private drowseReadFunctions = new Map<string, tvmjs.PackedFunc>();
 +  /** Buffers kept on the GPU across block-sites calls (head grams, unit scales, pattern
 +   *  captures), by id; dropped with the model. */
 +  private drowseResidents = new Map<
@@ -4414,7 +4615,7 @@ index 616cff4..ac287ca 100644
  
    // meta data
    private bosTokenId = 1;
-@@ -109,8 +697,12 @@ export class LLMChatPipeline {
+@@ -109,8 +707,12 @@ export class LLMChatPipeline {
    // states
    private outputMessage = "";
    private outputIds: Array<number> = [];
@@ -4427,7 +4628,7 @@ index 616cff4..ac287ca 100644
    // frequency of appeared token ids till now (refresh after PrefillStep); token_id mapped to freq
    private appearedTokensFreq = new Map<number, number>();
    private imageDataCache = new Map<string, ImageData>();
-@@ -130,6 +722,10 @@ export class LLMChatPipeline {
+@@ -130,6 +732,10 @@ export class LLMChatPipeline {
    private curRoundPrefillTotalTokens = 0;
    private curRoundDecodingTotalTime = 0;
    private curRoundPrefillTotalTime = 0;
@@ -4438,7 +4639,7 @@ index 616cff4..ac287ca 100644
  
    // additional stats, reset at every prefillStep()
    public curRoundLatencyBreakdown: LatencyBreakdown = {
-@@ -181,12 +777,14 @@ export class LLMChatPipeline {
+@@ -181,12 +787,14 @@ export class LLMChatPipeline {
      tokenizer: Tokenizer,
      config: ChatConfig,
      logitProcessor?: LogitProcessor,
@@ -4453,7 +4654,7 @@ index 616cff4..ac287ca 100644
      this.fullVocabSize = this.config.vocab_size;
      this.bitmaskSize = Math.ceil(this.fullVocabSize / 32);
  
-@@ -233,6 +831,32 @@ export class LLMChatPipeline {
+@@ -233,6 +841,32 @@ export class LLMChatPipeline {
        "batch_prefill",
        "decode",
        "batch_decode",
@@ -4486,7 +4687,7 @@ index 616cff4..ac287ca 100644
        "create_tir_paged_kv_cache",
        "create_rnn_state",
        "sample_with_top_p",
-@@ -244,6 +868,7 @@ export class LLMChatPipeline {
+@@ -244,6 +878,7 @@ export class LLMChatPipeline {
        "apply_logit_bias_inplace",
        "softmax_with_temperature",
      ]);
@@ -4494,7 +4695,7 @@ index 616cff4..ac287ca 100644
  
      const fgetMetadata = this.vm.getFunction("_metadata");
      const ret_value = fgetMetadata();
-@@ -253,9 +878,15 @@ export class LLMChatPipeline {
+@@ -253,9 +888,15 @@ export class LLMChatPipeline {
  
      const vmFunctionAvailability =
        LLMChatPipeline.getVMFunctionAvailability(vmFunctionRegistry);
@@ -4510,7 +4711,7 @@ index 616cff4..ac287ca 100644
      );
      const stateKinds: string[] = [];
      if (this.resolvedModelABI.needsKVCache) {
-@@ -287,6 +918,150 @@ export class LLMChatPipeline {
+@@ -287,6 +928,167 @@ export class LLMChatPipeline {
          vmFunctionRegistry,
        ),
      );
@@ -4558,15 +4759,32 @@ index 616cff4..ac287ca 100644
 +      }
 +      const replayPrefill = vmFunctionRegistry.drowse_replay_batch_prefill;
 +      if (replayPrefill !== undefined) {
-+        this.drowseReplayPrefill = this.tvm.detachFromCurrentScope(replayPrefill);
++        this.drowseReplayPrefill =
++          this.tvm.detachFromCurrentScope(replayPrefill);
 +      }
 +      const attentionRows = vmFunctionRegistry.drowse_attention_rows;
 +      if (attentionRows !== undefined) {
-+        this.drowseAttentionRows = this.tvm.detachFromCurrentScope(attentionRows);
++        this.drowseAttentionRows =
++          this.tvm.detachFromCurrentScope(attentionRows);
 +      }
 +      const headWriteGrams = vmFunctionRegistry.drowse_head_write_grams;
 +      if (headWriteGrams !== undefined) {
-+        this.drowseHeadWriteGrams = this.tvm.detachFromCurrentScope(headWriteGrams);
++        this.drowseHeadWriteGrams =
++          this.tvm.detachFromCurrentScope(headWriteGrams);
++      }
++      for (const name of [
++        ...DROWSE_READOUT_FUNCTIONS,
++        ...DROWSE_UNIT_READ_FUNCTIONS,
++      ]) {
++        const fn = (
++          vmFunctionRegistry as Record<string, tvmjs.PackedFunc | undefined>
++        )[name];
++        if (fn !== undefined) {
++          this.drowseReadFunctions.set(
++            name,
++            this.tvm.detachFromCurrentScope(fn),
++          );
++        }
 +      }
 +      const geometryPrefill = vmFunctionRegistry.drowse_geometry_batch_prefill;
 +      const geometryDecode = vmFunctionRegistry.drowse_geometry_batch_decode;
@@ -4661,7 +4879,7 @@ index 616cff4..ac287ca 100644
      if (this.resolvedModelABI.prefillABI === "batch") {
        log.info("Using batch_prefill kernel.");
      }
-@@ -356,155 +1131,2600 @@ export class LLMChatPipeline {
+@@ -356,155 +1158,2901 @@ export class LLMChatPipeline {
        throw new MinValueError("prefill_chunk_size", 0);
      }
  
@@ -4832,6 +5050,8 @@ index 616cff4..ac287ca 100644
 +    this.drowseReplayPrefill?.dispose();
 +    this.drowseAttentionRows?.dispose();
 +    this.drowseHeadWriteGrams?.dispose();
++    for (const fn of this.drowseReadFunctions.values()) fn.dispose();
++    this.drowseReadFunctions.clear();
 +    this.drowseGeometryDecoding?.dispose();
 +    this.drowseGeometryPrefill?.dispose();
 +    this.drowseCaptureDecoding?.dispose();
@@ -4952,11 +5172,21 @@ index 616cff4..ac287ca 100644
 +        this.drowseAttentionRows,
 +        this.drowseHeadWriteGrams,
 +      ].map((fn) => fn !== undefined);
++      for (const name of DROWSE_UNIT_READ_FUNCTIONS) {
++        present.push(this.drowseReadFunctions.has(name));
++      }
++      if (
++        !DROWSE_READOUT_FUNCTIONS.every((name) =>
++          this.drowseReadFunctions.has(name),
++        )
++      ) {
++        throw new Error(
++          `HOOK_ABI_MISMATCH: the model library does not export every ${DROWSE_EXACT_READOUT_ABI} function`,
++        );
++      }
 +      const unitFunctions = present.every(Boolean);
 +      const anyUnitFunction = present.some(Boolean);
-+      if (
-+        decoded.unitSites === 1 ? !unitFunctions : anyUnitFunction
-+      ) {
++      if (decoded.unitSites === 1 ? !unitFunctions : anyUnitFunction) {
 +        throw new Error(
 +          "HOOK_ABI_MISMATCH: the model library's unit functions do not match its hook profile",
 +        );
@@ -4972,6 +5202,22 @@ index 616cff4..ac287ca 100644
 +  async drowseBlockSites(
 +    request: DrowseBlockSitesRequest,
 +  ): Promise<DrowseBlockSitesResult> {
++    if (this.drowseHookDescriptor === undefined) {
++      throw new Error(
++        "BLOCK_SITES_UNAVAILABLE: the loaded model library does not attest hook ABI v5",
++      );
++    }
++    switch (request.op) {
++      case "uploadResident":
++        return this.uploadDrowseResident(request.kind, request.tensors);
++      case "read":
++        return await this.runDrowseReads(request.steps, request.read);
++      case "release":
++        this.releaseDrowseResident(request.id);
++        return null;
++      default:
++        break;
++    }
 +    if (
 +      !this.supportsDrowseUnitSites() ||
 +      this.drowseReplayPrefill === undefined ||
@@ -4987,9 +5233,6 @@ index 616cff4..ac287ca 100644
 +        return await this.drowseResidentHeadGrams();
 +      case "uploadUnitScales":
 +        return this.uploadDrowseUnitScales(request.values);
-+      case "release":
-+        this.releaseDrowseResident(request.id);
-+        return null;
 +      case "openReplay":
 +        await this.openDrowseReplay(request);
 +        return null;
@@ -5001,7 +5244,10 @@ index 616cff4..ac287ca 100644
 +        this.cancelDrowseReplay();
 +        return null;
 +      case "attentionRows":
-+        return await this.readDrowseAttentionRows(request.capture, request.rows);
++        return await this.readDrowseAttentionRows(
++          request.capture,
++          request.rows,
++        );
 +      default:
 +        throw new TypeError(
 +          `Unknown Drowse block-sites request ${String((request as { op?: unknown }).op)}`,
@@ -5051,7 +5297,9 @@ index 616cff4..ac287ca 100644
 +  ) {
 +    const resident = this.drowseResidents.get(id);
 +    if (resident === undefined || resident.handle.kind !== kind) {
-+      throw new Error(`BLOCK_SITES_RESIDENT_UNKNOWN: no resident ${kind} ${id}`);
++      throw new Error(
++        `BLOCK_SITES_RESIDENT_UNKNOWN: no resident ${kind} ${id}`,
++      );
 +    }
 +    return resident;
 +  }
@@ -5115,7 +5363,9 @@ index 616cff4..ac287ca 100644
 +      throw new Error(`BLOCK_SITES_RESIDENT_UNKNOWN: no resident ${id}`);
 +    }
 +    if (resident.handle.kind === "head_grams") {
-+      throw new Error("Drowse head grams are dropped with the model, not released");
++      throw new Error(
++        "Drowse head grams are dropped with the model, not released",
++      );
 +    }
 +    if (
 +      this.drowseReplayState !== undefined &&
@@ -5125,6 +5375,220 @@ index 616cff4..ac287ca 100644
 +    }
 +    for (const tensor of resident.tensors) tensor.dispose();
 +    this.drowseResidents.delete(id);
++  }
++
++  /** The dtype a host tensor uploads as, after checking its length against its shape. */
++  private drowseTensorDtype(input: DrowseTensorInput, label: string): string {
++    const { data, shape } = input ?? ({} as DrowseTensorInput);
++    if (
++      !Array.isArray(shape) ||
++      shape.length < 1 ||
++      shape.length > 4 ||
++      shape.some((extent) => !Number.isSafeInteger(extent) || extent < 1)
++    ) {
++      throw new TypeError(
++        `${label}: a shape of 1-4 positive extents is required`,
++      );
++    }
++    const dtype =
++      data instanceof Float32Array
++        ? "float32"
++        : data instanceof Int32Array
++          ? "int32"
++          : data instanceof Uint32Array
++            ? "uint32"
++            : undefined;
++    if (
++      dtype === undefined ||
++      data.length !== shape.reduce((a, b) => a * b, 1)
++    ) {
++      throw new TypeError(
++        `${label}: a Float32Array, Int32Array or Uint32Array of [${shape.join(",")}] is required`,
++      );
++    }
++    if (dtype === "float32" && !(data as Float32Array).every(Number.isFinite)) {
++      throw new TypeError(`${label}: values must be finite`);
++    }
++    return dtype;
++  }
++
++  /** §8 residency: one lens matrix `[1, d, d]`, or the S embedding statistics
++   *  (`mean_E [d]`, `Σ_E [d, d]`, mask `[ceil(V / 32)]`). */
++  private uploadDrowseResident(
++    kind: "lens_layer" | "embedding_statistics",
++    inputs: DrowseTensorInput[],
++  ): DrowseResidentHandle {
++    const d = this.requireModelDimension("hidden_size");
++    const expected =
++      kind === "lens_layer"
++        ? [["float32", [1, d, d]]]
++        : kind === "embedding_statistics"
++          ? [
++              ["float32", [d]],
++              ["float32", [d, d]],
++              ["uint32", [Math.ceil(this.fullVocabSize / 32)]],
++            ]
++          : undefined;
++    if (
++      expected === undefined ||
++      !Array.isArray(inputs) ||
++      inputs.length !== expected.length
++    ) {
++      throw new TypeError(
++        `Unknown Drowse resident ${String(kind)} or wrong tensor count`,
++      );
++    }
++    inputs.forEach((input, i) => {
++      const dtype = this.drowseTensorDtype(input, `Drowse ${kind}[${i}]`);
++      const [wantDtype, wantShape] = expected[i] as [string, number[]];
++      if (
++        dtype !== wantDtype ||
++        input.shape.join(",") !== wantShape.join(",")
++      ) {
++        throw new TypeError(
++          `Drowse ${kind}[${i}] must be ${wantDtype}[${wantShape.join(",")}]`,
++        );
++      }
++    });
++    this.tvm.beginScope();
++    try {
++      const tensors = inputs.map((input) => {
++        const tensor = this.tvm.detachFromCurrentScope(
++          this.tvm.empty(
++            input.shape,
++            this.drowseTensorDtype(input, kind),
++            this.device,
++          ),
++        );
++        // tvmjs copies a uint32 tensor through `Uint32Array.from`; its typing lists no Uint32Array.
++        tensor.copyFrom(input.data as unknown as Int32Array);
++        return tensor;
++      });
++      return this.addDrowseResident(kind, tensors);
++    } finally {
++      this.tvm.endScope();
++    }
++  }
++
++  /** §8: run static-read steps on the device and read the named outputs back with one sync. */
++  private async runDrowseReads(
++    steps: DrowseReadStep[],
++    read: string[],
++  ): Promise<DrowseReadOutputs> {
++    if (
++      !Array.isArray(steps) ||
++      steps.length < 1 ||
++      steps.length > DROWSE_MAX_READ_STEPS
++    ) {
++      throw new TypeError(`Drowse reads take 1-${DROWSE_MAX_READ_STEPS} steps`);
++    }
++    if (!Array.isArray(read) || read.length < 1) {
++      throw new TypeError("Drowse reads must name the outputs to read back");
++    }
++    const hosts: [string, tvmjs.Tensor][] = [];
++    this.tvm.beginScope();
++    try {
++      const values = new Map<string, tvmjs.Tensor>();
++      const view = (
++        tensor: tvmjs.Tensor,
++        shape: number[] | undefined,
++        label: string,
++      ) => {
++        if (shape === undefined) return tensor;
++        const count = (dims: number[]) => dims.reduce((a, b) => a * b, 1);
++        if (
++          !Array.isArray(shape) ||
++          shape.some((extent) => !Number.isSafeInteger(extent) || extent < 1) ||
++          count(shape) !== count(tensor.shape)
++        ) {
++          throw new TypeError(
++            `${label}: view [${shape}] does not match [${tensor.shape}]`,
++          );
++        }
++        return tensor.view(shape);
++      };
++      const argument = (arg: DrowseReadArg, label: string): tvmjs.Tensor => {
++        if (arg !== null && typeof arg === "object" && "tensor" in arg) {
++          const dtype = this.drowseTensorDtype(arg.tensor, label);
++          const tensor = this.tvm.empty(arg.tensor.shape, dtype, this.device);
++          tensor.copyFrom(arg.tensor.data as unknown as Int32Array);
++          return tensor;
++        }
++        if (arg !== null && typeof arg === "object" && "resident" in arg) {
++          const resident = this.drowseResidents.get(arg.resident);
++          const tensor = resident?.tensors[arg.index ?? 0];
++          if (tensor === undefined) {
++            throw new Error(
++              `BLOCK_SITES_RESIDENT_UNKNOWN: ${label} names no resident tensor`,
++            );
++          }
++          return view(tensor, arg.shape, label);
++        }
++        if (arg !== null && typeof arg === "object" && "ref" in arg) {
++          const tensor = values.get(arg.ref);
++          if (tensor === undefined) {
++            throw new TypeError(
++              `${label}: no earlier output ${String(arg.ref)}`,
++            );
++          }
++          return view(tensor, arg.shape, label);
++        }
++        throw new TypeError(
++          `${label}: an argument is a tensor, a resident or a ref`,
++        );
++      };
++      steps.forEach((step, index) => {
++        const label = `Drowse read step ${index} (${String(step?.fn)})`;
++        const fn = this.drowseReadFunctions.get(step?.fn);
++        if (fn === undefined) {
++          throw new Error(
++            `BLOCK_SITES_FUNCTION_UNAVAILABLE: ${label}: the model library does not export it`,
++          );
++        }
++        const args = (Array.isArray(step.args) ? step.args : []).map((arg, i) =>
++          argument(arg, `${label} argument ${i}`),
++        );
++        const result = DROWSE_PACKED_READ_FUNCTIONS.has(step.fn)
++          ? fn(...args, this.params)
++          : fn(...args);
++        const names = Array.isArray(step.out) ? step.out : [step.out];
++        if (names.length === 1) {
++          values.set(names[0], result as tvmjs.Tensor);
++        } else {
++          names.forEach((name, i) =>
++            values.set(
++              name,
++              (result as { get(i: number): tvmjs.Tensor }).get(i),
++            ),
++          );
++        }
++      });
++      for (const name of read) {
++        const tensor = values.get(name);
++        if (tensor === undefined) {
++          throw new TypeError(
++            `Drowse reads produced no output ${String(name)}`,
++          );
++        }
++        const host = this.tvm.detachFromCurrentScope(
++          this.tvm.empty(tensor.shape, tensor.dtype, this.tvm.cpu()),
++        );
++        hosts.push([name, host]);
++        host.copyFrom(tensor);
++      }
++      await this.device.sync();
++      const tensors: DrowseReadOutputs["tensors"] = {};
++      for (const [name, host] of hosts) {
++        tensors[name] = {
++          shape: [...host.shape],
++          data: host.toArray() as Float32Array | Int32Array | Uint32Array,
++        };
++      }
++      return { tensors };
++    } finally {
++      for (const [, host] of hosts) host.dispose();
++      this.tvm.endScope();
++    }
 +  }
 +
 +  /** Open a KV-continuing replay (B1 §2.3, HOOK_ABI.md §7) on a fresh sequence. The installed
@@ -5165,7 +5629,8 @@ index 616cff4..ac287ca 100644
 +    let scales = activity
 +      ? request.unitScales === null
 +        ? undefined
-+        : this.requireDrowseResident(request.unitScales, "unit_scales").tensors[0]
++        : this.requireDrowseResident(request.unitScales, "unit_scales")
++            .tensors[0]
 +      : undefined;
 +    if (activity && scales === undefined) {
 +      throw new TypeError("Drowse unit activity needs resident unit scales");
@@ -5188,13 +5653,20 @@ index 616cff4..ac287ca 100644
 +      meta.copyFrom(request.replayMeta);
 +      if (scales === undefined) {
 +        const width = 2 * dFF + nHeads;
-+        scales = f32([layerCount, width], new Float32Array(layerCount * width).fill(1));
++        scales = f32(
++          [layerCount, width],
++          new Float32Array(layerCount * width).fill(1),
++        );
 +      }
 +      const stride = 3 * dFF + 3 * nHeads;
 +      const initial = new Float32Array(layerCount * stride);
 +      for (let layer = 0; layer < layerCount; layer += 1) {
 +        initial.fill(-1, layer * stride + dFF, layer * stride + 3 * dFF);
-+        initial.fill(-1, layer * stride + 3 * dFF + nHeads, (layer + 1) * stride);
++        initial.fill(
++          -1,
++          layer * stride + 3 * dFF + nHeads,
++          (layer + 1) * stride,
++        );
 +      }
 +      const rows = activity ? request.rowCount : 1;
 +      const state = f32([layerCount, stride], initial);
@@ -5262,7 +5734,10 @@ index 616cff4..ac287ca 100644
 +      !Array.isArray(tokens) ||
 +      tokens.length === 0 ||
 +      tokens.some(
-+        (token) => !Number.isSafeInteger(token) || token < 0 || token >= this.fullVocabSize,
++        (token) =>
++          !Number.isSafeInteger(token) ||
++          token < 0 ||
++          token >= this.fullVocabSize,
 +      ) ||
 +      replay.position + tokens.length > replay.tokenCount
 +    ) {
@@ -5276,13 +5751,22 @@ index 616cff4..ac287ca 100644
 +        request.curveActive,
 +        request.unitActive,
 +      );
-+    } else if (request.curveActive !== undefined || request.unitActive !== undefined) {
-+      throw new TypeError("A Drowse replay segment's controls start with affineActive");
++    } else if (
++      request.curveActive !== undefined ||
++      request.unitActive !== undefined
++    ) {
++      throw new TypeError(
++        "A Drowse replay segment's controls start with affineActive",
++      );
 +    }
 +    const anatomy = (replay.flags & DROWSE_REPLAY_FLAG_ANATOMY) !== 0;
 +    let hosts: tvmjs.Tensor[] = [];
 +    try {
-+      for (let start = 0; start < tokens.length; start += this.prefillChunkSize) {
++      for (
++        let start = 0;
++        start < tokens.length;
++        start += this.prefillChunkSize
++      ) {
 +        const chunk = tokens.slice(start, start + this.prefillChunkSize);
 +        const last = start + chunk.length >= tokens.length;
 +        this.tvm.beginScope();
@@ -5331,8 +5815,12 @@ index 616cff4..ac287ca 100644
 +          ) {
 +            replay.anatomy?.dispose();
 +            replay.queries?.dispose();
-+            replay.anatomy = this.tvm.detachFromCurrentScope(ret.get(offset + 4));
-+            replay.queries = this.tvm.detachFromCurrentScope(ret.get(offset + 9));
++            replay.anatomy = this.tvm.detachFromCurrentScope(
++              ret.get(offset + 4),
++            );
++            replay.queries = this.tvm.detachFromCurrentScope(
++              ret.get(offset + 9),
++            );
 +          }
 +          if (last) {
 +            for (const index of [offset, offset + 3]) {
@@ -5375,8 +5863,13 @@ index 616cff4..ac287ca 100644
 +    const anatomy = (replay.flags & DROWSE_REPLAY_FLAG_ANATOMY) !== 0;
 +    const activity = (replay.flags & DROWSE_REPLAY_FLAG_ACTIVITY) !== 0;
 +    const patterns = (replay.flags & DROWSE_REPLAY_FLAG_PATTERNS) !== 0;
-+    if ((anatomy || patterns) && (replay.anatomy === undefined || replay.queries === undefined)) {
-+      throw new Error("REPLAY_INCOMPLETE: no forward held the anatomy position");
++    if (
++      (anatomy || patterns) &&
++      (replay.anatomy === undefined || replay.queries === undefined)
++    ) {
++      throw new Error(
++        "REPLAY_INCOMPLETE: no forward held the anatomy position",
++      );
 +    }
 +    const hosts: tvmjs.Tensor[] = [];
 +    const copy = (device: tvmjs.Tensor): tvmjs.Tensor => {
@@ -5445,14 +5938,18 @@ index 616cff4..ac287ca 100644
 +  ): Promise<Float32Array> {
 +    const capture = this.requireDrowseResident(captureId, "pattern_capture");
 +    const { nHeads } = this.drowseBlockDims();
-+    if (!(rows instanceof Int32Array) || rows.length !== 4 * DROWSE_UNIT_MAX_PATTERN_HEADS) {
++    if (
++      !(rows instanceof Int32Array) ||
++      rows.length !== 4 * DROWSE_UNIT_MAX_PATTERN_HEADS
++    ) {
 +      throw new TypeError(
 +        `Drowse attention rows must be Int32Array[${4 * DROWSE_UNIT_MAX_PATTERN_HEADS}]`,
 +      );
 +    }
 +    for (let row = 0; row < DROWSE_UNIT_MAX_PATTERN_HEADS; row += 1) {
 +      const [slot, layer, head, position] = rows.subarray(4 * row, 4 * row + 4);
-+      if (slot === -1 && layer === -1 && head === -1 && position === -1) continue;
++      if (slot === -1 && layer === -1 && head === -1 && position === -1)
++        continue;
 +      if (
 +        slot < 0 ||
 +        slot >= capture.layers!.length ||
@@ -5461,13 +5958,19 @@ index 616cff4..ac287ca 100644
 +        head >= nHeads ||
 +        position !== capture.position
 +      ) {
-+        throw new TypeError(`Drowse attention row ${row} is not in the capture`);
++        throw new TypeError(
++          `Drowse attention row ${row} is not in the capture`,
++        );
 +      }
 +    }
 +    let host: tvmjs.Tensor | undefined;
 +    this.tvm.beginScope();
 +    try {
-+      const meta = this.tvm.empty([DROWSE_UNIT_MAX_PATTERN_HEADS, 4], "int32", this.device);
++      const meta = this.tvm.empty(
++        [DROWSE_UNIT_MAX_PATTERN_HEADS, 4],
++        "int32",
++        this.device,
++      );
 +      meta.copyFrom(rows);
 +      const out = this.drowseAttentionRows!(
 +        capture.tensors[0],
@@ -5705,18 +6208,19 @@ index 616cff4..ac287ca 100644
 +    this.resetDrowseReadbackState();
 +    this.resetDrowseCaptureState();
 +    try {
-+      for (
-+        let chunkStart = 0;
-+        chunkStart < inputIds.length;
-+      ) {
-+        const span = this.drowsePositionSpans?.find((range) => range[1] > chunkStart);
++      for (let chunkStart = 0; chunkStart < inputIds.length; ) {
++        const span = this.drowsePositionSpans?.find(
++          (range) => range[1] > chunkStart,
++        );
 +        const active = span !== undefined && chunkStart >= span[0];
-+        const boundary = span === undefined ? Infinity : active ? span[1] : span[0];
++        const boundary =
++          span === undefined ? Infinity : active ? span[1] : span[0];
 +        const chunk = inputIds.slice(
 +          chunkStart,
 +          Math.min(chunkStart + this.prefillChunkSize, boundary),
 +        );
-+        if (this.drowsePositionSpans !== undefined) await this.applyDrowsePositionControls(active);
++        if (this.drowsePositionSpans !== undefined)
++          await this.applyDrowsePositionControls(active);
 +        const selected: Array<{ outputIndex: number; localPosition: number }> =
 +          [];
 +        for (
@@ -6123,16 +6627,27 @@ index 616cff4..ac287ca 100644
 +    curveActive?: Uint32Array,
 +    unitActive?: Float32Array,
 +  ): Promise<void> {
-+    const active = this.drowsePositionSpans === undefined || this.drowsePositionActive;
++    const active =
++      this.drowsePositionSpans === undefined || this.drowsePositionActive;
 +    await this.writeDrowseStructuredControls(
 +      active ? affineActive : new Uint32Array(affineActive.length),
-+      curveActive === undefined ? undefined : active ? curveActive : new Uint32Array(curveActive.length),
-+      unitActive === undefined ? undefined : active ? unitActive : new Float32Array(unitActive.length),
++      curveActive === undefined
++        ? undefined
++        : active
++          ? curveActive
++          : new Uint32Array(curveActive.length),
++      unitActive === undefined
++        ? undefined
++        : active
++          ? unitActive
++          : new Float32Array(unitActive.length),
 +    );
 +    if (this.drowsePositionSpans !== undefined) {
 +      this.drowsePositionAffine = new Uint32Array(affineActive);
-+      if (curveActive !== undefined) this.drowsePositionCurve = new Uint32Array(curveActive);
-+      if (unitActive !== undefined) this.drowsePositionUnit = new Float32Array(unitActive);
++      if (curveActive !== undefined)
++        this.drowsePositionCurve = new Uint32Array(curveActive);
++      if (unitActive !== undefined)
++        this.drowsePositionUnit = new Float32Array(unitActive);
 +    }
 +  }
 +
@@ -6161,10 +6676,14 @@ index 616cff4..ac287ca 100644
 +      }
 +      if (program.unitActive === undefined) {
 +        if (unitActive.some((value) => value !== 0)) {
-+          throw new TypeError("Drowse unit controls do not match the installed program");
++          throw new TypeError(
++            "Drowse unit controls do not match the installed program",
++          );
 +        }
 +      } else {
-+        this.drowseUnitActiveStaging ??= new Float32Array(DROWSE_UNIT_MAX_GROUPS);
++        this.drowseUnitActiveStaging ??= new Float32Array(
++          DROWSE_UNIT_MAX_GROUPS,
++        );
 +        this.drowseUnitActiveStaging.set(unitActive);
 +        program.unitActive.copyFrom(this.drowseUnitActiveStaging);
 +      }
@@ -7004,18 +7523,18 @@ index 616cff4..ac287ca 100644
 -    );
 -    this.fKVCacheAddSequence = this.tvm.detachFromCurrentScope(
 -      this.tvm.getGlobalFunc("vm.builtin.kv_state_add_sequence"),
--    );
--    this.fKVCacheRemoveSequence = this.tvm.detachFromCurrentScope(
--      this.tvm.getGlobalFunc("vm.builtin.kv_state_remove_sequence"),
--    );
--    this.fKVCacheBeginForward = this.tvm.detachFromCurrentScope(
--      this.tvm.getGlobalFunc("vm.builtin.kv_state_begin_forward"),
 +  private materializeDrowseJlensReadback(): void {
 +    const pending = this.drowsePendingJlensReadback;
 +    if (pending === undefined) return;
 +    const probabilities = new Float32Array(
 +      pending.layerCount * DROWSE_STRUCTURED_MAX_PROBES,
      );
+-    this.fKVCacheRemoveSequence = this.tvm.detachFromCurrentScope(
+-      this.tvm.getGlobalFunc("vm.builtin.kv_state_remove_sequence"),
+-    );
+-    this.fKVCacheBeginForward = this.tvm.detachFromCurrentScope(
+-      this.tvm.getGlobalFunc("vm.builtin.kv_state_begin_forward"),
+-    );
 -    this.fKVCacheEndForward = this.tvm.detachFromCurrentScope(
 -      this.tvm.getGlobalFunc("vm.builtin.kv_state_end_forward"),
 +    for (const { chunk, selectedHost } of pending.chunks) {
@@ -7384,7 +7903,7 @@ index 616cff4..ac287ca 100644
    }
  
    /**
-@@ -514,6 +3734,11 @@ export class LLMChatPipeline {
+@@ -514,6 +4062,11 @@ export class LLMChatPipeline {
      return this.outputMessage;
    }
  
@@ -7396,7 +7915,7 @@ index 616cff4..ac287ca 100644
    /**
     * Reset the runtime statistics
     */
-@@ -535,6 +3760,7 @@ export class LLMChatPipeline {
+@@ -535,6 +4088,7 @@ export class LLMChatPipeline {
      }
      this.resetKVCache();
      this.filledKVCacheLength = 0;
@@ -7404,7 +7923,7 @@ index 616cff4..ac287ca 100644
      this.logitProcessor?.resetState();
      this.tvm.endScope();
    }
-@@ -543,6 +3769,7 @@ export class LLMChatPipeline {
+@@ -543,6 +4097,7 @@ export class LLMChatPipeline {
     * Reset KV Cache
     */
    resetKVCache() {
@@ -7412,7 +7931,7 @@ index 616cff4..ac287ca 100644
      const states = this.getActiveKVStates();
      for (const state of states) {
        this.fclearKVCaches(state);
-@@ -572,6 +3799,10 @@ export class LLMChatPipeline {
+@@ -572,6 +4127,10 @@ export class LLMChatPipeline {
      return this.finishReason;
    }
  
@@ -7423,7 +7942,7 @@ index 616cff4..ac287ca 100644
    /**
     * @returns tokenLogprobArray for this current round of autoregressive generation.
     * Updated upon each sampled token, cleared upon each prefillStep().
-@@ -587,6 +3818,10 @@ export class LLMChatPipeline {
+@@ -587,6 +4146,10 @@ export class LLMChatPipeline {
      return this.curRoundDecodingTotalTokens;
    }
  
@@ -7434,7 +7953,7 @@ index 616cff4..ac287ca 100644
    /**
     * @returns the number of tokens decoded for a single request or a single choice in the request.
     */
-@@ -721,13 +3956,17 @@ export class LLMChatPipeline {
+@@ -721,13 +4284,17 @@ export class LLMChatPipeline {
     */
    async prefillStep(
      inp: string,
@@ -7455,7 +7974,7 @@ index 616cff4..ac287ca 100644
        );
      }
      if (this.resetStatsPerPrefill) {
-@@ -738,8 +3977,10 @@ export class LLMChatPipeline {
+@@ -738,8 +4305,10 @@ export class LLMChatPipeline {
  
      // cleanup the per convo states
      this.outputIds = [];
@@ -7466,7 +7985,7 @@ index 616cff4..ac287ca 100644
      this.tokenLogprobArray = [];
      this.curRoundDecodingTotalTokens = 0;
      this.curRoundPrefillTotalTokens = 0;
-@@ -747,6 +3988,10 @@ export class LLMChatPipeline {
+@@ -747,6 +4316,10 @@ export class LLMChatPipeline {
      this.curRoundDecodingTotalTime = 0;
      this.curRoundGrammarInitTotalTime = 0;
      this.curRoundGrammarPerTokenTotalTime = 0;
@@ -7477,7 +7996,7 @@ index 616cff4..ac287ca 100644
  
      this.curRoundLatencyBreakdown = {
        logitProcessorTime: [],
-@@ -758,6 +4003,8 @@ export class LLMChatPipeline {
+@@ -758,6 +4331,8 @@ export class LLMChatPipeline {
      };
  
      this.stopTriggered = false;
@@ -7486,7 +8005,7 @@ index 616cff4..ac287ca 100644
      const conversation = this.conversation;
  
      // -1. Instantiate grammar matcher according to generation config. This step is overlapped
-@@ -835,17 +4082,28 @@ export class LLMChatPipeline {
+@@ -835,17 +4410,28 @@ export class LLMChatPipeline {
        conversation.prompt = inp;
      } else {
        conversation.appendMessage(msgRole, inp, inp_role_str);
@@ -7519,7 +8038,7 @@ index 616cff4..ac287ca 100644
        }
      }
      const [inputData, promptLen, getEmbedSize] = await this.getInputData();
-@@ -944,8 +4202,9 @@ export class LLMChatPipeline {
+@@ -944,8 +4530,9 @@ export class LLMChatPipeline {
      }
      this.stopTriggered = true;
      this.finishReason = "abort";
@@ -7530,7 +8049,7 @@ index 616cff4..ac287ca 100644
      }
    }
  
-@@ -999,9 +4258,11 @@ export class LLMChatPipeline {
+@@ -999,9 +4586,11 @@ export class LLMChatPipeline {
      if (stopTokens.includes(nextToken)) {
        this.stopTriggered = true;
        this.finishReason = "stop";
@@ -7542,7 +8061,7 @@ index 616cff4..ac287ca 100644
        // Update token appearance frequency
        const curFreq = this.appearedTokensFreq.get(nextToken);
        if (curFreq !== undefined) {
-@@ -1013,6 +4274,7 @@ export class LLMChatPipeline {
+@@ -1013,6 +4602,7 @@ export class LLMChatPipeline {
  
      // Stop condition 2: stop string; update `this.outputMessage` subsequently
      let outputMessage = this.tokenizer.decode(new Int32Array(this.outputIds));
@@ -7550,7 +8069,7 @@ index 616cff4..ac287ca 100644
      let stopPos = -1;
      for (const stopStr of stopStrs) {
        // Stop at the first stopStr we find
-@@ -1021,32 +4283,36 @@ export class LLMChatPipeline {
+@@ -1021,32 +4611,36 @@ export class LLMChatPipeline {
          outputMessage = outputMessage.substring(0, stopPos);
          this.stopTriggered = true;
          this.finishReason = "stop";
@@ -7589,7 +8108,7 @@ index 616cff4..ac287ca 100644
        }
      }
    }
-@@ -1214,20 +4480,89 @@ export class LLMChatPipeline {
+@@ -1214,20 +4808,109 @@ export class LLMChatPipeline {
      return embed;
    }
  
@@ -7626,25 +8145,43 @@ index 616cff4..ac287ca 100644
 +    }
 +    const spans = useDrowseProgram ? this.drowsePositionSpans : undefined;
 +    if (spans === undefined) {
-+      return this.embedAndForwardChunk(inputData, inputDataLen, useDrowseProgram);
++      return this.embedAndForwardChunk(
++        inputData,
++        inputDataLen,
++        useDrowseProgram,
++      );
 +    }
 +    if (inputData.some((part) => !Array.isArray(part))) {
-+      throw new TypeError("Position-targeted steering requires text-only input");
++      throw new TypeError(
++        "Position-targeted steering requires text-only input",
++      );
 +    }
-+    const tokens = inputData.length === 1 ? inputData[0] as number[] : (inputData as number[][]).flat();
++    const tokens =
++      inputData.length === 1
++        ? (inputData[0] as number[])
++        : (inputData as number[][]).flat();
 +    if (tokens.length !== inputDataLen || inputDataLen < 1) {
-+      throw new TypeError("Position-targeted steering requires a non-empty token sequence");
++      throw new TypeError(
++        "Position-targeted steering requires a non-empty token sequence",
++      );
 +    }
 +    let offset = 0;
 +    while (offset < tokens.length) {
 +      const position = this.filledKVCacheLength;
 +      const span = spans.find((range) => range[1] > position);
 +      const active = span !== undefined && position >= span[0];
-+      const boundary = span === undefined ? Infinity : active ? span[1] : span[0];
-+      const length = Math.min(tokens.length - offset, boundary - position, this.prefillChunkSize);
++      const boundary =
++        span === undefined ? Infinity : active ? span[1] : span[0];
++      const length = Math.min(
++        tokens.length - offset,
++        boundary - position,
++        this.prefillChunkSize,
++      );
 +      await this.applyDrowsePositionControls(active);
 +      const logits = await this.embedAndForwardChunk(
-+        [tokens.slice(offset, offset + length)], length, useDrowseProgram,
++        [tokens.slice(offset, offset + length)],
++        length,
++        useDrowseProgram,
 +      );
 +      offset += length;
 +      if (offset === tokens.length) return logits;
@@ -7657,7 +8194,9 @@ index 616cff4..ac287ca 100644
 +    if (active === this.drowsePositionActive) return;
 +    if (this.drowseProgram !== undefined) {
 +      const enabled = this.drowsePositionEnabled!;
-+      this.drowseProgram.enabled.copyFrom(active ? new Int32Array(enabled) : new Int32Array(enabled.length));
++      this.drowseProgram.enabled.copyFrom(
++        active ? new Int32Array(enabled) : new Int32Array(enabled.length),
++      );
 +    } else if (this.drowseStructuredProgram !== undefined) {
 +      const affine = this.drowsePositionAffine!;
 +      const curve = this.drowsePositionCurve!;
@@ -7690,7 +8229,7 @@ index 616cff4..ac287ca 100644
      if (inputDataLen > this.prefillChunkSize) {
        throw new Error(
          "InternalError: expect inputDataLen <= this.prefillChunkSize.",
-@@ -1238,51 +4573,139 @@ export class LLMChatPipeline {
+@@ -1238,51 +4921,139 @@ export class LLMChatPipeline {
  
      // 1. Embed all inputData
      this.tvm.beginScope();
@@ -7871,7 +8410,7 @@ index 616cff4..ac287ca 100644
      this.tvm.attachToCurrentScope(logits);
      return logits;
    }
-@@ -1292,7 +4715,14 @@ export class LLMChatPipeline {
+@@ -1292,7 +5063,14 @@ export class LLMChatPipeline {
      names: string[],
    ): VMFunctionRegistry {
      const registry: VMFunctionRegistry = {};
@@ -7887,7 +8426,7 @@ index 616cff4..ac287ca 100644
        try {
          const func = vm.getFunction(name) as unknown;
          if (typeof func === "function") {
-@@ -1305,6 +4735,17 @@ export class LLMChatPipeline {
+@@ -1305,6 +5083,17 @@ export class LLMChatPipeline {
      return registry;
    }
  
@@ -7905,7 +8444,7 @@ index 616cff4..ac287ca 100644
    private static getRequiredVMFunctionByName(
      name: string,
      registry: VMFunctionRegistry,
-@@ -1365,6 +4806,7 @@ export class LLMChatPipeline {
+@@ -1365,6 +5154,7 @@ export class LLMChatPipeline {
    private static resolveModelABI(
      kvStateKind: KVStateKind,
      availability: VMFunctionAvailability,
@@ -7913,7 +8452,7 @@ index 616cff4..ac287ca 100644
    ): ResolvedModelABI {
      const hasSingleKernelPair = availability.prefill && availability.decode;
      const hasBatchKernelPair =
-@@ -1450,6 +4892,17 @@ export class LLMChatPipeline {
+@@ -1450,6 +5240,17 @@ export class LLMChatPipeline {
      }
  
      // kv_cache
@@ -7931,7 +8470,7 @@ index 616cff4..ac287ca 100644
      if (hasSingleKernelPair) {
        return {
          kvStateKind,
-@@ -1525,14 +4978,269 @@ export class LLMChatPipeline {
+@@ -1525,14 +5326,269 @@ export class LLMChatPipeline {
      return states;
    }
  
@@ -8202,7 +8741,7 @@ index 616cff4..ac287ca 100644
          this.params,
        );
      }
-@@ -1549,27 +5257,44 @@ export class LLMChatPipeline {
+@@ -1549,27 +5605,44 @@ export class LLMChatPipeline {
        this.resolvedModelABI.needsKVCache &&
        this.resolvedModelABI.needsRNNState
      ) {
@@ -8251,7 +8790,7 @@ index 616cff4..ac287ca 100644
          this.params,
        );
      }
-@@ -1577,20 +5302,80 @@ export class LLMChatPipeline {
+@@ -1577,20 +5650,80 @@ export class LLMChatPipeline {
        this.resolvedModelABI.needsKVCache &&
        this.resolvedModelABI.needsRNNState
      ) {
@@ -8334,7 +8873,7 @@ index 616cff4..ac287ca 100644
    // NOTE: caller must call device.sync()
    private updateLogitsOnCPU(logits: tvmjs.Tensor): tvmjs.Tensor {
      if (this.logitsOnCPU == undefined) {
-@@ -1610,7 +5395,7 @@ export class LLMChatPipeline {
+@@ -1610,7 +5743,7 @@ export class LLMChatPipeline {
      logitsOnGPU: tvmjs.Tensor,
      genConfig?: GenerationConfig,
    ) {
@@ -8343,7 +8882,7 @@ index 616cff4..ac287ca 100644
      // Also load other genConfig items like logit_bias. Consume all fields of `genConfig` here.
      function _hasValue(value: any): boolean {
        // if we use `if value` directly, `value` being 0 evaluates to false, violating semantics
-@@ -1618,6 +5403,7 @@ export class LLMChatPipeline {
+@@ -1618,6 +5751,7 @@ export class LLMChatPipeline {
      }
      let temperature: number = this.config.temperature;
      let top_p: number = this.config.top_p;
@@ -8351,7 +8890,7 @@ index 616cff4..ac287ca 100644
      let repetition_penalty: number = this.config.repetition_penalty;
      let frequency_penalty: number = this.config.frequency_penalty;
      let presence_penalty: number = this.config.presence_penalty;
-@@ -1633,6 +5419,9 @@ export class LLMChatPipeline {
+@@ -1633,6 +5767,9 @@ export class LLMChatPipeline {
        if (_hasValue(genConfig.top_p)) {
          top_p = genConfig.top_p!;
        }
@@ -8361,7 +8900,7 @@ index 616cff4..ac287ca 100644
        // TODO: setting top_p to 1.0 by default might run into issues since
        // top_p masking in relax uses < instead of <=
        // Set default top_p to 1.0 if not set
-@@ -1675,11 +5464,14 @@ export class LLMChatPipeline {
+@@ -1675,11 +5812,14 @@ export class LLMChatPipeline {
        }
      }
      // Check range validity
@@ -8379,7 +8918,7 @@ index 616cff4..ac287ca 100644
      }
      if (repetition_penalty <= 0) {
        throw new MinValueError("repetition_penalty", 0);
-@@ -1894,13 +5686,38 @@ export class LLMChatPipeline {
+@@ -1894,13 +6034,38 @@ export class LLMChatPipeline {
      // 4. Sample token from logits
      const sampleBegin = performance.now();
  
@@ -8422,7 +8961,7 @@ index 616cff4..ac287ca 100644
  
      this.tvm.beginScope();
      const temperaturesDevice = this.tvm
-@@ -1913,79 +5730,131 @@ export class LLMChatPipeline {
+@@ -1913,79 +6078,131 @@ export class LLMChatPipeline {
      );
      probs = probs.view([numProbs, this.fullVocabSize]);
  
@@ -8604,7 +9143,7 @@ index 616cff4..ac287ca 100644
    }
  
    /**
-@@ -2028,20 +5897,37 @@ export class LLMChatPipeline {
+@@ -2028,20 +6245,37 @@ export class LLMChatPipeline {
        if (this.filledKVCacheLength !== 0) {
          throw new TextCompletionExpectsKVEmptyError();
        }
@@ -8653,7 +9192,7 @@ index 616cff4..ac287ca 100644
      }
  
      // 1.5. Preload image dimensions to compute per-image embed sizes
-@@ -2082,7 +5968,7 @@ export class LLMChatPipeline {
+@@ -2082,7 +6316,7 @@ export class LLMChatPipeline {
  
      // 3. Encode all prompts. Iterate through each message in the prompt array, where each
      // prompt can either be a string, or an array of a mixture of string and ImageURLs.
@@ -8662,15 +9201,18 @@ index 616cff4..ac287ca 100644
      for (let i = 0; i < prompts.length; i++) {
        const curPrompt = prompts[i];
        if (typeof curPrompt === "string") {
-@@ -2116,6 +6002,23 @@ export class LLMChatPipeline {
+@@ -2116,6 +6350,26 @@ export class LLMChatPipeline {
          }
        }
      }
 +    if (!this.conversation.isTextCompletion && this.filledKVCacheLength > 0) {
 +      const cached = this.drowseCachedInputIds;
-+      if (ret.length === 0 && cached?.length === this.filledKVCacheLength &&
-+          cached.length < curTokens.length &&
-+          cached.every((token, index) => curTokens[index] === token)) {
++      if (
++        ret.length === 0 &&
++        cached?.length === this.filledKVCacheLength &&
++        cached.length < curTokens.length &&
++        cached.every((token, index) => curTokens[index] === token)
++      ) {
 +        curTokens = curTokens.slice(cached.length);
 +        numPromptTokens = curTokens.length;
 +      } else {
@@ -8686,7 +9228,7 @@ index 616cff4..ac287ca 100644
      // Deal with last curTokens
      if (curTokens.length !== 0) {
        ret.push([...curTokens]);
-@@ -2186,50 +6089,51 @@ export class LLMChatPipeline {
+@@ -2186,50 +6440,51 @@ export class LLMChatPipeline {
    }
  
    /**
@@ -8754,7 +9296,7 @@ index 616cff4..ac287ca 100644
      } as ChatCompletionTokenLogprob;
    }
  
-@@ -2284,3 +6188,10 @@ export class LLMChatPipeline {
+@@ -2284,3 +6539,10 @@ export class LLMChatPipeline {
      log.info(msg);
    }
  }
@@ -11662,10 +12204,10 @@ index 0000000..f54302c
 +});
 diff --git a/tests/drowse.test.ts b/tests/drowse.test.ts
 new file mode 100644
-index 0000000..cdd5269
+index 0000000..020b1fc
 --- /dev/null
 +++ b/tests/drowse.test.ts
-@@ -0,0 +1,936 @@
+@@ -0,0 +1,993 @@
 +import { describe, expect, test } from "@jest/globals";
 +import {
 +  DROWSE_REPLAY_META,
@@ -11719,6 +12261,9 @@ index 0000000..cdd5269
 +  DROWSE_DESCRIPTOR_HEAD_DIM,
 +  DROWSE_DESCRIPTOR_PREFILL_CHUNK_SIZE,
 +  DROWSE_DESCRIPTOR_UNIT_SITES,
++  DROWSE_PACKED_READ_FUNCTIONS,
++  DROWSE_READOUT_FUNCTIONS,
++  DROWSE_UNIT_READ_FUNCTIONS,
 +} from "../src/drowse";
 +
 +describe("Drowse structured hook profile", () => {
@@ -11863,7 +12408,9 @@ index 0000000..cdd5269
 +  });
 +
 +  test("accepts an empty and a populated section", () => {
-+    expect(() => validateDrowseUnitSection(program({}), layers, headDim, 8, 2)).not.toThrow();
++    expect(() =>
++      validateDrowseUnitSection(program({}), layers, headDim, 8, 2),
++    ).not.toThrow();
 +    const unit = section();
 +    // one neuron ablation at layer 1 (index 7, group 2), one head tap at layer 0 (head 1, slot 3)
 +    unit.unitMeta[2] = 1; // neuron offsets [0, 0, 1]
@@ -11874,7 +12421,9 @@ index 0000000..cdd5269
 +    unit.unitMeta[tapHead + 2] = 1;
 +    unit.unitMeta[tapHead + 3] = 1;
 +    unit.unitMeta[tapHead + 3 + 16] = 3;
-+    expect(() => validateDrowseUnitSection(program(unit), layers, headDim, 8, 2)).not.toThrow();
++    expect(() =>
++      validateDrowseUnitSection(program(unit), layers, headDim, 8, 2),
++    ).not.toThrow();
 +    expect(drowseProgramHasUnits(program(unit))).toBe(true);
 +    expect(drowseProgramHasUnits(program({}))).toBe(false);
 +  });
@@ -11882,33 +12431,60 @@ index 0000000..cdd5269
 +  test("fails closed on partial sections, lengths, offsets and indices", () => {
 +    const partial = section() as Partial<ReturnType<typeof section>>;
 +    delete partial.tapGrams;
-+    expect(() => validateDrowseUnitSection(program(partial), layers, headDim, 8, 2)).toThrow(
-+      /all four tables/,
-+    );
++    expect(() =>
++      validateDrowseUnitSection(program(partial), layers, headDim, 8, 2),
++    ).toThrow(/all four tables/);
 +    const short = section();
 +    short.unitCoeff = new Float32Array(lengths.coeff - 1);
-+    expect(() => validateDrowseUnitSection(program(short), layers, headDim, 8, 2)).toThrow();
++    expect(() =>
++      validateDrowseUnitSection(program(short), layers, headDim, 8, 2),
++    ).toThrow();
 +    const decreasing = section();
 +    decreasing.unitMeta[1] = 2;
 +    decreasing.unitMeta[2] = 1;
-+    expect(() => validateDrowseUnitSection(program(decreasing), layers, headDim, 8, 2)).toThrow(
-+      /must not decrease/,
-+    );
++    expect(() =>
++      validateDrowseUnitSection(program(decreasing), layers, headDim, 8, 2),
++    ).toThrow(/must not decrease/);
 +    const neuron = section();
 +    neuron.unitMeta[2] = 1;
 +    neuron.unitMeta[3] = 8; // d_ff is 8
-+    expect(() => validateDrowseUnitSection(program(neuron), layers, headDim, 8, 2)).toThrow(
-+      /entry 0 is out of range/,
-+    );
++    expect(() =>
++      validateDrowseUnitSection(program(neuron), layers, headDim, 8, 2),
++    ).toThrow(/entry 0 is out of range/);
 +    const group = section();
 +    group.unitMeta[2] = 1;
 +    group.unitMeta[3 + 256] = 4; // four groups
-+    expect(() => validateDrowseUnitSection(program(group), layers, headDim, 8, 2)).toThrow();
++    expect(() =>
++      validateDrowseUnitSection(program(group), layers, headDim, 8, 2),
++    ).toThrow();
 +    const nonFinite = section();
 +    nonFinite.unitCoeff[0] = Number.NaN;
-+    expect(() => validateDrowseUnitSection(program(nonFinite), layers, headDim, 8, 2)).toThrow(
-+      /finite/,
-+    );
++    expect(() =>
++      validateDrowseUnitSection(program(nonFinite), layers, headDim, 8, 2),
++    ).toThrow(/finite/);
++  });
++});
++
++describe("Drowse static reads (exact-readout-v2)", () => {
++  test("names every library's readout functions and the units libraries' reads apart", () => {
++    const readout = new Set<string>(DROWSE_READOUT_FUNCTIONS);
++    const units = new Set<string>(DROWSE_UNIT_READ_FUNCTIONS);
++    expect(readout.size).toBe(12);
++    expect(units.size).toBe(9);
++    for (const name of units) expect(readout.has(name)).toBe(false);
++    for (const name of DROWSE_PACKED_READ_FUNCTIONS) {
++      expect(readout.has(name) || units.has(name)).toBe(true);
++    }
++    for (const weightFree of [
++      "drowse_topk",
++      "drowse_log_sum_exp",
++      "drowse_batched_matmul",
++      "drowse_chan_merge",
++      "drowse_head_write_norms",
++      "drowse_gather_head_grams",
++    ]) {
++      expect(DROWSE_PACKED_READ_FUNCTIONS.has(weightFree)).toBe(false);
++    }
 +  });
 +});
 +
@@ -11969,21 +12545,27 @@ index 0000000..cdd5269
 +
 +  test("validates exact bindings, layers, and per-layer matrix shapes", () => {
 +    expect(() => validateDrowseJlensDictionary(dictionary, 2, 2)).not.toThrow();
-+    expect(() => validateDrowseJlensDictionary(
-+      { ...dictionary, bindingId: "floating" },
-+      2,
-+      2,
-+    )).toThrow(/identity is invalid/);
-+    expect(() => validateDrowseJlensDictionary(
-+      { ...dictionary, layerIndices: Int32Array.from([1, 0]) },
-+      2,
-+      2,
-+    )).toThrow(/unique, ordered, and in range/);
-+    expect(() => validateDrowseJlensDictionary(
-+      { ...dictionary, matrices: [new Float32Array(4), new Float32Array(3)] },
-+      2,
-+      2,
-+    )).toThrow(/wrong shape/);
++    expect(() =>
++      validateDrowseJlensDictionary(
++        { ...dictionary, bindingId: "floating" },
++        2,
++        2,
++      ),
++    ).toThrow(/identity is invalid/);
++    expect(() =>
++      validateDrowseJlensDictionary(
++        { ...dictionary, layerIndices: Int32Array.from([1, 0]) },
++        2,
++        2,
++      ),
++    ).toThrow(/unique, ordered, and in range/);
++    expect(() =>
++      validateDrowseJlensDictionary(
++        { ...dictionary, matrices: [new Float32Array(4), new Float32Array(3)] },
++        2,
++        2,
++      ),
++    ).toThrow(/wrong shape/);
 +  });
 +});
 +
@@ -12042,9 +12624,7 @@ index 0000000..cdd5269
 +      layerCount * DROWSE_STRUCTURED_MAX_PROBES * hiddenSize,
 +    ),
 +    probeBias: new Float32Array(layerCount * DROWSE_STRUCTURED_MAX_PROBES),
-+    probeThreshold: new Float32Array(
-+      layerCount * DROWSE_STRUCTURED_MAX_PROBES,
-+    ),
++    probeThreshold: new Float32Array(layerCount * DROWSE_STRUCTURED_MAX_PROBES),
 +    curveActive: new Uint32Array(curveSlots),
 +    curveRank: new Uint32Array(curveSlots),
 +    curveIntrinsicDim: new Uint32Array(curveSlots),
@@ -12545,7 +13125,14 @@ index 0000000..cdd5269
 +});
 +
 +describe("drowse replay meta (HOOK_ABI.md §7)", () => {
-+  const model = { layerCount: 4, dFF: 8, nHeads: 2, contextTokens: 64, rowCount: 6, tokenCount: 12 };
++  const model = {
++    layerCount: 4,
++    dFF: 8,
++    nHeads: 2,
++    contextTokens: 64,
++    rowCount: 6,
++    tokenCount: 12,
++  };
 +  const m = DROWSE_REPLAY_META;
 +  const meta = (flags: number) => {
 +    const out = new Int32Array(m.length).fill(-1);
@@ -12558,8 +13145,14 @@ index 0000000..cdd5269
 +
 +  test("is laid out as drowse.ai's replayMetaLayout (126 values under standard-v4)", () => {
 +    expect(m.length).toBe(126);
-+    expect([m.populationRow, m.traceCount, m.traces, m.patternLayerCount, m.patternLayers, m.flags])
-+      .toEqual([18, 19, 20, 116, 117, 125]);
++    expect([
++      m.populationRow,
++      m.traceCount,
++      m.traces,
++      m.patternLayerCount,
++      m.patternLayers,
++      m.flags,
++    ]).toEqual([18, 19, 20, 116, 117, 125]);
 +  });
 +
 +  test("accepts anatomy, activity and patterns within the model", () => {
@@ -12579,7 +13172,9 @@ index 0000000..cdd5269
 +  test("fails closed on what the kernels would index by", () => {
 +    const anatomy = meta(1);
 +    anatomy[m.anatomyPosition] = 12; // past the fed positions
-+    expect(() => validateDrowseReplayMeta(anatomy, model)).toThrow(/anatomy position/);
++    expect(() => validateDrowseReplayMeta(anatomy, model)).toThrow(
++      /anatomy position/,
++    );
 +    const trace = meta(2);
 +    trace[m.spanCount] = 1;
 +    trace.set([0, 6, 3, 0], m.spans);
@@ -12593,13 +13188,17 @@ index 0000000..cdd5269
 +    const patterns = meta(4);
 +    patterns[m.patternLayerCount] = 1;
 +    patterns[m.patternLayers] = 2;
-+    expect(() => validateDrowseReplayMeta(patterns, model)).toThrow(/anatomy position/);
++    expect(() => validateDrowseReplayMeta(patterns, model)).toThrow(
++      /anatomy position/,
++    );
 +    const unsorted = meta(5);
 +    unsorted[m.anatomyPosition] = 3;
 +    unsorted[m.patternLayerCount] = 2;
 +    unsorted.set([3, 1], m.patternLayers);
 +    expect(() => validateDrowseReplayMeta(unsorted, model)).toThrow(/ascend/);
-+    expect(() => validateDrowseReplayMeta(new Int32Array(125), model)).toThrow(/Int32Array/);
++    expect(() => validateDrowseReplayMeta(new Int32Array(125), model)).toThrow(
++      /Int32Array/,
++    );
 +  });
 +});
 diff --git a/tests/engine_integration.test.ts b/tests/engine_integration.test.ts

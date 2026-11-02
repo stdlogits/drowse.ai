@@ -1,11 +1,13 @@
 // Hook ABI v5's device surface over the WebLLM bridge (B1 §2-§4, browser-runtime/HOOK_ABI.md
-// §7-§9): the units programs, the residents (head grams, unit scales, pattern captures), the
-// replay and the attention rows. The bridge takes one request per call (`drowseBlockSites`), so
-// the worker engine carries the whole surface as one message kind.
+// §7-§9): the units programs, the residents (head grams, unit scales, lens layers, embedding
+// statistics, pattern captures), the replay, the attention rows and the static reads
+// (`webLlmStaticReads.ts`). The bridge takes one request per call (`drowseBlockSites`), so the
+// worker engine carries the whole surface as one message kind.
 import {
   activityStateLayout,
   anatomyTapLayout,
   BLOCK_SITES_BACKEND_MEMBERS,
+  BLOCK_SITES_UNIT_MEMBERS,
   encodeReplayMeta,
   f32Tensor,
   requireTensorShape,
@@ -26,6 +28,7 @@ import {
   structuredUnitSectionLayout,
   type StructuredHookProgramBuffers,
 } from "./structuredHookProgram";
+import { webLlmStaticReads, type WebLlmStaticReadRequest } from "./webLlmStaticReads";
 
 /** The bridge's block-sites requests (vendored WebLLM `DrowseBlockSitesRequest`). */
 export type WebLlmBlockSitesRequest =
@@ -48,7 +51,8 @@ export type WebLlmBlockSitesRequest =
     }
   | { op: "finishReplay" }
   | { op: "cancelReplay" }
-  | { op: "attentionRows"; capture: string; rows: Int32Array };
+  | { op: "attentionRows"; capture: string; rows: Int32Array }
+  | WebLlmStaticReadRequest;
 
 interface BridgeResident {
   id: string;
@@ -72,8 +76,8 @@ export interface WebLlmBlockSitesDevice {
   installProgram(program: StructuredHookProgramBuffers): Promise<void>;
 }
 
-/** Members a stage of hook ABI v5 has not wired into the WebLLM bridge yet reject with this code
- *  (static reads); they are not refusals of the model. */
+/** Members with no bridge behind them (no v5 bridge loaded) reject with this code; they are not
+ *  refusals of the model. */
 export const BLOCK_SITES_MEMBER_UNAVAILABLE = "BLOCK_SITES_MEMBER_UNAVAILABLE";
 
 export function blockSitesMemberUnavailable(member: string): Error {
@@ -109,14 +113,25 @@ export function webLlmBlockSitesBackend(
   const units = capabilities.profile.unitSites === 1;
   const refuse = (): Promise<never> =>
     Promise.reject(new UnsupportedBlockError(capabilities.unitRefusal ?? "unit sites unavailable"));
+  const unitMembers = new Set<string>([...BLOCK_SITES_UNIT_MEMBERS, "unembedCotangent"]);
   const backend: Record<string, unknown> = {
     capabilities: () => capabilities,
   };
   for (const member of BLOCK_SITES_BACKEND_MEMBERS) {
-    backend[member] = units
+    backend[member] = units || !unitMembers.has(member)
       ? () => Promise.reject(blockSitesMemberUnavailable(member))
       : refuse;
   }
+  let headGrams: Promise<BlockSitesResident<"head_grams">> | null = null;
+  const residentHeadGrams = (): Promise<BlockSitesResident<"head_grams">> => {
+    headGrams ??= device!.call({ op: "headGrams" }).then((value) => resident(value, "head_grams"));
+    headGrams.catch(() => { headGrams = null; });
+    return headGrams;
+  };
+  const reads = device === null
+    ? {}
+    : webLlmStaticReads(capabilities, device, async () => (await residentHeadGrams()).id);
+  Object.assign(backend, reads);
   backend.bindStructuredProgram = async (
     program: StructuredHookProgramBuffers,
   ): Promise<StructuredHookProgramBuffers> => {
@@ -136,34 +151,25 @@ export function webLlmBlockSitesBackend(
     ) {
       throw new TypeError("The program's unit section does not match the loaded model's layout");
     }
-    // Head taps read `tapGrams[i] = G_h` (B1 §2.2). Until the bridge gathers them from the
-    // resident grams, the caller supplies them and an all-zero gram fails closed.
-    const offsets = layout.meta.tapHeadOffsets;
-    const heads = program.unitMeta[offsets.offset + capabilities.layerCount];
-    const gram = spec.headDim * spec.headDim;
-    for (let entry = 0; entry < heads; entry += 1) {
-      const values = program.tapGrams.subarray(entry * gram, (entry + 1) * gram);
-      if (values.every((value) => value === 0)) {
-        throw blockSitesMemberUnavailable("the head write grams of a tapped head");
+    // Head taps read `tapGrams[i] = G_h` (B1 §2.2), gathered from the resident head grams.
+    const offsets = layout.meta.tapHeadOffsets.offset;
+    const index = layout.meta.tapHeadIndex.offset;
+    const count = program.unitMeta[offsets + capabilities.layerCount];
+    if (count === 0) return program;
+    if (device === null) throw blockSitesMemberUnavailable("the head write grams of a tapped head");
+    const heads: { layer: number; head: number }[] = [];
+    for (let layer = 0; layer < capabilities.layerCount; layer += 1) {
+      for (let entry = program.unitMeta[offsets + layer]; entry < program.unitMeta[offsets + layer + 1]; entry += 1) {
+        heads.push({ layer, head: program.unitMeta[index + entry] });
       }
     }
-    return program;
+    const grams = await (backend.headWriteGrams as BrowserBlockSitesBackend["headWriteGrams"])(heads);
+    const tapGrams = new Float32Array(layout.tapGramsLength);
+    tapGrams.set(grams.data);
+    return { ...program, tapGrams };
   };
-  if (!units || device === null) return Object.freeze(backend) as unknown as BrowserBlockSitesBackend;
-
-  const spec = capabilities.blockSpec!;
-  const L = capabilities.layerCount;
+  if (device === null) return Object.freeze(backend) as unknown as BrowserBlockSitesBackend;
   const captures = new Map<string, { layers: readonly number[]; position: number }>();
-  let open = false;
-
-  backend.residentHeadGrams = async (signal?: AbortSignal) => {
-    throwIfAborted(signal);
-    return resident(await device.call({ op: "headGrams" }), "head_grams");
-  };
-  backend.uploadUnitScales = async (scales: F32Tensor) => {
-    requireTensorShape(scales, "f32", [L, unitScalesLayout(spec).stride], "Unit scales");
-    return resident(await device.call({ op: "uploadUnitScales", values: scales.data }), "unit_scales");
-  };
   backend.release = async (handle: BlockSitesResident) => {
     if (handle.kind === "head_grams") {
       throw new TypeError("Head grams are dropped with the model, not released");
@@ -171,7 +177,23 @@ export function webLlmBlockSitesBackend(
     await device.call({ op: "release", id: handle.id });
     captures.delete(handle.id);
   };
+  if (!units) {
+    backend.unembedCotangent = refuse;
+    return Object.freeze(backend) as unknown as BrowserBlockSitesBackend;
+  }
 
+  const spec = capabilities.blockSpec!;
+  const L = capabilities.layerCount;
+  let open = false;
+
+  backend.residentHeadGrams = async (signal?: AbortSignal) => {
+    throwIfAborted(signal);
+    return residentHeadGrams();
+  };
+  backend.uploadUnitScales = async (scales: F32Tensor) => {
+    requireTensorShape(scales, "f32", [L, unitScalesLayout(spec).stride], "Unit scales");
+    return resident(await device.call({ op: "uploadUnitScales", values: scales.data }), "unit_scales");
+  };
   backend.openReplay = async (
     request: BlockSitesReplayRequest,
     signal?: AbortSignal,

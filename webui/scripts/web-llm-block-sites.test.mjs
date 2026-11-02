@@ -148,13 +148,13 @@ try {
   });
   const ablation = unitProgram();
   assert.equal(await surface.bindStructuredProgram(ablation), ablation);
-  // One tapped head (layer 2): its gram must be present until the bridge builds grams itself.
+  // One tapped head (layer 2, head 3): its gram comes from the bridge's resident head grams, so
+  // with no bridge the program cannot be bound.
   const tapped = unitProgram();
   const offsets = layout.meta.tapHeadOffsets.offset;
   for (let layer = 3; layer <= 4; layer += 1) tapped.unitMeta[offsets + layer] = 1;
+  tapped.unitMeta[layout.meta.tapHeadIndex.offset] = 3;
   await assert.rejects(surface.bindStructuredProgram(tapped), (error) => error.code === "BLOCK_SITES_MEMBER_UNAVAILABLE");
-  tapped.tapGrams[0] = 1;
-  assert.equal(await surface.bindStructuredProgram(tapped), tapped);
   const short = unitProgram();
   short.unitCoeff = new Float32Array(layout.coeffLength - 1);
   await assert.rejects(surface.bindStructuredProgram(short), TypeError);
@@ -163,6 +163,8 @@ try {
   await assert.rejects(residualSurface.bindStructuredProgram(unitProgram()), (error) =>
     error instanceof modelBackend.UnsupportedBlockError && error.message === refusal);
   await assert.rejects(residualSurface.unitWeightRows("neuron_write", []), modelBackend.UnsupportedBlockError);
+  await assert.rejects(residualSurface.logSumExp(modelBackend.f32Tensor(new Float32Array(2), [1, 2])),
+    (error) => error.code === "BLOCK_SITES_MEMBER_UNAVAILABLE");
   assert.equal(await residualSurface.bindStructuredProgram(plain), plain);
 
   // ------------------------------------------------- replay over a recording bridge ---
@@ -244,6 +246,9 @@ try {
   await assert.rejects(live.attentionRows(result.patterns, [{ layer: 1, head: 0 }]), TypeError);
   await assert.rejects(live.openReplay({ program: null, anatomyPosition: null, activity: null, patternLayers: [1] }), RangeError);
 
+  // -------------------------------------------- static reads over a computing bridge ---
+  await staticReads(backendModule, modelBackend, capabilities, residualCapabilities, spec, tapped);
+
   // ---------------------------------------------------------- unit taps as gate scores ---
   const tapSchema = [
     { name: "neuron/L1n5", unit: "neuron/L1n5", kind: "neuron", layer: 1, index: 5, slot: 0,
@@ -276,4 +281,195 @@ try {
   console.log("WebLLM block-sites adapter: descriptor attestation, capabilities, surface and unit taps passed");
 } finally {
   await server.close();
+}
+
+
+/** A bridge that runs the weight-free reads in JS and answers the weight reads with tagged
+ *  values, so each member's request and its result assembly are checked. */
+function computingBridge(log) {
+  const LOWEST = -3.4028234663852886e38;
+  const size = (shape) => shape.reduce((a, b) => a * b, 1);
+  const run = (fn, a) => {
+    const [x, y] = a;
+    switch (fn) {
+      case "drowse_neuron_rows": {
+        const n = x.shape[0];
+        const d = 64;
+        return { shape: [n, 3, d], data: Float32Array.from({ length: n * 3 * d }, (_, i) =>
+          1000 * Math.floor(i / (3 * d)) + 100 * (Math.floor(i / d) % 3) + (i % d)) };
+      }
+      case "drowse_head_rows": {
+        const n = x.shape[0];
+        return { shape: [n, 4, 16, 64], data: Float32Array.from({ length: n * 4 * 16 * 64 }, (_, i) => i) };
+      }
+      case "drowse_gather_head_grams":
+        return { shape: [y.shape[0], 16, 16], data: Float32Array.from({ length: y.shape[0] * 256 }, (_, i) =>
+          y.data[2 * Math.floor(i / 256)] * 10 + y.data[2 * Math.floor(i / 256) + 1]) };
+      case "drowse_batched_matmul":
+      case "drowse_batched_matmul_nt": {
+        const [b, m, k] = x.shape;
+        const nt = fn.endsWith("_nt");
+        const n = nt ? y.shape[1] : y.shape[2];
+        const out = new Float32Array(b * m * n);
+        for (let i = 0; i < b; i += 1) for (let r = 0; r < m; r += 1) for (let c = 0; c < n; c += 1) {
+          let acc = 0;
+          const w = y.shape[0] === 1 ? 0 : i;
+          for (let j = 0; j < k; j += 1) acc += x.data[(i * m + r) * k + j] * (nt ? y.data[(w * n + c) * k + j] : y.data[(w * k + j) * n + c]);
+          out[(i * m + r) * n + c] = acc;
+        }
+        return { shape: [b, m, n], data: out };
+      }
+      case "drowse_log_sum_exp": {
+        const [n, m] = x.shape;
+        return { shape: [n], data: Float32Array.from({ length: n }, (_, r) => {
+          const row = x.data.subarray(r * m, (r + 1) * m);
+          const top = Math.max(...row);
+          return top + Math.log(row.reduce((s, v) => s + Math.exp(v - top), 0));
+        }) };
+      }
+      case "drowse_topk": {
+        const [n, m] = x.shape;
+        const k = y.shape[1];
+        const values = new Float32Array(n * k);
+        const ids = new Int32Array(n * k);
+        for (let r = 0; r < n; r += 1) {
+          const order = [...Array(m).keys()].sort((p, q) => x.data[r * m + q] - x.data[r * m + p] || p - q);
+          for (let j = 0; j < k; j += 1) { ids[r * k + j] = order[j]; values[r * k + j] = x.data[r * m + order[j]]; }
+        }
+        return [{ shape: [n, k], data: values }, { shape: [n, k], data: ids }];
+      }
+      case "drowse_chan_merge": {
+        const [count, mean, m2, rows] = a;
+        const [r, w] = rows.shape;
+        const outMean = new Float32Array(w);
+        const outM2 = new Float32Array(w);
+        for (let c = 0; c < w; c += 1) {
+          let mb = 0;
+          for (let i = 0; i < r; i += 1) mb += rows.data[i * w + c] / r;
+          let qb = 0;
+          for (let i = 0; i < r; i += 1) qb += (rows.data[i * w + c] - mb) ** 2;
+          const delta = mb - mean.data[c];
+          const total = count.data[0] + r;
+          outMean[c] = mean.data[c] + delta * r / total;
+          outM2[c] = m2.data[c] + qb + delta * delta * count.data[0] * r / total;
+        }
+        return [{ shape: [w], data: outMean }, { shape: [w], data: outM2 }];
+      }
+      case "drowse_footprint_scores":
+        return { shape: [x.shape[0], 259], data: Float32Array.from({ length: x.shape[0] * 259 }, (_, i) =>
+          i % 259 < 3 ? 5 - (i % 259) : LOWEST) };
+      default:
+        return { shape: [1], data: new Float32Array(1) };
+    }
+  };
+  return {
+    installProgram: async () => {},
+    call: async (request) => {
+      log.push(request);
+      if (request.op === "headGrams") return { id: "head_grams:9", kind: "head_grams", shape: [4, 4, 16, 16], bytes: 4 };
+      if (request.op === "uploadResident") {
+        return { id: `${request.kind}:${log.length}`, kind: request.kind, shape: request.tensors[0].shape, bytes: 4 };
+      }
+      if (request.op === "release") return null;
+      assert.equal(request.op, "read");
+      const values = new Map();
+      for (const step of request.steps) {
+        const args = step.args.map((arg) => {
+          if ("tensor" in arg) return arg.tensor;
+          if ("ref" in arg) {
+            const value = values.get(arg.ref);
+            return arg.shape ? { ...value, shape: arg.shape } : value;
+          }
+          return { resident: arg.resident, shape: arg.shape ?? [1, 64, 64], data: Float32Array.from({ length: 64 * 64 }, (_, i) => (i % 65 === 0 ? 1 : 0)) };
+        });
+        const result = run(step.fn, args);
+        const names = Array.isArray(step.out) ? step.out : [step.out];
+        names.forEach((name, i) => values.set(name, Array.isArray(result) ? result[i] : result));
+        assert.equal(size(values.get(names[0]).shape), values.get(names[0]).data.length);
+      }
+      return { tensors: Object.fromEntries(request.read.map((name) => [name, values.get(name)])) };
+    },
+  };
+}
+
+async function staticReads(backendModule, modelBackend, capabilities, residualCapabilities, spec, tapped) {
+  const log = [];
+  const live = backendModule.webLlmBlockSitesBackend(capabilities, computingBridge(log));
+  const f32 = modelBackend.f32Tensor;
+  // The tapped head's gram is gathered from the resident grams into tap slot 0.
+  const bound = await live.bindStructuredProgram(tapped);
+  assert.notEqual(bound, tapped);
+  assert.ok(bound.tapGrams.subarray(0, 256).every((value) => value === 23));
+  assert.ok(bound.tapGrams.subarray(256).every((value) => value === 0));
+  const gather = log.at(-1).steps[0];
+  assert.equal(gather.fn, "drowse_gather_head_grams");
+  assert.equal(gather.args[0].resident, "head_grams:9");
+  assert.deepEqual([...gather.args[1].tensor.data], [2, 3]);
+
+  // Unit weight rows: slots and the head write block's transpose.
+  const units = [{ kind: "neuron", layer: 1, index: 5 }, { kind: "neuron", layer: 3, index: 0 }];
+  const write = await live.unitWeightRows("neuron_write", units);
+  assert.deepEqual(write.shape, [2, 64]);
+  assert.equal(write.data[64 + 7], 1000 + 7);
+  const read = await live.unitWeightRows("neuron_read", units);
+  assert.deepEqual(read.shape, [2, 2, 64]);
+  assert.equal(read.data[64], 200);
+  await assert.rejects(live.unitWeightRows("neuron_write", [{ kind: "neuron", layer: 4, index: 0 }]), RangeError);
+  await assert.rejects(live.unitWeightRows("head_write", units), RangeError);
+  const headWrite = await live.unitWeightRows("head_write", [{ kind: "head", layer: 0, index: 1 }]);
+  assert.deepEqual(headWrite.shape, [1, 64, 16]);
+  assert.equal(headWrite.data[5 * 16 + 2], 2 * 64 + 5);
+  const headRead = await live.unitWeightRows("head_read", [{ kind: "head", layer: 0, index: 1 }]);
+  assert.deepEqual(headRead.shape, [1, 3, 16, 64]);
+  assert.equal(headRead.data[0], 16 * 64);
+
+  // Residents, then the vocabulary reads composed over them.
+  const lens = await live.uploadLensLayer("s", "out", 1, f32(new Float32Array(64 * 64), [64, 64]));
+  assert.equal(lens.family, "s");
+  assert.deepEqual(log.at(-1).tensors[0].shape, [1, 64, 64]);
+  const stats = await live.uploadEmbeddingStatistics({
+    meanE: f32(new Float32Array(64), [64]),
+    sigmaE: f32(new Float32Array(64 * 64), [64, 64]),
+    mask: modelBackend.u32Tensor(new Uint32Array(9), [9]),
+  });
+  await assert.rejects(live.uploadEmbeddingStatistics({ ...stats, meanE: f32(new Float32Array(3), [3]) }), TypeError);
+  const footprint = await live.footprintTopK(f32(new Float32Array(2 * 64), [2, 64]), 5, stats);
+  assert.deepEqual([...footprint.ids.data.subarray(0, 5)], [0, 1, 2, 3, 4]);
+  assert.deepEqual([...footprint.z.data.subarray(0, 4)], [5, 4, 3, -Infinity]);
+  await assert.rejects(live.footprintTopK(f32(new Float32Array(64), [1, 64]), 257, stats), RangeError);
+  const directions = await live.footprintDirections([lens, lens], Int32Array.of(3, 4), stats);
+  assert.deepEqual(directions.shape, [2, 2, 64]);
+  assert.deepEqual(log.at(-1).steps.map((step) => step.fn),
+    ["drowse_embedding_rows", "drowse_batched_matmul_nt", "drowse_batched_matmul_nt"]);
+  await assert.rejects(live.footprintDirections([lens], Int32Array.of(259), stats), RangeError);
+  const times = await live.vocabRowsTimes({ kind: "unembed", ids: Int32Array.of(1), factor: { lens, transpose: false } });
+  assert.deepEqual(times.shape, [1, 64]);
+  assert.equal(log.at(-1).steps[1].fn, "drowse_batched_matmul");
+
+  // Utilities: the transport per layer, −∞ in and out, Chan's count.
+  const rows = f32(Float32Array.from({ length: 2 * 3 * 64 }, (_, i) => i % 7), [2, 3, 64]);
+  const moved = await live.lensTransport(rows, [lens, lens], true);
+  assert.deepEqual([...moved.data], [...rows.data]);
+  const x = f32(Float32Array.of(1, -Infinity, 3, 2), [1, 4]);
+  const top = await live.topK(x, 4);
+  assert.deepEqual([...top.indices.data], [2, 3, 0, 1]);
+  assert.deepEqual([...top.values.data], [3, 2, 1, -Infinity]);
+  await assert.rejects(live.topK(f32(Float32Array.of(Number.NaN), [1, 1]), 1), RangeError);
+  await assert.rejects(live.topK(x, 5), RangeError);
+  const merged = await live.chanMerge(
+    { count: 2, mean: f32(Float32Array.of(1), [1]), m2: f32(Float32Array.of(2), [1]) },
+    f32(Float32Array.of(3, 5), [2, 1]),
+  );
+  assert.equal(merged.count, 4);
+  assert.equal(merged.mean.data[0], 2.5);
+  await assert.rejects(live.layerWriteScores(f32(new Float32Array(64), [1, 1, 64]), Int32Array.of(4)), RangeError);
+
+  // A residual library runs the readout reads and refuses the unit ones.
+  const residual = backendModule.webLlmBlockSitesBackend(residualCapabilities, computingBridge([]));
+  const lse = await residual.logSumExp(f32(Float32Array.of(0, 0), [1, 2]));
+  assert.ok(Math.abs(lse.data[0] - Math.log(2)) < 1e-6);
+  await assert.rejects(residual.headWriteGrams([{ layer: 0, head: 0 }]), modelBackend.UnsupportedBlockError);
+  await assert.rejects(residual.unembedCotangent(f32(new Float32Array(64), [1, 64]), Int32Array.of(1)),
+    modelBackend.UnsupportedBlockError);
+  assert.equal(spec.headDim, 16);
 }
