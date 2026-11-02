@@ -44,7 +44,7 @@ test("new chat separates all model types without clipping and keeps downloads in
       onChooseModels(id) { document.body.dataset.chosen = id; },
     } });
   }, `/@fs/${resolve("src/hosted/ui/HostedHome.svelte")}`);
-  await page.locator(".hero-actions").getByRole("button", { name: "New chat", exact: true }).click();
+  await page.getByRole("region", { name: "Your chats", exact: true }).getByRole("button", { name: "New chat", exact: true }).click();
   const chooser = page.getByRole("region", { name: "Choose a model", exact: true });
   await expect(chooser.getByRole("region", { name: "Chat models", exact: true }).getByRole("button")).toHaveCount(4);
   await expect(chooser.getByRole("region", { name: "Base models", exact: true }).locator(".model-choices button")).toHaveCount(4);

@@ -147,9 +147,9 @@ test("landing browser copy is consistent across platforms and action labels stay
     "",
   ]) {
     await page.goto(`${devUrl}/${query}`);
-    const recommendation = page.locator(".hero-action-row > span");
+    const recommendation = page.locator("main [data-webgpu]");
     await expectWebGpuRequirement(page);
-    const action = page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse", exact: true });
+    const action = page.getByRole("main").getByRole("link", { name: "Open Drowse", exact: true }).first();
     await expect(action).toHaveAttribute("href", "/app");
     const returningAction = page.locator(".closing-action");
     await expect(returningAction.getByRole("link")).toHaveText("Open Drowse");

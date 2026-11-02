@@ -59,7 +59,7 @@ async function home(page: Page, installed = true) {
     const target = document.createElement("div"); document.body.append(target);
     mount(Harness, { target, props: { controller, onChooseModels: () => { routes++; } } });
   }, { moduleUrl: `/@fs/${resolve("e2e/fixtures/ModelDownloadHarness.svelte")}`, installed });
-  await page.locator(".hero-actions").getByRole("button", { name: installed ? "New chat" : "Download a model", exact: true }).click();
+  await page.getByRole("region", { name: "Your chats", exact: true }).getByRole("button", { name: installed ? "New chat" : "Download a model", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Choose a model" })).toBeVisible();
 }
 
@@ -101,7 +101,7 @@ test("pause, resume, retry, and chooser reopening retain download state", async 
   await action(page, 1).click(); await action(page, 1).click();
   await page.evaluate(() => (window as any).downloads.progress(570_000_000));
   await page.locator(".chooser-heading").getByRole("button", { name: "Cancel" }).click();
-  await page.locator(".hero-actions").getByRole("button", { name: "New chat", exact: true }).click();
+  await page.getByRole("region", { name: "Your chats", exact: true }).getByRole("button", { name: "New chat", exact: true }).click();
   await expect(card(page, 1).getByRole("progressbar")).toHaveAttribute("aria-valuenow", "25");
   await card(page, 1).getByRole("button", { name: "Pause", exact: true }).click();
   await expect(action(page, 1)).toContainText("Download paused. Select to resume");
