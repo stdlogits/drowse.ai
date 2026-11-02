@@ -193,7 +193,8 @@ export function webLlmBlockSitesBackend(
     if (!Number.isSafeInteger(tokenCount) || tokenCount < 1 || tokenCount > capabilities.contextTokens) {
       throw new RangeError("A replay's token count must fit the compiled context");
     }
-    await device.installProgram(replayProgram(capabilities, request.program));
+    const installed = replayProgram(capabilities, request.program);
+    await device.installProgram(installed);
     const activity = request.activity;
     await device.call({
       op: "openReplay",
@@ -214,8 +215,13 @@ export function webLlmBlockSitesBackend(
         const readback = await device.call({
           op: "replayForward",
           tokenIds: Array.from(segment.tokenIds),
-          affineActive: segment.controls.affineActive,
-          curveActive: segment.controls.curveActive,
+          // An unsteered replay's segments carry no controls: nothing of its program fires.
+          affineActive: segment.controls.affineActive.length === 0
+            ? new Uint32Array(installed.affineActive.length)
+            : segment.controls.affineActive,
+          curveActive: segment.controls.curveActive.length === 0
+            ? new Uint32Array(installed.curveActive.length)
+            : segment.controls.curveActive,
           unitActive: segment.controls.unitActive ?? new Float32Array(capabilities.profile.maxUnitGroups),
         }) as { measurements: Float32Array; unitTaps: Float32Array };
         return {

@@ -228,6 +228,11 @@ try {
   assert.deepEqual(readback.unitTaps.shape, [64]);
   assert.deepEqual(sent.at(-1).tokenIds, [1, 2, 3]);
   assert.deepEqual([...sent.at(-1).unitActive], [1, 0, 0, 0]);
+  // driveReplay's unsteered segments carry no controls: the bridge gets the program's zeros.
+  await replay.forward({ tokenIds: Int32Array.of(4), controls: { affineActive: new Uint32Array(0), curveActive: new Uint32Array(0) } });
+  assert.equal(sent.at(-1).affineActive.length, installed.affineActive.length);
+  assert.equal(sent.at(-1).curveActive.length, installed.curveActive.length);
+  assert.ok(sent.at(-1).affineActive.every((value) => value === 0));
   const result = await replay.finish();
   assert.deepEqual(result.anatomyTaps.shape, [L, anatomyStride]);
   assert.deepEqual(result.activity.traces.shape, [1, 3]);
