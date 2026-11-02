@@ -32,6 +32,11 @@ def fake_run(outputs):
 
 
 def args(tmp_path: Path) -> Namespace:
+    for key in observer.LIBRARIES:
+        arch, quantization = key.split("-", 1)
+        model = tmp_path / "fixtures" / f"units-{arch}-{quantization}"
+        model.mkdir(parents=True, exist_ok=True)
+        (model / "tensor-cache.json").write_text(key)
     return Namespace(python=tmp_path / "python", mlc_repository=tmp_path / "mlc", tvm_repository=tmp_path / "tvm",
                      units_fixtures=tmp_path / "fixtures")
 
@@ -42,7 +47,10 @@ def test_observation_carries_every_library_and_suite(monkeypatch, tmp_path) -> N
     observation = observer.observe(args(tmp_path))
     assert observation["evidenceType"] == "cVmGoldens"
     assert observation["fixturePath"] == "drowse/tests/fixtures/browser/units-tiny-models-v1.json"
-    assert observation["results"]["libraries"] == {key: {"suites": SUITES} for key in observer.LIBRARIES}
+    import hashlib
+    assert observation["results"]["libraries"] == {
+        key: {"modelSha256": hashlib.sha256(key.encode()).hexdigest(), "suites": SUITES} for key in observer.LIBRARIES
+    }
     assert calls[0][-1] == str(tmp_path / "tvm") and calls[1][-2:] == ["--units-fixtures", str(tmp_path / "fixtures")]
     assert sorted(observation) == ["evidenceType", "fixturePath", "passed", "producedAt", "results", "schemaVersion"]
 

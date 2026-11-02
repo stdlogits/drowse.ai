@@ -809,7 +809,7 @@ function cVmReceipt() {
       backend: "c-tvm-vm",
       defaultGoldensPassed: true,
       libraries: Object.fromEntries(
-        ["gemma3-q0f32", "gemma3-q4f32_1", "qwen3-q0f32", "qwen3-q4f32_1"].map((key) => [key, { suites }]),
+        ["gemma3-q0f32", "gemma3-q4f32_1", "qwen3-q0f32", "qwen3-q4f32_1"].map((key) => [key, { modelSha256: "e".repeat(64), suites }]),
       ),
     },
   };
@@ -929,6 +929,7 @@ function fullRuntimeReport() {
       browserVersion: "151.0.0.0",
       platform: "darwin",
       runtimeIdentitySha256: observedArtifacts.runtimeIdentitySha256,
+      runtimeLockSource: "repository",
       observedArtifacts,
     },
     checks,
@@ -954,7 +955,8 @@ async function trackedFixture(path) {
 }
 
 test("hook ABI v5 runtime evidence: units goldens per backend and each production library", async () => {
-  const { validateRuntimeGateResults } = await import("./check-runtime-lock.mjs");
+  const { validateRuntimeGateResults, vendoredWebLlmBundleSha256 } = await import("./check-runtime-lock.mjs");
+  const bridgeSha256 = vendoredWebLlmBundleSha256(runtimeLock);
   const fixtureSha256 = createHash("sha256").update('{"fixture":true}\n').digest("hex");
   const units = await trackedFixture("drowse/tests/fixtures/browser/units-tiny-models-v1.json");
   const fixtureRoot = units.root;
@@ -982,7 +984,15 @@ test("hook ABI v5 runtime evidence: units goldens per backend and each productio
     producedAt,
     results: {
       backend: "webgpu",
-      libraries: { [key]: { descriptor: { schema: 4, fields: 67, unitSites: 1, unitsPair: true }, suites: cvm.results.libraries[key].suites } },
+      bridgeSha256,
+      libraries: {
+        [key]: {
+          descriptor: { schema: 4, fields: 67, unitSites: 1, unitsPair: true },
+          librarySha256: "f".repeat(64),
+          modelSha256: "e".repeat(64),
+          suites: cvm.results.libraries[key].suites,
+        },
+      },
     },
   });
   const keys = Object.keys(cvm.results.libraries);
@@ -999,6 +1009,21 @@ test("hook ABI v5 runtime evidence: units goldens per backend and each productio
     }),
     /observed twice/,
   );
+  // The bridge that ran must be the lock's vendored one, and the same across the libraries.
+  await assert.rejects(
+    validateRuntimeGateResults("webGpuGoldens", { ...bound(merged), bridgeSha256: "0".repeat(64) }, fixtureRoot, runtimeLock),
+    /vendored WebLLM bridge/,
+  );
+  assert.throws(
+    () => adaptObserverReports({
+      evidenceType: "webGpuGoldens", nonce, producer, observer: "webui/scripts/browser-units-goldens.mjs",
+      reports: [observation(keys[0]), { ...observation(keys[1]), results: { ...observation(keys[1]).results, bridgeSha256: "0".repeat(64) } }],
+    }),
+    /one library on one backend/,
+  );
+  const unidentified = structuredClone(merged);
+  delete unidentified.results.libraries[keys[0]].librarySha256;
+  await assert.rejects(validateRuntimeGateResults("webGpuGoldens", bound(unidentified), fixtureRoot, runtimeLock), /unknown or missing fields/);
   const residual = structuredClone(merged);
   residual.results.libraries[keys[1]].descriptor.unitSites = 0;
   await assert.rejects(validateRuntimeGateResults("webGpuGoldens", bound(residual), fixtureRoot, runtimeLock), /schema-4 units descriptor/);
@@ -1026,6 +1051,15 @@ test("hook ABI v5 runtime evidence: units goldens per backend and each productio
   await assert.rejects(
     validateRuntimeGateResults("productionLibrary", { ...libraryResults, checks: libraryResults.checks.filter((name) => name !== "units") }, identity.root, runtimeLock),
     /every physical runtime check/,
+  );
+  const override = structuredClone(report);
+  override.environment.runtimeLockSource = "override";
+  assert.throws(
+    () => adaptObserverReports({
+      evidenceType: "productionLibrary", nonce, producer: libraryProducer,
+      observer: "webui/scripts/browser-full-runtime.mjs", reports: [override],
+    }),
+    /repository runtime lock/,
   );
   const unbound = structuredClone(report);
   unbound.checks.load.measurements.exactReadoutProfile = "standard-v3";

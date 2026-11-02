@@ -669,12 +669,35 @@ export const UNITS_GOLDEN_SUITES = Object.freeze([
 // keeps the worst error as observed, bounded here only against a broken harness.
 const UNITS_GOLDEN_CEILING = 1e-3;
 
+/** The bridge bundle the runtime lock's vendored WebLLM archive ships (`package/lib/index.js`):
+ *  what WebGPU units evidence must have run. */
+export function vendoredWebLlmBundleSha256(runtime) {
+  const archive = resolve(repositoryRoot, runtime?.toolchain?.webLlmPackage?.path ?? "");
+  let bundle;
+  try {
+    bundle = execFileSync("tar", ["-xOf", archive, "package/lib/index.js"], {
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch (error) {
+    throw new Error("the runtime lock's WebLLM archive has no readable bridge bundle", { cause: error });
+  }
+  return createHash("sha256").update(bundle).digest("hex");
+}
+
 function validateUnitsGoldenLibraries(name, libraries, webgpu) {
   if (!sameStringSet(Object.keys(libraries ?? {}), UNITS_FIXTURE_LIBRARIES)) {
     throw new Error(`${name} must cover the four fixture libraries ${UNITS_FIXTURE_LIBRARIES.join(", ")}`);
   }
   for (const [library, record] of Object.entries(libraries)) {
-    exactKeys(record, webgpu ? ["descriptor", "suites"] : ["suites"], `${name} ${library}`);
+    exactKeys(
+      record,
+      webgpu ? ["descriptor", "librarySha256", "modelSha256", "suites"] : ["modelSha256", "suites"],
+      `${name} ${library}`,
+    );
+    if (!SHA256.test(record.modelSha256 ?? "") || (webgpu && !SHA256.test(record.librarySha256 ?? ""))) {
+      throw new Error(`${name} ${library} does not identify the fixture it ran`);
+    }
     if (webgpu) {
       exactKeys(record.descriptor, ["schema", "fields", "unitSites", "unitsPair"], `${name} ${library} descriptor`);
       if (
@@ -705,12 +728,15 @@ export async function validateRuntimeGateResults(
     const webgpu = name === "webGpuGoldens";
     exactKeys(
       results,
-      ["fixturePath", "fixtureSha256", "backend", "libraries", ...(webgpu ? [] : ["defaultGoldensPassed"])],
+      ["fixturePath", "fixtureSha256", "backend", "libraries", ...(webgpu ? ["bridgeSha256"] : ["defaultGoldensPassed"])],
       `${name} results`,
     );
     await validateFixtureBinding(results, name, fixtureRoot);
     if (results.backend !== (webgpu ? "webgpu" : "c-tvm-vm") || (!webgpu && results.defaultGoldensPassed !== true)) {
       throw new Error(`${name} did not run on its backend with every golden`);
+    }
+    if (webgpu && (runtime === null || results.bridgeSha256 !== vendoredWebLlmBundleSha256(runtime))) {
+      throw new Error(`${name} did not run the runtime lock's vendored WebLLM bridge`);
     }
     validateUnitsGoldenLibraries(name, results.libraries, webgpu);
     return;

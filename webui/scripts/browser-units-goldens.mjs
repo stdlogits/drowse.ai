@@ -20,6 +20,7 @@
 // positions 2, 5, 8), token-anatomy (taps, write norms, the chosen heads' rows) and unit-activity
 // (every unit's device peak, the host ranking, traces, the float16 population). The reads suite
 // runs every static-read member of the adapter (browser-units-reads.mjs).
+import { createHash } from "node:crypto";
 import { createServer as createHttpServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { basename, extname, resolve } from "node:path";
@@ -597,6 +598,7 @@ if (failures === 0 && options.report) {
     console.error("--report covers the whole suite (--suite all)");
     process.exit(1);
   }
+  const digest = async (path) => createHash("sha256").update(await readFile(path)).digest("hex");
   process.stdout.write(`${JSON.stringify({
     schemaVersion: 1,
     evidenceType: "webGpuGoldens",
@@ -605,9 +607,13 @@ if (failures === 0 && options.report) {
     producedAt: new Date().toISOString(),
     results: {
       backend: "webgpu",
+      // What actually ran: the bridge bundle served to the page, each fixture library and model.
+      bridgeSha256: await digest(resolve(options.webllm)),
       libraries: {
         [`${options.arch}-${options.quantization}`]: {
           descriptor: descriptorRecord,
+          librarySha256: await digest(libraryPath),
+          modelSha256: await digest(resolve(modelDirectory, "tensor-cache.json")),
           suites: Object.fromEntries(Object.entries(suites).sort(([a], [b]) => a.localeCompare(b))),
         },
       },

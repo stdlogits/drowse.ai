@@ -240,6 +240,11 @@ function productionLibraryReceipt(report, producer, nonce) {
   if (environment.browserFlags !== "normal" || environment.adapterFallback !== "hardware") {
     throw new Error("productionLibrary requires normal browser flags and a confirmed hardware adapter");
   }
+  // The descriptor is attested against the lock the harness loaded with; only the repository's,
+  // which the record binds by identity, can stand for the release.
+  if (environment.runtimeLockSource !== "repository") {
+    throw new Error("productionLibrary requires a report made with the repository runtime lock");
+  }
   const load = report.checks.load?.measurements ?? {};
   if (
     load.exactReadoutProfile !== report.structuredHookProfile ||

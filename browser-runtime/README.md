@@ -562,16 +562,20 @@ profiles physically exercised for each model.
    libraries.
 2. Fill a candidate lock from the assembled directories (`prepare:hosted:candidate-lock`, one
    model at a time with `--base`), rebind the packs to each new runtime identity
-   (`build-hosted-packs.sh`), build each core pack against the candidate, and record each
-   library's `productionLibrary` and, for q4, `productionQ4Parity`.
+   (`RUNTIME_LOCK=CANDIDATE.json build-hosted-packs.sh MODEL_ID`) and build each core pack
+   against the candidate. Engineering runs (captures, the physical harness) take the candidate
+   with `--runtime-lock`; their reports are marked `override` and are not release evidence.
 3. Publish each model's converted files and core pack (`publish:hosted:model`,
    `publish:hosted:pack ... core`), then its R, S and units packs and any SAE pack (the
-   publisher runs the release policy); fill each `convertedRevision`
-   (`--converted-revision`) and adopt the candidate (`--adopt`), which writes
-   `runtime-lock.json` as `verified` and its identity fixture.
-4. Generate and sign the catalog (sequence 11 for this release), fill the exact Hugging Face
+   publisher runs the release policy); fill each `convertedRevision` (`--converted-revision`;
+   a later recompile clears it) and adopt the candidate (`--adopt`), which writes
+   `runtime-lock.json` as `verified` and its identity fixture. Commit it.
+4. At that commit, record each library's `productionLibrary` and, for q4, `productionQ4Parity`
+   against the repository lock (the producers refuse an override-lock report or capture), then
+   the ledger.
+5. Generate and sign the catalog (sequence 11 for this release), fill the exact Hugging Face
    redirect origins, set `distribution-lock.json`'s minimum sequence and status to `verified`.
-5. Run the release checker and distribution preflight:
+6. Run the release checker and distribution preflight:
 
    ```bash
    node webui/scripts/check-runtime-lock.mjs --release

@@ -125,6 +125,8 @@ export function deriveCandidateRuntimeLock(runtimeLock, modelId, {
   differs("quantization", manifest.quantization, model.quantization);
   differs("modelType", manifest.modelType ?? "chat", model.modelType ?? "chat");
   differs("contextWindowSize", manifest.contextWindowSize, Math.max(...model.contextProfiles));
+  // The descriptor attests the prefill chunk the browser expects: the smallest context profile.
+  differs("prefillChunkSize", manifest.prefillChunkSize, Math.min(...model.contextProfiles));
   if (model.hiddenSize !== null) differs("hiddenSize", manifest.hiddenSize, model.hiddenSize);
   if (model.layerMap !== null) differs("layerMap", manifest.layerMap, model.layerMap);
   const tokenizer = unique(manifest, "tokenizer", "tokenizer.json");
@@ -143,8 +145,14 @@ export function deriveCandidateRuntimeLock(runtimeLock, modelId, {
   }
   const candidate = structuredClone(runtimeLock);
   const pin = candidate.models[modelIndex];
-  pin.librarySha256 = unique(manifest, "model_library", "model.wasm");
-  pin.manifestSha256 = unique(manifest, "converted_manifest", "tensor-cache.json");
+  const librarySha256 = unique(manifest, "model_library", "model.wasm");
+  const manifestSha256 = unique(manifest, "converted_manifest", "tensor-cache.json");
+  // A new library or conversion is a new published closure: the old revision does not hold it.
+  if (librarySha256 !== pin.librarySha256 || manifestSha256 !== pin.manifestSha256) {
+    pin.convertedRevision = null;
+  }
+  pin.librarySha256 = librarySha256;
+  pin.manifestSha256 = manifestSha256;
   pin.tokenizerSha256 = tokenizer;
   pin.chatTemplateSha256 = chatTemplate;
   pin.hiddenSize = manifest.hiddenSize;

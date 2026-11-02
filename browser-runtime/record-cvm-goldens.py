@@ -15,6 +15,7 @@ reason on stderr, which the recorder refuses.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -70,6 +71,13 @@ def units_results(stdout: str) -> dict[str, dict[str, float]]:
     return {key: {suite: float(value) for suite, value in sorted(suites.items())} for key, suites in sorted(results.items())}
 
 
+def model_sha256(fixtures: Path, library: str) -> str:
+    """The fixture model a library key names: its converted tensor-cache.json (the weights'
+    manifest), so the record identifies what ran rather than only the argument's label."""
+    arch, quantization = library.split("-", 1)
+    return hashlib.sha256((fixtures / f"units-{arch}-{quantization}" / "tensor-cache.json").read_bytes()).hexdigest()
+
+
 def observe(args: argparse.Namespace) -> dict[str, object]:
     environment = toolchain_environment(args.mlc_repository, args.tvm_repository)
     repositories = ["--mlc-repository", str(args.mlc_repository), "--tvm-repository", str(args.tvm_repository)]
@@ -86,7 +94,10 @@ def observe(args: argparse.Namespace) -> dict[str, object]:
         "results": {
             "backend": "c-tvm-vm",
             "defaultGoldensPassed": True,
-            "libraries": {key: {"suites": suites} for key, suites in units_results(units).items()},
+            "libraries": {
+                key: {"modelSha256": model_sha256(args.units_fixtures, key), "suites": suites}
+                for key, suites in units_results(units).items()
+            },
         },
     }
 

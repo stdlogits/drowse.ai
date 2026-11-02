@@ -723,6 +723,7 @@
                   "type": "object",
                   "additionalProperties": false,
                   "required": [
+                    "modelSha256",
                     "suites"
                   ],
                   "properties": {
@@ -749,6 +750,10 @@
                         "maximum": 0.001
                       },
                       "description": "Worst absolute error per golden file; each file's own library tolerance is enforced by the harness."
+                    },
+                    "modelSha256": {
+                      "$ref": "#/$defs/sha256",
+                      "description": "The fixture model's tensor-cache.json."
                     }
                   }
                 },
@@ -756,6 +761,7 @@
                   "type": "object",
                   "additionalProperties": false,
                   "required": [
+                    "modelSha256",
                     "suites"
                   ],
                   "properties": {
@@ -782,6 +788,10 @@
                         "maximum": 0.001
                       },
                       "description": "Worst absolute error per golden file; each file's own library tolerance is enforced by the harness."
+                    },
+                    "modelSha256": {
+                      "$ref": "#/$defs/sha256",
+                      "description": "The fixture model's tensor-cache.json."
                     }
                   }
                 },
@@ -789,6 +799,7 @@
                   "type": "object",
                   "additionalProperties": false,
                   "required": [
+                    "modelSha256",
                     "suites"
                   ],
                   "properties": {
@@ -815,6 +826,10 @@
                         "maximum": 0.001
                       },
                       "description": "Worst absolute error per golden file; each file's own library tolerance is enforced by the harness."
+                    },
+                    "modelSha256": {
+                      "$ref": "#/$defs/sha256",
+                      "description": "The fixture model's tensor-cache.json."
                     }
                   }
                 },
@@ -822,6 +837,7 @@
                   "type": "object",
                   "additionalProperties": false,
                   "required": [
+                    "modelSha256",
                     "suites"
                   ],
                   "properties": {
@@ -848,6 +864,10 @@
                         "maximum": 0.001
                       },
                       "description": "Worst absolute error per golden file; each file's own library tolerance is enforced by the harness."
+                    },
+                    "modelSha256": {
+                      "$ref": "#/$defs/sha256",
+                      "description": "The fixture model's tensor-cache.json."
                     }
                   }
                 }
@@ -870,7 +890,8 @@
           "type": "object",
           "required": [
             "backend",
-            "libraries"
+            "libraries",
+            "bridgeSha256"
           ],
           "properties": {
             "backend": {
@@ -891,6 +912,8 @@
                   "additionalProperties": false,
                   "required": [
                     "descriptor",
+                    "librarySha256",
+                    "modelSha256",
                     "suites"
                   ],
                   "properties": {
@@ -942,6 +965,14 @@
                           "const": true
                         }
                       }
+                    },
+                    "modelSha256": {
+                      "$ref": "#/$defs/sha256",
+                      "description": "The fixture model's tensor-cache.json."
+                    },
+                    "librarySha256": {
+                      "$ref": "#/$defs/sha256",
+                      "description": "The compiled fixture library."
                     }
                   }
                 },
@@ -950,6 +981,8 @@
                   "additionalProperties": false,
                   "required": [
                     "descriptor",
+                    "librarySha256",
+                    "modelSha256",
                     "suites"
                   ],
                   "properties": {
@@ -1001,6 +1034,14 @@
                           "const": true
                         }
                       }
+                    },
+                    "modelSha256": {
+                      "$ref": "#/$defs/sha256",
+                      "description": "The fixture model's tensor-cache.json."
+                    },
+                    "librarySha256": {
+                      "$ref": "#/$defs/sha256",
+                      "description": "The compiled fixture library."
                     }
                   }
                 },
@@ -1009,6 +1050,8 @@
                   "additionalProperties": false,
                   "required": [
                     "descriptor",
+                    "librarySha256",
+                    "modelSha256",
                     "suites"
                   ],
                   "properties": {
@@ -1060,6 +1103,14 @@
                           "const": true
                         }
                       }
+                    },
+                    "modelSha256": {
+                      "$ref": "#/$defs/sha256",
+                      "description": "The fixture model's tensor-cache.json."
+                    },
+                    "librarySha256": {
+                      "$ref": "#/$defs/sha256",
+                      "description": "The compiled fixture library."
                     }
                   }
                 },
@@ -1068,6 +1119,8 @@
                   "additionalProperties": false,
                   "required": [
                     "descriptor",
+                    "librarySha256",
+                    "modelSha256",
                     "suites"
                   ],
                   "properties": {
@@ -1119,10 +1172,22 @@
                           "const": true
                         }
                       }
+                    },
+                    "modelSha256": {
+                      "$ref": "#/$defs/sha256",
+                      "description": "The fixture model's tensor-cache.json."
+                    },
+                    "librarySha256": {
+                      "$ref": "#/$defs/sha256",
+                      "description": "The compiled fixture library."
                     }
                   }
                 }
               }
+            },
+            "bridgeSha256": {
+              "$ref": "#/$defs/sha256",
+              "description": "The bridge bundle served to the page: the runtime lock's vendored package/lib/index.js."
             }
           }
         }

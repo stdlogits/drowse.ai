@@ -105,8 +105,12 @@ function validateRuntimeToolchain(value) {
     value.emccPlatform !== "linux/amd64" ||
     !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(value.llvmVersion)
   ) throw new Error("runtime lock toolchain is invalid");
-  if (!Array.isArray(value.llvmArtifacts) || value.llvmArtifacts.length === 0) {
-    throw new Error("runtime lock LLVM artifacts are invalid");
+  // One release archive per compiler platform (linux/amd64's is the source build's bootstrap).
+  if (
+    !Array.isArray(value.llvmArtifacts) || value.llvmArtifacts.length !== 2 ||
+    value.llvmArtifacts.map((artifact) => artifact?.platform).sort().join(",") !== "linux/amd64,linux/arm64"
+  ) {
+    throw new Error("runtime lock LLVM artifacts must name one archive for each of linux/amd64 and linux/arm64");
   }
   const llvmArtifacts = new Set();
   for (const artifact of value.llvmArtifacts) {

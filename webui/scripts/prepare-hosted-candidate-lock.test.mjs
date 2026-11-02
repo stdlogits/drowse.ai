@@ -26,7 +26,7 @@ function closure(model, { library = "b".repeat(64), converted = "c".repeat(64), 
     ...(model.modelType ? { modelType: model.modelType } : {}),
     quantization: model.quantization,
     contextWindowSize: Math.max(...model.contextProfiles),
-    prefillChunkSize: 2048,
+    prefillChunkSize: Math.min(...model.contextProfiles),
     hiddenSize: model.hiddenSize,
     layerMap: model.layerMap,
     files: [
@@ -90,6 +90,7 @@ const refusals = [
   [{ closure: { architecture: "llama" } }, /architecture differs/],
   [{ closure: { contextWindowSize: 2048 } }, /contextWindowSize differs/],
   [{ closure: { layerMap: [0, 1] } }, /layerMap differs/],
+  [{ closure: { prefillChunkSize: 4096 } }, /prefillChunkSize differs/],
   [{ closure: { files: closure(model(qwen)).files.map((file) => file.role === "tokenizer" ? { ...file, sha256: "d".repeat(64) } : file) } }, /tokenizer digest differs/],
   [{ closure: { files: closure(model(qwen)).files.filter((file) => file.role !== "model_library") } }, /no unique model\.wasm/],
   [{ chatConfig: { model_config: { ...chatConfig(model(qwen)).model_config, rope_theta: 10_000 } } }, /block spec differs from its converted configuration/],
@@ -119,6 +120,22 @@ for (const [index, entry] of runtimeLock.models.entries()) {
   });
 }
 const adopted = adoptedRuntimeLock(chained);
+// Recompiling a library after publication clears its revision until the new one is published.
+const recompiled = derive(adopted, qwen, { closure: { library: "f".repeat(64), converted: "e".repeat(64) } });
+assert.equal(recompiled.models.find((entry) => entry.id === qwen).convertedRevision, null);
+assert.throws(() => adoptedRuntimeLock(recompiled), /incomplete/);
+const unchanged = derive(adopted, qwen, {
+  closure: { library: adopted.models.find((entry) => entry.id === qwen).librarySha256, converted: "e".repeat(64) },
+});
+assert.equal(
+  unchanged.models.find((entry) => entry.id === qwen).convertedRevision,
+  adopted.models.find((entry) => entry.id === qwen).convertedRevision,
+);
+// One LLVM archive per compiler platform.
+assert.throws(
+  () => adoptedRuntimeLock({ ...adopted, toolchain: { ...adopted.toolchain, llvmArtifacts: adopted.toolchain.llvmArtifacts.slice(0, 1) } }),
+  /one archive for each of linux\/amd64 and linux\/arm64/,
+);
 assert.equal(adopted.status, "verified");
 assert.equal(adopted.models.every((entry) => entry.librarySha256 && entry.convertedRevision), true);
 assert.doesNotThrow(() => validateRuntimeLock(adopted));
