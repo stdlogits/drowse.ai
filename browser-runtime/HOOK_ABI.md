@@ -557,9 +557,12 @@ library allocates at its largest context and prefill chunk, the larger of:
 | gpt2-base (q0f32), pythia-70m-base (q0f32), qwen35-2b-base | 147.2, 98.3, 242.5 | | | (48 on qwen35) | 147.2, 98.3, 242.5 |
 
 The catalog builder derives every variant's `maxStorageBufferBindingSize` and `maxBufferSize` as
-this binding (a release spec cannot declare them); the browser's catalog check refuses a units
-variant whose limits fall below its lock entry's `blockSitesBindingBytes`; capability admission
-compares the adapter's reported limits with the variant's. At load the adapter derives the same
+this binding (a release spec cannot declare them); capability admission compares the adapter's
+reported limits with the variant's. So admission implies loadability for a catalog the builder
+made, which is what the release signs. The browser's own catalog check is a narrower floor: it
+refuses a units variant whose limits fall below its lock entry's `blockSitesBindingBytes`, the
+part of the binding the lock alone determines (the weight and vocabulary terms need the
+library's `tensor-cache.json` and chat config, which the lock does not record). At load the adapter derives the same
 binding from the verified `tensor-cache.json` and `mlc-chat-config.json` and the lock entry
 (`webLlmEngine.ts`; the variant's declared limits only gate admission), and the bridge
 (0.2.84-drowse.47) asks the device for exactly it (`buffer_size_required_bytes`; WebGPU's defaults
