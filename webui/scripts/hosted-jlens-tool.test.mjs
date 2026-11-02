@@ -82,16 +82,28 @@ save_lens_at(lens, root, LensProvenance(
     corpus_spec="fixture-\\u00e9\\u2028\\U0001f600\\x7f", corpus_sha256="1" * 64, seq_len=32,
     dim_batch=8,
 ), split_half={"out": {0: 1e-05, 1: 0.0}, "mid": {1: 1e16}})
-print(lens_identity(json.loads((root / "manifest.json").read_text())))
+manifest = json.loads((root / "manifest.json").read_text())
+print(lens_identity(manifest))
+# _validate_manifest accepts an int split_half, which json.dumps spells "0".
+manifest["sites"]["out"]["split_half"]["1"] = 0
+(root / "manifest-int.json").write_text(json.dumps(manifest, indent=2))
+print(lens_identity(manifest))
 `, stage], { cwd: repositoryRoot, env: pythonEnv });
-    const manifest = JSON.parse(await readFile(join(stage, "manifest.json"), "utf8"));
+    const [identity, intIdentity] = written.stdout.trim().split("\n");
+    const manifestText = await readFile(join(stage, "manifest.json"), "utf8");
+    const manifest = JSON.parse(manifestText);
     const sites = lensManifestSites(manifest);
     assert.deepEqual([...sites.keys()], ["out", "mid"]);
     assert.deepEqual(sites.get("out").layers, [0, 1]);
     assert.deepEqual(sites.get("out").splitHalf, { 0: 1e-5, 1: 0 });
     assert.deepEqual(sites.get("mid").layers, [1]);
     assert.deepEqual(sites.get("mid").splitHalf, { 1: 1e16 });
-    assert.equal(lensIdentity(manifest), written.stdout.trim());
+    assert.equal(lensIdentity(manifestText), identity);
+    const intText = await readFile(join(stage, "manifest-int.json"), "utf8");
+    assert.notEqual(intIdentity, identity);
+    assert.equal(lensIdentity(intText), intIdentity);
+    assert.equal(lensManifestSites(JSON.parse(intText)).get("out").splitHalf[1], 0);
+    assert.throws(() => lensIdentity(`${manifestText}}`), /not JSON Python reads/u);
 
     const withSite = (site, entry) => ({
       ...manifest,

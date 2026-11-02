@@ -877,28 +877,113 @@ export function lensManifestSites(
 }
 
 /**
- * drowse's `lens_identity` (`lens/store.py`): the sha256 of the manifest as
- * `json.dumps(manifest, sort_keys=True, separators=(",", ":"))` writes it.
- * JSON numbers lose Python's int/float split, so the v7 schema supplies it:
- * `split_half` values are floats, every other number an int.
+ * drowse's `lens_identity` (`lens/store.py`) of a manifest file's text: the
+ * sha256 of `json.dumps(json.loads(text), sort_keys=True, separators=(",", ":"))`.
+ * `JSON.parse` loses Python's int/float split, so this reads the text itself
+ * and takes each number's type from its spelling, as `json.loads` does: a
+ * fraction or an exponent makes a float, anything else an int.
  */
-export function lensIdentity(manifest: Record<string, unknown>): string {
-  return bytesToHex(sha256(new TextEncoder().encode(pythonJson(manifest, false))));
+export function lensIdentity(manifestText: string): string {
+  return bytesToHex(sha256(new TextEncoder().encode(pythonCanonicalJson(manifestText))));
 }
 
-function pythonJson(value: unknown, floats: boolean): string {
-  if (value === null) return "null";
-  if (value === true) return "true";
-  if (value === false) return "false";
-  if (typeof value === "number") return pythonNumberRepr(value, floats);
-  if (typeof value === "string") return pythonJsonString(value);
-  if (Array.isArray(value)) return `[${value.map((item) => pythonJson(item, floats)).join(",")}]`;
-  if (isRecord(value)) {
-    return `{${Object.keys(value).sort().map((key) =>
-      `${pythonJsonString(key)}:${pythonJson(value[key], floats || key === "split_half")}`
-    ).join(",")}}`;
+function pythonCanonicalJson(text: string): string {
+  let index = 0;
+  const skipSpace = () => {
+    while (index < text.length && " \t\n\r".includes(text[index])) index += 1;
+  };
+  const expect = (character: string) => {
+    skipSpace();
+    if (text[index] !== character) invalidManifestJson();
+    index += 1;
+  };
+  const string = (): string => {
+    skipSpace();
+    const start = index;
+    if (text[index] !== '"') invalidManifestJson();
+    index += 1;
+    while (index < text.length && text[index] !== '"') index += text[index] === "\\" ? 2 : 1;
+    if (index >= text.length) invalidManifestJson();
+    index += 1;
+    try {
+      return JSON.parse(text.slice(start, index)) as string;
+    } catch {
+      return invalidManifestJson();
+    }
+  };
+  // Each container ends at its closing bracket or continues past a comma.
+  const more = (close: string): boolean => {
+    skipSpace();
+    if (text[index] === close) {
+      index += 1;
+      return false;
+    }
+    expect(",");
+    return true;
+  };
+  const value = (): string => {
+    skipSpace();
+    const character = text[index];
+    if (character === "{") {
+      index += 1;
+      skipSpace();
+      const entries = new Map<string, string>();
+      if (text[index] === "}") index += 1;
+      else {
+        do {
+          const key = string();
+          expect(":");
+          entries.set(key, value());
+        } while (more("}"));
+      }
+      return `{${[...entries.keys()].sort(compareCodePoints).map((key) =>
+        `${pythonJsonString(key)}:${entries.get(key)}`).join(",")}}`;
+    }
+    if (character === "[") {
+      index += 1;
+      skipSpace();
+      const items: string[] = [];
+      if (text[index] === "]") index += 1;
+      else {
+        do items.push(value());
+        while (more("]"));
+      }
+      return `[${items.join(",")}]`;
+    }
+    if (character === '"') return pythonJsonString(string());
+    for (const literal of ["true", "false", "null"]) {
+      if (text.startsWith(literal, index)) {
+        index += literal.length;
+        return literal;
+      }
+    }
+    const number = /-?(?:0|[1-9]\d*)(\.\d+)?([eE][-+]?\d+)?/uy;
+    number.lastIndex = index;
+    const match = number.exec(text);
+    if (match === null) return invalidManifestJson();
+    index = number.lastIndex;
+    return match[1] === undefined && match[2] === undefined
+      ? BigInt(match[0]).toString()
+      : pythonNumberRepr(Number(match[0]), true);
+  };
+  const canonical = value();
+  skipSpace();
+  if (index !== text.length) invalidManifestJson();
+  return canonical;
+}
+
+function invalidManifestJson(): never {
+  throw instrumentError("INSTRUMENT_PROBE_IDENTITY_INVALID", "The lens manifest is not JSON Python reads");
+}
+
+// Python orders str keys by code point; `Array.prototype.sort` by UTF-16 unit.
+function compareCodePoints(left: string, right: string): number {
+  const a = Array.from(left, (character) => character.codePointAt(0)!);
+  const b = Array.from(right, (character) => character.codePointAt(0)!);
+  for (let index = 0; index < Math.min(a.length, b.length); index += 1) {
+    if (a[index] !== b[index]) return a[index] - b[index];
   }
-  throw instrumentError("INSTRUMENT_PROBE_IDENTITY_INVALID", "Lens manifests hold only JSON values");
+  return a.length - b.length;
 }
 
 // json.dumps's ensure_ascii string form: the short escapes, then \uXXXX
@@ -926,10 +1011,11 @@ async function loadJlens(
     artifact.manifest.path.endsWith("/manifest.json"), "Lens manifest");
   const vocabularyArtifact = uniqueArtifact(pack.artifacts, (artifact) =>
     artifact.manifest.path.endsWith("/browser-vocabulary.json"), "Lens browser vocabulary");
-  const [manifest, vocabulary] = await Promise.all([
-    jsonArtifact(manifestArtifact, request.signal),
+  const [manifestText, vocabulary] = await Promise.all([
+    textArtifact(manifestArtifact, request.signal),
     jsonArtifact(vocabularyArtifact, request.signal),
   ]);
+  const manifest = jsonObject(manifestArtifact, manifestText);
   const hiddenSize = request.variant.runtimeIdentity.hiddenSize;
   const sites = lensManifestSites(manifest);
   const site = sites?.get(BROWSER_LENS_SITE);
@@ -1018,7 +1104,7 @@ async function loadJlens(
     layerMap,
     runtimeLayerMap: [...request.variant.runtimeIdentity.layerMap],
     bindingId: manifestArtifact.manifest.sha256,
-    identity: lensIdentity(manifest),
+    identity: lensIdentity(manifestText),
     jacobians,
     words,
     unembedding: vocabularyTensors.tensor("unembedding", [words.size, hiddenSize]).data,
@@ -1278,14 +1364,23 @@ async function jsonArtifact(
   artifact: BrowserModelArtifact,
   signal: AbortSignal,
 ): Promise<Record<string, unknown>> {
+  return jsonObject(artifact, await textArtifact(artifact, signal));
+}
+
+async function textArtifact(artifact: BrowserModelArtifact, signal: AbortSignal): Promise<string> {
   signal.throwIfAborted();
+  const text = await artifact.file.text();
+  signal.throwIfAborted();
+  return text;
+}
+
+function jsonObject(artifact: BrowserModelArtifact, text: string): Record<string, unknown> {
   let value: unknown;
   try {
-    value = JSON.parse(await artifact.file.text());
+    value = JSON.parse(text);
   } catch {
     throw instrumentError("INSTRUMENT_PACK_INVALID", `${artifact.manifest.path} is not valid JSON`);
   }
-  signal.throwIfAborted();
   if (!isRecord(value)) throw instrumentError("INSTRUMENT_PACK_INVALID", `${artifact.manifest.path} must contain an object`);
   return value;
 }
