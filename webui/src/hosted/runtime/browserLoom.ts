@@ -616,7 +616,7 @@ export class BrowserLoomRuntime {
           thinking: effectiveThinking,
           generationSeat: rawCompletion ? null : role,
           generationRoleName: rawCompletion ? null : generationHeaderRoleLabel,
-          steeringExpression: effectiveSteering,
+          steeringExpression: boundSteering(hookProgram, effectiveSteering),
           position_spans: settings.positionSpans,
           hookProgram,
           liveInstruments: this.instruments?.liveInstruments() ?? null,
@@ -1313,7 +1313,7 @@ export class BrowserLoomRuntime {
         thinking: settings.thinking,
         generationSeat: this.session.is_base_model || request.options.raw ? null : node.role as ChatRole,
         generationRoleName: this.session.is_base_model || request.options.raw ? null : node.role_label,
-        steeringExpression: settings.steering,
+        steeringExpression: boundSteering(hookProgram, settings.steering),
         position_spans: settings.positionSpans,
         hookProgram,
         liveInstruments: this.instruments?.liveInstruments() ?? null,
@@ -1487,7 +1487,7 @@ export class BrowserLoomRuntime {
       thinking: settings.thinking,
       generationSeat: this.session.is_base_model ? null : node.role as ChatRole,
       generationRoleName: this.session.is_base_model ? null : node.role_label,
-      steeringExpression: settings.steering,
+      steeringExpression: boundSteering(hookProgram, settings.steering),
       position_spans: settings.positionSpans,
       hookProgram,
       liveInstruments: this.instruments?.liveInstruments() ?? null,
@@ -3537,4 +3537,14 @@ function loomError(code: string, message: string): Error & {
   recoverable: boolean;
 } {
   return Object.assign(new Error(message), { code, status: 409, recoverable: true });
+}
+
+/** The steering a generation's envelopes bind (native's recipe steering): the compiled
+ *  expression's canonical text (`formatSteering`), so `a @when:x > 0.2` binds as `a@when:x>0.2`. */
+function boundSteering(
+  program: StructuredHookProgramBuffers | null,
+  expression: string | null | undefined,
+): string | null | undefined {
+  if (!expression) return expression;
+  return (program as (StructuredHookProgramBuffers & { steeringExpression?: string }) | null)?.steeringExpression || expression;
 }

@@ -112,7 +112,8 @@ def main() -> None:
         for name, steering in (("unsteered", None), ("steered", ANATOMY_STEERING)):
             runs = generate(steering, steps=DECODE_STEPS, stateless=False)
             node = str(runs.node_ids[0])
-            anatomy = ranked(lambda **knobs: session.token_anatomy(node, ANATOMY_INDEX, **knobs),
+            # The hosted fixture is a base model: its replays render the node raw.
+            anatomy = ranked(lambda **knobs: session.token_anatomy(node, ANATOMY_INDEX, raw=True, **knobs),
                              [{"k": k, "units": k, "patterns": 2} for k in (5, 4, 6, 3, 7)],
                              f"nodes.{name}.anatomy", ties)
             entry: dict[str, Any] = {
@@ -121,7 +122,8 @@ def main() -> None:
             if name == "unsteered":
                 entry["activity"] = ranked(
                     lambda top: session.unit_activity(node, top=top, units=ACTIVITY["units"],
-                                                      raw_index=ACTIVITY["raw_index"], layers=ACTIVITY["layers"]),
+                                                      raw_index=ACTIVITY["raw_index"], layers=ACTIVITY["layers"],
+                                                      raw=True),
                     around("top", ACTIVITY["top"]), f"nodes.{name}.activity", ties)
             nodes[name] = entry
 

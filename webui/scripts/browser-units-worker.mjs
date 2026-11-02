@@ -345,12 +345,17 @@ function compareRun(run, unitProbes) {
   // unit-probes: tokens, every forward's units channel, gate scalars through the gate case, aggregate.
   for (const [index, golden] of unitProbes.cases.entries()) {
     const ours = run.probeCases[index];
-    check(`unit-probes ${golden.name}: tokens`, JSON.stringify(ours.tokens) === JSON.stringify(golden.tokens),
+    // Frames by raw index: a piece whose text completes in a later token (a split UTF-8 byte)
+    // rides that token's frame, so a forward can have no frame of its own.
+    const tokens = ours.tokens.filter(([raw]) => raw !== null);
+    check(`unit-probes ${golden.name}: tokens`,
+      tokens.length > 0 && tokens.every(([raw, id]) => golden.tokens[raw] === id) &&
+        tokens.at(-1)[0] === golden.tokens.length - 1,
       `${JSON.stringify(ours.tokens)} vs ${JSON.stringify(golden.tokens)}`);
-    golden.forwards.forEach((forward, step) => {
-      record(`unit-probes ${golden.name}: forward ${step} units channel`,
-        ours.frames[step]?.instruments?.units?.readings ?? null, forward.readings);
-    });
+    for (const [raw, measurements] of ours.frames) {
+      record(`unit-probes ${golden.name}: forward ${raw} units channel`,
+        measurements?.instruments?.units?.readings ?? null, golden.forwards[raw]?.readings ?? null);
+    }
     record(`unit-probes ${golden.name}: aggregate units`, ours.aggregate?.instruments?.units ?? null,
       golden.aggregate.instruments.units);
   }
@@ -376,7 +381,11 @@ function compareRun(run, unitProbes) {
     record(`node ${ours.name}: token anatomy`, withoutSources(ours.anatomy), withoutSources(native.anatomy.result),
       { root: `nodes.${ours.name}.anatomy.result`, ties: reference.declared_ties });
     if (native.activity) {
-      record(`node ${ours.name}: unit activity`, ours.activity, native.activity.result,
+      // Node ids are each tree's own; the population is fp16, matched within one ulp.
+      const population = populationProblems(ours.activity?.population ?? null, native.activity.result.population);
+      check(`node ${ours.name}: unit activity population (fp16, one ulp)`, population.length === 0, population.slice(0, 3).join("; "));
+      record(`node ${ours.name}: unit activity`, { ...ours.activity, node_id: null, population: null },
+        { ...native.activity.result, node_id: null, population: null },
         { root: `nodes.${ours.name}.activity.result`, ties: reference.declared_ties });
     }
   }
@@ -386,6 +395,33 @@ function compareRun(run, unitProbes) {
     reference.top[i].result.result, { root: `top[${i}].result`, ties: reference.declared_ties }));
   run.find.forEach((ours, i) => record(`unitFind vector at L${reference.find[i].layer}`, ours,
     reference.find[i].result.result, { root: `find[${i}].result`, ties: reference.declared_ties }));
+}
+
+/** An activity population's fp16 rows (base64, little-endian) against drowse's, one ulp apart at
+ *  most (units-activity.test.mjs's rule). */
+function populationProblems(actual, expected) {
+  if (expected === null || actual === null) return actual === expected ? [] : ["population presence differs"];
+  const halfBits = (text) => {
+    const bytes = Buffer.from(text, "base64");
+    return Array.from({ length: bytes.length / 2 }, (_, i) => bytes[2 * i] | (bytes[2 * i + 1] << 8));
+  };
+  const ordered = (bits) => (bits & 0x8000 ? -(bits & 0x7fff) : bits);
+  const problems = [];
+  if (actual.raw_index !== expected.raw_index || actual.encoding !== expected.encoding ||
+    JSON.stringify(actual.layers.map((l) => l.layer)) !== JSON.stringify(expected.layers.map((l) => l.layer))) {
+    return ["population header differs"];
+  }
+  actual.layers.forEach((layer, i) => {
+    for (const key of ["neurons", "heads"]) {
+      const got = halfBits(layer[key]);
+      const want = halfBits(expected.layers[i][key]);
+      if (got.length !== want.length) problems.push(`L${layer.layer} ${key} length`);
+      got.forEach((bits, j) => {
+        if (Math.abs(ordered(bits) - ordered(want[j])) > 1) problems.push(`L${layer.layer} ${key}[${j}]`);
+      });
+    }
+  });
+  return problems;
 }
 
 /** The lens sources' labels are each runtime's own (native `local:r`, a pack id here). */
@@ -490,9 +526,9 @@ async function driveWorker(plan) {
       const result = await generate({ input: plan.text, raw: true, stateless: true, steering: entry.steering, sampling: greedy(5) });
       out.probeCases.push({
         name: entry.name,
-        tokens: result.tokens.map((frame) => frame.token_id),
-        frames: result.tokens.map((frame) => frame.measurements ?? null),
-        aggregate: result.done?.measurements ?? null,
+        tokens: result.tokens.map((frame) => [frame.raw_index, frame.token_id]),
+        frames: result.tokens.map((frame) => [frame.raw_index, frame.measurements ?? null]),
+        aggregate: result.done?.result?.measurements ?? null,
       });
     }
     await service("probes", "attach", { selector: `slens/${plan.settings.slensWord}` });
@@ -502,13 +538,18 @@ async function driveWorker(plan) {
         name: entry.name,
         tokens: result.tokens.map((frame) => frame.token_id),
         liveUnitFrames: result.tokens.filter((frame) => frame.measurements?.instruments?.units !== undefined).length,
-        aggregate: result.done?.measurements ?? null,
+        aggregate: result.done?.result?.measurements ?? null,
       });
     }
     for (const name of [...plan.unitProbes, `slens/${plan.settings.slensWord}`]) await service("probes", "detach", name);
 
+    const root = (await service("tree", "get")).root_id;
     for (const entry of plan.nodes) {
-      const result = await generate({ input: plan.text, raw: true, stateless: false, steering: entry.steering, sampling: greedy(plan.settings.decodeSteps) });
+      // Each node from the root, as drowse's reference navigates there first.
+      const result = await generate({
+        input: plan.text, raw: true, stateless: false, parent_node_id: root, steering: entry.steering,
+        sampling: greedy(plan.settings.decodeSteps),
+      });
       const nodeId = result.done?.node_id ?? result.tokens.at(-1)?.node_id;
       const node = { name: entry.name, nodeId, tokens: result.tokens.map((frame) => frame.token_id) };
       node.anatomy = await service("instruments", "tokenAnatomy", nodeId, plan.settings.anatomyIndex, entry.anatomyKnobs);
