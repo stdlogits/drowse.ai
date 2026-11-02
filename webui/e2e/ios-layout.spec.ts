@@ -218,10 +218,11 @@ test("Weave keeps branch controls reachable on narrow phones and in landscape", 
 });
 
 test("Weave scrolls only vertically on a phone", async ({ page }) => {
-  // drowse bug (lanes/N3.md): on a phone LoomWeave's .weave scrolls (overflow-y: auto, so overflow-x
-  // computes to auto) and its sections keep their desktop focus gutter (margin 0 -4px), so the view
-  // pans sideways by 4 px at every phone width. Fix in drowse: overflow-x: hidden on the phone .weave.
-  test.fixme(true, "the phone Weave pans sideways by its sections' 4 px focus gutter; see lanes/N3.md");
+  // drowse bug, fixed in stdlogits/drowse webui/unit-refusal-wording (lanes/N3.md): in one column
+  // the .weave is the scroller and its sections keep their desktop focus gutter (margin 0 -4px), so
+  // its content is 4 px wider than it (overflow-x hidden, but scrollIntoView still shifts it).
+  // Expected to fail until the pin takes the fix; then this line goes.
+  test.fail(true, "the pinned drowse's one-column Weave overflows by its sections' 4 px focus gutter");
   const weave = await weaveThreeChoices(page);
   for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
     await page.setViewportSize(viewport);
