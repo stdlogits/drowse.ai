@@ -18,6 +18,7 @@ import {
   createStructuredHookControlEvaluator,
   STRUCTURED_HOOK_FORMAT,
   type StructuredGeometryMeasurementProbe,
+  type StructuredHookControl,
   type StructuredHookProgramBuffers,
 } from "./structuredHookProgram";
 import { isRoleSlug } from "../../../../drowse/webui/src/lib/roleSlug";
@@ -279,6 +280,9 @@ export async function streamWebLlmGeneration(
       ...plan.hookProgram,
       affineActive: new Uint32Array(plan.hookProgram.affineActive),
       curveActive: new Uint32Array(plan.hookProgram.curveActive),
+      ...(plan.hookProgram.unitActive === undefined
+        ? {}
+        : { unitActive: new Float32Array(plan.hookProgram.unitActive) }),
     } };
   }
   const request = buildRequest(plan);
@@ -2195,18 +2199,28 @@ function hasActiveGeometryMeasurements(
 function requiresPerTokenControlUpdates(
   program: WebLlmHookProgram | null | undefined,
 ): boolean {
-  if (!program || !isStructuredProgram(program) || program.controls === undefined) return false;
-  return [...program.controls.affine, ...program.controls.curve].some((control) =>
+  return structuredControls(program).some((control) =>
     control !== null && control.enabled &&
       (control.gate !== null || control.phase.kind !== "both")
   );
 }
 
 function hasProbeGates(program: WebLlmHookProgram | null | undefined): boolean {
-  if (!program || !isStructuredProgram(program) || !program.controls) return false;
-  return [...program.controls.affine, ...program.controls.curve].some((control) =>
+  return structuredControls(program).some((control) =>
     control !== null && control.enabled && control.gate !== null
   );
+}
+
+/** Every control of a structured program: affine, curve and unit groups alike. */
+function structuredControls(
+  program: WebLlmHookProgram | null | undefined,
+): readonly (StructuredHookControl | null)[] {
+  if (!program || !isStructuredProgram(program) || program.controls === undefined) return [];
+  return [
+    ...program.controls.affine,
+    ...program.controls.curve,
+    ...(program.controls.units ?? []),
+  ];
 }
 
 function requiresPerTokenMeasurementReads(
@@ -2218,6 +2232,7 @@ function requiresPerTokenMeasurementReads(
   const schema = program.measurementSchema;
   return schema.probes.some((probe) => probe !== null) ||
     hasActiveGeometryMeasurements(program) ||
+    schema.unitTaps?.some((tap) => tap !== null) === true ||
     schema.lensReadout === true || schema.saeReadout === true;
 }
 

@@ -73,7 +73,7 @@ try {
     summaryMeasurements,
     tokenRowMeasurements,
   } = await server.ssrLoadModule("/src/hosted/runtime/measurementRows.ts");
-  const { compileStructuredHookProgram } = await server.ssrLoadModule(
+  const { compileStructuredHookProgram, withStructuredUnitSection } = await server.ssrLoadModule(
     "/src/hosted/runtime/structuredHookProgram.ts",
   );
   const {
@@ -1045,6 +1045,45 @@ try {
   assert.equal(measuredTokens[0].measurements.scope, "token");
   assert.equal(measuredResult.measurements.scope, "aggregate");
   assert.equal(measuredTokens[0].measurements.scope, "token");
+
+  // A unit-only program (no affine or curve term) with phased groups: prompt-only ablation
+  // turns off at the first decode step, a response-only one turns on there, and the caller's
+  // `unitActive` is never written (a later run of the same program starts from it).
+  const unitOnlyProgram = withStructuredUnitSection(
+    compileStructuredHookProgram(1, [{}], STANDARD_STRUCTURED_HOOK_PROFILE_V4),
+    { dFF: 4, nHeads: 1, headDim: 1 },
+    {
+      ablations: [
+        { kind: "neuron", layer: 0, index: 1, keep: 0, bias: 0, group: 0 },
+        { kind: "neuron", layer: 0, index: 2, keep: 0, bias: 0, group: 1 },
+      ],
+      taps: [],
+      controls: [
+        { enabled: true, phase: { kind: "prompt_only" }, gate: null },
+        { enabled: true, phase: { kind: "generated_only" }, gate: null },
+      ],
+    },
+  );
+  const unitActiveBefore = Array.from(unitOnlyProgram.unitActive);
+  for (let run = 0; run < 2; run += 1) {
+    const unitInstalls = [];
+    const unitUpdates = [];
+    await streamWebLlmGeneration(engine, {
+      async clear() {},
+      async interrupt() {},
+      async install(program) { unitInstalls.push(Array.from(program.unitActive)); },
+      async updateControls(_affine, _curve, unitActive) { unitUpdates.push(Array.from(unitActive)); },
+      async read() { return new Float32Array(8); },
+      assertSteeringSupported() {},
+    }, {
+      input: { kind: "chat", messages: [{ role: "user", content: "Hi" }] },
+      hookProgram: unitOnlyProgram,
+    }, () => {});
+    assert.deepEqual(unitInstalls, [[1, 0, 0, 0]], `run ${run}: prefill ablates the prompt-only group`);
+    assert.deepEqual(unitUpdates, [[0, 1, 0, 0]], `run ${run}: decode swaps the groups once`);
+    assert.deepEqual(Array.from(unitOnlyProgram.unitActive), unitActiveBefore,
+      "generation must not write the caller's unit groups");
+  }
 
   const measurementOnlyProgram = { ...gatedProgram, controls: undefined };
   const tokenOnlyMeasurements = [];
