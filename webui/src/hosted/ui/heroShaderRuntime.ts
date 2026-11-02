@@ -1,6 +1,8 @@
 import { fullscreenVertex, sourceFragment, particleVertex, particleFragment, blurFragment, compositeFragment } from "./etherealShaders";
 import { HERO_FOCAL_LENGTH, HERO_VOLUME_RADIUS, heroCameraPosition } from "./heroCamera";
 
+/** Ledger's colours for the current theme, as linear-ish 0..1 sRGB triples (see HeroShader). */
+export type HeroPalette = { paper: number[]; ink: number[]; deep: number[]; late: number[]; dark: boolean };
 type Program = { program: WebGLProgram; uniforms: Record<string, WebGLUniformLocation | null> };
 type Target = { texture: WebGLTexture; framebuffer: WebGLFramebuffer; width: number; height: number };
 
@@ -107,7 +109,7 @@ export function createHeroShaderSource(canvas: HTMLCanvasElement, video: HTMLVid
         sizeTarget(horizontal, Math.ceil(width / 4), Math.ceil(height / 4));
         sizeTarget(glow, horizontal.width, horizontal.height);
       },
-      update(progress: number, delta: number, lightTheme: boolean, orbBoost: number) {
+      update(progress: number, delta: number, palette: HeroPalette) {
         if (gl.isContextLost()) return false;
         const playingVideo = video.readyState >= 2;
         if (!playingVideo && !(poster.complete && poster.naturalWidth > 0)) return false;
@@ -155,8 +157,9 @@ export function createHeroShaderSource(canvas: HTMLCanvasElement, video: HTMLVid
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         u = bind(composite, null);
         field(u); sample(u, "uScene", scene.texture, 0); sample(u, "uGlow", glow.texture, 1);
-        gl.uniform1f(u.uLightTheme, lightTheme ? 1 : 0);
-        gl.uniform1f(u.uOrbBoost, orbBoost);
+        gl.uniform3fv(u.uPaper, palette.paper); gl.uniform3fv(u.uInk, palette.ink);
+        gl.uniform3fv(u.uDeep, palette.deep); gl.uniform3fv(u.uLate, palette.late);
+        gl.uniform1f(u.uDark, palette.dark ? 1 : 0);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         return true;
       },

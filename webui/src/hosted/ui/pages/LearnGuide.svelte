@@ -9,7 +9,10 @@
 
 <SitePage current="learn" title={`${page.heading} · Drowse`} heading={page.heading} lede={page.intro} markdown={`${page.path}.md`}>
   <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/learn">Learn</a></nav>
-  <GuideContent {page} <style>
+  <GuideContent {page} />
+</SitePage>
+
+<style>
   .breadcrumb a { color: var(--ink3); font: var(--type-control); transition: color var(--fast) var(--ease); }
   @media (hover: hover) { .breadcrumb a:hover { color: var(--ink); } }
 </style>

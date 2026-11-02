@@ -153,8 +153,13 @@ export const compositeFragment = `#version 300 es
 precision highp float;
 uniform sampler2D uScene;
 uniform sampler2D uGlow;
-uniform float uLightTheme;
-uniform float uOrbBoost;
+// Ledger's colours for the current theme (HeroShader reads them from the tokens): the paper the orb
+// sits on, the ink its brightest light reaches, and the depth ramp it is lit along.
+uniform vec3 uPaper;
+uniform vec3 uInk;
+uniform vec3 uDeep;
+uniform vec3 uLate;
+uniform float uDark;
 in vec2 uv;
 out vec4 fragColor;
 ${field}
@@ -193,15 +198,13 @@ void main() {
   color += grain * (0.22 + 0.78 * smoothstep(0.02, 0.6, y));
   color = color / (1.0 + color * 0.24);
   color = clamp(color, 0.0, 1.0);
-  if (uLightTheme > 0.5) {
-    color = vec3(0.94902, 0.95686, 0.97255) + vec3(
-      dot(color, vec3(-0.07087, -0.23840, -0.02407)),
-      dot(color, vec3(-0.10255, -0.34497, -0.03483)),
-      dot(color, vec3(-0.02418, -0.08134, -0.00821))
-    );
-  } else {
-    color = 0.43 * pow(color, vec3(0.55));
-    color *= 1.0 + (uOrbBoost - 1.0) * smoothstep(vec3(0.12), vec3(0.30), color);
-  }
+  // The scene's light, recoloured onto the page: its brightness sets how far paper gives way to the
+  // depth ramp (deep on the left, late on the right, as the mark's tile runs), and the brightest
+  // light lifts toward ink.
+  float light = luma(color);
+  float lit = clamp(pow(light, mix(0.8, 0.62, uDark)) * mix(1.15, 1.6, uDark), 0.0, 1.0);
+  vec3 ramp = mix(uDeep, uLate, smoothstep(0.2, 0.8, uv.x + (light - 0.5) * 0.2));
+  vec3 recoloured = mix(uPaper, ramp, lit);
+  color = mix(recoloured, uInk, smoothstep(0.72, 1.0, light) * mix(0.18, 0.45, uDark));
   fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 }`
