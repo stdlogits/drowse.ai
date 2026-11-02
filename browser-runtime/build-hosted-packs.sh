@@ -41,14 +41,19 @@ if [ -e "$OUT" ]; then echo "$OUT exists; remove it to rebuild" >&2; exit 1; fi
 echo "=== [$ID] packs for runtime $SHA from $MODEL ($KINDS)"
 PYTHONPATH="$REPO/drowse${PYTHONPATH:+:$PYTHONPATH}" PYTHONUNBUFFERED=1 "$PY" "$HERE/build_hosted_packs.py" "$MODEL" \
   --runtime-identity "$IDENTITY" --output "$OUT" --kinds "$KINDS" \
-  --device "${DEVICE:-cpu}" --threads "${THREADS:-8}" > "$OUT.build.json"
-mv "$OUT.build.json" "$OUT/build-record.json"
+  --device "${DEVICE:-cpu}" --threads "${THREADS:-8}" > /dev/null
 cp "$IDENTITY" "$OUT/runtime-identity.json"
 for KIND in jlens slens units; do
-  [ -d "$OUT/$KIND" ] || continue
-  node "$SCRIPTS/assemble-hosted-pack.mjs" "$OUT/$KIND" > /dev/null
-  node "$SCRIPTS/validate-hosted-instrument-pack.mjs" "$ID" "$KIND" "$OUT/$KIND" --runtime-lock "$LOCK" \
-    > "$OUT/$KIND.validation.json"
+  [ -d "$OUT/$KIND" ] && node "$SCRIPTS/assemble-hosted-pack.mjs" "$OUT/$KIND" > /dev/null
 done
-du -sk "$OUT"/*/ | awk '{printf "%s\t%.1f MiB\n", $2, $1/1024}'
+for KIND in jlens slens units; do
+  [ -d "$OUT/$KIND" ] || continue
+  WITH=()
+  # A units pack reads through the R and S packs it binds.
+  [ "$KIND" = units ] && WITH=(--with "$OUT/jlens" --with "$OUT/slens")
+  node "$SCRIPTS/validate-hosted-instrument-pack.mjs" "$ID" "$KIND" "$OUT/$KIND" ${WITH[@]+"${WITH[@]}"} \
+    --runtime-lock "$LOCK" > "$OUT/$KIND.validation.json"
+done
+node "$SCRIPTS/hosted-pack-sizes.mjs" "$OUT" "$ID" --runtime-lock "$LOCK" > "$OUT/sizes.json"
+cat "$OUT/sizes.json"
 echo "=== [$ID] done: $OUT"
