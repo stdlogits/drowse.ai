@@ -37,7 +37,7 @@ async function installFixtureRpcProbe(page: Page): Promise<void> {
     const root = globalThis as typeof globalThis & {
       __drowseFixtureRpc?: {
         requests: Array<{ service: string; method: string; args: unknown[] }>;
-        failNextFamily: "lens" | "sae" | null;
+        failNextFamily: "lens" | "sae" | "anatomy" | null;
       };
     };
     root.__drowseFixtureRpc = { requests: [], failNextFamily: null };
@@ -58,7 +58,7 @@ async function installFixtureRpcProbe(page: Page): Promise<void> {
           : null;
         if (
           request?.command === "request" && payload?.service === "instruments" &&
-          payload.method === "tokenReadout" && Array.isArray(payload.args)
+          (payload.method === "tokenReadout" || payload.method === "tokenAnatomy") && Array.isArray(payload.args)
         ) {
           const state = root.__drowseFixtureRpc!;
           const recorded = structuredClone(payload) as {
@@ -67,7 +67,8 @@ async function installFixtureRpcProbe(page: Page): Promise<void> {
             args: unknown[];
           };
           state.requests.push(recorded);
-          const family = recorded.args[0];
+          // A readout names its family first; the anatomy is the lens side of a runtime that has it.
+          const family = recorded.method === "tokenAnatomy" ? "anatomy" : recorded.args[0];
           if (family === state.failNextFamily) {
             state.failNextFamily = null;
             queueMicrotask(() => {
@@ -1100,13 +1101,14 @@ test("first run includes the R lens and SAE while additional model tools remain 
 });
 
 /** Opens a reply token and checks the Token view read it through the installed lens and SAE:
- *  each layer's reading, the across-layer chips and the fixture's features, with no error. */
+ *  its anatomy (each layer's reading, the token by depth) and the fixture's features, with no
+ *  error. Watched words show in the Inspector and on the token rows, as natively. */
 async function expectTokenReadings(page: Page, text: string): Promise<void> {
   const token = await inspectToken(page, text);
   const layers = token.getByRole("region", { name: "Layer by layer", exact: true });
   await expect(layers).toContainText("L0");
   await expect(layers).toContainText("L1");
-  await expect(token.getByRole("region", { name: "Across layers", exact: true })).toContainText(/fixture/);
+  await expect(token.getByRole("region", { name: "By depth", exact: true })).toBeVisible();
   const features = token.getByRole("region", { name: "Features", exact: true });
   const rows = features.getByRole("listitem");
   await expect(rows.filter({ hasText: "f7" })).toHaveCount(1);
@@ -1122,7 +1124,9 @@ test("installed lens and SAE packs are usable without preparation errors", async
   // Artifacts: the installed packs are in use, and the hosted build offers no fitting or training.
   await selectRoom(page, "Artifacts");
   const sections = page.getByRole("group", { name: "Artifacts sections", exact: true });
-  // The Lenses section is drowse's 2x2 (S and R at out and mid) without the local fit.
+  // The Lenses section is drowse's 2x2 (S and R at out and mid) without the local fit. Units comes
+  // first: the fixture model has unit sites.
+  await sections.getByRole("button", { name: "Lenses", exact: true }).click();
   const lenses = page.getByRole("region", { name: "Lenses", exact: true });
   await expect(lenses).toContainText("R in use");
   await expect(lenses.getByRole("button", { name: /^fixture-jlens 64 documents/ })).toHaveAttribute("aria-pressed", "true");
@@ -1278,6 +1282,8 @@ test("installed standard and R-lens packs swap live without fitting", async ({ p
     "qwen3-1.7b-fixture",
   ]);
   await selectRoom(page, "Artifacts");
+  await page.getByRole("group", { name: "Artifacts sections", exact: true })
+    .getByRole("button", { name: "Lenses", exact: true }).click();
   // The R column's Sources: the pack in use is pressed; choosing another swaps it live.
   const lenses = page.getByRole("region", { name: "Lenses", exact: true });
   const standard = lenses.getByRole("button", { name: /^fixture-jlens 64 documents/ });
@@ -1292,24 +1298,20 @@ test("installed standard and R-lens packs swap live without fitting", async ({ p
   await selectRoom(page, "Workbench");
   await sendMessage(page, "Use the active R-lens");
   const token = await inspectToken(page, "deterministic");
-  await expect(token.getByRole("region", { name: "Across layers", exact: true })).toBeVisible();
+  await expect(token.getByRole("region", { name: "Layer by layer", exact: true })).toBeVisible();
 });
 
 test("token replay routes the exact token request and exposes a recoverable failure", async ({ page }) => {
   await installFixtureRpcProbe(page);
   await openFixtureWorkbench(page);
-  // With the live readout off, a token's lens reading has to be replayed.
-  const readout = inspector(page).getByRole("region", { name: "Lens", exact: true })
-    .getByRole("switch", { name: "Lens readout", exact: true });
-  await readout.click();
-  await expect(readout).not.toBeChecked();
+  // The fixture model has unit sites, so a token's lens side replays as its anatomy.
   await sendMessage(page, "Create a replayable token");
   await page.evaluate(() => {
     const state = (globalThis as typeof globalThis & {
-      __drowseFixtureRpc: { requests: FixtureTokenReadoutRequest[]; failNextFamily: "lens" | "sae" | null };
+      __drowseFixtureRpc: { requests: FixtureTokenReadoutRequest[]; failNextFamily: "lens" | "sae" | "anatomy" | null };
     }).__drowseFixtureRpc;
     state.requests = [];
-    state.failNextFamily = "lens";
+    state.failNextFamily = "anatomy";
   });
   const expected = await page.evaluate(async (moduleUrl) => {
     const stores = await import(moduleUrl);
@@ -1322,22 +1324,21 @@ test("token replay routes the exact token request and exposes a recoverable fail
     return { nodeId: turn.nodeId, rawIndex: token.rawIndex };
   }, toastModuleUrl);
   const token = await inspectToken(page, "This");
-  await expect.poll(() => page.evaluate(() =>
+  const anatomyRequests = () => page.evaluate(() =>
     (globalThis as typeof globalThis & { __drowseFixtureRpc: { requests: FixtureTokenReadoutRequest[] } })
-      .__drowseFixtureRpc.requests.filter(request => request.args[0] === "lens").length,
-  )).toBeGreaterThan(0);
-  const request = (await page.evaluate(() =>
-    (globalThis as typeof globalThis & { __drowseFixtureRpc: { requests: FixtureTokenReadoutRequest[] } })
-      .__drowseFixtureRpc.requests,
-  )).find(candidate => candidate.args[0] === "lens")!;
+      .__drowseFixtureRpc.requests.filter(request => request.method === "tokenAnatomy"),
+  );
+  await expect.poll(async () => (await anatomyRequests()).length).toBeGreaterThan(0);
+  const request = (await anatomyRequests())[0];
   expect(request.service).toBe("instruments");
-  expect(request.method).toBe("tokenReadout");
-  expect(request.args.slice(0, 3)).toEqual(["lens", expected.nodeId, expected.rawIndex]);
-  await expect(token.getByRole("alert").first()).toBeVisible();
+  expect(request.args.slice(0, 2)).toEqual([expected.nodeId, expected.rawIndex]);
+  await expect(token.getByRole("region", { name: "Anatomy", exact: true }).getByRole("alert"))
+    .toHaveText("Fixture token replay failed. Reopen the model and try again.");
   // The failure is recoverable: the next token replays normally.
   await token.getByRole("button", { name: "Next token", exact: true }).click();
   await expect(token.getByRole("heading", { name: "is" })).toBeVisible();
-  await expect(token.getByRole("region", { name: "Across layers", exact: true })).toBeVisible();
+  await expect(token.getByRole("region", { name: "Layer by layer", exact: true })).toBeVisible();
+  await expect(token.getByRole("region", { name: "Anatomy", exact: true })).toHaveCount(0);
 });
 
 test("optional SAE packs cannot be deleted while steering or readings use them", async ({ page }) => {
