@@ -66,6 +66,10 @@
     { name: "SAELens", by: "SAELens contributors", href: "https://github.com/jbloomAus/SAELens", note: "Loads published sparse autoencoders in the Python edition." },
     { name: "Gemma Scope 2", by: "Google DeepMind", note: "Sparse autoencoders for Gemma 3, used for SAE readings." },
     { name: "Neuronpedia", href: "https://www.neuronpedia.org", note: "Feature descriptions for Gemma Scope 2 features." },
+    // The corpus the hosted R and S lenses are fitted on: browser-runtime/release-corpus/native-lens-corpus.json.
+    { name: "FineWeb-Edu", by: "Hugging Face (Lozhkov, Ben Allal, von Werra and Wolf, 2024)", href: "https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu",
+      note: "The R and S lenses are fitted on 64 of its documents (sample-10BT), and the S lens's token mask counts them. The lens packs carry fitted matrices and counts, not corpus text. Its use is also subject to Common Crawl's Terms of Use.",
+      license: { label: "ODC-By 1.0", href: "https://opendatacommons.org/licenses/by/1-0/" } },
   ];
   const software: Credit[] = [
     { name: "WebLLM", by: "MLC", href: "https://github.com/mlc-ai/web-llm", note: "Runs models in the browser. Drowse uses its own fork, @drowse/web-llm.", license: { label: "Apache 2.0", href: thirdParty } },
@@ -81,7 +85,7 @@
   ];
   const creditGroups = [
     { id: "research", title: "Research Drowse builds on", lede: "If you use Drowse in published research, cite these methods too.", items: research },
-    { id: "interpretability", title: "Interpretability tools and data", lede: "Tools and data behind SAE readings and feature labels.", items: interpretability },
+    { id: "interpretability", title: "Interpretability tools and data", lede: "Tools and data behind SAE readings, feature labels and the lenses.", items: interpretability },
     { id: "catalog-models", title: "Models", lede: "Open models you can run in Drowse. Each keeps its own license.", items: catalogModels },
     { id: "software", title: "Software and type", lede: "Open-source projects Drowse ships with or is built with.", items: software },
   ];

@@ -31,7 +31,7 @@ export function parseArguments(args) {
 }
 
 export async function validatePublishDirectory(directory, model, runtime, {
-  allowLegacyBranding = false, allowStaleToolchain = false,
+  allowStaleToolchain = false,
 } = {}) {
   await requireDirectory(directory);
   const manifest = JSON.parse(await readFile(resolve(directory, "hosted-artifacts.json"), "utf8"));
@@ -48,14 +48,10 @@ export async function validatePublishDirectory(directory, model, runtime, {
     ...("modelType" in manifest ? ["modelType"] : []),
   ];
   const hookProfile = structuredHookProfile(manifest.structuredHookProfile);
-  const legacyBrand = allowLegacyBranding && runtime.runtimeAbi === "drowse-web-runtime-v1"
-    ? ["saklas", "polythetic"].find((brand) => manifest.runtimeAbi === `${brand}-web-runtime-v1`)
-    : undefined;
-  const expectedRuntime = legacyBrand === undefined ? runtime : { ...runtime, runtimeAbi: manifest.runtimeAbi };
   thinkingProfile(manifest.thinkingProfile);
   if (
     Object.keys(manifest).sort().join("\0") !== manifestKeys.sort().join("\0") ||
-    manifest.runtimeAbi !== expectedRuntime.runtimeAbi || manifest.hookAbi !== runtime.hookAbi ||
+    manifest.runtimeAbi !== runtime.runtimeAbi || manifest.hookAbi !== runtime.hookAbi ||
     hookProfile !== model.structuredHookProfile ||
     (manifest.modelType ?? "chat") !== (model.modelType ?? "chat") ||
     !sameThinkingProfile(manifest.thinkingProfile, model.thinkingProfile)
@@ -100,7 +96,7 @@ export async function validatePublishDirectory(directory, model, runtime, {
   ) {
     throw new Error("hosted model metadata differs from the runtime lock");
   }
-  await validateRuntimeMetadata(directory, manifest, model, expectedRuntime, legacyBrand ?? "drowse", allowStaleToolchain);
+  await validateRuntimeMetadata(directory, manifest, model, runtime, allowStaleToolchain);
   const declared = new Set(manifest.files.map((file) => file.path));
   const entries = [];
   for await (const entry of await opendir(directory)) entries.push(entry);
@@ -128,11 +124,11 @@ export async function validatePublishDirectory(directory, model, runtime, {
   return manifest;
 }
 
-async function validateRuntimeMetadata(directory, manifest, model, runtime, brand, allowStaleToolchain) {
+async function validateRuntimeMetadata(directory, manifest, model, runtime, allowStaleToolchain) {
   const [config, tensorCache, build] = await Promise.all([
     readFile(resolve(directory, "mlc-chat-config.json"), "utf8").then(JSON.parse),
     readFile(resolve(directory, "tensor-cache.json"), "utf8").then(JSON.parse),
-    readFile(resolve(directory, `${brand}-build.json`), "utf8").then(JSON.parse),
+    readFile(resolve(directory, "drowse-build.json"), "utf8").then(JSON.parse),
   ]);
   const configModel = config.model_config;
   const configModelShape = configModel?.text_config ?? configModel;

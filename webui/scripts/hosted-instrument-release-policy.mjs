@@ -47,6 +47,7 @@ export async function validateReleaseInstrumentPack({
   // Their release closure is the pinned corpus and its approved attribution review.
   if (kind === "jlens" || kind === "slens" || kind === "units") {
     const corpus = validateNativeLensCorpus(nativeLensCorpus);
+    await validateCorpusAttribution(directory, kind, nativeLensCorpus);
     return kind === "units"
       ? validateNativeUnits(instrumentManifest, modelLock, corpus)
       : validateNativeLens(kind, instrumentManifest, vocabularyManifest, modelLock, corpus);
@@ -349,6 +350,26 @@ function validateSae(manifest, release, modelLock) {
   };
 }
 
+
+/** Every published native lens and units pack carries the approved corpus attribution beside
+ *  its record (`packs/<kind>/ATTRIBUTION.md`, written by build_hosted_packs.py): the review's text,
+ *  the dataset's URL and its license, so the notice travels with the pack to Hugging Face. */
+async function validateCorpusAttribution(directory, kind, record) {
+  const text = (await readRequired(
+    resolve(directory, "packs", kind, "ATTRIBUTION.md"),
+    `${kind} pack corpus attribution`,
+  )).toString("utf8");
+  for (const required of [
+    record.attributionApproval.attribution,
+    record.dataset.url,
+    record.dataset.license,
+    record.corpusSpec,
+  ]) {
+    if (!text.includes(required)) {
+      throw new Error(`the ${kind} pack's ATTRIBUTION.md does not carry the approved corpus attribution`);
+    }
+  }
+}
 
 /** A full-depth native lens (PLAN.md): every layer of the family at both sites (R:out stops one
  *  short of the last block, whose read is the logit lens), split-half recorded at each, fitted

@@ -200,6 +200,15 @@ const approval = {
   attribution: "FineWeb-Edu (HuggingFaceFW), ODC-By 1.0",
 };
 const approvedCorpus = { ...nativeCorpus, attributionApproval: approval };
+// Each native pack carries the approved notice beside its record (build_hosted_packs.py).
+const attributionText = (corpus) => [
+  "# Corpus attribution", corpus.attributionApproval.attribution,
+  `- Dataset: ${corpus.dataset.url}`, `- License: ${corpus.dataset.license}`, `- Corpus: \`${corpus.corpusSpec}\``,
+].join("\n\n");
+for (const kind of ["jlens", "slens", "units"]) {
+  await mkdir(join(root, `native-${kind}`, "packs", kind), { recursive: true });
+  await writeFile(join(root, `native-${kind}`, "packs", kind, "ATTRIBUTION.md"), attributionText(approvedCorpus));
+}
 for (const kind of ["jlens", "slens", "units"]) {
   await assert.rejects(
     validateReleaseInstrumentPack({
@@ -271,6 +280,22 @@ await assert.rejects(
     nativeLensCorpus: approvedCorpus,
   }),
   /at least 64 documents/,
+);
+// A pack without the notice, or with another one, does not ship.
+await writeFile(join(root, "native-slens", "packs", "slens", "ATTRIBUTION.md"), "FineWeb-Edu");
+await assert.rejects(
+  validateReleaseInstrumentPack({
+    directory: join(root, "native-slens"), kind: "slens", instrumentManifest: nativeLens("S"), runtimeLock, modelLock,
+    nativeLensCorpus: approvedCorpus,
+  }),
+  /ATTRIBUTION\.md does not carry the approved corpus attribution/,
+);
+await assert.rejects(
+  validateReleaseInstrumentPack({
+    directory: join(root, "native-missing"), kind: "slens", instrumentManifest: nativeLens("S"), runtimeLock, modelLock,
+    nativeLensCorpus: approvedCorpus,
+  }),
+  /slens pack corpus attribution is missing/,
 );
 const unitsRecord = {
   format: "drowse-units-pack-v1", model_layer_count: depth, d_model: modelLock.hiddenSize,
