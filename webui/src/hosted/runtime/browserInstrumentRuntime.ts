@@ -356,11 +356,11 @@ export class BrowserInstrumentRuntime {
           displayName: descriptor.displayName,
           active: true,
           summary: {
+            family: "R" as const,
             kind: descriptor.kind,
             coverage: {
-              layers: descriptor.layers,
+              sites: { out: { layers: descriptor.layers, splitHalf: descriptor.splitHalf } },
               nPrompts: descriptor.nPrompts,
-              splitHalf: descriptor.splitHalf,
             },
           },
         }];
@@ -825,31 +825,36 @@ function tokenReadoutOptions(value: unknown): TokenReadoutOptions {
   return input as TokenReadoutOptions;
 }
 
-/** A hosted lens pack's row in 6.0's shape (`lens/sources.py::list_lens_sources`): a hosted lens
- *  pack selects into the R slot and the browser reads its `out` site only, so `family` is R,
- *  `sites` is `["out"]` and `layers`/`split_half` key that site. A pack whose manifest does not
- *  pass the loader's checks keeps native's coverage-free row (`sites: []`), with its kind when
- *  the manifest still names one (`LensSourceSummary`). */
+/** A hosted lens pack's row in 6.0's shape (`lens/sources.py::list_lens_sources`): an R pack
+ *  (`jlens`) or the S pack (`slens`), with the sites it holds (`out`, and `mid` for a 6.0 pack)
+ *  and `layers`/`split_half` keyed by site. A pack whose manifest does not pass the loader's
+ *  checks keeps native's coverage-free row (`sites: []`), with its kind when the manifest still
+ *  names one (`LensSourceSummary`). */
 function lensSourceRow(
   source: ReturnType<BrowserFeasibilityCorePackCompiler["jlensSources"]>[number],
 ): InstrumentSourceJSON {
   const summary = source.summary;
   const coverage = summary?.coverage ?? null;
+  const sites = coverage === null
+    ? []
+    : (["out", "mid"] as const).filter((site) => coverage.sites[site] !== undefined);
+  const splitHalf = Object.fromEntries(sites.flatMap((site) => {
+    const values = coverage!.sites[site]!.splitHalf;
+    return values === null || Object.keys(values).length === 0 ? [] : [[site, splitHalfByLayer(values)]];
+  }));
   return {
     source: source.source,
     kind: "catalog",
     name: source.displayName,
     ...(summary === null ? {} : { lens: summary.kind }),
-    family: "R",
-    sites: coverage === null ? [] : ["out"],
+    family: summary?.family ?? "R",
+    sites: [...sites],
     ...(coverage === null
       ? {}
       : {
-          layers: { out: [...coverage.layers] },
+          layers: Object.fromEntries(sites.map((site) => [site, [...coverage.sites[site]!.layers]])),
           n_prompts: coverage.nPrompts,
-          ...(coverage.splitHalf === null || Object.keys(coverage.splitHalf).length === 0
-            ? {}
-            : { split_half: { out: splitHalfByLayer(coverage.splitHalf) } }),
+          ...(Object.keys(splitHalf).length === 0 ? {} : { split_half: splitHalf }),
         }),
     active: source.active,
     provider: "catalog",

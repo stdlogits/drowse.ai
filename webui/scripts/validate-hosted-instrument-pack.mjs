@@ -7,13 +7,23 @@ import { resolve } from "node:path";
 import { createServer } from "vite";
 import { validatePackDirectory } from "./build-hosted-catalog.mjs";
 import { validateReleaseInstrumentPack } from "./hosted-instrument-release-policy.mjs";
+import { lockedRuntimeIdentity } from "./hosted-runtime-identity.mjs";
+
+const KINDS = ["sae", "jlens", "slens", "units"];
 
 const arguments_ = process.argv.slice(2);
 const values = [];
+const companions = [];
 let release = false;
 let runtimeLockInput = null;
 for (let index = 0; index < arguments_.length; index += 1) {
   const argument = arguments_[index];
+  if (argument === "--with") {
+    const value = arguments_[++index];
+    if (!value || value.startsWith("--")) throw new Error("--with requires a pack directory");
+    companions.push(resolve(value));
+    continue;
+  }
   if (argument === "--release") {
     if (release) throw new Error("--release may be supplied only once");
     release = true;
@@ -34,10 +44,11 @@ for (let index = 0; index < arguments_.length; index += 1) {
   values.push(argument);
 }
 const [modelId, kind, input] = values;
-if (!modelId || !["sae", "jlens"].includes(kind) || !input || values.length !== 3) {
+if (!modelId || !KINDS.includes(kind) || !input || values.length !== 3) {
   throw new Error(
-    "usage: validate-hosted-instrument-pack.mjs MODEL_ID sae|jlens PACK_DIR " +
-    "[--release] [--runtime-lock PATH]",
+    "usage: validate-hosted-instrument-pack.mjs MODEL_ID sae|jlens|slens|units PACK_DIR " +
+    "[--with PACK_DIR]... [--release] [--runtime-lock PATH]\n" +
+    "  --with loads another pack beside it (a units pack is read through the R and S packs it binds)",
   );
 }
 
@@ -52,39 +63,43 @@ const runtimeLock = JSON.parse(
 );
 const lock = runtimeLock.models.find((entry) => entry.id === modelId);
 if (!lock) throw new Error(`unknown runtime-lock model ${modelId}`);
-const manifest = await validatePackDirectory(directory);
-const prefix = `${kind}/`;
-if (
-  manifest.files.some((file) => !file.path.includes("/") || !file.path.includes(prefix)) ||
-  manifest.files.filter((file) => file.path.endsWith(`/${kind}/manifest.json`)).length !== 1
-) {
-  throw new Error(`${kind} pack files must share a nested ${kind}/ closure with one manifest.json`);
+// Each kind's one record: a lens pack's manifest.json, the units pack's units.json.
+const RECORD = { sae: "manifest.json", jlens: "manifest.json", slens: "manifest.json", units: "units.json" };
+const revision = "a".repeat(40);
+
+async function packEntry(packDirectory, packKind) {
+  const packManifest = await validatePackDirectory(packDirectory);
+  if (
+    packManifest.files.some((file) => !file.path.includes("/") || !file.path.includes(`${packKind}/`)) ||
+    packManifest.files.filter((file) => file.path.endsWith(`/${packKind}/${RECORD[packKind]}`)).length !== 1
+  ) {
+    throw new Error(`${packKind} pack files must share a nested ${packKind}/ closure with one ${RECORD[packKind]}`);
+  }
+  const packFiles = packManifest.files.map((file) => ({
+    ...file,
+    role: "instrument",
+    revision,
+    url: `https://huggingface.co/drowse/local/resolve/${revision}/${file.path}`,
+  }));
+  // Every file, on-demand layers included: the registry reads them as a fetch would.
+  const packArtifacts = await Promise.all(packFiles.map(async (entry) => ({
+    manifest: entry,
+    file: new File([await readFile(resolve(packDirectory, entry.path))], entry.path),
+  })));
+  return { files: packFiles, artifacts: packArtifacts };
 }
 
-const revision = "a".repeat(40);
-const files = manifest.files.map((file) => ({
-  ...file,
-  role: "instrument",
-  revision,
-  url: `https://huggingface.co/drowse/local/resolve/${revision}/${file.path}`,
-}));
-const artifacts = await Promise.all(files.map(async (entry) => ({
-  manifest: entry,
-  file: new File([await readFile(resolve(directory, entry.path))], entry.path),
-})));
-const runtimeIdentity = {
-  sourceModel: lock.sourceRepository,
-  sourceRevision: lock.sourceRevision,
-  convertedManifestSha256: lock.manifestSha256,
-  quantization: lock.quantization,
-  tokenizerSha256: lock.tokenizerSha256,
-  chatTemplateSha256: lock.chatTemplateSha256,
-  modelLibrarySha256: lock.librarySha256,
-  runtimeAbi: runtimeLock.runtimeAbi,
-  hookAbi: runtimeLock.hookAbi,
-  hiddenSize: lock.hiddenSize,
-  layerMap: [...lock.layerMap],
-};
+async function companionKind(packDirectory) {
+  const packManifest = await validatePackDirectory(packDirectory);
+  const kinds = KINDS.filter((candidate) =>
+    packManifest.files.some((file) => file.path.endsWith(`/${candidate}/${RECORD[candidate]}`)));
+  if (kinds.length !== 1) throw new Error(`${packDirectory} is not one instrument pack`);
+  return kinds[0];
+}
+
+const manifest = await validatePackDirectory(directory);
+const { files, artifacts } = await packEntry(directory, kind);
+const runtimeIdentity = lockedRuntimeIdentity(runtimeLock, modelId);
 let releaseQuality = null;
 if (release) {
   const instrumentManifest = JSON.parse(await readFile(resolve(
@@ -129,30 +144,92 @@ try {
     contextTokens: lock.contextProfiles[0],
     adapter: {},
     artifacts: [],
-    optionalPacks: [{
-      pack: {
-        id: `${modelId}-${kind}`,
-        kind,
-        displayName: `${modelId} ${kind}`,
-        runtimeIdentitySha256: fingerprint,
-        files,
+    optionalPacks: [
+      {
+        pack: {
+          id: `${modelId}-${kind}`,
+          kind,
+          displayName: `${modelId} ${kind}`,
+          runtimeIdentitySha256: fingerprint,
+          files,
+        },
+        artifacts,
       },
-      artifacts,
-    }],
+      ...await Promise.all(companions.map(async (companion) => {
+        const companionPackKind = await companionKind(companion);
+        const entry = await packEntry(companion, companionPackKind);
+        return {
+          pack: {
+            id: `${modelId}-${companionPackKind}`,
+            kind: companionPackKind,
+            displayName: `${modelId} ${companionPackKind}`,
+            runtimeIdentitySha256: fingerprint,
+            files: entry.files,
+          },
+          artifacts: entry.artifacts,
+        };
+      })),
+    ],
     activationSpool: {},
     signal: new AbortController().signal,
     onDeviceLost() {},
   });
   const descriptor = registry.descriptor();
+  const signal = new AbortController().signal;
+  const square = runtimeIdentity.hiddenSize * runtimeIdentity.hiddenSize;
+  let readBack = null;
+  // Each family's layers read back through the loader: the first, last and middle layer of
+  // every site, as a first read fetches them.
+  const lensReadBack = async (family) => {
+    const read = {};
+    for (const site of ["out", "mid"]) {
+      const layers = registry.lensSiteLayers(family, site);
+      const probe = [...new Set([layers[0], layers[Math.floor(layers.length / 2)], layers.at(-1)])]
+        .filter((layer) => layer !== undefined);
+      for (const layer of probe) {
+        const matrix = await registry.lensMatrix(family, site, layer, signal);
+        assert.equal(matrix?.length, square, `${family}:${site} L${layer}`);
+      }
+      read[site] = { layers: layers.length, checked: probe };
+    }
+    return read;
+  };
   if (kind === "sae") {
     assert.equal(registry.capabilities().sae, true);
     assert.ok(descriptor.sae?.features > 0);
     registry.saeFeature("0");
     registry.saeFeature(String(descriptor.sae.features - 1));
-  } else {
+  } else if (kind === "jlens") {
     assert.equal(registry.capabilities().jlens, true);
     assert.ok(descriptor.jlens?.words.length > 0);
     registry.jlensToken(descriptor.jlens.words[0].word);
+    readBack = { readout: descriptor.jlens.layers, lens: await lensReadBack("R"), identity: registry.lensIdentity("R") };
+  } else if (kind === "slens") {
+    assert.equal(registry.capabilities().slens, true);
+    const statistics = await registry.embeddingStatistics(signal);
+    assert.equal(statistics.meanE.length, runtimeIdentity.hiddenSize);
+    assert.equal(statistics.sigmaE.length, square);
+    readBack = {
+      lens: await lensReadBack("S"),
+      identity: registry.lensIdentity("S"),
+      mask: statistics.maskDescription,
+      tokenizerFingerprint: statistics.tokenizerFingerprint,
+    };
+  } else {
+    const units = registry.unitsPack();
+    assert.ok(units !== null, "the units pack did not load");
+    const nullBasis = await registry.unitsNullBasis(signal);
+    assert.equal(nullBasis.length, units.dModel * units.nullRank);
+    const layers = {};
+    for (const layer of [...new Set([0, Math.floor(units.layers / 2), units.layers - 1])]) {
+      const reads = await registry.unitsLayer("reads", layer, signal);
+      const contrast = await registry.unitsLayer("contrast", layer, signal);
+      for (const tensor of [...reads.values(), ...contrast.values()]) {
+        assert.equal(tensor.data.length, tensor.shape.reduce((total, size) => total * size, 1));
+      }
+      layers[layer] = { reads: reads.size, contrast: contrast.size };
+    }
+    readBack = { units: { ...units, layers: units.layers }, checked: layers };
   }
   process.stdout.write(`${JSON.stringify({
     modelId,
@@ -162,7 +239,8 @@ try {
     bytes: files.reduce((sum, file) => sum + file.bytes, 0),
     closureSha256: digest(files.map(({ path, bytes, sha256 }) => ({ path, bytes, sha256 }))),
     releaseQuality,
-    descriptor: kind === "sae" ? descriptor.sae : descriptor.jlens,
+    descriptor: kind === "sae" ? descriptor.sae : kind === "jlens" ? descriptor.jlens : null,
+    readBack,
   }, null, 2)}\n`);
 } finally {
   await vite.close();

@@ -132,6 +132,15 @@ interface ArtifactDownloaderLike {
     packId: string,
     options: ArtifactDownloadOptions,
   ): Promise<ArtifactDownloadResult>;
+  /** One on-demand layer file into an installed pack (`VerifiedArtifactDownloader`). */
+  downloadPackFile?(
+    catalog: VerifiedCatalog,
+    modelVariantId: string,
+    packId: string,
+    path: string,
+    installedHashes: readonly string[],
+    options: ArtifactDownloadOptions,
+  ): Promise<ArtifactDownloadResult>;
   cancel(): boolean;
 }
 
@@ -2275,7 +2284,7 @@ export class HostedRuntimeWorker {
         return stored;
       }
       const catalog = this.acceptedCatalog;
-      if (catalog === null) {
+      if (catalog === null || this.downloader.downloadPackFile === undefined) {
         throw runtimeFailure(
           "CATALOG_UNAVAILABLE",
           `Reconnect to fetch ${manifest.path} of ${pack.displayName}`,
