@@ -26,7 +26,8 @@ export async function unitsFixture(server, arch, options = {}) {
   const stats = archGolden("unit-stats", arch);
   const means = { out: Float32Array.from(decode(stats.out_mean)), mid: Float32Array.from(decode(stats.mid_mean)) };
   const lenses = tiny.tinyLenses(file, arch);
-  const selected = new Map([...lenses].filter(([key]) => (options.families ?? ["R", "S"]).includes(key[0])));
+  const selected = new Map([...lenses].filter(([key]) =>
+    (options.families ?? ["R", "S"]).includes(key[0]) && !(options.drop ?? []).includes(key)));
   const readContext = context.referenceReadContext({
     backend,
     model,
