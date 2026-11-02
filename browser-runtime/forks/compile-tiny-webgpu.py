@@ -10,7 +10,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from overlay_checks import (  # noqa: E402
-    REQUIRED_FUNCTIONS,
+    UNIT_FUNCTIONS,
+    required_functions,
     bootstrap_mlc_package,
     ensure_import_roots,
     require_llvm,
@@ -163,7 +164,7 @@ def main() -> None:
     if len(wasm) == 0 or wasm[:4] != b"\x00asm":
         output.unlink(missing_ok=True)
         raise SystemExit("compiler did not produce a valid WebAssembly container")
-    verify_wasm(output, wasm, emcc)
+    verify_wasm(output, wasm, emcc, args.architecture)
     digest = hashlib.sha256(wasm).hexdigest()
     print(
         json.dumps(
@@ -213,9 +214,9 @@ def validate_output(output: Path) -> None:
         raise SystemExit(f"output parent does not exist: {output.parent}")
 
 
-def verify_wasm(output: Path, wasm: bytes, emcc: Path) -> None:
+def verify_wasm(output: Path, wasm: bytes, emcc: Path, architecture: str) -> None:
     try:
-        verify_library_shaders(wasm)
+        verify_library_shaders(wasm, required_functions(architecture))
     except SystemExit:
         output.unlink(missing_ok=True)
         raise
@@ -346,7 +347,10 @@ def create_model(
 
 def verify_exports(module, architecture: str) -> None:
     names = {global_var.name_hint for global_var in module.get_global_vars()}
-    missing = sorted(REQUIRED_FUNCTIONS - names)
+    missing = sorted(required_functions(architecture) - names)
+    unexpected = sorted(UNIT_FUNCTIONS & names) if architecture == "llama" else []
+    if unexpected:
+        raise SystemExit(f"{architecture} is a residual architecture but exports {unexpected[0]}")
     if missing:
         raise SystemExit(f"{architecture} export lacks Drowse functions: {', '.join(missing)}")
 

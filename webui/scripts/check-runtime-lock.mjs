@@ -2115,9 +2115,9 @@ function requireTrueResults(results, fields, label) {
 
 export function validateFixtureToolPins(manifest, modelTool, compilerTool, overlayChecks) {
   if (
-    manifest?.hookAbi !== "post-block-residual-v4" ||
-    manifest?.structuredHookProfile !== "standard-v3" ||
-    manifest?.exactReadoutAbi !== "exact-readout-v1"
+    manifest?.hookAbi !== "block-sites-v5" ||
+    manifest?.structuredHookProfile !== "standard-v4" ||
+    manifest?.exactReadoutAbi !== "exact-readout-v2"
   ) {
     throw new Error(
       "fork overlay manifest does not attest the production exact-readout profile",

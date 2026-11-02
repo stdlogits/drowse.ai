@@ -66,10 +66,10 @@ index c5f33250..5f8096e5 100644
      allowed_lora_source_formats = {"huggingface-safetensor", "huggingface-torch"}
 diff --git a/python/mlc_llm/model/drowse_hooks.py b/python/mlc_llm/model/drowse_hooks.py
 new file mode 100644
-index 00000000..f51368cf
+index 00000000..d67ebc61
 --- /dev/null
 +++ b/python/mlc_llm/model/drowse_hooks.py
-@@ -0,0 +1,4535 @@
+@@ -0,0 +1,4549 @@
 +"""Drowse post-block residual hooks for browser model libraries."""
 +
 +from tvm import te
@@ -77,6 +77,7 @@ index 00000000..f51368cf
 +from tvm.relax.frontend.nn import Tensor, op
 +from tvm.script import tirx as T
 +
++from mlc_llm.model.drowse_units import hook_profile_values
 +from mlc_llm.model.model_utils import index_last_token
 +
 +
@@ -101,12 +102,12 @@ index 00000000..f51368cf
 +STRUCTURED_GEOMETRY_KERNEL_STORAGE_BINDINGS = 8
 +STRUCTURED_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE = 8
 +STRUCTURED_HOOK_PROFILE_MAGIC = 0x53414B4C
-+STRUCTURED_HOOK_PROFILE_SCHEMA_VERSION = 3
-+STRUCTURED_HOOK_PROFILE_ID = 3
-+STRUCTURED_HOOK_ABI_VERSION = 4
-+STRUCTURED_HOOK_FORMAT_VERSION = 3
++STRUCTURED_HOOK_PROFILE_SCHEMA_VERSION = 4
++STRUCTURED_HOOK_PROFILE_ID = 4
++STRUCTURED_HOOK_ABI_VERSION = 5
++STRUCTURED_HOOK_FORMAT_VERSION = 4
 +STRUCTURED_MIN_COMPUTE_WORKGROUP_STORAGE_SIZE = 32 * 1024
-+EXACT_READOUT_ABI_VERSION = 1
++EXACT_READOUT_ABI_VERSION = 2
 +READOUT_TOP_K = 8
 +EXACT_READOUT_TOPK_BLOCK_SIZE = 256
 +MAX_SAE_FEATURES_PER_CHUNK = 16384
@@ -430,8 +431,18 @@ index 00000000..f51368cf
 +    }
 +
 +
-+def structured_hook_profile_descriptor(num_layers: int, hidden_size: int) -> Tensor:
-+    values = (
++def structured_hook_profile_descriptor(
++    num_layers: int,
++    hidden_size: int,
++    *,
++    block: dict | None,
++    context_tokens: int,
++    prefill_chunk_size: int,
++) -> Tensor:
++    """Descriptor schema 4 (hook ABI `block-sites-v5`): v3's 31 fields, then the block spec and
++    the unit capacities (`drowse_units.hook_profile_values`). `block` is None for a residual
++    (`standard-v4-residual`) library."""
++    base = (
 +        STRUCTURED_HOOK_PROFILE_MAGIC,
 +        STRUCTURED_HOOK_PROFILE_SCHEMA_VERSION,
 +        STRUCTURED_HOOK_PROFILE_ID,
@@ -463,6 +474,9 @@ index 00000000..f51368cf
 +        EXACT_READOUT_ABI_VERSION,
 +        READOUT_TOP_K,
 +        MAX_SAE_FEATURES_PER_CHUNK,
++    )
++    values = hook_profile_values(
++        base, block, context_tokens, prefill_chunk_size, hidden_size
 +    )
 +    return op.concat(
 +        [op.full((1,), value, dtype="int32") for value in values],
@@ -4605,11 +4619,489 @@ index 00000000..f51368cf
 +        return te.compute((1,), lambda _: values_te[layer_id], name=name)
 +
 +    return op.tensor_expr_op(_take, name_hint=name, args=[values])
+diff --git a/python/mlc_llm/model/drowse_units.py b/python/mlc_llm/model/drowse_units.py
+new file mode 100644
+index 00000000..70ac263e
+--- /dev/null
++++ b/python/mlc_llm/model/drowse_units.py
+@@ -0,0 +1,472 @@
++"""Drowse hook ABI v5 (`block-sites-v5`): in-block unit sites for dense blocks.
++
++Every eligible model's decoder layer runs `drowse_block(hidden, cache, layer_id, sites)`. With
++`NO_SITES` the block is op for op the upstream layer (the v4 graph); `UnitSites` inserts, per
++layer, exact mean-ablation of heads at the output-projection input and of neurons at the
++down-projection input (`x <- x * keep + bias` on rows whose absolute position is at least
++`UNIT_POSITIONS_FROM`), and the live unit tap at the forward's last row. Layouts and semantics:
++drowse.ai `browser-runtime/HOOK_ABI.md` (B1 §2.2, §3.1, §3.4, §3.5).
++"""
++
++import struct
++
++from tvm.relax.frontend import nn
++from tvm.relax.frontend.nn import Tensor, op
++from tvm.script import tirx as T
++
++UNIT_MAX_GROUPS = 4
++UNIT_MAX_NEURON_ABLATIONS = 256
++UNIT_MAX_HEAD_ABLATIONS = 64
++UNIT_MAX_TAPS = 64
++UNIT_MAX_HEAD_TAPS = 16
++UNIT_MAX_ACTIVITY_TRACES = 32
++UNIT_MAX_ACTIVITY_SPANS = 4
++UNIT_MAX_PATTERN_LAYERS = 8
++UNIT_MAX_PATTERN_HEADS = 16
++UNIT_MAX_LENS_READ_TOP_K = 256
++UNIT_MAX_ANATOMY_UNITS = 64
++UNIT_POSITIONS_FROM = 1
++DROWSE_KERNEL_STORAGE_BINDINGS = 8
++
++HOOK_PROFILE_SCHEMA_VERSION = 4
++HOOK_PROFILE_ID = 4
++BLOCK_SITES_HOOK_ABI_VERSION = 5
++STRUCTURED_HOOK_FORMAT_VERSION = 4
++BLOCK_SITES_EXACT_READOUT_ABI_VERSION = 2
++
++ACTIVATION_SILU = 1
++ACTIVATION_GELU_TANH = 2
++
++_LANES = 64
++
++
++def unit_meta_layout(num_layers: int) -> dict[str, tuple[int, int]]:
++    """`(offset, length)` of each u32 table in `unit_meta` (HOOK_ABI.md §4)."""
++    fields = (
++        ("neuron_offsets", num_layers + 1),
++        ("neuron_index", UNIT_MAX_NEURON_ABLATIONS),
++        ("neuron_group", UNIT_MAX_NEURON_ABLATIONS),
++        ("head_offsets", num_layers + 1),
++        ("head_index", UNIT_MAX_HEAD_ABLATIONS),
++        ("head_group", UNIT_MAX_HEAD_ABLATIONS),
++        ("tap_neuron_offsets", num_layers + 1),
++        ("tap_neuron_index", UNIT_MAX_TAPS),
++        ("tap_neuron_slot", UNIT_MAX_TAPS),
++        ("tap_head_offsets", num_layers + 1),
++        ("tap_head_index", UNIT_MAX_HEAD_TAPS),
++        ("tap_head_slot", UNIT_MAX_HEAD_TAPS),
++    )
++    return _pack(fields)
++
++
++def unit_coeff_layout(head_dim: int) -> dict[str, tuple[int, int]]:
++    """`(offset, length)` of each f32 table in `unit_coeff`."""
++    return _pack((
++        ("neuron_keep", UNIT_MAX_NEURON_ABLATIONS),
++        ("neuron_bias", UNIT_MAX_NEURON_ABLATIONS),
++        ("head_keep", UNIT_MAX_HEAD_ABLATIONS),
++        ("head_bias", UNIT_MAX_HEAD_ABLATIONS * head_dim),
++    ))
++
++
++def _pack(fields) -> dict[str, tuple[int, int]]:
++    out, offset = {}, 0
++    for name, length in fields:
++        out[name] = (offset, length)
++        offset += length
++    out["__length__"] = (offset, 0)
++    return out
++
++
++def unit_program_spec(num_layers: int, head_dim: int) -> dict[str, nn.spec.Tensor]:
++    """The unit section's arguments, after the curved program's (B1 §3.4)."""
++    return {
++        "unit_meta": nn.spec.Tensor([unit_meta_layout(num_layers)["__length__"][0]], "uint32"),
++        "unit_coeff": nn.spec.Tensor([unit_coeff_layout(head_dim)["__length__"][0]], "float32"),
++        "unit_active": nn.spec.Tensor([UNIT_MAX_GROUPS], "float32"),
++        "tap_grams": nn.spec.Tensor([UNIT_MAX_HEAD_TAPS, head_dim, head_dim], "float32"),
++    }
++
++
++def float32_bits(value: float) -> int:
++    return struct.unpack("<i", struct.pack("<f", value))[0]
++
++
++def hook_profile_values(base: tuple, block: dict | None, context_tokens: int,
++                        prefill_chunk_size: int, hidden_size: int) -> tuple:
++    """Descriptor schema 4: v3's 31 fields (ABI 5, format 4, readout 2 in `base`), then the block
++    and unit fields. A residual library (`block is None`) reports 0 in every block field, unit
++    capacity, `ANATOMY_STRIDE`, `UNIT_POSITIONS_FROM` and `MAX_ANATOMY_UNITS`."""
++    units = block is not None
++    spec = block or {}
++
++    def bits(key):
++        value = spec.get(key)
++        return 0 if value is None else float32_bits(value)
++
++    def cap(value):
++        return value if units else 0
++
++    anatomy_stride = (
++        6 * hidden_size + spec["d_ff"] + spec["n_heads"] * spec["head_dim"] if units else 0
++    )
++    return base + (
++        int(units),
++        spec.get("d_ff", 0),
++        spec.get("n_heads", 0),
++        spec.get("n_kv_heads", 0),
++        spec.get("head_dim", 0),
++        int(spec.get("sandwich", False)),
++        spec.get("norm_offset", 0),
++        spec.get("activation", 0),
++        bits("embed_scale"),
++        bits("rms_eps"),
++        int(spec.get("qk_norm", False)),
++        bits("attn_scaling"),
++        bits("attn_logit_softcap"),
++        bits("final_logit_softcap"),
++        bits("rope_theta"),
++        bits("rope_local_theta"),
++        bits("rope_global_scale"),
++        int(spec.get("rope_in_graph", False)),
++        spec.get("sliding_window") or 0,
++        spec.get("sliding_pattern") or 0,
++        prefill_chunk_size,
++        cap(UNIT_MAX_GROUPS),
++        cap(UNIT_MAX_NEURON_ABLATIONS),
++        cap(UNIT_MAX_HEAD_ABLATIONS),
++        cap(UNIT_MAX_TAPS),
++        cap(UNIT_MAX_HEAD_TAPS),
++        cap(UNIT_MAX_ACTIVITY_TRACES),
++        cap(UNIT_MAX_ACTIVITY_SPANS),
++        cap(UNIT_MAX_PATTERN_LAYERS),
++        cap(UNIT_MAX_PATTERN_HEADS),
++        anatomy_stride,
++        UNIT_POSITIONS_FROM if units else 0,
++        UNIT_MAX_LENS_READ_TOP_K,
++        UNIT_MAX_ANATOMY_UNITS if units else 0,
++        DROWSE_KERNEL_STORAGE_BINDINGS,
++        context_tokens,
++    )
++
++
++class NoSites:
++    """Sites compiled out: the block is the upstream layer. Every site hook receives the block's
++    own tensor; `head` and `neuron` return the tensor the block continues with, the observing
++    hooks (`tap`, `mid`, `mlp`) return nothing."""
++
++    def head(self, z: Tensor, layer_id: int) -> Tensor:
++        return z
++
++    def mid(self, h_mid: Tensor, layer_id: int) -> None:
++        return None
++
++    def mlp(self, mlp_o: Tensor, layer_id: int) -> None:
++        return None
++
++    def neuron(self, act: Tensor, layer_id: int) -> Tensor:
++        return act
++
++    def tap(self, z: Tensor, attn_o: Tensor, act: Tensor, layer_id: int) -> None:
++        return None
++
++
++NO_SITES = NoSites()
++
++
++class UnitSites(NoSites):
++    """Mean-ablation and the live unit tap (B1 §2.2, §3.1), one forward's worth."""
++
++    def __init__(
++        self,
++        num_layers: int,
++        head_dim: int,
++        positions: Tensor,
++        unit_meta: Tensor,
++        unit_coeff: Tensor,
++        unit_active: Tensor,
++        tap_grams: Tensor,
++        sandwich: bool,
++        rms_eps: float,
++    ):
++        self.num_layers = num_layers
++        self.head_dim = head_dim
++        self.positions = positions
++        self.unit_meta = unit_meta
++        self.unit_coeff = unit_coeff
++        self.unit_active = unit_active
++        self.tap_grams = tap_grams
++        self.sandwich = sandwich
++        self.rms_eps = rms_eps
++        self.taps = op.zeros((UNIT_MAX_TAPS,), "float32")
++
++    def head(self, z: Tensor, layer_id: int) -> Tensor:
++        return _head_ablate(z, layer_id, self)
++
++    def neuron(self, act: Tensor, layer_id: int) -> Tensor:
++        return _neuron_ablate(act, layer_id, self)
++
++    def tap(self, z: Tensor, attn_o: Tensor, act: Tensor, layer_id: int) -> None:
++        self.taps = _unit_tap(z, attn_o, act, layer_id, self)
++
++
++def _neuron_ablate(act: Tensor, layer_id: int, sites: UnitSites) -> Tensor:
++    batch_size, sequence_length, d_ff = act.shape
++    dtype = act.dtype
++    meta_len = sites.unit_meta.shape[0]
++    coeff_len = sites.unit_coeff.shape[0]
++    total = batch_size * sequence_length
++    meta = unit_meta_layout(sites.num_layers)
++    coeff = unit_coeff_layout(sites.head_dim)
++    offsets = meta["neuron_offsets"][0]
++    index_at = meta["neuron_index"][0]
++    group_at = meta["neuron_group"][0]
++    keep_at = coeff["neuron_keep"][0]
++    bias_at = coeff["neuron_bias"][0]
++    steps = (UNIT_MAX_NEURON_ABLATIONS + _LANES - 1) // _LANES
++
++    @T.prim_func(private=True, s_tir=True)
++    def _ablate(
++        var_act: T.handle,
++        var_positions: T.handle,
++        var_meta: T.handle,
++        var_coeff: T.handle,
++        var_active: T.handle,
++    ):
++        T.func_attr({"op_pattern": 8, "tirx.is_scheduled": 1, "tirx.noalias": True})
++        values = T.match_buffer(var_act, (batch_size, sequence_length, d_ff), dtype)
++        positions = T.match_buffer(var_positions, (total,), "int32")
++        unit_meta = T.match_buffer(var_meta, (meta_len,), "uint32")
++        unit_coeff = T.match_buffer(var_coeff, (coeff_len,), "float32")
++        active = T.match_buffer(var_active, (UNIT_MAX_GROUPS,), "float32")
++        for row in T.thread_binding(total, thread="blockIdx.x"):
++            for lane in T.thread_binding(_LANES, thread="threadIdx.x"):
++                with T.sblock("drowse_neuron_ablate"):
++                    r = T.axis.spatial(total, row)
++                    t = T.axis.spatial(_LANES, lane)
++                    if positions[r] >= UNIT_POSITIONS_FROM:
++                        for step in T.serial(steps):
++                            entry = T.meta_var(
++                                T.Cast("int32", unit_meta[offsets + layer_id]) + step * _LANES + t
++                            )
++                            if entry < T.Cast("int32", unit_meta[offsets + layer_id + 1]):
++                                if active[T.Cast("int32", unit_meta[group_at + entry])] != T.float32(0):
++                                    neuron = T.meta_var(T.Cast("int32", unit_meta[index_at + entry]))
++                                    b = T.meta_var(T.floordiv(r, sequence_length))
++                                    s = T.meta_var(T.floormod(r, sequence_length))
++                                    values[b, s, neuron] = T.Cast(
++                                        dtype,
++                                        T.Cast("float32", values[b, s, neuron]) * unit_coeff[keep_at + entry]
++                                        + unit_coeff[bias_at + entry],
++                                    )
++
++    return op.tensor_ir_inplace_op(
++        _ablate,
++        f"drowse_neuron_ablate_{layer_id}",
++        args=[act, sites.positions, sites.unit_meta, sites.unit_coeff, sites.unit_active],
++        inplace_indices=[0],
++        out=Tensor.placeholder(act.shape, dtype),
++    )
++
++
++def _head_ablate(z: Tensor, layer_id: int, sites: UnitSites) -> Tensor:
++    batch_size, sequence_length, width = z.shape
++    dtype = z.dtype
++    head_dim = sites.head_dim
++    meta_len = sites.unit_meta.shape[0]
++    coeff_len = sites.unit_coeff.shape[0]
++    total = batch_size * sequence_length
++    meta = unit_meta_layout(sites.num_layers)
++    coeff = unit_coeff_layout(head_dim)
++    offsets = meta["head_offsets"][0]
++    index_at = meta["head_index"][0]
++    group_at = meta["head_group"][0]
++    keep_at = coeff["head_keep"][0]
++    bias_at = coeff["head_bias"][0]
++    steps = (UNIT_MAX_HEAD_ABLATIONS * head_dim + _LANES - 1) // _LANES
++
++    @T.prim_func(private=True, s_tir=True)
++    def _ablate(
++        var_z: T.handle,
++        var_positions: T.handle,
++        var_meta: T.handle,
++        var_coeff: T.handle,
++        var_active: T.handle,
++    ):
++        T.func_attr({"op_pattern": 8, "tirx.is_scheduled": 1, "tirx.noalias": True})
++        values = T.match_buffer(var_z, (batch_size, sequence_length, width), dtype)
++        positions = T.match_buffer(var_positions, (total,), "int32")
++        unit_meta = T.match_buffer(var_meta, (meta_len,), "uint32")
++        unit_coeff = T.match_buffer(var_coeff, (coeff_len,), "float32")
++        active = T.match_buffer(var_active, (UNIT_MAX_GROUPS,), "float32")
++        for row in T.thread_binding(total, thread="blockIdx.x"):
++            for lane in T.thread_binding(_LANES, thread="threadIdx.x"):
++                with T.sblock("drowse_head_ablate"):
++                    r = T.axis.spatial(total, row)
++                    t = T.axis.spatial(_LANES, lane)
++                    if positions[r] >= UNIT_POSITIONS_FROM:
++                        first = T.meta_var(T.Cast("int32", unit_meta[offsets + layer_id]))
++                        count = T.meta_var(
++                            T.Cast("int32", unit_meta[offsets + layer_id + 1]) - first
++                        )
++                        for step in T.serial(steps):
++                            item = T.meta_var(step * _LANES + t)
++                            if item < count * head_dim:
++                                entry = T.meta_var(first + T.floordiv(item, head_dim))
++                                coordinate = T.meta_var(T.floormod(item, head_dim))
++                                if active[T.Cast("int32", unit_meta[group_at + entry])] != T.float32(0):
++                                    column = T.meta_var(
++                                        T.Cast("int32", unit_meta[index_at + entry]) * head_dim
++                                        + coordinate
++                                    )
++                                    b = T.meta_var(T.floordiv(r, sequence_length))
++                                    s = T.meta_var(T.floormod(r, sequence_length))
++                                    values[b, s, column] = T.Cast(
++                                        dtype,
++                                        T.Cast("float32", values[b, s, column]) * unit_coeff[keep_at + entry]
++                                        + unit_coeff[bias_at + entry * head_dim + coordinate],
++                                    )
++
++    return op.tensor_ir_inplace_op(
++        _ablate,
++        f"drowse_head_ablate_{layer_id}",
++        args=[z, sites.positions, sites.unit_meta, sites.unit_coeff, sites.unit_active],
++        inplace_indices=[0],
++        out=Tensor.placeholder(z.shape, dtype),
++    )
++
++
++def _unit_tap(z: Tensor, attn_o: Tensor, act: Tensor, layer_id: int, sites: UnitSites) -> Tensor:
++    """Writes this layer's tapped values at the forward's last row into `unit_taps`: a neuron's
++    `act`, a head's write norm `sqrt(max(0, z_h^T G_h z_h)) * r_ao` (B1 §2.2)."""
++    batch_size, sequence_length, width = z.shape
++    hidden_size = attn_o.shape[2]
++    d_ff = act.shape[2]
++    head_dim = sites.head_dim
++    meta_len = sites.unit_meta.shape[0]
++    meta = unit_meta_layout(sites.num_layers)
++    neuron_offsets = meta["tap_neuron_offsets"][0]
++    neuron_index = meta["tap_neuron_index"][0]
++    neuron_slot = meta["tap_neuron_slot"][0]
++    head_offsets = meta["tap_head_offsets"][0]
++    head_index = meta["tap_head_index"][0]
++    head_slot = meta["tap_head_slot"][0]
++    blocks = UNIT_MAX_TAPS + UNIT_MAX_HEAD_TAPS
++    sandwich = sites.sandwich
++    rms_eps = sites.rms_eps
++    z_dtype, o_dtype, act_dtype = z.dtype, attn_o.dtype, act.dtype
++    head_chunks = (head_dim + _LANES - 1) // _LANES
++
++    @T.prim_func(private=True, s_tir=True)
++    def _tap(
++        var_z: T.handle,
++        var_o: T.handle,
++        var_act: T.handle,
++        var_meta: T.handle,
++        var_grams: T.handle,
++        var_taps: T.handle,
++    ):
++        T.func_attr({"op_pattern": 8, "tirx.is_scheduled": 1, "tirx.noalias": True})
++        zs = T.match_buffer(var_z, (batch_size, sequence_length, width), z_dtype)
++        outs = T.match_buffer(var_o, (batch_size, sequence_length, hidden_size), o_dtype)
++        acts = T.match_buffer(var_act, (batch_size, sequence_length, d_ff), act_dtype)
++        unit_meta = T.match_buffer(var_meta, (meta_len,), "uint32")
++        grams = T.match_buffer(var_grams, (UNIT_MAX_HEAD_TAPS, head_dim, head_dim), "float32")
++        taps = T.match_buffer(var_taps, (UNIT_MAX_TAPS,), "float32")
++        local_z = T.sblock_alloc_buffer((head_dim,), "float32", scope="shared")
++        partial = T.sblock_alloc_buffer((_LANES,), "float32", scope="shared")
++        scale = T.sblock_alloc_buffer((1,), "float32", scope="shared")
++        acc = T.sblock_alloc_buffer((1,), "float32", scope="local")
++        row_acc = T.sblock_alloc_buffer((1,), "float32", scope="local")
++        for block in T.thread_binding(blocks, thread="blockIdx.x"):
++            for lane in T.thread_binding(_LANES, thread="threadIdx.x"):
++                with T.sblock("drowse_unit_tap"):
++                    k = T.axis.spatial(blocks, block)
++                    t = T.axis.spatial(_LANES, lane)
++                    last_b = T.meta_var(batch_size - 1)
++                    last_s = T.meta_var(sequence_length - 1)
++                    if k < UNIT_MAX_TAPS:
++                        entry = T.meta_var(
++                            T.Cast("int32", unit_meta[neuron_offsets + layer_id]) + k
++                        )
++                        if T.And(
++                            entry < T.Cast("int32", unit_meta[neuron_offsets + layer_id + 1]),
++                            t == 0,
++                        ):
++                            taps[T.Cast("int32", unit_meta[neuron_slot + entry])] = T.Cast(
++                                "float32",
++                                acts[last_b, last_s, T.Cast("int32", unit_meta[neuron_index + entry])],
++                            )
++                    else:
++                        # Barriers stay in control flow that depends on the workgroup id only
++                        # (WGSL uniformity); the entry's validity guards loads and stores.
++                        entry = T.meta_var(
++                            T.Cast("int32", unit_meta[head_offsets + layer_id]) + k - UNIT_MAX_TAPS
++                        )
++                        valid = T.meta_var(
++                            entry < T.Cast("int32", unit_meta[head_offsets + layer_id + 1])
++                        )
++                        for chunk in T.serial(head_chunks):
++                            coordinate = T.meta_var(chunk * _LANES + t)
++                            if coordinate < head_dim:
++                                local_z[coordinate] = T.float32(0)
++                                if valid:
++                                    local_z[coordinate] = T.Cast(
++                                        "float32",
++                                        zs[
++                                            last_b,
++                                            last_s,
++                                            T.Cast("int32", unit_meta[head_index + entry]) * head_dim
++                                            + coordinate,
++                                        ],
++                                    )
++                        T.tvm_storage_sync("shared")
++                        acc[0] = T.float32(0)
++                        if valid:
++                            for chunk in T.serial(head_chunks):
++                                a = T.meta_var(chunk * _LANES + t)
++                                if a < head_dim:
++                                    row_acc[0] = T.float32(0)
++                                    for b2 in T.serial(head_dim):
++                                        row_acc[0] = row_acc[0] + grams[entry, a, b2] * local_z[b2]
++                                    acc[0] = acc[0] + local_z[a] * row_acc[0]
++                        partial[t] = acc[0]
++                        T.tvm_storage_sync("shared")
++                        for stage in T.unroll(6):
++                            offset = T.meta_var(32 >> stage)
++                            if t < offset:
++                                partial[t] = partial[t] + partial[t + offset]
++                            T.tvm_storage_sync("shared")
++                        if t == 0:
++                            scale[0] = T.sqrt(T.max(partial[0], T.float32(0)))
++                        T.tvm_storage_sync("shared")
++                        if sandwich:
++                            acc[0] = T.float32(0)
++                            for chunk in T.serial((hidden_size + _LANES - 1) // _LANES):
++                                i = T.meta_var(chunk * _LANES + t)
++                                if i < hidden_size:
++                                    acc[0] = acc[0] + T.Cast("float32", outs[last_b, last_s, i]) * T.Cast(
++                                        "float32", outs[last_b, last_s, i]
++                                    )
++                            partial[t] = acc[0]
++                            T.tvm_storage_sync("shared")
++                            for stage in T.unroll(6):
++                                offset = T.meta_var(32 >> stage)
++                                if t < offset:
++                                    partial[t] = partial[t] + partial[t + offset]
++                                T.tvm_storage_sync("shared")
++                            if T.And(valid, t == 0):
++                                taps[T.Cast("int32", unit_meta[head_slot + entry])] = scale[0] * T.rsqrt(
++                                    partial[0] / T.float32(hidden_size) + T.float32(rms_eps)
++                                )
++                        else:
++                            if T.And(valid, t == 0):
++                                taps[T.Cast("int32", unit_meta[head_slot + entry])] = scale[0]
++
++    return op.tensor_ir_inplace_op(
++        _tap,
++        f"drowse_unit_tap_{layer_id}",
++        args=[z, attn_o, act, sites.unit_meta, sites.tap_grams, sites.taps],
++        inplace_indices=[5],
++        out=Tensor.placeholder((UNIT_MAX_TAPS,), "float32"),
++    )
 diff --git a/python/mlc_llm/model/gemma3/gemma3_model.py b/python/mlc_llm/model/gemma3/gemma3_model.py
-index b022bab9..b3cdb886 100644
+index b022bab9..83457440 100644
 --- a/python/mlc_llm/model/gemma3/gemma3_model.py
 +++ b/python/mlc_llm/model/gemma3/gemma3_model.py
-@@ -3,13 +3,14 @@
+@@ -3,13 +3,15 @@
  import dataclasses
  from typing import Any, Dict, Optional  # noqa: UP035
  
@@ -4619,13 +5111,14 @@ index b022bab9..b3cdb886 100644
  from tvm.relax.frontend.nn import Tensor, op
  
  from mlc_llm import op as op_ext
++from mlc_llm.model.drowse_units import ACTIVATION_GELU_TANH, NO_SITES
  from mlc_llm.model.gemma.gemma_model import GemmaEmbedding
  from mlc_llm.model.model_utils import index_last_token
 +from mlc_llm.model.qwen3.qwen3_model import Qwen3LMHeadModel, Qwen3Model
  from mlc_llm.nn import PagedKVCache, RopeMode
  from mlc_llm.support import logging
  from mlc_llm.support import tensor_parallel as tp
-@@ -35,13 +36,14 @@ class Gemma3TextConfig(ConfigBase):
+@@ -35,13 +37,14 @@ class Gemma3TextConfig(ConfigBase):
      rms_norm_eps: float = 1e-6
      hidden_activation: Optional[str] = "gelu_pytorch_tanh"
      position_embedding_base: int = 1_000_000
@@ -4641,7 +5134,7 @@ index b022bab9..b3cdb886 100644
      kwargs: Dict[str, Any] = dataclasses.field(default_factory=dict)  # noqa: UP006
  
      def __post_init__(self):
-@@ -88,9 +90,6 @@ class Gemma3TextConfig(ConfigBase):
+@@ -88,9 +91,6 @@ class Gemma3TextConfig(ConfigBase):
                  min(self.context_window_size, 8192),
              )
              self.prefill_chunk_size = min(self.context_window_size, 8192)
@@ -4651,7 +5144,22 @@ index b022bab9..b3cdb886 100644
  
  
  @dataclasses.dataclass
-@@ -195,6 +194,11 @@ class Gemma3Attention(nn.Module):
+@@ -150,9 +150,13 @@ class Gemma3MLP(nn.Module):
+         )
+ 
+     def forward(self, x: Tensor):
++        return self.down_proj(self.drowse_act(x))
++
++    def drowse_act(self, x: Tensor):
++        """The down projection's input `act` [b, s, d_ff] (the neuron site)."""
+         concat_x1_x2 = self.gate_up_proj(x)
+         x1, x2 = op.split(concat_x1_x2, 2, axis=-1)
+-        return self.down_proj(op.gelu(x1, approximate="tanh") * x2)
++        return op.gelu(x1, approximate="tanh") * x2
+ 
+ 
+ class Gemma3Attention(nn.Module):
+@@ -195,8 +199,17 @@ class Gemma3Attention(nn.Module):
          )
          # self.scaling_factor = (self.head_dim / config.text_config.query_pre_attn_scalar) ** 0.5
          self.scaling = config.text_config.query_pre_attn_scalar**-0.5
@@ -4662,8 +5170,14 @@ index b022bab9..b3cdb886 100644
 +        self.global_rope_scale = 1.0 / rope_scaling.get("factor", 1.0)
  
      def forward(self, hidden_states: Tensor, paged_kv_cache: PagedKVCache, layer_id: int):
++        return self.o_proj(self.drowse_heads(hidden_states, paged_kv_cache, layer_id))
++
++    def drowse_heads(self, hidden_states: Tensor, paged_kv_cache: PagedKVCache, layer_id: int):
++        """Attention up to the output projection's input `z` [b, s, H·hd] (the head site)."""
          d, h_q = self.head_dim, self.num_q_heads
-@@ -208,6 +212,14 @@ class Gemma3Attention(nn.Module):
+         b, s, _ = hidden_states.shape
+         # QKV Projection
+@@ -208,6 +221,14 @@ class Gemma3Attention(nn.Module):
          k_norm = self.k_norm(k_proj)
  
          qkv = op.concat([q_norm, k_norm, v_proj], dim=2)
@@ -4678,10 +5192,14 @@ index b022bab9..b3cdb886 100644
  
          # Attention
          output = op.reshape(
-@@ -219,6 +231,28 @@ class Gemma3Attention(nn.Module):
-         return self.o_proj(output)
- 
- 
+@@ -216,7 +237,29 @@ class Gemma3Attention(nn.Module):
+             ),
+             (b, s, h_q * d),
+         )
+-        return self.o_proj(output)
++        return output
++
++
 +def _gemma3_rotary(qkv: Tensor, positions: Tensor, rotary_heads: int, theta: float, scale: float):
 +    def compute(x, position_map):
 +        _, sequence, _, head_dim = x.shape
@@ -4702,12 +5220,38 @@ index b022bab9..b3cdb886 100644
 +        return te.compute(x.shape, rotate, name="gemma3_rotary")
 +
 +    return op.tensor_expr_op(compute, "gemma3_rotary", args=[qkv, positions])
-+
-+
+ 
+ 
  class Gemma3DecoderLayer(nn.Module):
-     def __init__(self, config: Gemma3Config):
-         rms_norm_eps = config.text_config.rms_norm_eps
-@@ -410,9 +444,10 @@ class Gemma3LanguageModel(nn.Module):
+@@ -259,12 +302,24 @@ class Gemma3DecoderLayer(nn.Module):
+         _set_tp()
+ 
+     def forward(self, hidden_states: Tensor, paged_kv_cache: PagedKVCache, layer_id: int):
+-        out = self.self_attn(self.input_layernorm(hidden_states), paged_kv_cache, layer_id)
+-        out = self._apply_post_matmul_norm(out, norm=self.post_attention_layernorm)
++        return self.drowse_block(hidden_states, paged_kv_cache, layer_id, NO_SITES)
++
++    def drowse_block(self, hidden_states: Tensor, paged_kv_cache: PagedKVCache, layer_id: int, sites):
++        """The block with hook ABI v5's sites (B1 §1.2); `NO_SITES` is the upstream layer."""
++        z = self.self_attn.drowse_heads(
++            self.input_layernorm(hidden_states), paged_kv_cache, layer_id
++        )
++        z = sites.head(z, layer_id)
++        attn_o = self.self_attn.o_proj(z)
++        out = self._apply_post_matmul_norm(attn_o, norm=self.post_attention_layernorm)
+         hidden_states = out + hidden_states
++        sites.mid(hidden_states, layer_id)
+ 
+         out = self.pre_feedforward_layernorm(hidden_states)
+-        out = self.mlp(out)
++        act = sites.neuron(self.mlp.drowse_act(out), layer_id)
++        sites.tap(z, attn_o, act, layer_id)
++        out = self.mlp.down_proj(act)
++        sites.mlp(out, layer_id)
+         out = self._apply_post_matmul_norm(out, norm=self.post_feedforward_layernorm)
+         hidden_states = out + hidden_states
+ 
+@@ -410,9 +465,10 @@ class Gemma3LanguageModel(nn.Module):
              num_key_value_heads=self.num_key_value_heads // self.tensor_parallel_shards,
              qk_head_dim=self.head_dim,
              v_head_dim=self.head_dim,
@@ -4719,17 +5263,45 @@ index b022bab9..b3cdb886 100644
              dtype=self.dtype,
          )
  
-@@ -489,6 +524,9 @@ class Gemma3ForCausalLM(nn.Module):
+@@ -489,6 +545,37 @@ class Gemma3ForCausalLM(nn.Module):
          self.vocab_size = config.vocab_size
          self.dtype = "float32"
          self.tensor_parallel_shards = config.tensor_parallel_shards
 +        self.tie_word_embeddings = True
 +        self.hidden_size = config.text_config.hidden_size
 +        self.num_hidden_layers = config.text_config.num_hidden_layers
++        self.drowse_context_window_size = config.context_window_size
++        self.drowse_prefill_chunk_size = config.prefill_chunk_size
++
++    def _drowse_block_spec(self) -> dict:
++        """The block constants descriptor schema 4 attests (B1 §3.5, §8.2): Gemma 3."""
++        text = self.config.text_config
++        rope_scaling = text.rope_scaling or {}
++        return {
++            "d_ff": text.intermediate_size,
++            "n_heads": text.num_attention_heads,
++            "n_kv_heads": text.num_key_value_heads,
++            "head_dim": text.head_dim,
++            "sandwich": True,
++            "norm_offset": 1,
++            "activation": ACTIVATION_GELU_TANH,
++            "embed_scale": text.hidden_size**0.5,
++            "rms_eps": text.rms_norm_eps,
++            "qk_norm": True,
++            "attn_scaling": text.query_pre_attn_scalar**-0.5,
++            "attn_logit_softcap": None,
++            "final_logit_softcap": None,
++            "rope_theta": float(text.position_embedding_base),
++            "rope_local_theta": float(text.rope_local_base_freq),
++            "rope_global_scale": 1.0 / rope_scaling.get("factor", 1.0),
++            "rope_in_graph": True,
++            "sliding_window": text.sliding_window_size,
++            "sliding_pattern": text.sliding_window_pattern,
++        }
  
      def to(self, dtype: Optional[str] = None):
          super().to(dtype=dtype)
-@@ -588,9 +626,10 @@ class Gemma3ForCausalLM(nn.Module):
+@@ -588,9 +675,10 @@ class Gemma3ForCausalLM(nn.Module):
              // self.tensor_parallel_shards,
              qk_head_dim=self.language_model.head_dim,
              v_head_dim=self.language_model.head_dim,
@@ -4741,7 +5313,7 @@ index b022bab9..b3cdb886 100644
              dtype=self.dtype,
          )
  
-@@ -665,3 +704,70 @@ class Gemma3ForCausalLM(nn.Module):
+@@ -665,3 +753,74 @@ class Gemma3ForCausalLM(nn.Module):
              },
          }
          return nn.spec.ModuleSpec.from_raw(mod_spec, self)
@@ -4763,6 +5335,7 @@ index b022bab9..b3cdb886 100644
 +)
 +Gemma3TextModel.drowse_structured_forward = Qwen3Model.drowse_structured_forward
 +Gemma3TextModel.drowse_curved_forward = Qwen3Model.drowse_curved_forward
++Gemma3TextModel.drowse_units_forward = Qwen3Model.drowse_units_forward
 +
 +Gemma3ForCausalLM.model = property(_gemma3_drowse_model)
 +Gemma3ForCausalLM.drowse_prefill = Qwen3LMHeadModel.drowse_prefill
@@ -4795,6 +5368,9 @@ index b022bab9..b3cdb886 100644
 +Gemma3ForCausalLM.drowse_geometry_batch_decode = Qwen3LMHeadModel.drowse_geometry_batch_decode
 +Gemma3ForCausalLM.drowse_curved_batch_prefill = Qwen3LMHeadModel.drowse_curved_batch_prefill
 +Gemma3ForCausalLM.drowse_curved_batch_decode = Qwen3LMHeadModel.drowse_curved_batch_decode
++Gemma3ForCausalLM._drowse_unit_sites = Qwen3LMHeadModel._drowse_unit_sites
++Gemma3ForCausalLM.drowse_units_batch_prefill = Qwen3LMHeadModel.drowse_units_batch_prefill
++Gemma3ForCausalLM.drowse_units_batch_decode = Qwen3LMHeadModel.drowse_units_batch_decode
 +Gemma3ForCausalLM.drowse_jlens_probabilities = Qwen3LMHeadModel.drowse_jlens_probabilities
 +Gemma3ForCausalLM.drowse_jlens_readout_accumulate = (
 +    Qwen3LMHeadModel.drowse_jlens_readout_accumulate
@@ -4813,7 +5389,7 @@ index b022bab9..b3cdb886 100644
 +Gemma3ForCausalLM.drowse_hook_profile = Qwen3LMHeadModel.drowse_hook_profile
 +Gemma3ForCausalLM.get_default_spec = Qwen3LMHeadModel.get_default_spec
 diff --git a/python/mlc_llm/model/llama/llama_model.py b/python/mlc_llm/model/llama/llama_model.py
-index 4659a249..d685d37f 100644
+index 4659a249..48289578 100644
 --- a/python/mlc_llm/model/llama/llama_model.py
 +++ b/python/mlc_llm/model/llama/llama_model.py
 @@ -11,6 +11,34 @@ from tvm.relax.frontend.nn import Tensor, op
@@ -4860,7 +5436,7 @@ index 4659a249..d685d37f 100644
          self.layers = nn.ModuleList(
              [LlamaDecoderLayer(config) for _ in range(config.num_hidden_layers)]
          )
-@@ -243,13 +271,206 @@ class LlamaModel(nn.Module):
+@@ -243,17 +271,212 @@ class LlamaModel(nn.Module):
          hidden_states = self.norm(hidden_states)
          return hidden_states
  
@@ -5068,7 +5644,13 @@ index 4659a249..d685d37f 100644
          self.num_hidden_layers = config.num_hidden_layers
          self.num_attention_heads = config.num_attention_heads
          self.num_key_value_heads = config.num_key_value_heads
-@@ -346,6 +567,663 @@ class LlamaForCausalLM(nn.Module):
+         self.head_dim = config.head_dim
++        self.drowse_context_window_size = config.context_window_size
++        self.drowse_prefill_chunk_size = config.prefill_chunk_size
+         self.hidden_size = config.hidden_size
+         self.vocab_size = config.vocab_size
+         self.rope_scaling = config.rope_scaling
+@@ -346,6 +569,663 @@ class LlamaForCausalLM(nn.Module):
          logits = self.get_logits(hidden_states)
          return logits, paged_kv_cache
  
@@ -5732,14 +6314,18 @@ index 4659a249..d685d37f 100644
      def prefill_to_last_hidden_states(self, input_embed: Tensor, paged_kv_cache: PagedKVCache):
          op_ext.configure()
  
-@@ -422,8 +1300,121 @@ class LlamaForCausalLM(nn.Module):
+@@ -422,8 +1302,125 @@ class LlamaForCausalLM(nn.Module):
              dtype=self.dtype,
          )
  
 +    def drowse_hook_profile(self):
++        # Llama has no unit sites in hook ABI v5: it attests the residual profile.
 +        return structured_hook_profile_descriptor(
 +            self.num_hidden_layers,
 +            self.hidden_size,
++            block=None,
++            context_tokens=self.drowse_context_window_size,
++            prefill_chunk_size=self.drowse_prefill_chunk_size,
 +        )
 +
      def get_default_spec(self):
@@ -5854,7 +6440,7 @@ index 4659a249..d685d37f 100644
              "embed": {
                  "input_ids": nn.spec.Tensor(["seq_len"], "int32"),
                  "$": {
-@@ -462,6 +1453,62 @@ class LlamaForCausalLM(nn.Module):
+@@ -462,6 +1459,62 @@ class LlamaForCausalLM(nn.Module):
                      "effect_mode": "none",
                  },
              },
@@ -5917,7 +6503,7 @@ index 4659a249..d685d37f 100644
              "prefill_to_last_hidden_states": {
                  "input_embed": nn.spec.Tensor([1, "seq_len", self.hidden_size], self.dtype),
                  "paged_kv_cache": nn.spec.Object(object_type=PagedKVCache),
-@@ -495,6 +1542,123 @@ class LlamaForCausalLM(nn.Module):
+@@ -495,6 +1548,123 @@ class LlamaForCausalLM(nn.Module):
                      "effect_mode": "none",
                  },
              },
@@ -6042,10 +6628,10 @@ index 4659a249..d685d37f 100644
                  "input_embeds": nn.spec.Tensor([1, "seq_len", self.hidden_size], self.dtype),
                  "paged_kv_cache": nn.spec.Object(object_type=PagedKVCache),
 diff --git a/python/mlc_llm/model/qwen3/qwen3_model.py b/python/mlc_llm/model/qwen3/qwen3_model.py
-index f3bdfec1..50918084 100644
+index f3bdfec1..ed68c81e 100644
 --- a/python/mlc_llm/model/qwen3/qwen3_model.py
 +++ b/python/mlc_llm/model/qwen3/qwen3_model.py
-@@ -12,6 +12,34 @@ from tvm.relax.frontend.nn import Tensor, op
+@@ -12,6 +12,40 @@ from tvm.relax.frontend.nn import Tensor, op
  
  from mlc_llm import op as op_ext
  from mlc_llm.model.model_utils import index_last_token
@@ -6077,10 +6663,76 @@ index f3bdfec1..50918084 100644
 +    structured_hook_profile_descriptor,
 +    transport_jlens_hidden,
 +)
++from mlc_llm.model.drowse_units import (
++    ACTIVATION_SILU,
++    NO_SITES,
++    UnitSites,
++    unit_program_spec,
++)
  from mlc_llm.nn import PagedKVCache, RopeMode
  from mlc_llm.support import logging
  from mlc_llm.support import tensor_parallel as tp
-@@ -255,6 +283,192 @@ class Qwen3Model(nn.Module):
+@@ -130,6 +164,10 @@ class Qwen3Attention(nn.Module):
+         self.k_norm = nn.RMSNorm(config.head_dim, -1, config.rms_norm_eps, bias=False)
+ 
+     def forward(self, hidden_states: Tensor, paged_kv_cache: PagedKVCache, layer_id: int):
++        return self.o_proj(self.drowse_heads(hidden_states, paged_kv_cache, layer_id))
++
++    def drowse_heads(self, hidden_states: Tensor, paged_kv_cache: PagedKVCache, layer_id: int):
++        """Attention up to the output projection's input `z` [b, s, H·hd] (the head site)."""
+         d, h_q, h_kv = self.head_dim, self.num_attention_heads, self.num_key_value_heads
+         b, s, _ = hidden_states.shape
+         qkv = self.c_attn(hidden_states)
+@@ -144,8 +182,7 @@ class Qwen3Attention(nn.Module):
+             ),
+             (b, s, h_q * d),
+         )
+-        attn_output = self.o_proj(output)
+-        return attn_output
++        return output
+ 
+ 
+ ACT2FN = {
+@@ -183,9 +220,13 @@ class Qwen3MLP(nn.Module):
+         self.act_fn = ACT2FN[config.hidden_act]
+ 
+     def forward(self, x: Tensor):
++        return self.down_proj(self.drowse_act(x))
++
++    def drowse_act(self, x: Tensor):
++        """The down projection's input `act` [b, s, d_ff] (the neuron site)."""
+         concat_x1_x2 = self.gate_up_proj(x)
+         x1, x2 = op.split(concat_x1_x2, 2, axis=-1)
+-        return self.down_proj(self.act_fn(x1) * x2)
++        return self.act_fn(x1) * x2
+ 
+ 
+ class Qwen3DecoderLayer(nn.Module):
+@@ -226,11 +267,20 @@ class Qwen3DecoderLayer(nn.Module):
+         _set_tp()
+ 
+     def forward(self, hidden_states: Tensor, paged_kv_cache: PagedKVCache, layer_id: int):
++        return self.drowse_block(hidden_states, paged_kv_cache, layer_id, NO_SITES)
++
++    def drowse_block(self, hidden_states: Tensor, paged_kv_cache: PagedKVCache, layer_id: int, sites):
++        """The block with hook ABI v5's sites (B1 §1.2); `NO_SITES` is the upstream layer."""
+         out = self.input_layernorm(hidden_states)
+-        out = self.self_attn(out, paged_kv_cache, layer_id)
+-        hidden_states = self._apply_residual(out, residual=hidden_states)
++        z = sites.head(self.self_attn.drowse_heads(out, paged_kv_cache, layer_id), layer_id)
++        attn_o = self.self_attn.o_proj(z)
++        hidden_states = self._apply_residual(attn_o, residual=hidden_states)
++        sites.mid(hidden_states, layer_id)
+         out = self.post_attention_layernorm(hidden_states)
+-        out = self.mlp(out)
++        act = sites.neuron(self.mlp.drowse_act(out), layer_id)
++        sites.tap(z, attn_o, act, layer_id)
++        out = self.mlp.down_proj(act)
++        sites.mlp(out, layer_id)
+         hidden_states = self._apply_residual(out, residual=hidden_states)
+         return hidden_states
+ 
+@@ -255,6 +305,248 @@ class Qwen3Model(nn.Module):
          hidden_states = self.norm(hidden_states)
          return hidden_states
  
@@ -6270,10 +6922,75 @@ index f3bdfec1..50918084 100644
 +            jlens_hidden = store_jlens_hidden(jlens_hidden, hidden_states, layer_id)
 +        return self.norm(hidden_states), measurements, next_feet, jlens_hidden
 +
++    def drowse_units_forward(
++        self,
++        inputs: Tensor,
++        paged_kv_cache: PagedKVCache,
++        decode: bool,
++        sites,
++        affine_active: Tensor,
++        affine_basis: Tensor,
++        affine_neutral: Tensor,
++        affine_target: Tensor,
++        affine_along: Tensor,
++        affine_kappa: Tensor,
++        probe_kind: Tensor,
++        probe_direction: Tensor,
++        probe_bias: Tensor,
++        probe_threshold: Tensor,
++        curve_basis: Tensor,
++        curve_neutral: Tensor,
++        curve_domain_kind: Tensor,
++        curve_parameters: Tensor,
++        curve_feet: Tensor,
++    ):
++        """The curved forward with unit sites in every block (B1 §3.4's units pair)."""
++        hidden_states = self._drowse_prepare_inputs(inputs)
++        measurements = empty_structured_probe_buffer(len(self.layers))
++        next_feet = curve_feet
++        jlens_hidden = empty_jlens_hidden_buffer(len(self.layers), hidden_states.shape[2])
++        for layer_id, layer in enumerate(self.layers):
++            hidden_states = layer.drowse_block(hidden_states, paged_kv_cache, layer_id, sites)
++            hidden_states, layer_measurements, foot = apply_structured_curved_hook(
++                hidden_states,
++                layer_id,
++                decode,
++                affine_active,
++                affine_basis,
++                affine_neutral,
++                affine_target,
++                affine_along,
++                affine_kappa,
++                probe_kind,
++                probe_direction,
++                probe_bias,
++                probe_threshold,
++                curve_basis,
++                curve_neutral,
++                curve_domain_kind,
++                curve_parameters,
++                curve_feet,
++            )
++            measurements = store_structured_measurements(
++                measurements, layer_measurements, layer_id
++            )
++            next_feet = store_curve_foot(next_feet, foot, layer_id)
++            jlens_hidden = store_jlens_hidden(jlens_hidden, hidden_states, layer_id)
++        return self.norm(hidden_states), measurements, next_feet, jlens_hidden, sites.taps
++
  
  class Qwen3LMHeadModel(nn.Module):
      def __init__(self, config: Qwen3Config):
-@@ -330,6 +544,668 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -274,6 +566,8 @@ class Qwen3LMHeadModel(nn.Module):
+         self.tensor_parallel_shards = config.tensor_parallel_shards
+         self.head_dim = config.head_dim
+         self.weight_block_size = config.weight_block_size
++        self.drowse_context_window_size = config.context_window_size
++        self.drowse_prefill_chunk_size = config.prefill_chunk_size
+ 
+     def to(self, dtype: Optional[str] = None):
+         super().to(dtype=dtype)
+@@ -330,6 +624,811 @@ class Qwen3LMHeadModel(nn.Module):
              logits = logits.astype("float32")
          return logits, paged_kv_cache
  
@@ -6724,6 +7441,149 @@ index f3bdfec1..50918084 100644
 +        )
 +        return self._get_logits(hidden_states), paged_kv_cache, measurements, next_feet, jlens_hidden
 +
++    def _drowse_unit_sites(
++        self,
++        input_embeds: Tensor,
++        paged_kv_cache: PagedKVCache,
++        unit_meta: Tensor,
++        unit_coeff: Tensor,
++        unit_active: Tensor,
++        tap_grams: Tensor,
++    ) -> UnitSites:
++        spec = self._drowse_block_spec()
++        b, s, _ = input_embeds.shape
++        return UnitSites(
++            self.num_hidden_layers,
++            spec["head_dim"],
++            paged_kv_cache.get_query_positions(b * s),
++            unit_meta,
++            unit_coeff,
++            unit_active,
++            tap_grams,
++            spec["sandwich"],
++            spec["rms_eps"],
++        )
++
++    def drowse_units_batch_prefill(
++        self,
++        input_embeds: Tensor,
++        logit_positions: Tensor,
++        paged_kv_cache: PagedKVCache,
++        affine_active: Tensor,
++        affine_basis: Tensor,
++        affine_neutral: Tensor,
++        affine_target: Tensor,
++        affine_along: Tensor,
++        affine_kappa: Tensor,
++        probe_kind: Tensor,
++        probe_direction: Tensor,
++        probe_bias: Tensor,
++        probe_threshold: Tensor,
++        curve_basis: Tensor,
++        curve_neutral: Tensor,
++        curve_domain_kind: Tensor,
++        curve_parameters: Tensor,
++        curve_feet: Tensor,
++        unit_meta: Tensor,
++        unit_coeff: Tensor,
++        unit_active: Tensor,
++        tap_grams: Tensor,
++    ):
++        sites = self._drowse_unit_sites(
++            input_embeds, paged_kv_cache, unit_meta, unit_coeff, unit_active, tap_grams
++        )
++        hidden_states, measurements, next_feet, jlens_hidden, unit_taps = (
++            self.model.drowse_units_forward(
++                input_embeds,
++                paged_kv_cache,
++                False,
++                sites,
++                affine_active,
++                affine_basis,
++                affine_neutral,
++                affine_target,
++                affine_along,
++                affine_kappa,
++                probe_kind,
++                probe_direction,
++                probe_bias,
++                probe_threshold,
++                curve_basis,
++                curve_neutral,
++                curve_domain_kind,
++                curve_parameters,
++                curve_feet,
++            )
++        )
++        hidden_states = op.take(hidden_states, logit_positions, axis=1)
++        return (
++            self._get_logits(hidden_states),
++            paged_kv_cache,
++            measurements,
++            next_feet,
++            jlens_hidden,
++            unit_taps,
++        )
++
++    def drowse_units_batch_decode(
++        self,
++        input_embeds: Tensor,
++        paged_kv_cache: PagedKVCache,
++        affine_active: Tensor,
++        affine_basis: Tensor,
++        affine_neutral: Tensor,
++        affine_target: Tensor,
++        affine_along: Tensor,
++        affine_kappa: Tensor,
++        probe_kind: Tensor,
++        probe_direction: Tensor,
++        probe_bias: Tensor,
++        probe_threshold: Tensor,
++        curve_basis: Tensor,
++        curve_neutral: Tensor,
++        curve_domain_kind: Tensor,
++        curve_parameters: Tensor,
++        curve_feet: Tensor,
++        unit_meta: Tensor,
++        unit_coeff: Tensor,
++        unit_active: Tensor,
++        tap_grams: Tensor,
++    ):
++        sites = self._drowse_unit_sites(
++            input_embeds, paged_kv_cache, unit_meta, unit_coeff, unit_active, tap_grams
++        )
++        hidden_states, measurements, next_feet, jlens_hidden, unit_taps = (
++            self.model.drowse_units_forward(
++                input_embeds,
++                paged_kv_cache,
++                True,
++                sites,
++                affine_active,
++                affine_basis,
++                affine_neutral,
++                affine_target,
++                affine_along,
++                affine_kappa,
++                probe_kind,
++                probe_direction,
++                probe_bias,
++                probe_threshold,
++                curve_basis,
++                curve_neutral,
++                curve_domain_kind,
++                curve_parameters,
++                curve_feet,
++            )
++        )
++        return (
++            self._get_logits(hidden_states),
++            paged_kv_cache,
++            measurements,
++            next_feet,
++            jlens_hidden,
++            unit_taps,
++        )
++
 +    def drowse_capture_batch_decode(
 +        self,
 +        input_embeds: Tensor,
@@ -6942,14 +7802,41 @@ index f3bdfec1..50918084 100644
      def batch_prefill(
          self,
          input_embeds: Tensor,
-@@ -375,8 +1251,121 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -375,8 +1474,151 @@ class Qwen3LMHeadModel(nn.Module):
              dtype=self.dtype,
          )
  
++    def _drowse_block_spec(self) -> dict:
++        """The block constants descriptor schema 4 attests (B1 §3.5, §8.2): Qwen3."""
++        return {
++            "d_ff": self.intermediate_size,
++            "n_heads": self.num_attention_heads,
++            "n_kv_heads": self.num_key_value_heads,
++            "head_dim": self.head_dim,
++            "sandwich": False,
++            "norm_offset": 0,
++            "activation": ACTIVATION_SILU,
++            "embed_scale": 1.0,
++            "rms_eps": self.rms_norm_eps,
++            "qk_norm": True,
++            "attn_scaling": self.head_dim**-0.5,
++            "attn_logit_softcap": None,
++            "final_logit_softcap": None,
++            "rope_theta": float(self.rope_theta),
++            "rope_local_theta": None,
++            "rope_global_scale": 1.0,
++            "rope_in_graph": False,
++            "sliding_window": None,
++            "sliding_pattern": None,
++        }
++
 +    def drowse_hook_profile(self):
 +        return structured_hook_profile_descriptor(
 +            self.num_hidden_layers,
 +            self.hidden_size,
++            block=self._drowse_block_spec(),
++            context_tokens=self.drowse_context_window_size,
++            prefill_chunk_size=self.drowse_prefill_chunk_size,
 +        )
 +
      def get_default_spec(self):
@@ -6962,6 +7849,9 @@ index f3bdfec1..50918084 100644
 +        )
 +        geometry_spec = structured_geometry_program_spec(
 +            self.num_hidden_layers, self.hidden_size
++        )
++        units_spec = unit_program_spec(
++            self.num_hidden_layers, self._drowse_block_spec()["head_dim"]
 +        )
          mod_spec = {
 +            "drowse_hook_profile": {
@@ -7064,7 +7954,7 @@ index f3bdfec1..50918084 100644
              "embed": {
                  "input_ids": nn.spec.Tensor(["seq_len"], "int32"),
                  "$": {
-@@ -400,6 +1389,62 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -400,6 +1642,62 @@ class Qwen3LMHeadModel(nn.Module):
                      "effect_mode": "none",
                  },
              },
@@ -7127,7 +8017,7 @@ index f3bdfec1..50918084 100644
              "batch_prefill": {
                  "input_embeds": nn.spec.Tensor([1, "seq_len", self.hidden_size], self.dtype),
                  "logit_positions": nn.spec.Tensor(["batch_size"], "int32"),
-@@ -417,6 +1462,123 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -417,6 +1715,144 @@ class Qwen3LMHeadModel(nn.Module):
                      "effect_mode": "none",
                  },
              },
@@ -7203,6 +8093,27 @@ index f3bdfec1..50918084 100644
 +                "input_embeds": nn.spec.Tensor(["batch_size", 1, self.hidden_size], self.dtype),
 +                "paged_kv_cache": nn.spec.Object(object_type=PagedKVCache),
 +                **curved_spec,
++                "$": {
++                    "param_mode": "packed",
++                    "effect_mode": "none",
++                },
++            },
++            "drowse_units_batch_prefill": {
++                "input_embeds": nn.spec.Tensor([1, "seq_len", self.hidden_size], self.dtype),
++                "logit_positions": nn.spec.Tensor(["batch_size"], "int32"),
++                "paged_kv_cache": nn.spec.Object(object_type=PagedKVCache),
++                **curved_spec,
++                **units_spec,
++                "$": {
++                    "param_mode": "packed",
++                    "effect_mode": "none",
++                },
++            },
++            "drowse_units_batch_decode": {
++                "input_embeds": nn.spec.Tensor(["batch_size", 1, self.hidden_size], self.dtype),
++                "paged_kv_cache": nn.spec.Object(object_type=PagedKVCache),
++                **curved_spec,
++                **units_spec,
 +                "$": {
 +                    "param_mode": "packed",
 +                    "effect_mode": "none",

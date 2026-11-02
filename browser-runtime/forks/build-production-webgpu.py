@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from overlay_checks import (  # noqa: E402
     MLC_BASE_COMMIT,
     REQUIRED_FUNCTIONS,
+    required_functions,
     RESULT_DIGESTS,
     TVM_COMMIT,
     TVM_FFI_COMMIT,
@@ -611,7 +612,7 @@ def compile_library(args, mlc_repository: Path, tvm_repository: Path) -> None:
                 str(staged_output),
             ]
         )
-        verify_compiled_library(staged_output)
+        verify_compiled_library(staged_output, args.architecture)
         os.replace(staged_output, output)
     print(
         json.dumps(
@@ -627,8 +628,8 @@ def compile_library(args, mlc_repository: Path, tvm_repository: Path) -> None:
     )
 
 
-def verify_compiled_library(output: Path) -> None:
-    verify_library_shaders(output.read_bytes())
+def verify_compiled_library(output: Path, architecture: str) -> None:
+    verify_library_shaders(output.read_bytes(), required_functions(architecture))
 
 
 def verify_build_manifest(

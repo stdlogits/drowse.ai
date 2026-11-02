@@ -446,25 +446,25 @@ def test_verify_compiled_library_requires_wasm_and_every_drowse_export(tmp_path:
     output.write_bytes(
         b"\x00asm" + b"".join(
             len(function.encode()).to_bytes(8, "little") + function.encode()
-            for function in sorted(TOOL.REQUIRED_FUNCTIONS)
+            for function in sorted(CHECKS.required_functions("qwen3"))
         ) + tile_shader + merge_shader + transport_shader + geometry_shader
     )
-    TOOL.verify_compiled_library(output)
+    TOOL.verify_compiled_library(output, "qwen3")
 
     output.write_bytes(output.read_bytes().replace(b"fma(", b"mul(", 1))
     with pytest.raises(SystemExit, match="bounded cooperative fp32 schedule"):
-        TOOL.verify_compiled_library(output)
+        TOOL.verify_compiled_library(output, "qwen3")
 
     output.write_bytes(b"not wasm")
     with pytest.raises(SystemExit, match="valid WebAssembly"):
-        TOOL.verify_compiled_library(output)
+        TOOL.verify_compiled_library(output, "qwen3")
 
     function = "drowse_prefill"
     output.write_bytes(
         b"\x00asm" + len(function.encode()).to_bytes(8, "little") + function.encode()
     )
     with pytest.raises(SystemExit, match="lacks Drowse VM function metadata"):
-        TOOL.verify_compiled_library(output)
+        TOOL.verify_compiled_library(output, "qwen3")
 
 
 def test_copy_notices_packages_full_declared_model_license(tmp_path: Path):

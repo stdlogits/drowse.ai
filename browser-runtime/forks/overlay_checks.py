@@ -61,6 +61,19 @@ REQUIRED_FUNCTIONS = {
     "drowse_sae_jump_relu_readout_accumulate",
 }
 
+#: Hook ABI v5's unit functions: every eligible (dense, unit-site) architecture exports them, a
+#: residual one none (B1 §3.5 attestation).
+UNIT_FUNCTIONS = {
+    "drowse_units_batch_prefill",
+    "drowse_units_batch_decode",
+}
+UNIT_ARCHITECTURES = ("qwen3", "gemma3_text")
+
+
+def required_functions(architecture: str) -> set[str]:
+    return REQUIRED_FUNCTIONS | (UNIT_FUNCTIONS if architecture in UNIT_ARCHITECTURES else set())
+
+
 GEOMETRY_SHADER_PREFIX = b"// Function: drowse_geometry_measurements"
 TOPK_TILE_SHADER_PREFIX = b"// Function: drowse_exact_top8_tiles"
 TOPK_MERGE_SHADER_PREFIX = b"// Function: drowse_exact_top8_merge"
@@ -203,7 +216,7 @@ def vm_function_names_missing(wasm: bytes, functions) -> list[str]:
     return missing
 
 
-def verify_library_shaders(wasm: bytes, functions=REQUIRED_FUNCTIONS) -> None:
+def verify_library_shaders(wasm: bytes, functions) -> None:
     """Every check on a compiled model library's container and emitted WGSL."""
     if not wasm.startswith(b"\x00asm"):
         raise SystemExit("compiler did not produce a valid WebAssembly container")
