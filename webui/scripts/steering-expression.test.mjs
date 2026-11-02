@@ -310,9 +310,9 @@ try {
   assert.equal(plain.n_layers, undefined, "a program without placements leaves the strip out");
   assert.deepEqual(plain.parts.map((part) => part.target), ["plain", "x"]);
   assert.deepStrictEqual(await validate("   "), { valid: true, expression: "", error: null });
-  const syntax = await validate("honest +");
+  const syntax = await validate("deceptive +");
   assert.equal(syntax.valid, false);
-  assert.equal(syntax.expression, "honest +");
+  assert.equal(syntax.expression, "deceptive +");
   const unfitted = await validate("x{9}");
   assert.deepStrictEqual(unfitted, {
     valid: false,
@@ -325,7 +325,7 @@ try {
   const compilesBefore = compiles.length;
   await assert.rejects(validate("0.5 x"), (error) => error.code === "ENGINE_BUSY" && error.status === 409);
   assert.deepStrictEqual(await validate(""), { valid: true, expression: "", error: null });
-  assert.equal((await validate("honest +")).valid, false);
+  assert.equal((await validate("deceptive +")).valid, false);
   assert.equal(compiles.length, compilesBefore, "nothing compiles while busy");
   runtime.generating = false;
 

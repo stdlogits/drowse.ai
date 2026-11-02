@@ -1036,7 +1036,7 @@ try {
         text: "question",
         authored_role: "user",
         generated_role: "assistant",
-        steering: "0.5 honest",
+        steering: "0.5 deceptive",
       },
       () => {},
     ),

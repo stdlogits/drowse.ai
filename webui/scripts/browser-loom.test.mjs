@@ -1460,17 +1460,17 @@ try {
       text: "Prompt",
       authored_role: "user",
       generated_role: "assistant",
-      steering: "0.5 honest",
+      steering: "0.5 deceptive",
       position_spans: [[5, 7], [1, 3], [3, 4]],
     },
     (event) => steeringEvents.push(event),
   );
-  assert.deepEqual(compiled, ["0.5 honest"]);
+  assert.deepEqual(compiled, ["0.5 deceptive"]);
   assert.equal(steeringEngine.plans[0].hookProgram, hookProgram);
   assert.deepEqual(steeringEngine.plans[0].position_spans, [[1, 4], [5, 7]]);
   assert.deepEqual(steeringRuntime.snapshot().tree.nodes[2].recipe.position_spans, [[1, 4], [5, 7]]);
-  assert.equal(steeringRuntime.snapshot().tree.nodes[2].applied_steering, "0.5 honest");
-  assert.equal(steeringEvents.at(-1).result.applied_steering, "0.5 honest");
+  assert.equal(steeringRuntime.snapshot().tree.nodes[2].applied_steering, "0.5 deceptive");
+  assert.equal(steeringEvents.at(-1).result.applied_steering, "0.5 deceptive");
   const comparisonEvents = [];
   await steeringRuntime.generate({
     type: "generate",
@@ -1506,7 +1506,7 @@ try {
     const planCount = steeringEngine.plans.length;
     const events = [];
     await assert.rejects(steeringRuntime.generate({ type: "submit", text: "Must not append", authored_role: "user",
-      generated_role: "assistant", steering: "0.5 honest", ...selection }, event => events.push(event)),
+      generated_role: "assistant", steering: "0.5 deceptive", ...selection }, event => events.push(event)),
     error => error.code === "INVALID_STEERING_POSITIONS");
     assert.deepEqual(steeringRuntime.snapshot().tree, before);
     assert.equal(steeringEngine.plans.length, planCount);
@@ -1951,7 +1951,7 @@ try {
         text: "Prompt",
         authored_role: "user",
         generated_role: "assistant",
-        steering: "honest",
+        steering: "deceptive",
       },
       () => {},
     ),
@@ -2376,7 +2376,7 @@ try {
     service: "instruments", method: "sources", args: ["lens"],
   }), { sources: [] });
   assert.equal((await serviceRuntime.request({
-    service: "sessions", method: "validateSteering", args: ["honest +"],
+    service: "sessions", method: "validateSteering", args: ["deceptive +"],
   })).valid, false);
   const initial = await serviceRuntime.request({ service: "tree", method: "get", args: [] });
   const restored = structuredClone(chatRuntime.snapshot().tree);
