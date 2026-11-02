@@ -1,4 +1,6 @@
 <script lang="ts">
+  // The browser runtime's lens sources, in #/artifacts/lenses under the Artifacts room's Lenses head:
+  // the R lens packs this model has, the one in use, and the way to a pack when none is loaded.
   import { onMount } from "svelte";
   import {
     instrumentFamily,
@@ -35,7 +37,7 @@
   allowLocal={false}
   onuse={(source) => void useLensSource(source)}
   providerOptions={[]}
-  providerPlaceholder="compatible J-lens pack"
+  providerPlaceholder="compatible R lens pack"
   onfetch={() => undefined}
   localActionLabel=""
   localActionDisabled

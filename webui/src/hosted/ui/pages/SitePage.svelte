@@ -1,26 +1,30 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import TabIdentity from "../../../../../drowse/webui/src/lib/ui/TabIdentity.svelte";
-  import PageHeader from "../../../../../drowse/webui/src/lib/ui/PageHeader.svelte";
+  import { tips } from "@stdlogits/ledger";
+  import SiteHeader from "../SiteHeader.svelte";
   import PageFooter from "../PageFooter.svelte";
   import PwaUpdatePrompt from "../PwaUpdatePrompt.svelte";
 
-  let { title, heading, lede, children, markdown }: {
+  // A reading page (About, Learn, Privacy, Contribute, the licences): a title and a lead, then the
+  // page's parts, as neuron-lens.com draws its own.
+  let { title, heading, lede, children, markdown, current }: {
     title: string;
     heading: string;
     lede: string;
     children: Snippet;
     /** Path of the page's Markdown twin, when it has one. */
     markdown?: string;
+    current?: "learn" | "privacy" | "about" | "contribute";
   } = $props();
+
+  $effect(() => { document.title = title; });
 </script>
 
-<TabIdentity {title} />
 <PwaUpdatePrompt />
 
-<div class="site-page">
+<div class="site-page" use:tips>
   <a class="skip-link" href="#site-page-main">Skip to content</a>
-  <PageHeader />
+  <SiteHeader {current} />
   <main id="site-page-main" tabindex="-1">
     <header class="page-intro">
       <h1>{heading}</h1>
@@ -29,20 +33,19 @@
     {@render children()}
     {#if markdown}<p class="alternate"><a href={markdown} type="text/markdown">Read this page as Markdown</a></p>{/if}
   </main>
-  <PageFooter />
+  <PageFooter {current} />
 </div>
 
 <style>
-  .site-page { display: flex; flex-direction: column; min-height: 100svh; overflow-x: clip; background: var(--bg); color: var(--fg); }
-  .skip-link { position: fixed; inset: 8px auto auto 8px; z-index: 10; padding: var(--space-sm); background: var(--accent); color: var(--text-on-accent); border-radius: var(--radius); text-decoration: none; transform: translateY(-160%); }
-  .skip-link:focus { transform: none; }
-  main { flex: 1; width: min(100%, var(--page-max)); margin-inline: auto; padding-inline: var(--page-gutter); padding-block-end: var(--section-space); }
+  .site-page { display: flex; flex-direction: column; min-height: 100svh; overflow-x: clip; }
+  .skip-link { position: fixed; z-index: 60; top: var(--s2); inset-inline-start: var(--s2); padding: var(--s2) var(--s4); border-radius: var(--r-pill); background: var(--ink); color: var(--paper); font: var(--type-control); translate: 0 calc(-100% - var(--s4)); transition: translate var(--fast) var(--ease); }
+  .skip-link:focus { translate: 0 0; }
+  main { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: var(--s8); width: 100%; max-width: var(--page); margin: 0 auto; padding: var(--s7) var(--gutter) var(--s9); }
   main:focus { outline: none; }
-  .page-intro { display: grid; gap: var(--space-6); max-width: 52rem; padding-block: var(--section-space) var(--surface-padding); }
-  h1 { margin: 0; color: var(--fg); font-family: var(--font-structure); font-weight: var(--weight-display); font-size: var(--text-section-display-compact); line-height: 1.05; letter-spacing: -0.05em; text-wrap: balance; }
-  .lede { margin: 0; max-width: 60ch; color: var(--fg-dim); font-size: var(--text-lg); line-height: 1.55; text-wrap: pretty; }
-  .alternate { margin: var(--space-8) 0 0; font-size: var(--text-sm); }
-  .alternate a { display: inline-flex; align-items: center; min-height: var(--control-target); color: var(--fg-muted); text-underline-offset: 4px; }
-  .alternate a:hover { color: var(--fg); }
-  a:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 4px; border-radius: var(--radius-sm); }
+  .page-intro { display: grid; justify-items: start; gap: var(--s5); max-width: 52rem; }
+  h1 { color: var(--ink); font: var(--type-title); letter-spacing: -0.04em; }
+  .lede { max-width: 60ch; color: var(--ink2); font: var(--type-lead); }
+  .alternate a { color: var(--ink3); font: var(--type-small); text-decoration: underline; text-decoration-color: var(--wash2); text-decoration-thickness: 2px; text-underline-offset: 4px; transition: color var(--fast) var(--ease); }
+  @media (hover: hover) { .alternate a:hover { color: var(--ink); } }
+  @media (max-width: 720px) { main { gap: var(--s7); padding-top: var(--s5); } }
 </style>

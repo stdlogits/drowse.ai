@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import FluentIcon from "../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
+  import { Icon } from "@stdlogits/ledger";
   import { dropdownMotion } from "../../../../drowse/webui/src/lib/dropdownMotion.svelte";
 
   let { name, disabled = false, duplicateDisabled = false, busy = false, onduplicate, ondelete }: {
@@ -120,29 +120,52 @@
   aria-label={`More options for ${name}`} aria-haspopup="menu" aria-expanded={open}
   aria-controls={presence.mounted ? id : undefined} aria-busy={busy}
   onclick={() => open ? close() : void show()} onkeydown={onKeydown}>
-  <FluentIcon name="more" size={20} />
+  <Icon name="menu" />
 </button>
 
 {#if presence.mounted}
   <div bind:this={popover} class="chat-menu-popover" popover="manual" style={position} inert={!open}>
-    <div bind:this={surface} id={id} class="chat-menu t-dropdown" role="menu" tabindex="-1" aria-label={`Options for ${name}`} onkeydown={onKeydown}>
+    <div bind:this={surface} id={id} class="chat-menu" role="menu" tabindex="-1" aria-label={`Options for ${name}`} onkeydown={onKeydown}>
       <button type="button" role="menuitem" tabindex={active === 0 ? 0 : -1} disabled={disabled || duplicateDisabled}
         aria-label={`Duplicate ${name}`} onfocus={() => active = 0} onclick={() => run(onduplicate)}>Duplicate</button>
-      <button type="button" role="menuitem" class="delete-option" tabindex={active === 1 ? 0 : -1} {disabled}
+      <button type="button" role="menuitem" tabindex={active === 1 ? 0 : -1} {disabled}
         onfocus={() => active = 1} onclick={() => run(ondelete)}>Delete</button>
     </div>
   </div>
 {/if}
 
 <style>
-  .chat-menu-popover { --popup-radius: calc(var(--radius) + var(--space-2)); }
-  .chat-menu-trigger { --control-sheen: none; display: grid; place-items: center; flex: none; width: var(--control-target); min-height: var(--control-target); padding: 0; border: 0; border-radius: var(--radius); color: var(--fg-muted); background: transparent; box-shadow: none; touch-action: manipulation; transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out); }
-  .chat-menu-trigger:hover:not(:disabled), .chat-menu-trigger[aria-expanded="true"] { color: var(--fg); background: var(--bg-hover); }
-  .chat-menu-popover { position: fixed; inset: auto; margin: 0; padding: 0; width: min(184px, calc(100vw - 16px)); border: 0; background: transparent; overflow: visible; pointer-events: none; }
-  .chat-menu { display: grid; gap: var(--space-1); max-height: inherit; box-sizing: border-box; padding: var(--space-2); overflow: auto; overscroll-behavior: contain; border: 1px solid var(--popup-border); border-radius: var(--popup-radius); background: var(--popup-bg); box-shadow: var(--popup-shadow); color: var(--fg); font-size: var(--text-sm); }
-  .chat-menu button { --control-sheen: none; display: flex; align-items: center; min-width: 0; min-height: var(--control-target); padding: var(--space-2) var(--space-3); border: 0; border-radius: var(--radius); color: var(--fg); background: transparent; box-shadow: none; font: inherit; text-align: start; touch-action: manipulation; transition: background var(--dur-fast) var(--ease-out); }
-  .chat-menu button:hover:not(:disabled) { background: var(--bg-hover); }
-  .chat-menu .delete-option { color: var(--accent-red); }
-  .chat-menu .delete-option:hover:not(:disabled) { background: var(--danger-bg); }
-  @media (prefers-reduced-motion: reduce) { .chat-menu-trigger, .chat-menu button { transition: none; scale: none; } }
+  /* A row's few more actions: a round icon button that opens a small wash2 menu (the dashboard's
+     header menu, in miniature). It rises in and fades out on Ledger's curve. */
+  .chat-menu-trigger { display: grid; place-items: center; flex: none; width: 36px; height: 36px; padding: 0; border: 0; border-radius: var(--r-pill); background: transparent; color: var(--ink3); cursor: pointer; touch-action: manipulation; transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease), scale var(--fast) var(--ease); }
+  .chat-menu-trigger:active:not(:disabled) { scale: 0.94; }
+  .chat-menu-trigger:disabled { opacity: 0.4; cursor: default; }
+  .chat-menu-trigger[aria-expanded="true"] { background: var(--wash2); color: var(--ink); }
+  @media (hover: hover) { .chat-menu-trigger:hover:not(:disabled) { background: var(--wash2); color: var(--ink); } }
+  .chat-menu-popover { position: fixed; inset: auto; width: min(184px, calc(100vw - 16px)); margin: 0; padding: 0; border: 0; background: transparent; overflow: visible; pointer-events: none; }
+  .chat-menu {
+    --dropdown-close-dur: var(--out);
+    display: grid;
+    gap: 2px;
+    max-height: inherit;
+    padding: var(--s1);
+    overflow: auto;
+    overscroll-behavior: contain;
+    border-radius: var(--r-box);
+    background: var(--wash2);
+    color: var(--ink2);
+    font: var(--type-control);
+    opacity: 0;
+    translate: 0 -4px;
+    pointer-events: auto;
+    transition: opacity var(--out) var(--ease), translate var(--out) var(--ease);
+  }
+  .chat-menu:focus { outline: none; }
+  .chat-menu:global(.is-open) { opacity: 1; translate: 0 0; transition-duration: var(--in); }
+  .chat-menu button { display: flex; align-items: center; min-width: 0; min-height: 40px; padding: 0 var(--s3); border: 0; border-radius: var(--r-col); background: transparent; color: var(--ink2); font: inherit; text-align: start; cursor: pointer; touch-action: manipulation; transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease); }
+  .chat-menu button:disabled { opacity: 0.4; cursor: default; }
+  .chat-menu button:focus-visible { outline-offset: -2px; }
+  @media (hover: hover) { .chat-menu button:hover:not(:disabled) { background: var(--paper); color: var(--ink); } }
+  @media (pointer: coarse) { .chat-menu-trigger { width: 44px; height: 44px; } .chat-menu button { min-height: 44px; } }
+  @media (prefers-reduced-motion: reduce) { .chat-menu { translate: none; } }
 </style>

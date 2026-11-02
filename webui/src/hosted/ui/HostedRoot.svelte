@@ -1,7 +1,6 @@
 <script lang="ts">
-  import TabIdentity from "../../../../drowse/webui/src/lib/ui/TabIdentity.svelte";
   import { onDestroy, onMount, tick, type Component } from "svelte";
-  import { fade, fly } from "svelte/transition";
+  import { IN, OUT, fadeIn, fadeOut, rise } from "@stdlogits/ledger";
   import { createShellController } from "../../../hosted/shell-controller";
   import { mountHostedWebMcp } from "../../../../drowse/webui/src/lib/webmcp";
   import { registerPageActions } from "../../../../drowse/webui/src/lib/webmcp/lifecycle";
@@ -12,7 +11,7 @@
   } from "../../../../drowse/webui/src/lib/runtime/registry";
   import HostedApp from "./HostedApp.svelte";
   import HostedHome from "./HostedHome.svelte";
-  import PageHeader from "../../../../drowse/webui/src/lib/ui/PageHeader.svelte";
+  import SiteHeader from "./SiteHeader.svelte";
   import PageFooter from "./PageFooter.svelte";
   import PwaUpdatePrompt from "./PwaUpdatePrompt.svelte";
   import { conversationLibrary, flushConversationAutosave } from "../../../../drowse/webui/src/lib/stores/savedConversations.svelte";
@@ -26,15 +25,6 @@
     recoverFromChunkLoadError,
     reloadHostedApp,
   } from "../runtime/chunkRecovery";
-  import {
-    contentIn,
-    contentOut,
-    pageTransition,
-    modalIn,
-    modalOut,
-    scrimIn,
-    scrimOut,
-  } from "../../../../drowse/webui/src/lib/motion";
   import {
     forgetEntryModel,
     readEntryMemory,
@@ -96,6 +86,9 @@
   const route = $derived(Workbench ? "workbench" : shellSnapshot === null ? "resolving" : entryView);
   const routeKey = $derived(`${route}:${viewNonce}`);
   let routeMounted = $state(false);
+  $effect(() => {
+    if (route === "resolving") document.title = "Opening workspace · Drowse";
+  });
 
   const FOCUSABLE = [
     "button:not([disabled])",
@@ -508,8 +501,8 @@
   <div class="route-stage">
   {#key routeKey}
   <div class="page-route" data-route={route}
-    in:pageTransition={{ animate: routeMounted }}
-    out:pageTransition={{ animate: routeMounted }}
+    in:rise={{ duration: routeMounted ? IN : 0 }}
+    out:fadeOut={{ duration: routeMounted ? OUT : 0 }}
     onintrostart={enterPage}
     onintroend={(event) => {
       if (event.currentTarget.dataset.route !== "resolving") routeMounted = true;
@@ -522,11 +515,10 @@
       <Workbench onhome={() => returnToChats()} onmodels={() => returnToChats("models")} />
     </div>
   {:else if entryView === "resolving" || shellSnapshot === null}
-    <TabIdentity state="loading" title="Opening workspace · Drowse" />
     <div class="entry-loading">
-      <PageHeader />
+      <SiteHeader variant="app" siteNavigation={false} />
       <main aria-busy="true" aria-live="polite">
-        <p class="loading-pulse loading-placeholder">Opening your local workspace…</p>
+        <p class="loading-placeholder">Opening your local workspace…</p>
       </main>
       <PageFooter />
     </div>
@@ -562,8 +554,8 @@
 {#if dialogOpen}
   <div
     class="runtime-dialog-backdrop"
-    in:fade={scrimIn()}
-    out:fade={scrimOut()}
+    in:fadeIn
+    out:fadeOut
   >
     <div
       bind:this={runtimeDialog}
@@ -575,16 +567,16 @@
       aria-busy={takeoverPhase === "allowing"}
       tabindex="-1"
       onkeydown={onDialogKeydown}
-      in:fly={modalIn(8)}
-      out:fly={modalOut(4)}
+      in:rise
+      out:fadeOut
       onintrostart={(event) => { event.currentTarget.inert = false; }}
       onoutrostart={(event) => { event.currentTarget.inert = true; }}
     >
       {#key dialogKey}
         <div
           class="runtime-dialog-content"
-          in:fly={contentIn()}
-          out:fly={contentOut()}
+          in:rise
+          out:fadeOut
         >
           {#if runtimeRecovery}
             <h1 id="runtime-dialog-title">Reload Drowse to recover</h1>
@@ -596,7 +588,7 @@
               <button
                 bind:this={dialogInitialFocus}
                 type="button"
-                class="primary"
+                class="dw-button"
                 onclick={() => reloadToOnboarding()}
               >Reload Drowse</button>
             </div>
@@ -612,12 +604,12 @@
               <button
                 bind:this={dialogInitialFocus}
                 type="button"
-                class="secondary"
+                class="dw-quiet"
                 onclick={denyTakeover}
               >Keep working here</button>
               <button
                 type="button"
-                class="primary"
+                class="dw-button"
                 onclick={() => void allowTakeover()}
               >{takeoverForDownload ? "Pause and release" : "Release runtime"}</button>
             </div>
@@ -635,134 +627,40 @@
 {/if}
 
 <style>
-  .hosted-background {
-    display: contents;
-  }
+  .hosted-background { display: contents; }
 
   .route-stage { position: relative; display: grid; min-width: 0; }
   .route-stage > :global(*) { grid-area: 1 / 1; min-width: 0; }
   .page-route { min-width: 0; }
   .workbench-route, .home-route { min-width: 0; }
 
-  .entry-loading {
-    min-height: 100dvh;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    color: var(--fg);
-    background: var(--ambient-canvas);
-  }
+  .entry-loading { display: flex; flex-direction: column; justify-content: space-between; min-height: 100dvh; }
+  .entry-loading > main { display: grid; place-content: center; min-height: 50dvh; padding: var(--s6) var(--gutter); }
 
-  .entry-loading > main {
-    min-height: 50dvh;
-    display: grid;
-    place-content: center;
-    justify-items: center;
-    gap: var(--space-5);
-    color: var(--fg-dim);
-  }
-
-  .entry-loading p { margin: 0; }
-
+  /* A dialog over the page: the dashboard's scrim and a paper sheet, no line or shadow. */
   .runtime-dialog-backdrop {
     position: fixed;
     inset: 0;
     z-index: 10000;
     display: grid;
     place-items: center;
-    padding:
-      max(var(--surface-padding), env(safe-area-inset-top))
-      max(var(--surface-padding), env(safe-area-inset-right))
-      max(var(--surface-padding), env(safe-area-inset-bottom))
-      max(var(--surface-padding), env(safe-area-inset-left));
+    padding: max(var(--s5), env(safe-area-inset-top)) max(var(--s5), env(safe-area-inset-right)) max(var(--s5), env(safe-area-inset-bottom)) max(var(--s5), env(safe-area-inset-left));
     overflow-y: auto;
     overscroll-behavior: contain;
-    background: var(--scrim-strong);
+    background: color-mix(in oklab, var(--wash2) 88%, transparent);
+    -webkit-backdrop-filter: blur(8px);
     backdrop-filter: blur(8px);
   }
-
-  .runtime-dialog {
-    width: min(100%, 32rem);
-    padding: var(--surface-padding);
-    border: 1px solid var(--popup-border);
-    border-radius: var(--popup-radius);
-    color: var(--fg);
-    background: var(--surface-sheen), var(--popup-bg);
-    box-shadow: var(--popup-shadow);
-  }
-
-  .runtime-dialog-content {
-    min-width: 0;
-  }
-
-  .runtime-dialog h1 {
-    margin: 0;
-    font-size: var(--text-page-title);
-  }
-
-  .runtime-dialog p {
-    color: var(--fg-strong);
-    line-height: 1.55;
-  }
-
-  .runtime-dialog-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-6);
-    margin-top: var(--space-6);
-  }
-
-  .runtime-dialog button {
-    min-height: 2.75rem;
-    padding: var(--space-4) var(--space-6);
-    border: 1px solid transparent;
-    border-radius: var(--radius);
-    font-family: var(--font-structure);
-    font-size: inherit;
-    font-weight: var(--weight-structure-bold);
-    cursor: pointer;
-  }
-
-  .runtime-dialog button.primary {
-    color: var(--text-on-accent);
-    background: var(--accent);
-  }
-
-  .runtime-dialog button.secondary {
-    border-color: var(--glass-line);
-    color: var(--fg);
-    background: var(--glass);
-  }
-
-  .runtime-dialog button:focus-visible,
-  .runtime-dialog:focus-visible {
-    outline: 3px solid var(--focus-ring);
-    outline-offset: 3px;
-  }
-
-  @media (prefers-reduced-motion: no-preference) {
-    .runtime-dialog button {
-      transition: transform var(--dur-fast) var(--ease-out);
-    }
-
-    .runtime-dialog button:active {
-      transform: scale(var(--press-scale));
-    }
-  }
-
-  @media (max-width: 32rem) {
-    .runtime-dialog-backdrop {
-      align-items: end;
-      padding:
-        max(var(--surface-padding), env(safe-area-inset-top))
-        max(var(--surface-padding), env(safe-area-inset-right))
-        max(var(--surface-padding), env(safe-area-inset-bottom))
-        max(var(--surface-padding), env(safe-area-inset-left));
-    }
-
-    .runtime-dialog-actions,
-    .runtime-dialog button {
-      width: 100%;
-    }
+  .runtime-dialog { width: min(100%, 520px); padding: var(--s6); border-radius: var(--r-row); background: var(--paper); color: var(--ink2); }
+  .runtime-dialog:focus { outline: none; }
+  .runtime-dialog-content { display: grid; gap: var(--s4); min-width: 0; }
+  .runtime-dialog h1 { color: var(--ink); font: var(--type-heading); letter-spacing: -0.02em; }
+  .runtime-dialog-content > div { display: grid; gap: var(--s3); }
+  .runtime-dialog-actions { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s2); }
+  @media (prefers-reduced-transparency: reduce) { .runtime-dialog-backdrop { background: var(--wash2); } }
+  @media (max-width: 720px) {
+    .runtime-dialog-backdrop { align-items: end; padding: var(--s4) 0 0; }
+    .runtime-dialog { width: 100%; padding: var(--s5) var(--s4) max(var(--s5), env(safe-area-inset-bottom)); border-radius: var(--r-row) var(--r-row) 0 0; }
+    .runtime-dialog-actions > :global(button) { flex: 1 1 auto; }
   }
 </style>

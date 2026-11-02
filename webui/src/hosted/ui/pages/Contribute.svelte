@@ -1,5 +1,5 @@
 <script lang="ts">
-  import FluentIcon from "../../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
+  import { Icon } from "@stdlogits/ledger";
   import SitePage from "./SitePage.svelte";
   import { contributeLinks } from "../../../../scripts/site-content.mjs";
 
@@ -28,7 +28,7 @@
   ];
 </script>
 
-<SitePage title="Contribute · Drowse" heading="Help build Drowse." lede="Drowse is open source. Here are the ways you can help.">
+<SitePage current="contribute" title="Contribute · Drowse" heading="Help build Drowse." lede="Drowse is open source. Here are the ways you can help.">
   <ul class="ways">
     {#each ways as way}
       <li class="way">
@@ -38,7 +38,7 @@
           {#each way.links as link}
             {@const external = !link.href.startsWith("/")}
             <a href={link.href} rel={external ? "noreferrer" : undefined}>
-              <span>{link.label}</span><FluentIcon name={external ? "external" : "next"} size={18} />
+              <span>{link.label}</span><Icon name={external ? "external" : "right"} />
             </a>
           {/each}
         </div>
@@ -54,21 +54,23 @@
 </SitePage>
 
 <style>
-  .ways { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-6); margin: 0; padding: 0 0 var(--surface-padding); list-style: none; }
-  .way { display: grid; grid-template-rows: auto 1fr auto; gap: var(--space-4); padding: var(--surface-padding); border-radius: var(--radius-lg); background: var(--surface-card); box-shadow: var(--shadow-card); }
-  h2 { margin: 0; color: var(--fg); font-family: var(--font-structure); font-weight: var(--weight-display); font-size: var(--text-lg); line-height: 1.2; letter-spacing: -0.02em; text-wrap: balance; }
-  p { margin: 0; max-width: 60ch; color: var(--fg-dim); font-size: var(--text-md); line-height: 1.6; text-wrap: pretty; }
-  .actions { display: flex; flex-wrap: wrap; gap: var(--space-4); }
-  .actions a { display: inline-flex; align-items: center; gap: var(--space-3); min-height: 48px; padding: var(--space-3) var(--space-5); border-radius: var(--radius); background: var(--control-sheen), var(--glass); box-shadow: var(--shadow-control); color: var(--fg); font-size: var(--text-sm); font-weight: var(--weight-structure); text-decoration: none; transition: background-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out); }
-  .actions a:hover { background: var(--control-sheen), var(--glass-strong); box-shadow: var(--shadow-control-hover); }
-  .actions a:active, .source-action:active { transform: scale(var(--press-scale)); box-shadow: var(--shadow-control-pressed); }
-  .actions a > :global(svg) { color: var(--fg-muted); }
-  .source { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-4) var(--space-6); padding-block: var(--surface-padding); border-top: 1px solid var(--grid-line); }
-  .source h2 { flex-basis: 100%; }
-  code { font-family: var(--font-mono); color: var(--fg); }
-  .source-action { display: inline-flex; justify-content: center; align-items: center; min-height: 48px; padding: var(--space-4) var(--space-6); border-radius: var(--radius); background: var(--control-sheen), var(--action-bg); box-shadow: var(--shadow-control); color: var(--action-ink); font-weight: var(--weight-structure); text-decoration: none; transition: background-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out); }
-  .source-action:hover { background: var(--control-sheen), var(--action-hover); box-shadow: var(--shadow-control-hover); }
-  a:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 4px; }
-  @media (max-width: 760px) { .ways { grid-template-columns: minmax(0, 1fr); gap: var(--space-4); } }
-  @media (prefers-reduced-motion: reduce) { .actions a, .source-action { transition: none; } }
+  /* Ways to help, each a wash with its one or two ways in; then the source for this build. */
+  .ways { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: var(--s2); }
+  .way { display: grid; align-content: start; gap: var(--s3); padding: var(--s5); border-radius: var(--r-row); background: var(--wash); }
+  h2 { color: var(--ink); font: var(--type-label); }
+  p { color: var(--ink2); font: var(--type-small); }
+  .actions { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s1); }
+  .actions a { display: inline-flex; align-items: center; gap: var(--s2); height: 36px; padding: 0 var(--s4); border-radius: var(--r-pill); background: var(--paper); color: var(--ink); font: var(--type-control); transition: background-color var(--fast) var(--ease), scale var(--fast) var(--ease); }
+  .actions a:active { scale: 0.97; }
+  .actions a > :global(svg) { color: var(--ink3); }
+  .source { display: grid; justify-items: start; gap: var(--s3); }
+  .source h2 { color: var(--ink3); font: var(--type-head); }
+  .source code { color: var(--ink); }
+  .source-action { display: inline-flex; align-items: center; height: 44px; padding: 0 var(--s5); border-radius: var(--r-pill); background: var(--ink); color: var(--paper); font: var(--type-control); transition: opacity var(--fast) var(--ease), scale var(--fast) var(--ease); }
+  .source-action:active { scale: 0.97; }
+  @media (hover: hover) {
+    .actions a:hover { background: var(--wash2); }
+    .source-action:hover { opacity: 0.86; }
+  }
+  @media (max-width: 720px) { .actions a { height: 44px; } }
 </style>

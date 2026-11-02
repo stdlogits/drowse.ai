@@ -30,27 +30,51 @@
 
 <script lang="ts">
   import { onMount } from "svelte";
-  import { subscribeTheme } from "../../../../drowse/webui/src/lib/theme";
-  let { paused = false, contained = false, closeup = false, motionControl = false }: {
+  import { IconButton } from "@stdlogits/ledger";
+  import { theme } from "../../../../drowse/webui/src/lib/theme";
+  import type { HeroPalette } from "./heroShaderRuntime";
+
+  // The landing's orb, contained in its frame (the hero beside the copy). The scene is rendered
+  // from recorded light, then recoloured onto Ledger's paper and depth ramp (--deep to --late) for
+  // the current theme; the still artwork does the same with the ramp masked by the orb's light.
+  // Whether a moving scene belongs in Ledger's flat look is a9's call.
+  let { paused = false, motionControl = false }: {
     paused?: boolean;
-    contained?: boolean;
-    closeup?: boolean;
     /** Show a pause/play control. Only enable where the control is not inside an aria-hidden ancestor. */
     motionControl?: boolean;
   } = $props();
   let updateMotion = $state<(() => void) | null>(null);
+  let redraw: (() => void) | null = null;
   let userPaused = $state(false);
   let controlAvailable = $state(false);
   $effect(() => { void paused; void userPaused; updateMotion?.(); });
+  // A theme change recolours the next frame (and the still one at once).
+  $effect(() => { void theme.mode; redraw?.(); });
   let host: HTMLElement;
   let canvas: HTMLCanvasElement;
   let status = $state<"fallback" | "loading" | "ready">("loading");
-  let orbBoost = $state(1);
-  const highlightTable = $derived(Array.from({ length: 101 }, (_, i) => {
-    const value = i / 100;
-    const highlight = Math.min(1, Math.max(0, (value - 0.12) / 0.18));
-    return Math.min(1, value * (1 + (orbBoost - 1) * highlight * highlight * (3 - 2 * highlight))).toFixed(5);
-  }).join(" "));
+
+  /** One token as a 0..1 RGB triple, read through a canvas so any CSS colour form parses. */
+  function tokenRgb(name: string, probe: CanvasRenderingContext2D | null): number[] {
+    const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    if (!probe || !value) return [0, 0, 0];
+    probe.fillStyle = "transparent";
+    probe.fillStyle = value;
+    const color = String(probe.fillStyle);
+    const hex = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(color);
+    if (hex) return hex.slice(1, 4).map((part) => parseInt(part, 16) / 255);
+    const channels = /(\d+(?:\.\d+)?)\D+(\d+(?:\.\d+)?)\D+(\d+(?:\.\d+)?)/.exec(color);
+    return channels ? channels.slice(1, 4).map((part) => Number(part) / 255) : [0, 0, 0];
+  }
+
+  function readPalette(): HeroPalette {
+    const probe = document.createElement("canvas").getContext("2d");
+    return {
+      paper: tokenRgb("--paper", probe), ink: tokenRgb("--ink", probe),
+      deep: tokenRgb("--deep", probe), late: tokenRgb("--late", probe),
+      dark: theme.mode === "dark",
+    };
+  }
 
   function toggleMotion() {
     userPaused = !userPaused;
@@ -73,7 +97,7 @@
     let frame = 0, lastFrame = 0, progress = 0, scrollFrame = 0;
     let readyTimer: ReturnType<typeof setTimeout> | undefined;
     let cancelVideoSchedule: (() => void) | null = null;
-    let lightTheme = document.documentElement.dataset.theme === "light";
+    let palette = readPalette();
     userPaused = readMotionPreference();
     const refreshControl = () => { controlAvailable = motionControl && !motion.matches && !saveData && !failed; };
     refreshControl();
@@ -101,7 +125,7 @@
         const delta = lastFrame ? Math.min((now - lastFrame) / 1000, 0.1) : 1 / 30;
         lastFrame = now;
         try {
-          if (source.update(progress, delta, lightTheme, orbBoost)) { status = "ready"; clearTimeout(readyTimer); }
+          if (source.update(progress, delta, palette)) { status = "ready"; clearTimeout(readyTimer); }
         } catch { fail(); return; }
       }
       frame = requestAnimationFrame(render);
@@ -112,27 +136,10 @@
       playVideo();
       frame = requestAnimationFrame(render);
     };
-    const boost = (viewportHeight: number) => {
-      const blend = Math.min(1, Math.max(0, window.scrollY / Math.max(viewportHeight * 2.5, 1)));
-      const dimming = blend * blend * (3 - 2 * blend);
-      return host.clientWidth > 760 ? 2.2 - 0.8 * dimming : 1 - 0.1 * dimming;
-    };
-    const setBoost = (value: number) => {
-      // Each change rewrites a full-viewport SVG filter table, so skip imperceptible steps.
-      if (Math.abs(value - orbBoost) >= 0.001) orbBoost = value;
-    };
     const onScroll = () => {
-      if (closeup) {
-        progress = 0.38;
-        setBoost(1.25);
-        host.dataset.travel = progress.toFixed(3);
-        return;
-      }
-      // The still artwork keeps the boost it had when motion stopped.
+      // The camera travels into the orb as the page scrolls; the still artwork stays where it is.
       if (paused || userPaused || motion.matches || saveData || status === "fallback") return;
-      const viewportHeight = contained ? innerHeight : host.clientHeight;
-      setBoost(boost(viewportHeight));
-      progress = Math.min(1, Math.max(0, window.scrollY / Math.max(viewportHeight * 1.8, 1)));
+      progress = Math.min(1, Math.max(0, window.scrollY / Math.max(innerHeight * 1.8, 1)));
       host.dataset.travel = progress.toFixed(3);
     };
     const queueScroll = () => {
@@ -145,15 +152,15 @@
         try {
           source.resize(host.clientWidth, host.clientHeight);
           // Resizing clears the canvas; redraw before Safari can composite it.
-          source.update(progress, 0, lightTheme, orbBoost);
+          source.update(progress, 0, palette);
         } catch { fail(); }
       }
     };
-    const unsubscribeTheme = subscribeTheme((theme) => {
-      lightTheme = theme === "light";
-      try { source?.update(progress, 0, lightTheme, orbBoost); }
+    redraw = () => {
+      palette = readPalette();
+      try { source?.update(progress, 0, palette); }
       catch { fail(); }
-    });
+    };
     const loadVideo = () => {
       cancelVideoSchedule = null;
       if (disposed || !source || videoRequested) return;
@@ -228,15 +235,12 @@
     window.addEventListener("pageshow", update);
     canvas.addEventListener("webglcontextlost", contextLost);
     canvas.addEventListener("webglcontextrestored", contextRestored);
-    // Set the still artwork's brightness once; scrolling only changes it while the scene moves.
-    if (closeup) onScroll();
-    else orbBoost = boost(contained ? innerHeight : host.clientHeight);
     return () => {
       disposed = true; stop(); source?.dispose(); source = null;
       clearTimeout(readyTimer);
       cancelVideoSchedule?.();
       cancelAnimationFrame(scrollFrame);
-      unsubscribeTheme();
+      redraw = null;
       intersection.disconnect(); observer.disconnect();
       motion.removeEventListener("change", update);
       document.removeEventListener("visibilitychange", update);
@@ -253,135 +257,26 @@
   });
 </script>
 
-<div class="hero-visual" class:contained class:closeup bind:this={host} data-shader-status={status} data-orb-boost={orbBoost.toFixed(3)} aria-hidden="true">
-  <svg class="palette-definitions" width="0" height="0" focusable="false">
-    <defs>
-      <filter id="hero-dark-palette" color-interpolation-filters="sRGB">
-        <feComponentTransfer>
-          <feFuncR type="gamma" amplitude="0.43" exponent="0.55" offset="0" />
-          <feFuncG type="gamma" amplitude="0.43" exponent="0.55" offset="0" />
-          <feFuncB type="gamma" amplitude="0.43" exponent="0.55" offset="0" />
-        </feComponentTransfer>
-        <feComponentTransfer>
-          <feFuncR type="table" tableValues={highlightTable} />
-          <feFuncG type="table" tableValues={highlightTable} />
-          <feFuncB type="table" tableValues={highlightTable} />
-        </feComponentTransfer>
-      </filter>
-      <filter id="hero-light-palette" color-interpolation-filters="sRGB">
-        <!-- Map scene luminance to paper and lavender, without hue inversion. -->
-        <feColorMatrix type="matrix" values="
-          -0.07087 -0.23840 -0.02407 0 0.94902
-          -0.10255 -0.34497 -0.03483 0 0.95686
-          -0.02418 -0.08134 -0.00821 0 0.97255
-           0        0        0       1 0
-        " />
-      </filter>
-    </defs>
-  </svg>
-  <div class="visual-layer">
+<div class="hero-frame">
+  <div class="hero-visual contained" bind:this={host} data-shader-status={status} aria-hidden="true">
     <div class:visible={status === "fallback"} class="fallback"></div>
-    <canvas
-      bind:this={canvas}
-      class:visible={status === "ready"}
-    ></canvas>
+    <canvas bind:this={canvas} class:visible={status === "ready"}></canvas>
   </div>
+  {#if controlAvailable}
+    <div class="motion-toggle">
+      <IconButton icon={userPaused ? "play" : "pause"} label={userPaused ? "Play background animation" : "Pause background animation"} onclick={toggleMotion} />
+    </div>
+  {/if}
 </div>
 
-{#if controlAvailable}
-  <button type="button" class="motion-toggle" onclick={toggleMotion}
-    aria-label={userPaused ? "Play background animation" : "Pause background animation"}>
-    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
-      {#if userPaused}<path d="M4.5 2.75v10.5L13 8z" />{:else}<path d="M4 2.5h2.75v11H4zM9.25 2.5H12v11H9.25z" />{/if}
-    </svg>
-  </button>
-{/if}
-
 <style>
-  .palette-definitions { position: absolute; overflow: hidden; }
-
-  .hero-visual {
-    position: fixed;
-    z-index: 0;
-    inset: 0;
-    background: var(--hero-bg);
-    overflow: hidden;
-    isolation: isolate;
-    pointer-events: none;
-  }
-
-  .visual-layer {
-    position: absolute;
-    inset: 0;
-  }
-
-  @media (hover: none) and (pointer: coarse) {
-    .hero-visual:not(.contained) { bottom: auto; height: 100lvh; }
-  }
-
-  .hero-visual.contained { position: absolute; }
-
-  .fallback,
-  canvas {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-  }
-
-  .fallback {
-    background: url("/images/ethereal-orb.jpg") center / cover no-repeat;
-    filter: var(--hero-media-filter);
-    opacity: 0;
-    transition: opacity 600ms var(--ease-out);
-  }
-
-  .fallback.visible { opacity: 1; }
-
-  .hero-visual.closeup .fallback { background-size: auto 180%; background-position: 60% 48%; }
-
-  canvas {
-    display: block;
-    opacity: 0;
-    transition: opacity 1400ms cubic-bezier(0.16, 1, 0.3, 1);
-  }
-
-  canvas.visible { opacity: 1; }
-
-  /* Sits at the bottom of the first screen and scrolls away with the hero. */
-  .motion-toggle {
-    position: absolute;
-    z-index: 2;
-    top: calc(100svh - 44px - max(var(--space-md), env(safe-area-inset-bottom)));
-    inset-inline-end: max(var(--surface-padding), env(safe-area-inset-right));
-    display: inline-grid;
-    place-items: center;
-    width: 44px;
-    height: 44px;
-    padding: 0;
-    border: 1px solid var(--glass-line);
-    border-radius: var(--radius-pill);
-    background: var(--landing-panel-bg);
-    color: var(--fg);
-    cursor: pointer;
-    pointer-events: auto;
-    -webkit-backdrop-filter: blur(8px);
-    backdrop-filter: blur(8px);
-    transition: background-color var(--dur-fast) var(--ease-out), scale var(--dur-fast) var(--ease-out);
-  }
-  .motion-toggle:hover { background: var(--bg-hover); }
-  .motion-toggle:active { scale: 0.96; }
-  .motion-toggle:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-  .motion-toggle svg { fill: currentColor; }
-
-  @media (prefers-reduced-motion: reduce) {
-    .fallback,
-    canvas, .motion-toggle { transition: none; }
-    .motion-toggle:active { scale: 1; }
-    .visual-layer, .fallback {
-      transform: none;
-      transition: none;
-      will-change: auto;
-    }
-  }
+  /* The orb fills its frame on the paper; the still artwork is the depth ramp seen through the
+     orb's light. Both arrive with Ledger's fade. */
+  .hero-frame { position: absolute; inset: 0; }
+  .hero-visual { position: absolute; inset: 0; overflow: hidden; isolation: isolate; border-radius: var(--r-row); background: var(--paper); pointer-events: none; }
+  .fallback, canvas { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; transition: opacity var(--in) var(--ease); }
+  .fallback { background: linear-gradient(90deg, var(--deep), var(--late)); -webkit-mask: url("/images/ethereal-orb.jpg") center / cover no-repeat luminance; mask: url("/images/ethereal-orb.jpg") center / cover no-repeat luminance; }
+  .fallback.visible, canvas.visible { opacity: 1; }
+  canvas { display: block; }
+  .motion-toggle { position: absolute; z-index: 2; right: var(--s3); bottom: var(--s3); }
 </style>

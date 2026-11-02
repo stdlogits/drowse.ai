@@ -9,15 +9,18 @@ import {
   reloadInstructions,
   appRefreshSafetyMessage,
 } from "../src/hosted/runtime/chunkRecovery";
-import { initializeTheme } from "../../drowse/webui/src/lib/theme";
+import { startTheme } from "../../drowse/webui/src/lib/theme";
 import { initializeInputModality } from "../../drowse/webui/src/lib/inputModality";
-import "../../drowse/webui/src/lib/style/fonts.css";
-import "../../drowse/webui/src/lib/style/tokens.css";
+import { followThemeColor } from "../src/hosted/ui/themeColor.svelte";
+// Ledger first (its faces, tokens and base), then the dashboard's globals, then the site's own.
+import "@stdlogits/ledger/ledger.css";
 import "../../drowse/webui/src/lib/style/global.css";
+import "./site.css";
 
 const target = document.getElementById("app");
 if (!target) throw new Error("drowse hosted: #app element missing in index.html");
-initializeTheme();
+startTheme();
+followThemeColor();
 initializeInputModality();
 // WebMCP is ~50 KB and inert without the browser's experimental model context, so load it on demand.
 // It must start before any route mounts, because app routes attach their tools to the running adapter.

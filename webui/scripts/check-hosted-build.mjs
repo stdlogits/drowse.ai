@@ -84,8 +84,10 @@ assert.ok(index.includes(`<meta name="theme-color" media="(prefers-color-scheme:
 assert.ok(index.includes(`<meta name="theme-color" media="(prefers-color-scheme: light)" content="${themeColors.light}" />`));
 assert.equal(metadata("og:image:type"), socialImageType);
 const { source: themeSource, cspSource } = await themeInitScript();
-assert.ok(index.includes(`<script>${themeSource}</script>`), "the pre-paint theme script must be inlined");
-assert.doesNotMatch(index, /<script src="\/theme-init\.js">/);
+assert.ok(index.includes(`<script data-ledger-theme-key="drowse.theme">${themeSource}</script>`), "the pre-paint theme script must be inlined with its key");
+assert.doesNotMatch(index, /<script src="\/theme-init\.js"/);
+assert.doesNotMatch(index, /icons\/tab-/, "no tab-identity icons");
+for (const icon of ['href="/favicon.ico"', 'href="/favicon.svg"', 'href="/icons/apple-touch-icon.png"']) assert.ok(index.includes(icon), `index links ${icon}`);
 assert.match(index, /<link rel="preload" href="\/assets\/WixMadeforText-normal-latin-[^"]+\.woff2" as="font" type="font\/woff2" crossorigin \/>/);
 assert.match(index, /<link rel="preload" href="\/assets\/WixMadeforDisplay-latin-[^"]+\.woff2" as="font" type="font\/woff2" crossorigin \/>/);
 assert.equal(metadata("description"), siteDescription);
@@ -154,10 +156,11 @@ assert.ok(precacheUrls.includes("app") && !precacheUrls.includes("app-shell.html
 const precacheBytes = (await Promise.all(precacheUrls.map(url => stat(resolve(root, precacheFile(url)))))).reduce((sum, file) => sum + file.size, 0);
 assert.ok(precacheBytes < 2.2 * 1024 * 1024, `service worker precache grew to ${precacheBytes} bytes`);
 assert.doesNotMatch(serviceWorker, /url:"assets\/[^"]+",revision:"/, "content-hashed assets must not carry a revision");
-for (const cache of ["drowse-hosted-on-demand-assets-v1", "drowse-hosted-landing-shader-v1", "drowse-hosted-on-demand-wasm-v2", "drowse-hosted-tab-icons-v1", "drowse-hosted-sae-descriptions-v1"]) {
+for (const cache of ["drowse-hosted-on-demand-assets-v1", "drowse-hosted-landing-shader-v1", "drowse-hosted-on-demand-wasm-v2", "drowse-hosted-sae-descriptions-v1"]) {
   assert.match(serviceWorker, new RegExp(`cacheName:"${cache}",(?:matchOptions:\\{[^}]*\\},)?plugins:\\[new [A-Za-z_$][\\w$]*\\.ExpirationPlugin\\(`), `${cache} must be bounded`);
 }
 assert.doesNotMatch(serviceWorker, /the-uncertain-loom/);
+assert.doesNotMatch(serviceWorker, /drowse-hosted-tab-icons|icons\\\/tab-/, "the tab-icon cache left with tab identity");
 const bundledWorkers = (await readdir(resolve(root, "assets"))).filter(name => /^fitting\.worker-.*\.js$/.test(name));
 for (const name of bundledWorkers) {
   const source = await readFile(resolve(root, "assets", name), "utf8");

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import FluentIcon from "../../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
+  import { Icon } from "@stdlogits/ledger";
   import SitePage from "./SitePage.svelte";
 
   const groups = [
@@ -14,13 +14,10 @@
       links: [{ label: "Third-party software notices", href: "/third-party-licenses.txt" }],
     },
     {
-      id: "fonts", title: "Fonts and icons",
-      body: "Wix Madefor and Martian Mono are under the SIL Open Font License 1.1. Fluent icons and Torph are under the MIT License.",
+      id: "fonts", title: "Type and motion",
+      body: "Wix Madefor is under the SIL Open Font License 1.1. Torph, which morphs text that changes in place, is under the MIT License.",
       links: [
         { label: "Wix Madefor", href: "/LICENSE-Wix-Madefor.txt" },
-        { label: "Martian Mono", href: "/LICENSE-Martian-Mono.txt" },
-        { label: "Fluent UI icons", href: "/LICENSE-Fluent-Icons.txt" },
-        { label: "Fluent System Icons", href: "/LICENSE-Fluent-System-Icons.txt" },
         { label: "Torph", href: "/LICENSE-Torph.txt" },
       ],
     },
@@ -42,7 +39,7 @@
       {#if group.links.length}
         <ul>
           {#each group.links as link}
-            <li><a href={link.href} type="text/plain"><span>{link.label}</span><FluentIcon name="next" size={18} /></a></li>
+            <li><a href={link.href} type="text/plain"><span>{link.label}</span><Icon name="right" /></a></li>
           {/each}
         </ul>
       {/if}
@@ -51,16 +48,15 @@
 </SitePage>
 
 <style>
-  .license-group { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: var(--space-6) var(--space-8); padding-block: var(--surface-padding); border-top: 1px solid var(--grid-line); }
-  .copy { display: grid; gap: var(--space-4); align-content: start; }
-  h2 { margin: 0; color: var(--fg); font-family: var(--font-structure); font-weight: var(--weight-display); font-size: var(--text-model-title); line-height: 1.15; letter-spacing: -0.035em; }
-  p { margin: 0; max-width: 60ch; color: var(--fg-dim); font-size: var(--text-md); line-height: 1.6; text-wrap: pretty; }
-  ul { display: flex; flex-wrap: wrap; align-content: start; gap: var(--space-4); margin: 0; padding: 0; list-style: none; }
-  a { display: flex; align-items: center; gap: var(--space-4); min-height: 48px; padding: var(--space-3) var(--space-5); border-radius: var(--radius); background: var(--surface-card); box-shadow: var(--shadow-rack); color: var(--fg); font-size: var(--text-sm); text-decoration: none; transition: background-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out); }
-  a:hover { background: var(--surface-card-hover); box-shadow: var(--shadow-rack-hover); }
-  a:active { transform: scale(var(--press-scale)); box-shadow: var(--shadow-control-pressed); }
-  a > :global(svg) { flex: none; color: var(--fg-muted); }
-  a:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 4px; }
-  @media (max-width: 760px) { .license-group { grid-template-columns: minmax(0, 1fr); } }
-  @media (prefers-reduced-motion: reduce) { a { transition: none; } }
+  /* Each group a caption beside its licence files, as rows of wash. */
+  .license-group { display: grid; grid-template-columns: minmax(0, 300px) minmax(0, 1fr); gap: var(--s4) var(--s7); align-items: start; }
+  .copy { display: grid; gap: var(--s2); }
+  h2 { color: var(--ink); font: var(--type-label); }
+  p { max-width: 60ch; color: var(--ink2); font: var(--type-small); }
+  ul { display: grid; gap: var(--s2); }
+  a { display: flex; align-items: center; justify-content: space-between; gap: var(--s4); min-height: 48px; padding: var(--s3) var(--s4); border-radius: var(--r-box); background: var(--wash); color: var(--ink); font: var(--type-control); transition: background-color var(--fast) var(--ease), scale var(--fast) var(--ease); }
+  a:active { scale: 0.99; }
+  a > :global(svg) { flex: none; color: var(--ink3); }
+  @media (hover: hover) { a:hover { background: var(--wash2); } }
+  @media (max-width: 900px) { .license-group { grid-template-columns: minmax(0, 1fr); } }
 </style>

@@ -81,10 +81,10 @@ try {
   const revision = (await invoke("drowse_read_workspace")).revision;
   await page.$eval('[aria-label="Template lab"] input', input => { input.value = "human renamed draft"; input.dispatchEvent(new Event("input", { bubbles: true })); });
   assert.notEqual((await invoke("drowse_read_workspace")).revision, revision, "human form typing changes revision");
-  await invoke("drowse_navigate", { drawer: null, view: "conversation" });
+  await invoke("drowse_navigate", { drawer: null, room: "workbench" });
   await invoke("drowse_set_composer", { text: "Pirate search prompt" });
   const before = (await invoke("drowse_read_workspace")).revision;
-  await page.$eval("textarea", input => { input.value += " human edit"; input.dispatchEvent(new Event("input", { bubbles: true })); });
+  await page.$eval(".dw-compose textarea", input => { input.value += " human edit"; input.dispatchEvent(new Event("input", { bubbles: true })); });
   assert.notEqual((await invoke("drowse_read_workspace")).revision, before, "human composer typing changes revision");
   await page.evaluate(async root => {
     const { applyTreeSnapshot, loomTree } = await import(`/@fs${root}/../drowse/webui/src/lib/stores.svelte.ts`);
@@ -101,7 +101,7 @@ try {
   await invoke("drowse_set_loom_view", { filter: { expression: "text:friend", mode: "advanced" }, collapsed_ids: ["prompt"] });
   assert.deepEqual((await invoke("drowse_read_workspace")).interfaces.loom.values.collapsed_ids, ["prompt"]);
   await invoke("drowse_set_loom_view", { filter: { expression: "", mode: "text" }, collapsed_ids: [], camera: "current" });
-  await invoke("drowse_navigate", { view: "conversation" });
+  await invoke("drowse_navigate", { room: "workbench" });
   await invoke("drowse_set_loom_view", { comparison_visible: false });
   assert.equal((await invoke("drowse_read_workspace")).interfaces.loom_filter.pin_node_id, null);
   await invoke("drowse_navigate", { drawer: "node_compare", params: { node_ids: ["a", "b"] } });
