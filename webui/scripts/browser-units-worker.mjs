@@ -49,6 +49,18 @@ const vite = await createViteServer({
   root: webui, configFile: false, appType: "custom", logLevel: "silent",
   publicDir: resolve(webui, "public-hosted"),
   server: { middlewareMode: true, hmr: false, watch: null },
+  // What vite.hosted.config.ts injects into a preview build (the worker reads its provenance).
+  define: {
+    __DROWSE_HOSTED_RELEASE__: "false",
+    __DROWSE_SOURCE_REVISION__: JSON.stringify("0".repeat(40)),
+    __DROWSE_SOURCE_URL__: JSON.stringify("https://github.com/stdlogits/drowse.ai"),
+    __DROWSE_VERSION__: JSON.stringify("6.0.0"),
+    __DROWSE_ARTIFACT_SOURCE_REVISION__: JSON.stringify("0".repeat(40)),
+    __DROWSE_RUNTIME_ABI__: JSON.stringify("drowse-web-runtime-v2"),
+    __DROWSE_HOOK_ABI__: JSON.stringify("block-sites-v5"),
+    __DROWSE_HOSTED_CHANNEL__: JSON.stringify("preview"),
+    __DROWSE_FITTING_WASM__: JSON.stringify({ module: "/fitting.js", wasm: "/fitting.wasm" }),
+  },
 });
 const catalogModule = await vite.ssrLoadModule("/src/lib/runtime/catalog.ts");
 const fingerprint = catalogModule.runtimeIdentitySha256(runtimeIdentity);

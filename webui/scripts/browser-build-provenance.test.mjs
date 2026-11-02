@@ -30,10 +30,10 @@ try {
   } = await server.ssrLoadModule("/src/hosted/runtime/buildProvenance.ts");
   const preview = {
     schemaVersion: 1,
-    drowseVersion: "5.3.0",
+    drowseVersion: "6.0.0",
     sourceRevision: "a".repeat(40),
-    runtimeAbi: "drowse-web-runtime-v1",
-    hookAbi: "post-block-residual-v4",
+    runtimeAbi: "drowse-web-runtime-v2",
+    hookAbi: "block-sites-v5",
     channel: "preview",
     verified: false,
   };
