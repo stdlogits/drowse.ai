@@ -164,6 +164,7 @@ class NativeModel:
     def neutral_identity(self) -> dict[str, Any]:
         from drowse.store.neutral import neutral_cache_identity, validate_neutral_cache_metadata
 
+        self.session.layer_means  # the neutral pass, loaded (or made) as every read makes it
         identity = neutral_cache_identity(validate_neutral_cache_metadata(self.model_id))
         return {"capture_sha256": identity["capture_sha256"], "sha256": canonical_digest(identity),
                 "n_prompts": identity["n_prompts"]}
@@ -178,9 +179,14 @@ def expected_layers(family: str, site: str, n_layers: int) -> list[int]:
 
 # --------------------------------------------------------------------------- lens packs
 
-def build_lens_pack(model: NativeModel, family: str, runtime: Mapping[str, Any], root: Path) -> dict[str, Any]:
+def build_lens_pack(
+    model: NativeModel, family: str, runtime: Mapping[str, Any], root: Path, *, full_depth: bool = True,
+    words: Iterable[str] | None = None,
+) -> dict[str, Any]:
     """``<root>/packs/<kind>/``: the native manifest bound to the runtime identity
-    and every (site, layer) shard; returns the pack's binding summary."""
+    and every (site, layer) shard; returns the pack's binding summary.  A release
+    pack is full depth (PLAN.md); ``full_depth=False`` takes the lens's layers as
+    fitted (the tiny fixture's sparse lenses)."""
     from drowse.lens.store import lens_identity
 
     kind = FAMILY_KIND[family]
@@ -190,7 +196,12 @@ def build_lens_pack(model: NativeModel, family: str, runtime: Mapping[str, Any],
         raise PackBuildError(f"the {family} source is not a v7 {family} lens")
     if manifest.get("checkpoint") is not False or manifest.get("dtype") != "float32":
         raise PackBuildError(f"the {family} lens is a checkpoint or not fp32")
-    if manifest["d_model"] != identity["hiddenSize"] or manifest["model_layer_count"] != len(identity["layerMap"]):
+    # A lens from `drowse lens fit` records its model's depth; a hand-made one (the tiny
+    # fixture's) may not, and only outside a release is that filled from the runtime.
+    depth = manifest["model_layer_count"]
+    if manifest["d_model"] != identity["hiddenSize"] or (
+        depth != len(identity["layerMap"]) and (full_depth or depth is not None)
+    ):
         raise PackBuildError(f"the {family} lens does not match the runtime's shape")
     if model.n_layers != len(identity["layerMap"]):
         raise PackBuildError("the loaded model's depth differs from the runtime identity")
@@ -200,8 +211,11 @@ def build_lens_pack(model: NativeModel, family: str, runtime: Mapping[str, Any],
     for site in LENS_SITES:
         native = manifest["sites"].get(site)
         layers = expected_layers(family, site, model.n_layers)
-        if native is None or list(native["layers"]) != layers:
+        if native is None or (full_depth and list(native["layers"]) != layers):
             raise PackBuildError(f"the {family} lens does not cover {site} at every layer ({layers[0]}..{layers[-1]})")
+        if not set(native["layers"]) <= set(layers):
+            raise PackBuildError(f"the {family} lens has {site} layers outside the model")
+        layers = list(native["layers"])
         files: dict[str, str] = {}
         digests: dict[str, str] = {}
         for layer in layers:
@@ -221,6 +235,7 @@ def build_lens_pack(model: NativeModel, family: str, runtime: Mapping[str, Any],
         "sites": sites,
         "model_fingerprint": runtime["runtimeIdentitySha256"],
         "model_source_fingerprint": identity["sourceRevision"],
+        "model_layer_count": len(identity["layerMap"]),
     }
     manifest_text = json.dumps(bound, indent=2, sort_keys=True) + "\n"
     (pack / "manifest.json").write_text(manifest_text, encoding="utf-8")
@@ -239,7 +254,7 @@ def build_lens_pack(model: NativeModel, family: str, runtime: Mapping[str, Any],
         "sites": {site: {"layers": len(value["layers"])} for site, value in sites.items()},
     }
     if family == "R":
-        summary["vocabulary"] = build_browser_vocabulary(model, pack, identity["hiddenSize"])
+        summary["vocabulary"] = build_browser_vocabulary(model, pack, identity["hiddenSize"], words)
     else:
         summary["embedding_statistics"] = build_embedding_statistics(model, pack, runtime)
     write_json(pack / "pack.json", summary)
@@ -259,14 +274,16 @@ def single_token_id(tokenizer: Any, word: str) -> int | None:
     return None
 
 
-def build_browser_vocabulary(model: NativeModel, pack: Path, hidden_size: int) -> dict[str, Any]:
+def build_browser_vocabulary(
+    model: NativeModel, pack: Path, hidden_size: int, words_in: Iterable[str] | None = None,
+) -> dict[str, Any]:
     """The R pack's curated words: each seed word that is one token, with its
     unembedding row of the browser weights (``browser-vocabulary.*``)."""
     unembedding = model.session.model.get_output_embeddings().weight.detach()
     rows: list[torch.Tensor] = []
     words: list[dict[str, Any]] = []
     seen: set[int] = set()
-    for word in lens_words():
+    for word in (lens_words() if words_in is None else words_in):
         token_id = single_token_id(model.session.tokenizer, word)
         if token_id is None or token_id in seen or token_id >= unembedding.shape[0]:
             continue
@@ -482,7 +499,8 @@ def check_weights(model: NativeModel, runtime: Mapping[str, Any], model_path: st
 
 
 def build(model: NativeModel, runtime: Mapping[str, Any], output: Path, kinds: Iterable[str],
-          progress: Any = None, provenance: Mapping[str, Any] | None = None) -> dict[str, Any]:
+          progress: Any = None, provenance: Mapping[str, Any] | None = None, *,
+          full_depth: bool = True, words: Iterable[str] | None = None) -> dict[str, Any]:
     """Build ``kinds`` into ``output`` (which must not exist) through a partial
     directory renamed at the end; returns the build record."""
     kinds = list(dict.fromkeys(kinds))
@@ -508,7 +526,7 @@ def build(model: NativeModel, runtime: Mapping[str, Any], output: Path, kinds: I
             kind = FAMILY_KIND[family]
             if kind in kinds:
                 say(f"{kind}: copying {family} shards")
-                lenses[family] = build_lens_pack(model, family, runtime, partial / kind)
+                lenses[family] = build_lens_pack(model, family, runtime, partial / kind, full_depth=full_depth, words=words)
                 record["packs"][kind] = lenses[family]
         if "units" in kinds:
             binding = {
