@@ -58,11 +58,12 @@ test("the token view passes automated WCAG checks", async ({ page }) => {
 test("a steered reply's token reads steered or replayed without the steering", async ({ page }) => {
   // The Token view's Readings switch (6.0's captured/replayed boundary): a token generated under a
   // recipe offers Steered (the recipe as its hint) and Unsteered ("Replayed without the steering");
-  // Unsteered asks the runtime to replay every family without the steering, and Steered shows the
-  // steered readings again (from drowse's replay cache, so no new request). A reply sent without
-  // steering offers no switch. The fixture runtime ignores `steered`, so the spy marks what an
-  // unsteered replay returns ("unsteered" in the lens, "unsteered feature" in the SAE) to show which
-  // readings the view holds.
+  // Unsteered asks the runtime to replay without the steering, and Steered shows the steered
+  // readings again (from drowse's replay cache, so no new request). A reply sent without steering
+  // offers no switch. The fixture serves the node replay, so the lens side is the token's anatomy
+  // (tokenAnatomy) and the SAE side its readout (tokenReadout). The fixture ignores `steered`, so
+  // the spy marks what an unsteered replay returns ("unsteered" in every anatomy read,
+  // "unsteered feature" in the SAE) to show which readings the view holds.
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -71,17 +72,30 @@ test("a steered reply's token reads steered or replayed without the steering", a
   await page.evaluate(async ({ storesUrl, registryUrl }) => {
     const stores = await import(storesUrl);
     const instruments = (await import(registryUrl)).getRuntimeClient().instruments;
-    const original = instruments.tokenReadout.bind(instruments);
+    const readout = instruments.tokenReadout.bind(instruments);
+    const anatomy = instruments.tokenAnatomy.bind(instruments);
     (window as any).readouts = [];
+    const markReads = (value: unknown): void => {
+      if (Array.isArray(value)) { value.forEach(markReads); return; }
+      if (!value || typeof value !== "object") return;
+      for (const [key, inner] of Object.entries(value)) {
+        if (key === "tokens" && Array.isArray(inner)) for (const read of inner) if (read && typeof read === "object" && "token" in read) read.token = "unsteered";
+        markReads(inner);
+      }
+    };
     instruments.tokenReadout = async (family: string, nodeId: string, index: number, options: { steered?: boolean }) => {
       const steered = options?.steered ?? true;
       (window as any).readouts.push({ family, steered });
-      const result = await original(family, nodeId, index, options);
+      const result = await readout(family, nodeId, index, options);
       if (steered) return result;
-      const lens = result.measurements.instruments.lens?.readout;
-      for (const row of lens?.layers ?? []) for (const read of row.tokens) read.token = " unsteered";
-      for (const chip of lens?.aggregate ?? []) chip.token = " unsteered";
       for (const feature of result.measurements.instruments.sae?.readout.features ?? []) feature.label = "unsteered feature";
+      return result;
+    };
+    instruments.tokenAnatomy = async (nodeId: string, index: number, options: { steered?: boolean }) => {
+      const steered = options?.steered ?? true;
+      (window as any).readouts.push({ family: "anatomy", steered });
+      const result = await anatomy(nodeId, index, options);
+      if (!steered) markReads(result.measurements.anatomy.layers);
       return result;
     };
     stores.applyRecipe("0.5 fixture/calm.focused");
@@ -91,11 +105,11 @@ test("a steered reply's token reads steered or replayed without the steering", a
 
   const token = await inspectToken(page, "deterministic");
   const readings = token.getByRole("group", { name: "Readings", exact: true });
-  const acrossLayers = token.getByRole("region", { name: "Across layers", exact: true });
+  const layers = token.getByRole("region", { name: "Layer by layer", exact: true });
   const features = token.getByRole("region", { name: "Features", exact: true });
   const showsSteered = async () => {
-    await expect(acrossLayers).toContainText("fixture");
-    await expect(acrossLayers).not.toContainText("unsteered");
+    await expect(layers.getByRole("button", { name: /^L[0-3] / })).toHaveCount(4);
+    await expect(layers).not.toContainText("unsteered");
     await expect(features).toContainText("fixture feature");
     await expect(features).not.toContainText("unsteered feature");
   };
@@ -108,10 +122,9 @@ test("a steered reply's token reads steered or replayed without the steering", a
   await readings.getByRole("button", { name: "Unsteered", exact: true }).click();
   await expect(readings.getByRole("button", { name: "Unsteered", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect.poll(async () => [...new Set((await reads()).filter(read => !read.steered).map(read => read.family))].sort())
-    .toEqual(["lens", "sae"]);
+    .toEqual(["anatomy", "sae"]);
   await expect(token.getByRole("alert")).toHaveCount(0);
-  await expect(acrossLayers).toContainText("unsteered");
-  await expect(acrossLayers).not.toContainText("fixture");
+  await expect(layers).toContainText("unsteered");
   await expect(features).toContainText("unsteered feature");
   await expect(features).not.toContainText("fixture feature");
 

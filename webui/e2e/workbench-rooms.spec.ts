@@ -15,9 +15,9 @@ test("room tabs, the model pill and the drowse mark move between rooms", async (
   test.skip(isMobile, "A phone keeps the rooms in the Menu (the next test).");
   await openLayoutWorkbench(page);
   const tabs = page.getByRole("navigation", { name: "Rooms", exact: true });
-  // The fixture runtimes read no units, so the Units room is hidden.
-  await expect(tabs.getByRole("button")).toHaveText(["Workbench", "Lens", "Probes", "Artifacts", "Model"]);
-  for (const room of ["Lens", "Probes", "Artifacts", "Workbench"]) {
+  // The layout fixture reads units (units/fixtureUnits.ts), so the Units room is there.
+  await expect(tabs.getByRole("button")).toHaveText(["Workbench", "Units", "Lens", "Probes", "Artifacts", "Model"]);
+  for (const room of ["Units", "Lens", "Probes", "Artifacts", "Workbench"]) {
     await selectRoom(page, room);
     await expect(tabs.getByRole("button", { name: room, exact: true })).toHaveAttribute("aria-pressed", "true");
   }
@@ -33,7 +33,7 @@ test("a phone reaches every room from the Menu", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await openLayoutWorkbench(page);
   await expect(page.getByRole("navigation", { name: "Rooms", exact: true })).toHaveCount(0);
-  for (const room of ["Lens", "Artifacts", "Workbench"]) await selectRoom(page, room);
+  for (const room of ["Units", "Lens", "Artifacts", "Workbench"]) await selectRoom(page, room);
   await expect(composer(page)).toBeVisible();
 });
 
