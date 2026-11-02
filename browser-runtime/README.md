@@ -598,8 +598,8 @@ Runtime evidence (`runtime-evidence.json`, `runtime-evidence.schema.json` schema
 |---|---|---|---|
 | `cVmGoldens` | every units, replay and read golden (block sites, unit ablation incl. `mixed`, unit probes, attention patterns, token anatomy, unit activity, unit/lens/S reads, unit artifacts, neuron push) within its file's tolerance, plus the structured, geometry and readout goldens, on the C TVM VM | `browser-runtime/record-cvm-goldens.py` (runs `verify-mlc-hook.py` twice with the exact toolchain) | the four fixture libraries, one record |
 | `webGpuGoldens` | the same goldens through the vendored bridge on WebGPU (the record's bridge digest must be the lock archive's `package/lib/index.js`, so run it with `--webllm node_modules/@drowse/web-llm/lib/index.js`), and each library's schema-4 descriptor attested by the adapter (`attestCompiledStructuredHookProfile`, unit sites 1); each fixture library and model is recorded by digest | `webui/scripts/browser-units-goldens.mjs --report`, one argument set per library | the four fixture libraries, one record |
-| `productionLibrary` | the production library loaded by the physical harness: its descriptor attested at load against the lock's profile and block spec (a mismatch refuses the load), then every check of its profile, including `units` (an ablation that moves the next-token distribution, finite taps, one anatomy replay, one static read, the S readout) on `standard-v4` or `unit_refusal` (each unit call answers the lock's `unitRefusal`, no unit function exported) on `standard-v4-residual`, at an advertised context | `webui/scripts/browser-full-runtime.mjs` | each lock model (`libraries.<id>.productionLibrary`) |
-| `productionQ4Parity` | q4 against the source weights (B1 §4.3 item 2): hook-disabled greedy parity, probe and capture error ≤ 1%, steering direction cosine ≥ 0.99; on a `standard-v4` library also `act`, `z` and `mid` ≤ 1% per layer, neuron-write static reads ≤ 1e-3 relative with top-8 overlap ≥ 7/8, and top-32 unit activity Jaccard ≥ 0.9 (null on a residual library) | `capture-hosted-residuals.mjs` (capture schema 5) then `validate_mlc_q4_parity.py` | each q4f32_1 model (`libraries.<id>.productionQ4Parity`) |
+| `productionLibrary` | the production library loaded by the physical harness: its descriptor attested at load against the lock's profile and block spec (a mismatch refuses the load), then every check of its profile, including `units` (an ablation that moves the next-token distribution, finite taps, one anatomy replay, one static read, the S readout) on `standard-v4` or `unit_refusal` (each unit call answers the lock's `unitRefusal`, no unit function exported) on `standard-v4-residual`, at an advertised context | `webui/scripts/browser-full-runtime.mjs` | optional, per lock model (`libraries.<id>.productionLibrary`) |
+| `productionQ4Parity` | q4 against the source weights (B1 §4.3 item 2): hook-disabled greedy parity, probe and capture error ≤ 1%, steering direction cosine ≥ 0.99; on a `standard-v4` library also `act`, `z` and `mid` ≤ 1% per layer, neuron-write static reads ≤ 1e-3 relative with top-8 overlap ≥ 7/8, and top-32 unit activity Jaccard ≥ 0.9 (null on a residual library) | `capture-hosted-residuals.mjs` (capture schema 5) then `validate_mlc_q4_parity.py` | optional, per q4f32_1 model (`libraries.<id>.productionQ4Parity`) |
 
 Offline, before any record: `assemble-hosted-model.mjs` requires each library's VM function
 surface (present and, for a residual library, absent) from the overlay's own lists, and
@@ -640,12 +640,15 @@ profiles physically exercised for each model.
    units packs and any SAE pack (the publisher runs the release policy); fill each `convertedRevision` (`--converted-revision`;
    a later recompile clears it) and adopt the candidate (`--adopt`), which writes
    `runtime-lock.json` as `verified` and its identity fixture. Commit it.
-4. At that commit, record every runtime record: `cVmGoldens` and `webGpuGoldens` (re-run
-   through their producers), each library's `productionLibrary` and, for q4,
-   `productionQ4Parity`, all against the repository lock (the producers refuse an override-lock
-   report or capture), then the ledger. The attestation verifier refuses a ledger whose records
-   name different revisions, so a record made before the adopting commit cannot be reused; any
-   later commit, a submodule bump included, means recording them all again.
+4. At that commit, record the runtime gates: `cVmGoldens` and `webGpuGoldens` (re-run through
+   their producers, against the repository lock), then the ledger. A release does not run the
+   physical harness or the q4 capture on every library: the compile's CPU verification
+   (`verify-production-library.py`) and the fixture goldens stand for the libraries, and a
+   problem found in use comes back as an issue. `productionLibrary` and `productionQ4Parity`
+   stay as optional records for diagnosing one library, made the same way when they are made.
+   The attestation verifier refuses a ledger whose records name different revisions, so a record
+   made before the adopting commit cannot be reused; any later commit, a submodule bump
+   included, means recording them again.
 5. Generate and sign the catalog (sequence 11 for this release) and publish it at the lock's
    `v2/` path (`publish:hosted:catalog`, which first verifies the root catalog the live site
    reads, sequence 10), fill the exact Hugging Face redirect origins, set

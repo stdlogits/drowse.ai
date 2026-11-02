@@ -23,11 +23,12 @@ set against the lock):
 - `webgpu-goldens.json` (`webGpuGoldens`): `browser-units-goldens.mjs --report` once per fixture
   library through the vendored bridge, over `~/.drowse-parity/units-webgpu-p16` on the M5 (the
   four fixture models and their pattern-cap-16 libraries, `libs/SHA256SUMS`).
-- `production-library-<id>.json` (`productionLibrary`), one per lock model: the physical harness
+- `production-library-<id>.json` (`productionLibrary`), one per lock model, optional (a release
+  records only the two golden gates; these diagnose one library): the physical harness
   at the model's smallest advertised context, without SAE; a `standard-v4` model with its R, S
   and units packs, a residual one with none. They run Chrome Beta (`--browser-channel
   chrome-beta`), the only Chrome on the M5; with stable Chrome installed, drop the flag.
-- `production-q4-parity-<id>.json` (`productionQ4Parity`), one per q4f32_1 model:
+- `production-q4-parity-<id>.json` (`productionQ4Parity`), one per q4f32_1 model, optional:
   `validate_mlc_q4_parity.py` on the CPU over a capture-schema-5 capture made beforehand with the
   repository lock (`npm run capture:hosted:residuals -- ID MODEL MODEL.wasm WEBLLM.js
   ../browser-runtime/fixtures/production-q4-parity-input-v1.json CAPTURE`). The producer runs
