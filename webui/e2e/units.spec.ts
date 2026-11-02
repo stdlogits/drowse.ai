@@ -115,6 +115,10 @@ test("the Units room's search finds a word's writers and a unit by its ID", asyn
   await expect(selected.getByRole("heading", { level: 2 })).toHaveText(NEURON);
   await expect(selected.getByRole("heading", { name: "Writes", exact: true })).toBeVisible();
   await expect(selected).toContainText(/[RS] · (out|mid)/);
+  // A chosen writer gives way to a searched ID (stdlogits/drowse#73).
+  const writers = results.getByRole("button", { name: ROW });
+  await writers.nth(1).click();
+  await expect(writers.nth(1)).toHaveAttribute("aria-pressed", "true");
 
   // An ID: that unit alone, read from its weights.
   await search.fill("L1 h2");
@@ -331,10 +335,8 @@ test("a model without unit sites refuses every unit read with the lock's refusal
 });
 
 test("the refusal reads as the model's refusal, not another tab's lock", async ({ page }) => {
-  // drowse bug, fixed in stdlogits/drowse#73 (lanes/N3.md): userFacingError
-  // upper-cases the code to UNSUPPORTEDBLOCKERROR, whose BLOCK matched its tab-lock pattern. Expected
-  // to fail until the pin takes the fix; then this line goes.
-  test.fail(true, "the pinned drowse reads a 422 UnsupportedBlockError as a tab lock");
+  // userFacingError upper-cases the code to UNSUPPORTEDBLOCKERROR, whose BLOCK once matched its
+  // tab-lock pattern (stdlogits/drowse#73).
   await continueBaseText(page);
   await selectRoom(page, "Units");
   await expect(page.getByRole("main")).toContainText(PYTHIA_REFUSAL);
