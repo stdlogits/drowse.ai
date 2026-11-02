@@ -1,9 +1,10 @@
 // The notice in Your chats for chats saved before Drowse 6.0. The library refuses a snapshot older
 // than v8, and the worker stashes a 5.x autosave instead of deleting it (lib/runtime/legacyAutosaves.ts),
 // so neither opens here. The notice counts both, downloads them as one file (A2's
-// exportLegacyConversations, which keeps every record as stored) and can be dismissed on this device.
-// Dismissing deletes nothing; clearing all local data empties the stash and the library, and this
-// key with them (drowse's clearDrowseLocalData clears every `drowse.` key).
+// exportLegacyConversations, which keeps every record as stored), can be dismissed on this device,
+// and can delete them after a confirmation. Dismissing deletes nothing; clearing all local data
+// empties the stash and the library, and this key with them (drowse's clearDrowseLocalData clears
+// every `drowse.` key).
 import {
   exportLegacyConversations,
   findLegacyConversations,
@@ -11,6 +12,7 @@ import {
 } from "../../lib/runtime/legacyConversations";
 import {
   BrowserHostedAutosaveStash,
+  clearLegacyAutosaves,
   findLegacyAutosaves,
   type HostedAutosaveStash,
 } from "../../lib/runtime/legacyAutosaves";
@@ -108,4 +110,22 @@ export async function downloadLegacyChats(
   const file = await withStores(options, (library, autosaves) => exportLegacyConversations({ library, autosaves, now: options.now }));
   if (file) (options.save ?? saveFile)(file);
   return file;
+}
+
+/**
+ * Deletes the old saved chats through `deleteChat` (the page's conversation library, so other tabs
+ * hear of it) and empties the autosave stash. The notice offers this only after a confirmation.
+ */
+export async function deleteLegacyChats(
+  chats: LegacyChats,
+  deleteChat: (id: string) => Promise<boolean>,
+  autosaves?: HostedAutosaveStash,
+): Promise<void> {
+  for (const id of chats.conversationIds) await deleteChat(id);
+  const stash = autosaves ?? new BrowserHostedAutosaveStash();
+  try {
+    await clearLegacyAutosaves(stash);
+  } finally {
+    if (!autosaves) stash.close?.();
+  }
 }

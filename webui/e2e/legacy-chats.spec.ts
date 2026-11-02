@@ -4,7 +4,8 @@ import { resolve } from "node:path";
 
 // Chats saved before Drowse 6.0: a v7 saved chat in the library and a 5.x autosave the worker
 // stashed. Your chats counts them in one notice, downloads them as one JSON file and can dismiss the
-// notice on this device; neither the download nor the dismissal deletes anything.
+// notice on this device; neither the download nor the dismissal deletes anything. Delete asks first,
+// then removes the old chats and empties the stash.
 const modules = {
   home: `/@fs${resolve("src/hosted/ui/HostedHome.svelte")}`,
   stash: `/@fs${resolve("src/lib/runtime/legacyAutosaves.ts")}`,
@@ -58,6 +59,17 @@ const stashed = (page: Page) => page.evaluate(async stashUrl => {
   try { return (await stash.list()).map((entry: { key: string }) => entry.key); } finally { stash.close(); }
 }, modules.stash);
 
+const savedIds = (page: Page) => page.evaluate(() => new Promise<string[]>((resolve, reject) => {
+  const request = indexedDB.open("drowse-saved-conversations");
+  request.onerror = () => reject(request.error);
+  request.onsuccess = () => {
+    const database = request.result;
+    const read = database.transaction("conversations").objectStore("conversations").getAllKeys();
+    read.onsuccess = () => { database.close(); resolve(read.result.map(String)); };
+    read.onerror = () => { database.close(); reject(read.error); };
+  };
+}));
+
 test.beforeEach(async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("http://127.0.0.1:4176/outside-the-workbench");
@@ -98,6 +110,25 @@ test("dismissing hides the notice on this device until another old chat appears"
   await seed(page, [{ ...oldAutosave, key: "test-model@900", stashedAt: 900 }]);
   await mountHome(page);
   await expect(page.locator("section.legacy-chats").getByRole("heading", { level: 2 })).toHaveText("3 chats from before Drowse 6.0 can’t be opened here");
+});
+
+test("deleting asks first, then removes the old chats and empties the stash", async ({ page }) => {
+  await seed(page);
+  await mountHome(page);
+  const notice = page.locator("section.legacy-chats");
+  await notice.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(notice).toContainText("This can’t be undone.");
+  await notice.getByRole("button", { name: "Cancel" }).click();
+  await expect(notice.getByRole("button", { name: "Delete", exact: true })).toBeVisible();
+  expect(await stashed(page)).toEqual(["test-model@500"]);
+  expect(await savedIds(page)).toEqual(["old-chat"]);
+
+  await notice.getByRole("button", { name: "Delete", exact: true }).click();
+  await notice.getByRole("button", { name: "Delete old chats" }).click();
+  await expect(notice).toHaveCount(0);
+  expect(await stashed(page)).toEqual([]);
+  expect(await savedIds(page)).toEqual([]);
+  await expect(page.getByText("This chat could not be read")).toHaveCount(0);
 });
 
 test("the notice fits a phone and a wide screen in both themes", async ({ page }) => {

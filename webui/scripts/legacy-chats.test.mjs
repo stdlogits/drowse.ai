@@ -1,6 +1,6 @@
 // The old-chats notice in Your chats: chats saved before Drowse 6.0 (pre-v8 library rows and the
-// 5.x autosaves the worker stashed) are counted, offered as one download and dismissable on this
-// device without deleting anything. Runs the notice's module over in-memory stores and checks how
+// 5.x autosaves the worker stashed) are counted, offered as one download, dismissable on this
+// device without deleting anything, and deletable after a confirmation. Runs the notice's module over in-memory stores and checks how
 // HostedHome uses it.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -103,6 +103,15 @@ test("downloads one JSON file with every old chat and autosave, as A2's export w
   assert.equal(none, null);
 });
 
+test("deleting removes each old saved chat through the page's library and empties the stash", async () => {
+  const deleted = [];
+  const stashed = stash([autosave]);
+  await notice.deleteLegacyChats({ keys: ["chat:old-a", "chat:old-b", "autosave:fastest@500"], conversationIds: ["old-a", "old-b"] },
+    async (id) => { deleted.push(id); return true; }, stashed);
+  assert.deepEqual(deleted, ["old-a", "old-b"]);
+  assert.deepEqual(stashed.touched, ["clear"], "the stash is emptied and, being given, left open");
+});
+
 test("Your chats shows the notice and leaves old rows out of the unreadable list", async () => {
   const home = await readFile(new URL("../src/hosted/ui/HostedHome.svelte", import.meta.url), "utf8");
   assert.match(home, /from "\.\/legacyChats"/);
@@ -115,7 +124,10 @@ test("Your chats shows the notice and leaves old rows out of the unreadable list
   assert.match(home, /const unreadable = \$derived\(issues\.filter\(\(issue\) => !legacyIds\.has\(issue\.id\)\)\)/);
   assert.match(home, /\{#each unreadable as issue \(issue\.id\)\}/);
   assert.doesNotMatch(home, /\{#each issues as/);
-  assert.doesNotMatch(home, /clearLegacyAutosaves/, "the notice never empties the stash");
+  assert.doesNotMatch(home, /clearLegacyAutosaves/, "only deleteLegacyChats empties the stash");
+  assert.match(home, /function dismissOldChats\(\): void \{\s*legacyDismissed = dismissLegacyChats\(legacyChats\);\s*legacyResult = "";\s*\}/, "Dismiss deletes nothing");
+  assert.match(home, /\{#if legacyConfirming\}[\s\S]*?onclick=\{\(\) => void deleteOldChats\(\)\}[\s\S]*?\{:else\}[\s\S]*?onclick=\{\(\) => \{ legacyConfirming = true;/, "Delete asks first");
+  assert.match(home, /await deleteLegacyChats\(legacyChats, \(id\) => conversationLibrary\.delete\(id\)\);\s*legacyConfirming = false;\s*await refreshChats\(\);/, "deletes through the library, then recounts");
   const { render } = await server.ssrLoadModule("svelte/server");
   const { default: HostedHome } = await server.ssrLoadModule("/src/hosted/ui/HostedHome.svelte");
   const snapshot = {

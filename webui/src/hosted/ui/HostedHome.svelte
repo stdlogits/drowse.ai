@@ -23,7 +23,7 @@
     queueConversationOpen,
   } from "../../../../drowse/webui/src/lib/conversationOpen";
   import { readEntryMemory } from "./entryMemory";
-  import { NO_LEGACY_CHATS, dismissLegacyChats, downloadLegacyChats, findLegacyChats, legacyChatsTitle, legacyNoticeShown, readDismissedLegacyChats, type LegacyChats } from "./legacyChats";
+  import { NO_LEGACY_CHATS, deleteLegacyChats, dismissLegacyChats, downloadLegacyChats, findLegacyChats, legacyChatsTitle, legacyNoticeShown, readDismissedLegacyChats, type LegacyChats } from "./legacyChats";
   import type { HostedModelOption, HostedShellController, HostedShellSnapshot } from "../../../../drowse/webui/src/lib/shell";
 
   let {
@@ -54,6 +54,8 @@
   let legacyChats = $state.raw<LegacyChats>(NO_LEGACY_CHATS);
   let legacyDismissed = $state.raw(readDismissedLegacyChats());
   let legacyDownloading = $state(false);
+  let legacyConfirming = $state(false);
+  let legacyDeleting = $state(false);
   let legacyResult = $state("");
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -406,6 +408,21 @@
   function dismissOldChats(): void {
     legacyDismissed = dismissLegacyChats(legacyChats);
     legacyResult = "";
+  }
+
+  async function deleteOldChats(): Promise<void> {
+    legacyDeleting = true;
+    legacyResult = "";
+    try {
+      await deleteLegacyChats(legacyChats, (id) => conversationLibrary.delete(id));
+      legacyConfirming = false;
+      await refreshChats();
+    } catch (cause) {
+      legacyResult = userFacingError(cause, "The old chats could not be deleted.");
+      void refreshLegacyChats();
+    } finally {
+      legacyDeleting = false;
+    }
   }
 
   async function downloadBackup(record: SavedConversationSummary): Promise<void> {
@@ -963,14 +980,26 @@
       <section class="notice legacy-chats" aria-labelledby="legacy-chats-title" in:expand out:expand>
         <div>
           <h2 id="legacy-chats-title">{legacyChatsTitle(legacyChats.keys.length)}</h2>
-          <p>Download them as one file to keep them. Dismissing this leaves them stored in this browser.</p>
+          {#if legacyConfirming}
+            <p>Delete them from this browser? Download them first if you want to keep them. This can’t be undone.</p>
+          {:else}
+            <p>Download them as one file to keep them. Dismissing this leaves them stored in this browser.</p>
+          {/if}
           {#if legacyResult}<p role="status">{legacyResult}</p>{/if}
         </div>
         <div class="panel-actions">
-          <button type="button" class="quiet" onclick={dismissOldChats}>Dismiss</button>
-          <button type="button" class="secondary" aria-busy={legacyDownloading} disabled={legacyDownloading} onclick={() => void downloadOldChats()}>
-            <MorphText text={legacyDownloading ? "Preparing file…" : "Download"} />
-          </button>
+          {#if legacyConfirming}
+            <button type="button" class="quiet" disabled={legacyDeleting} onclick={() => (legacyConfirming = false)}>Cancel</button>
+            <button type="button" class="delete" aria-busy={legacyDeleting} disabled={legacyDeleting} onclick={() => void deleteOldChats()}>
+              <MorphText text={legacyDeleting ? "Deleting…" : "Delete old chats"} />
+            </button>
+          {:else}
+            <button type="button" class="quiet" onclick={dismissOldChats}>Dismiss</button>
+            <button type="button" class="delete-control" disabled={legacyDownloading} onclick={() => { legacyConfirming = true; legacyResult = ""; }}>Delete</button>
+            <button type="button" class="secondary" aria-busy={legacyDownloading} disabled={legacyDownloading} onclick={() => void downloadOldChats()}>
+              <MorphText text={legacyDownloading ? "Preparing file…" : "Download"} />
+            </button>
+          {/if}
         </div>
       </section>
     {/if}
@@ -1183,8 +1212,8 @@
   .notice > div, .new-chat-panel > div:first-child { display: grid; gap: var(--s2); flex: 1 1 320px; min-width: 0; }
   .notice > div.panel-actions { display: flex; flex: none; }
   .notice p { max-width: 72ch; }
-  .notice button:not(.primary, .quiet), .new-chat-panel button:not(.primary, .quiet) { background: var(--paper); }
-  @media (hover: hover) { .notice button:not(.primary, .quiet):hover:not(:disabled), .new-chat-panel button:not(.primary, .quiet):hover:not(:disabled) { background: var(--wash2); } }
+  .notice button:not(.primary, .quiet, .delete, .delete-control), .new-chat-panel button:not(.primary, .quiet) { background: var(--paper); }
+  @media (hover: hover) { .notice button:not(.primary, .quiet, .delete, .delete-control):hover:not(:disabled), .new-chat-panel button:not(.primary, .quiet):hover:not(:disabled) { background: var(--wash2); } }
   .new-chat-panel { display: grid; justify-content: stretch; }
   .chooser-heading, .recovery-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--s2) var(--s4); }
   .notice.model-recovery { display: grid; justify-content: stretch; }
