@@ -931,6 +931,7 @@ try {
     assert.deepEqual(taps[0].scale.top.length, 2, "a neuron's scale is a pole pair");
     assert.equal(gated.controls.units[0].gate.scoreKey, "head/L1h0");
     assert.equal(gated.controls.units[0].gate.threshold, 0.5);
+
     // slens/ atoms push their prepared footprints; an slens/ probe has no GPU slot and its gate
     // reads the post-forward score by name.
     const slensSource = {
@@ -949,17 +950,23 @@ try {
     assert.equal(slensGated.measurementSchema.probes.filter((probe) => probe !== null).length, 0, "no GPU slot");
     // Its reads run post-forward over the bridge's [L, d] capture, which the program asks for.
     assert.equal(slensGated.hiddenCapture, true);
-    assert.deepEqual(slensGated.measurementSchema.slensProbes, [
-      { name: "slens/e", word: "e", tokenId: 72, attached: true },
-    ]);
-    const gateOnly = compiler.compile("!neuron/L1n2@when:slens/e>1");
+    assert.deepEqual(slensGated.measurementSchema.slensProbes, [{ name: "slens/e", word: "e", tokenId: 72 }]);
+    // Native parse_gate_ref: `name[0]` is the same scalar; another axis of a one-axis family
+    // never fires; another channel is native's UnsupportedProbeChannelError. (A unit takes no
+    // suffix at all: the grammar refuses it.)
+    assert.equal(compiler.compile("!neuron/L1n2@when:slens/e[0]>1").controls.units[0].gate.scoreKey, "slens/e");
+    assert.deepEqual(compiler.compile("!neuron/L1n2@when:slens/e[1]>1").controls.units[0], { enabled: false, phase: slensGated.controls.units[0].phase, gate: null });
+    assert.throws(() => compiler.compile("!neuron/L1n2@when:slens/e:fraction>1"), (error) =>
+      error.code === "UnsupportedProbeChannelError" && error.status === 400 &&
+      error.message === "probe gate 'slens/e:fraction' references the subspace fraction channel, which a lens probe does not produce");
+    assert.throws(() => compiler.compile("!neuron/L1n2@when:head/L1h0[0]>1"), (error) => error.code === "SteeringExprError");
     compiler.detachProbe("slens/e");
+    // Native resolve_gates: a gate naming no attached probe (and no unit) never fires, so it
+    // reads nothing and compiles as a control that stays off.
     const unattached = compiler.compile("!neuron/L1n2@when:slens/e>1");
-    assert.deepEqual(unattached.measurementSchema.slensProbes, [
-      { name: "slens/e", word: "e", tokenId: 72, attached: false },
-    ], "a gate's slens/ word is read for the gate alone");
-    assert.equal(compiler.compile("!neuron/L1n2").hiddenCapture, undefined, "no slens/ read, no capture");
-    assert.ok(gateOnly.hiddenCapture);
+    assert.deepEqual(unattached.controls.units[0], { enabled: false, phase: slensGated.controls.units[0].phase, gate: null });
+    assert.equal(unattached.measurementSchema.slensProbes, undefined);
+    assert.equal(unattached.hiddenCapture, undefined, "no slens/ read, no capture");
     compiler.attachProbe({ selector: "slens/e" });
     // Unit and slens/ probes carry native's digests (units-readout-v2, slens-footprint-z-v3).
     const digests = await server.ssrLoadModule("/src/hosted/runtime/units/probeDigest.ts");
@@ -1404,7 +1411,18 @@ try {
       generatedTokens: 1,
     }).affineActive[0], 1);
 
-    // A manifold gate is the manifold's geometry readout, read back by name (`scoreKey`).
+    // A gate naming no attached probe never fires (native resolve_gates): its control is off
+    // and nothing is read for it.
+    const unattached = compiler.compile("0.5 alert@when:demo>0");
+    assert.equal(unattached.controls.affine[0].enabled, false);
+    assert.equal(unattached.controls.affine[0].gate, null);
+    assert.equal(unattached.geometryActive?.[0] ?? 0, 0);
+    assert.equal(structuredHookControlsFor(unattached, {
+      prefill: false, thinking: false, generatedTokens: 1, priorScores: { demo: 0.25 },
+    }).affineActive[0], 0);
+    // A gate on an attached manifold probe is its geometry readout, read back by its verbatim
+    // key (`scoreKey`).
+    compiler.attachProbe({ selector: "demo", name: "demo" });
     const gated = compiler.compile("0.5 alert@when:demo>0");
     assert.equal(gated.probeKind[0], 0);
     assert.equal(gated.geometryActive[0], 1);
@@ -1506,6 +1524,7 @@ try {
     const bareLabel = compiler.compile("calm");
     assert.equal(bareLabel.format, "drowse-structured-v4");
     assert.equal(bareLabel.curveActive.some(Boolean), true);
+    compiler.attachProbe({ selector: "sae/0" });
     const program = compiler.compile("0.5,1 demo%alert@response&when:sae/0>0.2");
     assert.equal(program.format, "drowse-structured-v4");
     assert.deepEqual([...program.curveRank.filter(Boolean)], [2, 2]);
@@ -1586,6 +1605,7 @@ try {
   test("loads a local v1 SAE and lowers decoder steering plus an exact ReLU gate", async () => {
     const { request } = await fixture({ withWhitener: true, withSae: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+    compiler.attachProbe({ selector: "sae/0" });
     const program = compiler.compile("0.5 sae/0@when:sae/0>0.2");
     assert.equal(program.format, "drowse-structured-v4");
     assert.equal(structuredHookControlsFor(program, {
@@ -1630,6 +1650,8 @@ try {
         assert.equal(result.probes[0], 1.5);
         const atThreshold = runStructuredHookLayer(program, initialStructuredHookState(program), 1, [0.75, 1.75]);
         assert.equal(atThreshold.probes[0], 0, "JumpReLU is inactive at its threshold");
+        // A gate names the attached probe it reads (native resolve_gates).
+        compiler.attachProbe({ selector: "sae/0" });
         const gated = compiler.compile("0.5 alert@when:sae/0>1.4");
         const prior = new Float32Array(gated.layerCount * gated.profile.maxProbes);
         prior[gated.profile.maxProbes] = result.probes[0];
@@ -1801,6 +1823,8 @@ try {
       "activation_over_max",
     );
     assert.equal(envelope.instruments.sae.readout, undefined);
+    // A gate names the attached probe it reads (native resolve_gates).
+    compiler.attachProbe({ selector: "sae/0" });
     const gated = compiler.compile("0.5 alert@when:sae/0>0.4");
     const prior = new Float32Array(gated.layerCount * gated.profile.maxProbes);
     prior[gated.profile.maxProbes] = 0.5;
@@ -2066,6 +2090,7 @@ try {
       "0.5 jlens/novel@when:jlens/novel>0.01",
       resolver,
     );
+    compiler.attachProbe({ selector: "jlens/novel" });
     const program = compiler.compile("0.5 jlens/novel@when:jlens/novel>0.01");
     assertFloatArray(program.affineBasis.slice(0, 2), [7 / Math.sqrt(113), 8 / Math.sqrt(113)]);
     assertFloatArray(
@@ -2078,13 +2103,16 @@ try {
     const tokenize = resolver.tokenizeText;
     resolver.tokenizeText = async () => assert.fail("a #<id> atom names its token without tokenizing");
     await compiler.prepareJlensSelectors("0.5 jlens/#7@when:jlens/#7>0.01", resolver);
+    compiler.attachProbe({ selector: "jlens/#7" });
     const exact = compiler.compile("0.5 jlens/#7@when:jlens/#7>0.01");
     assert.equal(exact.jLensTokenIds[0], 7);
     assertFloatArray(exact.affineBasis.slice(0, 2), [7 / Math.sqrt(113), 8 / Math.sqrt(113)]);
     assert.deepEqual(batches, [[7]], "the exact id reuses the resolved directions");
     // An id past the vocabulary fails as drowse's InvalidTokenIdError does,
     // before any direction lookup reaches the runtime.
-    for (const expression of ["0.5 jlens/#128", "0.5 x@when:jlens/#4096>0.01"]) {
+    // A gate naming no attached probe reads nothing, so its word is never resolved.
+    await compiler.prepareJlensSelectors("0.5 x@when:jlens/#4096>0.01", resolver);
+    for (const expression of ["0.5 jlens/#128"]) {
       await assert.rejects(
         compiler.prepareJlensSelectors(expression, resolver),
         (error) =>
@@ -2182,6 +2210,7 @@ try {
     };
 
     await compiler.prepareJlensSelectors("0.5 jlens/novel", resolver);
+    compiler.attachProbe({ selector: "jlens/novel" });
     const program = compiler.compile("0.5 jlens/novel@when:jlens/novel>0.01");
     assert.equal(program.affineActive.filter(Boolean).length, 1);
     assert.equal(program.affineActive[0], 0);
@@ -2230,7 +2259,9 @@ try {
   test("keeps lens gate and pinned means independent of live display layers", async () => {
     const { request } = await fixture({ withWhitener: true, withJlens: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
-    for (const pinned of [false, true]) {
+    // Unattached, the gate reads nothing and never fires (native resolve_gates).
+    assert.equal(compiler.compile("0.5 alert@when:jlens/hello>0.6").controls.affine[0].enabled, false);
+    for (const pinned of [true]) {
       if (pinned) compiler.attachProbe({ selector: "jlens/hello", name: "jlens/hello" });
       for (const [enabled, layers] of [[false, undefined], [true, undefined], [true, [1]], [true, [0]]]) {
         compiler.setInstrumentLive("lens", enabled, layers);
@@ -2529,6 +2560,7 @@ try {
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const thinking = compiler.compile("0.5 alert@thinking");
     assert.equal(thinking.controls.affine[0].phase.kind, "thinking_only");
+    compiler.attachProbe({ selector: "jlens/hello" });
     const jlensGate = compiler.compile("0.5 alert@when:jlens/hello>0.1");
     assert.equal(jlensGate.probeKind[0], 3);
     assert.equal(jlensGate.probeKind[8], 3);
@@ -2537,6 +2569,7 @@ try {
     assert.deepEqual([...jlensGate.jLensTokenIds], [0, 0, 0, 0, 0, 0, 0, 0]);
     // A gate reads the attached probe it names, whatever the alias: an R-lens probe attached as
     // `slens/watch` installs as a lens gate (drowse attaches under any as_name).
+    compiler.detachProbe("jlens/hello");
     compiler.attachProbe({ selector: "jlens/hello", name: "slens/watch" });
     const aliased = compiler.compile("0.5 alert@when:slens/watch>0.1");
     assert.equal(aliased.probeKind[0], 3);
@@ -3126,10 +3159,12 @@ try {
     for (const [expression, namespace] of [
       ["0.5 alert@when:neuron/L8n344>2", "neuron"],
       ["0.5 alert@after&when:head/L3h2<=0.5", "head"],
-      ["0.5 alert@when:slens/Owl>3", "slens"],
     ]) {
       assert.throws(() => whitened.compile(expression), unavailable(namespace), expression);
     }
+    // A gate on an slens/ probe nothing attached reads nothing (native): it compiles and never
+    // fires, with or without an S lens.
+    assert.equal(whitened.compile("0.5 alert@when:slens/Owl>3").controls.affine[0].enabled, false);
     for (const [expression, namespace] of [
       ["0.3 slens/#12", "slens"],
       ["0.3 slens/Owl", "slens"],

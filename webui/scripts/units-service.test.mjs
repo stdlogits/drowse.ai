@@ -202,7 +202,7 @@ try {
   // readout (the backend's scorer) and the slens/ reads over the [L, d] capture.
   {
     const tokenId = fx.tokenizer.encode("e")[0];
-    const probes = [{ name: "slens/e", tokenId, attached: false }];
+    const probes = [{ name: "slens/e", word: "e", tokenId }];
     const hidden = Float32Array.from({ length: 4 * fx.model.hiddenSize }, (_, i) => Math.sin(i));
     const scoring = new service.BrowserUnitsService({
       modelId: "units-tiny",

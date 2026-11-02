@@ -18,8 +18,10 @@
 //    units family live: unsteered, a neuron and a head ablated, a head ablation gated on a unit no
 //    probe attaches: tokens, every forward's units channel, the aggregate); a neuron push, a unit
 //    ablation at @response and an S-lens-gated push with an `slens/` probe attached (tokens and the
-//    aggregate's units and lens channels); a generated node's token anatomy (unsteered and steered)
-//    and unit activity; and unitRead, unitTop and unitFind. Tolerances are each golden's.
+//    aggregate's units and lens channels); generated nodes' token anatomy and unit activity
+//    (unsteered, steered, S-lens-gated with slens/ attached, whose replay steps its gate, and
+//    S-lens-gated with nothing attached, whose gate never fires); and unitRead, unitTop and
+//    unitFind. Tolerances are each golden's.
 import { execFile } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -295,7 +297,7 @@ try {
     probeCases: unitProbes.cases.map((entry) => ({ name: entry.name, steering: entry.steering })),
     generations: Object.entries(reference.generations).map(([name, entry]) => ({ name, steering: entry.steering })),
     nodes: Object.entries(reference.nodes).map(([name, entry]) => ({
-      name, steering: entry.steering, anatomyKnobs: entry.anatomy.knobs, activityKnobs: entry.activity?.knobs ?? null,
+      name, steering: entry.steering, probes: entry.probes, anatomyKnobs: entry.anatomy.knobs, activityKnobs: entry.activity?.knobs ?? null,
     })),
     settings: reference.settings,
     reads: reference.reads.map((entry) => ({ unit: entry.unit, k: entry.read.knobs.k, hideHubs: entry.hide_hubs })),
@@ -545,6 +547,8 @@ async function driveWorker(plan) {
 
     const root = (await service("tree", "get")).root_id;
     for (const entry of plan.nodes) {
+      // The node's probes stay attached through its generation and its replays, as drowse's.
+      for (const selector of entry.probes) await service("probes", "attach", { selector });
       // Each node from the root, as drowse's reference navigates there first.
       const result = await generate({
         input: plan.text, raw: true, stateless: false, parent_node_id: root, steering: entry.steering,
@@ -559,6 +563,7 @@ async function driveWorker(plan) {
           top: entry.activityKnobs.top, units: activity.units, rawIndex: activity.raw_index, layers: activity.layers,
         });
       }
+      for (const selector of entry.probes) await service("probes", "detach", selector);
       out.nodes.push(node);
     }
     out.reads = [];

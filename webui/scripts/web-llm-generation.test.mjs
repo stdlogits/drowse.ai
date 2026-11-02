@@ -1078,9 +1078,9 @@ try {
   }
 
   // Envelope v2's units channel and the lens channel's slens/ readings (B1 §2.2, §5.1): an
-  // attached unit probe and an attached slens/ probe read out (token envelopes while their
-  // family is live, the aggregate always); a unit tapped for a gate and a gate-only slens/ word
-  // feed gates only; slens/ reads run over the bridge's [L, d] capture.
+  // attached unit probe and the attached slens/ probes read out (token envelopes while their
+  // family is live, the aggregate always); a unit tapped for a gate feeds gates only; a gate reads
+  // an attached slens/ probe by name; slens/ reads run over the bridge's [L, d] capture.
   const liveBase = compileStructuredHookProgram(2, [{}], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
   liveBase.measurementSchema = {
     layerMap: [0],
@@ -1104,8 +1104,8 @@ try {
     measurementSchema: {
       ...unitLive.measurementSchema,
       slensProbes: [
-        { name: "slens/cat", word: "cat", tokenId: 5, attached: true },
-        { name: "slens/dog", word: "dog", tokenId: 6, attached: false },
+        { name: "slens/cat", word: "cat", tokenId: 5 },
+        { name: "slens/dog", word: "dog", tokenId: 6 },
       ],
     },
   };
@@ -1147,7 +1147,7 @@ try {
     return { tokens, result, slensCalls, unitControls };
   };
   // Each forward's gate scalars set the next forward's controls (an update only when they
-  // change): the gate-only slens/dog score is 1/3 after the prefill and 2/3 after the decode
+  // change): the attached slens/dog score is 1/3 after the prefill and 2/3 after the decode
   // forward, and the tapped unit's scalar holds, so the ablation's group opens where they cross
   // the threshold.
   const regated = (gate) => ({ ...liveProgram, controls: {
@@ -1182,8 +1182,8 @@ try {
     },
   }, "only the attached unit probe reads out, over its + pole");
   assert.deepEqual(firstLive.instruments.lens.binding, { sources: { S: "s-pack" }, steering: null });
-  assert.deepEqual(Object.keys(firstLive.instruments.lens.readings), ["slens/cat"], "a gate-only slens/ word never reads out");
-  assert.deepEqual(firstLive.scores, { "probe-a": 0.5, "slens/cat": roundReading(1 / 3) });
+  assert.deepEqual(Object.keys(firstLive.instruments.lens.readings), ["slens/cat", "slens/dog"], "every attached slens/ probe reads out");
+  assert.deepEqual(firstLive.scores, { "probe-a": 0.5, "slens/cat": roundReading(1 / 3), "slens/dog": roundReading(1 / 3) });
   assert.deepEqual(liveOn.slensCalls, [[1, ["slens/cat", "slens/dog"]], [2, ["slens/cat", "slens/dog"]]],
     "a gated slens/ word reads every forward");
   assert.equal(liveOn.tokens[1].measurements.instruments.units.readings["probe-a"].value, -0.5, "a negative act reads over the − pole");

@@ -119,25 +119,40 @@ def main() -> None:
                     session.remove_probe(probe)
 
         nodes: dict[str, Any] = {}
-        # The S-lens-gated node replays one decode position per forward, its gate scored from
-        # the previous forward (native's gate run; the browser's replay readback).
-        for name, steering in (("unsteered", None), ("steered", ANATOMY_STEERING), ("slens-gated", SLENS_GATED)):
-            runs = generate(steering, steps=DECODE_STEPS, stateless=False)
-            node = str(runs.node_ids[0])
-            # The hosted fixture is a base model: its replays render the node raw.
-            anatomy = ranked(lambda **knobs: session.token_anatomy(node, ANATOMY_INDEX, raw=True, **knobs),
-                             [{"k": k, "units": k, "patterns": 2} for k in (5, 4, 6, 3, 7)],
-                             f"nodes.{name}.anatomy", ties)
-            entry: dict[str, Any] = {
-                "steering": steering, "tokens": [int(t) for t in runs.first.tokens], "anatomy": anatomy,
-            }
-            if name != "steered":
-                entry["activity"] = ranked(
-                    lambda top: session.unit_activity(node, top=top, units=ACTIVITY["units"],
-                                                      raw_index=ACTIVITY["raw_index"], layers=ACTIVITY["layers"],
-                                                      raw=True),
-                    around("top", ACTIVITY["top"]), f"nodes.{name}.activity", ties)
-            nodes[name] = entry
+        # The S-lens-gated nodes replay one decode position per forward, their gate scored from
+        # the previous forward (native's gate run; the browser's replay readback) while slens/e
+        # stays attached; unattached, the gate names no probe and never fires (resolve_gates), in
+        # the generation and in its replays.
+        slens_probe = f"slens/{SLENS_WORD}"
+        for name, steering, probes in (
+            ("unsteered", None, ()),
+            ("steered", ANATOMY_STEERING, ()),
+            ("slens-gated", SLENS_GATED, (slens_probe,)),
+            ("slens-unattached", SLENS_GATED, ()),
+        ):
+            for probe in probes:
+                session.add_probe(probe)
+            try:
+                runs = generate(steering, steps=DECODE_STEPS, stateless=False)
+                node = str(runs.node_ids[0])
+                # The hosted fixture is a base model: its replays render the node raw.
+                anatomy = ranked(lambda **knobs: session.token_anatomy(node, ANATOMY_INDEX, raw=True, **knobs),
+                                 [{"k": k, "units": k, "patterns": 2} for k in (5, 4, 6, 3, 7)],
+                                 f"nodes.{name}.anatomy", ties)
+                entry: dict[str, Any] = {
+                    "steering": steering, "probes": list(probes), "tokens": [int(t) for t in runs.first.tokens],
+                    "anatomy": anatomy,
+                }
+                if name != "steered":
+                    entry["activity"] = ranked(
+                        lambda top: session.unit_activity(node, top=top, units=ACTIVITY["units"],
+                                                          raw_index=ACTIVITY["raw_index"], layers=ACTIVITY["layers"],
+                                                          raw=True),
+                        around("top", ACTIVITY["top"]), f"nodes.{name}.activity", ties)
+                nodes[name] = entry
+            finally:
+                for probe in probes:
+                    session.remove_probe(probe)
 
         golden = json.loads((ROOT / "drowse/tests/fixtures/browser" / f"unit-reads-{arch}-v1.json").read_text())
         units = session.units

@@ -156,18 +156,16 @@ export interface StructuredMeasurementSchema {
   saeFeatureMetadata?: Record<string, { label: string | null; maxAct: number | null }>;
   /** drowse-structured-v4: one entry per unit tap slot (`maxUnitTaps`), null when unused. */
   unitTaps?: Array<StructuredUnitTap | null>;
-  /** `slens/` probes the host reads post-forward over the `[L, d]` capture (`hiddenCapture`,
-   *  HOOK_ABI §5): every attached one and every `slens/` word a gate reads. */
+  /** The attached `slens/` probes, which the host reads post-forward over the `[L, d]` capture
+   *  (`hiddenCapture`, HOOK_ABI §5); a gate reads one by name. */
   slensProbes?: StructuredSlensProbe[];
 }
 
-/** One post-forward `slens/` read: its reading's name, its token, and whether it is an attached
- *  probe (its readings ride the lens channel) or only a gate's (`@when:slens/<word>`). */
+/** One post-forward `slens/` read: the attached probe's name, word and token. */
 export interface StructuredSlensProbe {
   readonly name: string;
   readonly word: string;
   readonly tokenId: number;
-  readonly attached: boolean;
 }
 
 export interface StructuredHookProgramBuffers {
@@ -3041,7 +3039,7 @@ function validateSlensProbes(program: StructuredHookProgramBuffers): void {
     if (
       typeof probe.name !== "string" || probe.name.length === 0 || names.has(probe.name) ||
       typeof probe.word !== "string" || probe.word.length === 0 ||
-      !Number.isSafeInteger(probe.tokenId) || probe.tokenId < 0 || typeof probe.attached !== "boolean"
+      !Number.isSafeInteger(probe.tokenId) || probe.tokenId < 0
     ) {
       throw new TypeError("slens/ probe entries are invalid");
     }

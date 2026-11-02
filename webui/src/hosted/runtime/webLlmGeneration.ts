@@ -2830,7 +2830,7 @@ async function aggregateResult(
   if (selected === undefined) return {};
   let envelope = selected.envelope;
   if (selected.hidden !== undefined) {
-    const probes = attachedSlensProbes(plan.hookProgram);
+    const probes = plan.hookProgram?.measurementSchema?.slensProbes ?? [];
     const read = await plan.liveInstruments!.slensReads(selected.hidden, probes);
     envelope = withLiveChannels(envelope, {
       slens: { readings: read.readings, source: read.source },
@@ -2855,21 +2855,15 @@ interface LiveChannelReadings {
   slens?: { readings: Record<string, ScalarReadingJSON>; source: string | null };
 }
 
-function attachedSlensProbes(program: StructuredHookProgramBuffers | null | undefined): StructuredSlensProbe[] {
-  return program?.measurementSchema?.slensProbes?.filter((probe) => probe.attached) ?? [];
-}
-
-/** Whether every forward reads its `slens/` probes: a gate reads one (a gate-only `slens/`
- *  word, or an attached probe a gate names), or the lens family is live with one attached.
- *  Otherwise the reply's aggregate reads them once from its last content token's capture. */
+/** Whether every forward reads its `slens/` probes: a gate reads one, or the lens family is
+ *  live. Otherwise the reply's aggregate reads them once from its last content token's capture. */
 function slensReadsEveryForward(plan: WebLlmGenerationPlan): boolean {
   const probes = plan.hookProgram?.measurementSchema?.slensProbes ?? [];
   if (probes.length === 0) return false;
   const gated = new Set(structuredControls(plan.hookProgram).flatMap((control) =>
     control?.gate?.scoreKey ? [control.gate.scoreKey] : []
   ));
-  return probes.some((probe) => !probe.attached || gated.has(probe.name)) ||
-    plan.liveInstruments?.lensLive === true && probes.some((probe) => probe.attached);
+  return probes.some((probe) => gated.has(probe.name)) || plan.liveInstruments?.lensLive === true;
 }
 
 /** The units channel (native `UnitsInstrument.readings` over the tap, its gate scalars for
@@ -2904,17 +2898,13 @@ async function liveChannelReads(
   }
   const probes = schema.slensProbes ?? [];
   if (measurement.hidden !== undefined && probes.length > 0 && live !== null) {
-    const attached = probes.filter((probe) => probe.attached);
     if (slensPerToken) {
       const read = await live.slensReads(measurement.hidden, probes);
       out.gateScores = { ...out.gateScores, ...read.values };
-      const readings = Object.fromEntries(attached.map((probe) => [probe.name, read.readings[probe.name]]));
-      if (attached.length > 0) {
-        const channel = { readings, source: read.source };
-        out.aggregate.slens = channel;
-        if (display && live.lensLive) out.token.slens = channel;
-      }
-    } else if (attached.length > 0) {
+      const channel = { readings: read.readings, source: read.source };
+      out.aggregate.slens = channel;
+      if (display && live.lensLive) out.token.slens = channel;
+    } else {
       out.deferredHidden = measurement.hidden;
     }
   }

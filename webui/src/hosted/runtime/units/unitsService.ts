@@ -406,8 +406,6 @@ export class BrowserUnitsService {
             }
             if (atom.namespace === "slens") await prepareSlens(atom.concept);
           }
-          const gate = term.trigger?.gate?.probe;
-          if (gate?.startsWith("slens/")) await prepareSlens(gate.slice("slens/".length));
         }
       },
       prepareProbe: async (selector) => {

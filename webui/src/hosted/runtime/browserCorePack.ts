@@ -461,12 +461,11 @@ export class BrowserFeasibilityCorePackCompiler {
     for (const term of parsed.terms) {
       addAtom(term.selector.base);
       addAtom(term.selector.onto);
+      // A gate reads the attached probe its key names (native resolve_gates), never a word.
       const gate = term.trigger?.gate?.probe;
-      if (gate?.startsWith("jlens/")) {
-        words.push(gate.slice("jlens/".length));
-      } else if (gate !== undefined) {
-        const attached = this.attachedProbes.get(gate);
-        if (attached?.family === "lens") words.push(attached.word);
+      if (gate !== undefined) {
+        const attached = this.attachedProbes.get(parseGateRef(gate).probe);
+        if (attached?.family === "lens" && attached.namespace === "jlens") words.push(attached.word);
       }
     }
     await this.instruments.prepareJlensWords(words, resolver);
@@ -1169,16 +1168,18 @@ export class BrowserFeasibilityCorePackCompiler {
         `The browser GPU program supports at most ${this.structuredHookProfile.maxAffineGroups} independently gated affine groups`,
       );
     }
-    // A gate on a unit reads the live unit tap (priorScores[unit]), not a measurement probe.
-    const allGateNames = [...new Set(allTerms.flatMap((term) =>
-      term.trigger?.gate ? [term.trigger.gate.probe] : []
-    ))];
-    const unitGateNames = allGateNames.filter((name) => this.isUnitGate(name));
-    // An S-lens gate reads the post-forward slens/ score by name (`scoreKey`), as a unit gate does.
-    const slensGateNames = allGateNames.filter((name) => this.isSlensGate(name));
-    const requiredGateNames = allGateNames.filter((name) =>
-      !unitGateNames.includes(name) && !slensGateNames.includes(name)
-    );
+    // Native `resolve_gates`: a gate reads the attached probe its key names (any unit, attached
+    // or not, through a live tap), by its verbatim scalar key; a key naming no attached probe and
+    // no unit never fires.
+    const gates = new Map<string, GateResolution>();
+    for (const term of allTerms) {
+      const key = term.trigger?.gate?.probe;
+      if (key !== undefined && !gates.has(key)) gates.set(key, this.resolveGate(key));
+    }
+    const gatedProbes = (kind: GateResolution["kind"]) =>
+      [...new Set([...gates.values()].flatMap((gate) => gate.kind === kind && gate.kind !== "never" ? [gate.probe] : []))];
+    const unitGateNames = gatedProbes("unit");
+    const requiredGateNames = [...gatedProbes("slot"), ...gatedProbes("geometry")];
     if (requiredGateNames.length > this.structuredHookProfile.maxProbes) {
       throw coreError(
         "CORE_PACK_PROBE_LIMIT",
@@ -1204,9 +1205,18 @@ export class BrowserFeasibilityCorePackCompiler {
     const geometrySchemas: Array<StructuredGeometryMeasurementProbe | null> =
       Array.from({ length: this.structuredHookProfile.maxGeometryProbes }, () => null);
     gateNames.forEach((name, probeIndex) => {
-      const installed = this.installGateProbe(name, probeIndex, layers);
+      const keys = [...gates.entries()].flatMap(([key, gate]) =>
+        gate.kind === "geometry" && gate.probe === name ? [key] : []
+      );
+      const installed = this.installGateProbe(name, probeIndex, layers, keys);
       gateSlots.set(name, installed.slots);
-      if (installed.geometry !== null) geometrySchemas[probeIndex] = installed.geometry;
+      if (installed.geometry !== null) {
+        geometrySchemas[probeIndex] = installed.geometry;
+        // A channel the readout does not produce never scores: its gate never fires (native).
+        for (const key of keys) {
+          if (!installed.geometry.scoreKeys.includes(key)) gates.set(key, { kind: "never" });
+        }
+      }
     });
     const hasActiveGeometry = geometrySchemas.some((schema) => schema !== null);
     if (hasActiveGeometry) {
@@ -1243,7 +1253,7 @@ export class BrowserFeasibilityCorePackCompiler {
         if (lowered === null) continue;
         (layers[programIndex].affineGroups as StructuredAffineGroup[])[groupIndex] = lowered;
         affineControls[programIndex * this.structuredHookProfile.maxAffineGroups + groupIndex] =
-          hookControl(termGroup.trigger, gateSlots);
+          hookControl(termGroup.trigger, gates, gateSlots);
       }
     });
 
@@ -1251,7 +1261,7 @@ export class BrowserFeasibilityCorePackCompiler {
       for (const [programIndex, curve] of curves) {
         (layers[programIndex].curves as StructuredCurve[])[curveIndex] = curve;
         curveControls[programIndex * this.structuredHookProfile.maxCurves + curveIndex] =
-          hookControl(curved[curveIndex].trigger, gateSlots);
+          hookControl(curved[curveIndex].trigger, gates, gateSlots);
       }
     });
     const program = compileStructuredHookProgram(
@@ -1301,29 +1311,16 @@ export class BrowserFeasibilityCorePackCompiler {
     }
     program.controls = { affine: affineControls, curve: curveControls };
     validateStructuredHookProgram(program);
-    return this.withSlensReads(this.withUnitSection(program, unitTerms, unitGateNames, gateSlots), slensGateNames);
+    return this.withSlensReads(this.withUnitSection(program, unitTerms, unitGateNames, gates, gateSlots));
   }
 
-  /** The post-forward `slens/` reads (HOOK_ABI §5): every attached `slens/` probe, and every
-   *  `slens/<word>` a gate reads that no probe attached, scored over the bridge's `[L, d]`
-   *  capture, which the program then asks for (`hiddenCapture`). */
-  private withSlensReads(
-    program: StructuredHookProgramBuffers,
-    slensGateNames: readonly string[],
-  ): StructuredHookProgramBuffers {
+  /** The post-forward `slens/` reads (HOOK_ABI §5): every attached `slens/` probe, scored over
+   *  the bridge's `[L, d]` capture, which the program then asks for (`hiddenCapture`). */
+  private withSlensReads(program: StructuredHookProgramBuffers): StructuredHookProgramBuffers {
     const probes: StructuredSlensProbe[] = [];
     for (const [name, probe] of this.attachedProbes) {
       if (probe.family !== "lens" || probe.namespace !== "slens" || probe.token_id === null) continue;
-      probes.push({ name, word: probe.word, tokenId: probe.token_id, attached: true });
-    }
-    for (const name of slensGateNames) {
-      if (probes.some((probe) => probe.name === name)) continue;
-      const word = name.slice("slens/".length);
-      const prepared = this.unitSource?.slensAtom(word) ?? null;
-      if (prepared === null) {
-        throw coreError("SLENS_ATOM_UNPREPARED", `${name} was not resolved before compiling`);
-      }
-      probes.push({ name, word, tokenId: prepared.tokenId, attached: false });
+      probes.push({ name, word: probe.word, tokenId: probe.token_id });
     }
     if (probes.length === 0) return program;
     const out: StructuredHookProgramBuffers = {
@@ -1335,18 +1332,44 @@ export class BrowserFeasibilityCorePackCompiler {
     return out;
   }
 
-  private isSlensGate(name: string): boolean {
-    const attached = this.attachedProbes.get(name);
-    if (attached !== undefined) return attached.family === "lens" && attached.namespace === "slens";
-    if (!name.startsWith("slens/")) return false;
-    if (this.unitSource === null) throw instrumentAtomUnavailable("slens");
-    return true;
-  }
-
-  private isUnitGate(name: string): boolean {
-    const attached = this.attachedProbes.get(name);
-    if (attached !== undefined) return attached.family === "units";
-    return name.startsWith("neuron/") || name.startsWith("head/");
+  /** What a gate key reads (native `resolve_gates` over `parse_gate_ref`): a unit (an attached
+   *  unit probe, or any `neuron/`/`head/` unit, checked against the model) through its live tap;
+   *  an attached `slens/` probe by name; an attached R-lens or SAE probe through its device slots;
+   *  an attached geometry probe through the geometry readout, any channel it produces. The scalar
+   *  families read their one axis: another channel is native's `UnsupportedProbeChannelError`,
+   *  another axis never fires. A key naming no attached probe and no unit never fires (native's
+   *  gate stays inactive). */
+  private resolveGate(key: string): GateResolution {
+    const ref = parseGateRef(key);
+    const attached = this.attachedProbes.get(ref.probe);
+    const scalar = (family: string): boolean => {
+      if (ref.channel.kind !== "axis") {
+        throw Object.assign(new Error(
+          `probe gate '${key}' references the ${GATE_CHANNEL_WORDS[ref.channel.kind]} channel, which a ${family} probe does not produce`,
+        ), { code: "UnsupportedProbeChannelError", status: 400, recoverable: true });
+      }
+      return ref.channel.index === 0;
+    };
+    const unitNamespace = ref.probe.startsWith("neuron/") ? "neuron" : ref.probe.startsWith("head/") ? "head" : null;
+    if (attached?.family === "units" || (attached === undefined && unitNamespace !== null)) {
+      if (attached === undefined) {
+        if (this.unitSource === null) throw instrumentAtomUnavailable(unitNamespace!);
+        resolveUnitAtom(this.unitSource, unitNamespace!, ref.probe.slice(unitNamespace!.length + 1));
+      }
+      return scalar("units") ? { kind: "unit", probe: ref.probe } : { kind: "never" };
+    }
+    if (attached === undefined) return { kind: "never" };
+    switch (attached.family) {
+      case "lens":
+        if (!scalar("lens")) return { kind: "never" };
+        return { kind: attached.namespace === "slens" ? "slens" : "slot", probe: ref.probe };
+      case "sae":
+        return scalar("sae") ? { kind: "slot", probe: ref.probe } : { kind: "never" };
+      case "geometry":
+        return { kind: "geometry", probe: ref.probe };
+      default:
+        return { kind: "never" };
+    }
   }
 
   /** The unit section (B1 §3.1, §2.2): one ablation per unit term, grouped by trigger in first
@@ -1356,6 +1379,7 @@ export class BrowserFeasibilityCorePackCompiler {
     program: StructuredHookProgramBuffers,
     unitTerms: readonly ResolvedCoreTerm[],
     unitGateNames: readonly string[],
+    gates: ReadonlyMap<string, GateResolution>,
     gateSlots: ReadonlyMap<string, readonly StructuredMeasurementSlot[]>,
   ): StructuredHookProgramBuffers {
     const tapped: Array<{ name: string; unit: UnitRef }> = [];
@@ -1383,7 +1407,7 @@ export class BrowserFeasibilityCorePackCompiler {
       if (group < 0) {
         group = triggers.length;
         triggers.push(key);
-        controls.push(term.trigger === null ? null : hookControl(term.trigger, gateSlots));
+        controls.push(term.trigger === null ? null : hookControl(term.trigger, gates, gateSlots));
       }
       return structuredUnitAblationTerm(unit.kind, unit.layer, unit.index, term.coefficient, unitMean(source, unit), group);
     });
@@ -1858,16 +1882,21 @@ export class BrowserFeasibilityCorePackCompiler {
     return curves;
   }
 
+  /** One attached probe on the device: an SAE or R-lens probe in its probe slots, a geometry
+   *  probe in the geometry readout producing its own scores and the `gateKeys` a gate reads
+   *  (a key it cannot produce is left out: that gate never fires). */
   private installGateProbe(
     name: string,
     probeIndex: number,
     layers: StructuredHookLayer[],
+    gateKeys: readonly string[],
   ): InstalledProbeProgram {
     const attached = this.attachedProbes.get(name);
-    const saeFeatureId = attached?.family === "sae"
-      ? String(attached.feature_id)
-      : name.startsWith("sae/") ? name.slice("sae/".length) : null;
-    if (saeFeatureId !== null) {
+    if (attached === undefined || attached.family === "units" || (attached.family === "lens" && attached.namespace === "slens")) {
+      throw coreError("CORE_PACK_GATE_PROBE_UNAVAILABLE", `${name} is not an attached device probe`);
+    }
+    if (attached.family === "sae") {
+      const saeFeatureId = String(attached.feature_id);
       const feature = this.instruments.saeFeature(saeFeatureId);
       const programIndex = this.layerMap.indexOf(feature.layer);
       if (programIndex < 0) {
@@ -1886,11 +1915,8 @@ export class BrowserFeasibilityCorePackCompiler {
       );
       return { slots: [{ layer: programIndex, probe: probeIndex }], geometry: null };
     }
-    const lensWord = attached?.family === "lens"
-      ? attached.word
-      : name.startsWith("jlens/") ? name.slice("jlens/".length) : null;
-    if (lensWord !== null) {
-      const token = this.instruments.jlensToken(lensWord);
+    if (attached.family === "lens") {
+      const token = this.instruments.jlensToken(attached.word);
       const slots: StructuredMeasurementSlot[] = [];
       for (const layer of token.directions.keys()) {
         const programIndex = this.layerMap.indexOf(layer);
@@ -1910,37 +1936,35 @@ export class BrowserFeasibilityCorePackCompiler {
       }
       return { slots, geometry: null };
     }
-    const namespace = name.includes("/") ? name.slice(0, name.indexOf("/")) : null;
-    if (attached === undefined && (namespace === "neuron" || namespace === "head" || namespace === "slens")) {
-      // Units and the S lens parse, but this runtime cannot read them yet: refuse rather than
-      // install a gate that would never fire.
-      throw instrumentAtomUnavailable(namespace);
-    }
-    let geometryTarget: {
-      manifold: CoreManifold;
-      name: string;
-      scoreKeys: string[];
-      topN: number;
-    };
+    let manifold: CoreManifold;
     try {
-      geometryTarget = this.resolveGeometryProgramTarget(name, attached);
+      manifold = this.resolveProbeManifold(attached.manifold);
     } catch {
       throw coreError(
         "CORE_PACK_GATE_PROBE_UNAVAILABLE",
         `The installed browser packs do not provide live probe ${name}`,
       );
     }
-    const manifold = geometryTarget.manifold;
+    const geometryTarget = { name: attached.name, topN: attached.top_n };
     this.assertGeometryProbeLowerable(manifold);
     const built = this.structuredGeometryProbe(manifold);
     for (const [programIndex, probe] of built.layers) {
       (layers[programIndex].geometryProbes as StructuredGeometryProbe[])[probeIndex] = probe;
     }
+    // The readout's key family (native `flat_scalars`): every axis, the fraction, the membership,
+    // and a distance and an assignment per label.
+    const produced = new Set([
+      ...(built.intrinsicDim > 0 ? [name] : []),
+      ...Array.from({ length: built.intrinsicDim }, (_, axis) => `${name}[${axis}]`),
+      `${name}:fraction`,
+      `${name}:membership`,
+      ...built.labels.flatMap((label) => [`${name}@${label}`, `${name}~${label}`]),
+    ]);
     return {
       slots: [],
       geometry: {
         name: geometryTarget.name,
-        scoreKeys: geometryTarget.scoreKeys,
+        scoreKeys: [...new Set([name, ...gateKeys])].filter((key) => produced.has(key)),
         manifold: manifold.selectorKey,
         labels: built.labels,
         topN: geometryTarget.topN,
@@ -1971,67 +1995,6 @@ export class BrowserFeasibilityCorePackCompiler {
     }
     if (attached?.family === "geometry") return { name, family: "geometry" };
     return measurementProbe(name, this.instruments);
-  }
-
-  private resolveGeometryProgramTarget(
-    name: string,
-    attached: ProbeInfo | undefined,
-  ): { manifold: CoreManifold; name: string; scoreKeys: string[]; topN: number } {
-    if (attached?.family === "geometry") {
-      return {
-        manifold: this.resolveProbeManifold(attached.manifold),
-        name: attached.name,
-        scoreKeys: [name],
-        topN: attached.top_n,
-      };
-    }
-    let selector = name;
-    let channel: "coordinate" | "fraction" | "membership" | "distance" | "assignment" =
-      "coordinate";
-    let axis = 0;
-    let label: string | null = null;
-    const scalar = /:(fraction|membership)$/u.exec(selector);
-    const indexed = /\[(0|[1-9]\d*)\]$/u.exec(selector);
-    if (scalar) {
-      channel = scalar[1] as "fraction" | "membership";
-      selector = selector.slice(0, -scalar[0].length);
-    } else if (indexed) {
-      axis = Number(indexed[1]);
-      selector = selector.slice(0, -indexed[0].length);
-    } else {
-      const distanceAt = selector.lastIndexOf("@");
-      const assignmentAt = selector.lastIndexOf("~");
-      const discriminator = Math.max(distanceAt, assignmentAt);
-      if (discriminator > 0) {
-        channel = discriminator === distanceAt ? "distance" : "assignment";
-        label = selector.slice(discriminator + 1);
-        selector = selector.slice(0, discriminator);
-      }
-    }
-    const manifold = this.resolveProbeManifold(selector);
-    const intrinsicDim = manifoldIntrinsicDimension(manifold);
-    if (channel === "coordinate" && axis >= intrinsicDim) {
-      throw coreError(
-        "CORE_PACK_GATE_PROBE_UNAVAILABLE",
-        `Probe ${selector} has no coordinate axis ${axis}`,
-      );
-    }
-    if (
-      (label !== null && label !== "neutral" && !manifold.labels.includes(label)) ||
-      (label === "neutral" && manifold.labels.includes("neutral") &&
-        manifold.labels.filter((value) => value === "neutral").length !== 1)
-    ) {
-      throw coreError(
-        "CORE_PACK_GATE_PROBE_UNAVAILABLE",
-        `Probe ${selector} has no candidate ${String(label)}`,
-      );
-    }
-    return {
-      manifold,
-      name: selector,
-      scoreKeys: [name],
-      topN: Math.min(3, manifold.labels.length + (manifold.labels.includes("neutral") ? 0 : 1)),
-    };
   }
 
   private structuredGeometryWhitener(layer: number): StructuredGeometryWhitener {
@@ -3803,26 +3766,57 @@ function disabledStructuredProbe(hiddenSize: number): StructuredProbe {
   return { kind: "disabled", direction: new Float32Array(hiddenSize), bias: 0 };
 }
 
+/** What one gate key reads (`BrowserFeasibilityCorePackCompiler.resolveGate`). */
+type GateResolution =
+  | { readonly kind: "never" }
+  | { readonly kind: "unit" | "slens" | "slot" | "geometry"; readonly probe: string };
+
+type GateChannel =
+  | { readonly kind: "axis"; readonly index: number }
+  | { readonly kind: "fraction" | "membership" }
+  | { readonly kind: "distance" | "assignment"; readonly label: string };
+
+/** Native `_CHANNEL_WORDS`. */
+const GATE_CHANNEL_WORDS: Readonly<Record<GateChannel["kind"], string>> = {
+  axis: "coordinate axis",
+  fraction: "subspace fraction",
+  membership: "tube membership",
+  distance: "label distance",
+  assignment: "soft assignment",
+};
+
+/** Native `parse_gate_ref`: a verbatim gate scalar key into the probe it names and its channel
+ *  (`name[i]`, `name:fraction`, `name:membership`, `name@label`, `name~label`, else axis 0). */
+export function parseGateRef(key: string): { probe: string; channel: GateChannel } {
+  if (key.endsWith("]")) {
+    const open = key.lastIndexOf("[");
+    const index = key.slice(open + 1, -1);
+    if (open > 0 && /^\d+$/u.test(index)) return { probe: key.slice(0, open), channel: { kind: "axis", index: Number(index) } };
+  }
+  if (key.endsWith(":fraction")) return { probe: key.slice(0, -":fraction".length), channel: { kind: "fraction" } };
+  if (key.endsWith(":membership")) return { probe: key.slice(0, -":membership".length), channel: { kind: "membership" } };
+  for (const [separator, kind] of [["@", "distance"], ["~", "assignment"]] as const) {
+    const at = key.indexOf(separator);
+    if (at > 0 && at < key.length - 1) return { probe: key.slice(0, at), channel: { kind, label: key.slice(at + 1) } };
+  }
+  return { probe: key, channel: { kind: "axis", index: 0 } };
+}
+
 function hookControl(
   trigger: SteeringTrigger | null,
+  gates: ReadonlyMap<string, GateResolution>,
   gateSlots: ReadonlyMap<string, readonly StructuredMeasurementSlot[]>,
 ): StructuredHookControl {
   const phase: SteeringPhase = trigger?.phase ?? { kind: "both" };
   const gate = trigger?.gate ?? null;
-  return {
-    enabled: true,
-    phase,
-    gate: gate === null
-      ? null
-      : {
-          slots: gateSlots.get(gate.probe) ?? [],
-          ...((gateSlots.get(gate.probe)?.length ?? 0) === 0
-            ? { scoreKey: gate.probe }
-            : {}),
-          operator: gate.operator,
-          threshold: gate.threshold,
-        },
-  };
+  if (gate === null) return { enabled: true, phase, gate: null };
+  const resolved = gates.get(gate.probe) ?? { kind: "never" };
+  // A gate that reads nothing never fires (native: no score, inactive).
+  if (resolved.kind === "never") return { enabled: false, phase, gate: null };
+  const read = resolved.kind === "slot"
+    ? { slots: gateSlots.get(resolved.probe) ?? [] }
+    : { slots: [], scoreKey: resolved.kind === "geometry" ? gate.probe : resolved.probe };
+  return { enabled: true, phase, gate: { ...read, operator: gate.operator, threshold: gate.threshold } };
 }
 
 function structuredCurveDomain(
