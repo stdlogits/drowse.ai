@@ -25,6 +25,7 @@ try {
     SessionPersistenceError,
     validatePersistedHostedSession,
   } = await server.ssrLoadModule("/../drowse/webui/src/lib/sessionPersistence.ts");
+  const legacyConversationsModule = await server.ssrLoadModule("/src/lib/runtime/legacyConversations.ts");
 
   test("round-trips one authoritative session per model variant", async () => {
     const store = memoryStore();
@@ -317,23 +318,96 @@ try {
     assert.equal(restored.record.tree.nodes[1].tokens[0].top_alts.length, count);
   });
 
-  test("accepts open current token rows while validating their known fields", () => {
+  test("reads the 6.0 slim token row and refuses unknown or retired row fields", () => {
     const valid = persistedRecord("fastest", "session-a", 1);
+    valid.tree.nodes[1].recipe = {
+      steering: null, sampling: null, thinking: null, seed: null, probes: [], probe_hashes: {},
+    };
     valid.tree.nodes[1].tokens = [{
       token_id: 7,
       text: "Hello",
       logprob: -0.25,
-      producer_extension: { finite: 1 },
+      perplexity: 1.28403,
+      raw_index: 0,
+      measurements: {
+        version: 2,
+        scope: "token",
+        provenance: "captured",
+        instruments: { geometry: { readings: { "local/calm.alert": { fraction: 0.5, coords: [0.25] } } } },
+        scores: { "local/calm.alert": 0.25 },
+      },
     }];
+    valid.tree.nodes[1].aggregate_measurements = {
+      version: 2,
+      scope: "aggregate",
+      provenance: "captured",
+      instruments: {},
+    };
     validatePersistedHostedSession(valid);
 
-    const invalid = structuredClone(valid);
-    invalid.tree.nodes[1].tokens[0].producer_extension.finite = Infinity;
+    for (const [field, value, pattern] of [
+      ["producer_extension", { finite: 1 }, /unknown field producer_extension/],
+      ["probes", { "local/calm.alert": 0.25 }, /earlier drowse/],
+      ["per_layer_scores", { "4": { "local/calm.alert": 0.25 } }, /earlier drowse/],
+    ]) {
+      const invalid = structuredClone(valid);
+      invalid.tree.nodes[1].tokens[0][field] = value;
+      assert.throws(
+        () => validatePersistedHostedSession(invalid),
+        (error) => error.code === "INVALID_SESSION_STATE" && pattern.test(error.message),
+        field,
+      );
+    }
+    const fiveX = structuredClone(valid);
+    fiveX.tree.nodes[1].tokens[0].measurements.version = 1;
     assert.throws(
-      () => validatePersistedHostedSession(invalid),
-      (error) => error.code === "INVALID_SESSION_STATE" &&
-        /non-finite/.test(error.message),
+      () => validatePersistedHostedSession(fiveX),
+      (error) => error.code === "INVALID_SESSION_STATE" && /version 1/.test(error.message),
     );
+    const noCapture = structuredClone(valid);
+    delete noCapture.tree.nodes[1].prompt_capture;
+    assert.throws(
+      () => validatePersistedHostedSession(noCapture),
+      (error) => error.code === "INVALID_SESSION_STATE",
+    );
+  });
+
+  test("offers pre-v8 saved chats as one file without opening them", async () => {
+    const rows = [
+      { key: "old-b", value: { schemaVersion: 1, id: "old-b", name: "Later", modelId: "m", updatedAt: 20, snapshot: { version: 7, tree: { tree_format: 2 } } } },
+      { key: "current", value: { schemaVersion: 1, id: "current", name: "Now", modelId: "m", updatedAt: 30, snapshot: { version: 8 } } },
+      { key: "old-a", value: { schemaVersion: 1, id: "old-a", name: "Earlier", modelId: "m", updatedAt: 10, snapshot: { version: 6, extra: [1, 2] } } },
+      { key: "broken", value: { schemaVersion: 1, id: "broken", snapshot: null } },
+    ];
+    let initialized = 0;
+    const store = {
+      async initialize() { initialized += 1; },
+      async list() { return structuredClone(rows); },
+      async read() { throw new Error("the export never opens a chat"); },
+      async write() { throw new Error("the export never writes"); },
+      async delete() { throw new Error("the export never deletes"); },
+    };
+    assert.equal(legacyConversationsModule.isLegacyConversationRow(rows[0].value), true);
+    assert.equal(legacyConversationsModule.isLegacyConversationRow(rows[1].value), false);
+    assert.equal(legacyConversationsModule.isLegacyConversationRow(rows[3].value), false);
+    const file = await legacyConversationsModule.exportLegacyConversations(store, Date.UTC(2026, 10, 1));
+    assert.equal(initialized, 1);
+    assert.equal(file.filename, "drowse-chats-before-6.0-2026-11-01.json");
+    assert.equal(file.mimeType, "application/json");
+    assert.deepEqual(file.conversations.map((row) => [row.id, row.name, row.snapshotVersion]), [
+      ["old-a", "Earlier", 6],
+      ["old-b", "Later", 7],
+    ]);
+    const document = JSON.parse(file.json);
+    assert.equal(document.format, "drowse-legacy-conversations");
+    assert.equal(document.format_version, 1);
+    assert.equal(document.exported_at, "2026-11-01T00:00:00.000Z");
+    assert.deepEqual(document.conversations, [
+      { id: "old-a", record: rows[2].value },
+      { id: "old-b", record: rows[0].value },
+    ]);
+    const empty = { ...store, async list() { return [rows[1]]; } };
+    assert.equal(await legacyConversationsModule.exportLegacyConversations(empty), null);
   });
 
   test("reopens the IndexedDB state store after versionchange", async () => {
@@ -438,6 +512,7 @@ function node(id, parentId, role, text) {
     role_label: null,
     thinking_text: null,
     aggregate_readings: {},
+    aggregate_measurements: null,
     applied_steering: null,
     finish_reason: null,
     starred: false,
@@ -451,6 +526,7 @@ function node(id, parentId, role, text) {
     tokens: null,
     thinking_tokens: null,
     raw_token_ids: null,
+    prompt_capture: null,
   };
 }
 
