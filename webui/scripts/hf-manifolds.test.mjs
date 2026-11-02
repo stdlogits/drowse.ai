@@ -23,6 +23,27 @@ try {
     "/src/hosted/artifacts/service.ts",
   );
 
+  const { domainLabel } = await server.ssrLoadModule("/src/hosted/artifacts/authoring.ts");
+
+  test("domain labels name periodic axes as drowse's manifold schema does", () => {
+    const axis = (periodic, period = 1) => ({ name: "t", low: 0, high: period, periodic, period });
+    assert.equal(domainLabel({ type: "box", axes: [axis(true, 12)] }), "ring(12)");
+    assert.equal(domainLabel({ type: "box", axes: [axis(true, 0.5)] }), "ring(0.5)");
+    assert.equal(domainLabel({ type: "box", axes: [{ periodic: true }] }), "ring(1d)");
+    assert.equal(domainLabel({ type: "box", axes: [axis(true), axis(true)] }), "torus(2d)");
+    assert.equal(
+      domainLabel({ type: "box", axes: [axis(true, 7), axis(false), axis(false)] }),
+      "box(3d, 1 periodic)",
+    );
+    assert.equal(domainLabel({ type: "box", axes: [axis(false), axis(false)] }), "box(2d)");
+    assert.equal(domainLabel({ type: "box", axes: [axis(false)] }), "box(1d)");
+    assert.equal(domainLabel({ type: "sphere", dim: 2 }), "sphere(2d)");
+    assert.equal(domainLabel({ type: "custom", embed_dim: 4 }), "custom(4d)");
+    assert.equal(domainLabel({ type: "klein" }), "Klein bottle (2D)");
+    assert.equal(domainLabel({ type: "projective" }), "Projective plane / RP² (2D)");
+    assert.equal(domainLabel({}), "?(0d)");
+  });
+
   test("hosted imports use the same explicit origin union as the CSP", () => {
     assert.deepEqual([...hostedHfManifoldDownloadOrigins({
       catalogUrl: "https://huggingface.co/catalog.json",

@@ -12,6 +12,7 @@ import type {
   TemplateDetail,
   TemplateSummary,
 } from "../../../../drowse/webui/src/lib/types.gen";
+import { formatG } from "../../../../drowse/webui/src/lib/expression";
 import { buildDrowseArchive, jsonBytes } from "./builder";
 import { parseDrowseTensorFilename } from "./drowseArchive";
 
@@ -364,8 +365,38 @@ function domainDimension(domain: ManifoldDomain): number {
   return Number(domain.embed_dim ?? 0);
 }
 
-function domainLabel(domain: ManifoldDomain): string {
-  return `${domain.type}(${domainDimension(domain)}d)`;
+/** `store/manifold_schema.py::domain_label`: a short `type(Nd)` label for a domain spec. A box
+ *  names its periodic axes, so a ring does not read as an interval: one periodic axis is
+ *  `ring(<period>)` (months: `ring(12)`), all periodic `torus(Nd)`, some `box(Nd, K periodic)`. */
+export function domainLabel(spec: unknown): string {
+  const record = typeof spec === "object" && spec !== null && !Array.isArray(spec)
+    ? spec as Record<string, unknown>
+    : {};
+  const kind = record.type ?? "?";
+  if (kind === "klein") return "Klein bottle (2D)";
+  if (kind === "projective") return "Projective plane / RP² (2D)";
+  let n = 0;
+  if (kind === "box") {
+    const listed = Array.isArray(record.axes) ? record.axes : [];
+    const periodic = listed.filter((axis): axis is Record<string, unknown> =>
+      typeof axis === "object" && axis !== null && !Array.isArray(axis) &&
+      (axis as Record<string, unknown>).periodic === true
+    );
+    n = listed.length;
+    if (n === 1 && periodic.length === 1) {
+      const period = periodic[0].period;
+      return typeof period === "number" && Number.isFinite(period)
+        ? `ring(${formatG(period, 6)})`
+        : "ring(1d)";
+    }
+    if (periodic.length > 0 && periodic.length === n) return `torus(${n}d)`;
+    if (periodic.length > 0) return `box(${n}d, ${periodic.length} periodic)`;
+  } else if (kind === "sphere") {
+    n = Math.trunc(Number(record.dim ?? 0));
+  } else if (kind === "custom") {
+    n = Math.trunc(Number(record.embed_dim ?? 0));
+  }
+  return `${String(kind)}(${n}d)`;
 }
 
 function embedCoordinates(domain: ManifoldDomain, coordinates: number[][]): number[][] {

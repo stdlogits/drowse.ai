@@ -68,7 +68,9 @@ try {
     const affineRank2 = options.affineRank2 === true || options.nonPoised === true;
     const saeFit = options.saeFit === true;
     const nodeRole = options.role ?? null;
-    const labels = affineRank2 ? ["center", "east", "north"] : ["calm", "alert"];
+    const oneNode = options.oneNode === true;
+    const labels = affineRank2 ? ["center", "east", "north"]
+      : oneNode ? ["deceptive"] : ["calm", "alert"];
     const nodeRoles = options.nodeRoles ?? labels.map(() => nodeRole);
     const tensorName = saeFit
       ? "_zdGVzdC9tb2RlbA_sae-_zojswyzlbonss2yi.safetensors"
@@ -169,6 +171,14 @@ try {
         shape: [3, 2],
         data: new Float32Array([0, 0, 0, 3, 5, 0]),
       },
+    } : oneNode ? {
+      node_coords: { shape: [1, 1], data: new Float32Array([1]) },
+      "layer_0.mean": { shape: [2], data: new Float32Array([0.1, 0.2]) },
+      "layer_0.basis": { shape: [1, 2], data: new Float32Array([1, 0]) },
+      "layer_0.node_coords": { shape: [1, 1], data: new Float32Array([1]) },
+      "layer_1.mean": { shape: [2], data: new Float32Array([0.3, 0.4]) },
+      "layer_1.basis": { shape: [1, 2], data: new Float32Array([0, 1]) },
+      "layer_1.node_coords": { shape: [1, 1], data: new Float32Array([2]) },
     } : {
       node_coords: { shape: [2, 1], data: new Float32Array([-1, 1]) },
       "layer_0.mean": { shape: [2], data: new Float32Array([0.1, 0.2]) },
@@ -736,6 +746,53 @@ try {
     assert.deepEqual([...program.collapse], [0, 0]);
   });
 
+  test("honors a layer clause and refuses one naming an unfitted layer", async () => {
+    const { request } = await fixture({ withWhitener: true });
+    const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+    assert.deepEqual([...compiler.compile("0.5 alert").enabled], [1, 1]);
+    const scoped = compiler.compile("0.5 alert{1}");
+    assert.deepEqual([...scoped.enabled], [0, 1]);
+    assert.equal(scoped.steeringDepth, 2);
+    assert.equal(scoped.steeringTerms.length, 1);
+    assert.equal(scoped.steeringTerms[0].key, "local/demo%alert{1}");
+    assert.deepEqual(scoped.steeringTerms[0].fitted, [0, 1]);
+    assert.deepEqual(scoped.steeringTerms[0].layers, [1]);
+    assert.equal(scoped.steeringTerms[0].share.length, 2);
+    assert.ok(Math.abs(scoped.steeringTerms[0].share.reduce((a, b) => a + b, 0) - 2) < 1e-9);
+    assert.deepEqual([...compiler.compile("0.5 !alert{0}").enabled], [1, 0]);
+    assert.throws(
+      () => compiler.compile("0.5 alert{1,4-5}"),
+      (error) => error.status === 422 && error.message ===
+        "steering term 'local/demo%alert{1,4-5}' selects layer(s) 4-5 it is not fitted at; " +
+          "fitted layers: 0-1",
+    );
+    // One position under two clauses is two terms, each with its own trigger.
+    assert.deepEqual(
+      compiler.compile("0.5 alert{1} + 0.2 alert@response").steeringTerms.map((term) => term.key),
+      ["local/demo%alert{1}", "local/demo%alert"],
+    );
+  });
+
+  test("resolves a one-node concept through its label; the retired axis does not resolve", async () => {
+    const { request } = await fixture({ withWhitener: true, oneNode: true });
+    const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+    const toward = compiler.compile("0.5 deceptive");
+    assert.deepEqual([...toward.enabled], [1, 1]);
+    assert.equal(toward.steeringTerms[0].key, "local/demo%deceptive");
+    const away = compiler.compile("-0.5 deceptive");
+    assert.deepEqual([...away.enabled], [1, 1]);
+    assert.ok([...toward.target].every((value) => value > 0));
+    assertFloatArray(away.target, [...toward.target].map((value) => -value));
+    assertFloatArray(away.along, toward.along);
+    for (const retired of ["0.5 honest.deceptive", "0.5 honest", "0.5 demo"]) {
+      assert.throws(
+        () => compiler.compile(retired),
+        (error) => error.code === "CORE_PACK_SELECTOR_NOT_FOUND",
+        retired,
+      );
+    }
+  });
+
   test("caches immutable generation payloads and isolates public mutable programs", async () => {
     const { request } = await fixture({ withWhitener: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
@@ -1064,7 +1121,7 @@ try {
     assert.equal(combined.curveActive.filter(Boolean).length, 2);
     assert.throws(
       () => compiler.compile("0.2 demo%alert@response + 0.3 demo%alert@prompt"),
-      (error) => error.code === "CORE_PACK_TRIGGER_CONFLICT",
+      (error) => error.code === "SteeringExprError" && /conflicting triggers/.test(error.message),
     );
 
     const flatFixture = await fixture({ withWhitener: true, withSecondManifold: true });
@@ -1082,7 +1139,7 @@ try {
     assertFloatArray(duplicateAblation.affineKappa, singleAblation.affineKappa);
     assert.throws(
       () => flat.compile("0.2 !alert@response + 0.3 !alert@prompt"),
-      (error) => error.code === "CORE_PACK_TRIGGER_CONFLICT",
+      (error) => error.code === "SteeringExprError" && /conflicting triggers/.test(error.message),
     );
   });
 
@@ -2002,7 +2059,9 @@ try {
       },
     };
     const runtime = new BrowserInstrumentRuntime(compiler, resolver);
-    compiler.attachProbe({ selector: "jlens/hello", name: "watched hello" });
+    const watched = compiler.attachProbe({ selector: "jlens/hello", name: "watched hello" });
+    assert.equal(watched.family, "lens");
+    assert.equal(watched.namespace, "jlens");
     compiler.setInstrumentLive("lens", true, [1]);
 
     assert.equal(runtime.blocks()[1].capabilities.source_switch, true);
@@ -2720,7 +2779,7 @@ try {
         expression,
       );
     }
-    for (const expression of ["0.3 slens/#12", "0.2 neuron/L8n344", "0.2 head/L3h2"]) {
+    for (const expression of ["0.3 slens/#12", "0.3 slens/Owl", "0.2 neuron/L8n344", "!head/L3h2"]) {
       assert.throws(
         () => compiler.compile(expression),
         (error) => error.code === "CORE_PACK_EXPRESSION_UNAVAILABLE" &&
