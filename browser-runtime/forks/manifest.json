@@ -80,9 +80,9 @@
       "baseTree": "ac223f95dc7ea27acaba299fe6b780ccb5d67b6f",
       "patch": "web-llm-drowse.patch",
       "patchBytes": 494420,
-      "patchSha256": "475d679f54a57e949c849412ef1f0f5db7605b198eb4b5035deee7762b21451b",
+      "patchSha256": "6e65100f7ae5aabf5e5509033b08a5fd9c243e164b1c8b8aece42ff72ace3eb3",
       "resultFiles": {
-        "package-lock.json": "a7886e6abbf0e35dfcc21fdbbd2855536597312d00e66b1ec8231d2e1181de16",
+        "package-lock.json": "06303a08aa57897393ae28db4db9e6d5e7f0e0178d3c9004be4b5fa482edf36a",
         "package.json": "f7b842245806fd3511262f6e03ba2c8c25a5b82c4dbe77fc887ae229de6c2abb",
         "rollup.config.js": "509d7ae65c5f1d3a9844f317854c191c2e4ea0978880b1e9cb4abb9216209273",
         "src/cache_util.ts": "22068a3108e0df16d9bd6c1397283cdb0f33aafa5f22eb2c26678cc30342ec08",

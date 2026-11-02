@@ -8,7 +8,7 @@ The runtime lock is hook ABI v5 (`runtime-lock.json` schema 2): `drowse-web-runt
 `block-sites-v5`, `exact-readout-v2`, each model's capacity profile by architecture
 (`standard-v4` for Gemma 3 and Qwen3, with the `blockSpec` its library's schema-4 descriptor
 attests; `standard-v4-residual` for GPT-2, Pythia and Qwen3.5 base, with the `unitRefusal` its
-unit calls answer), the WebLLM archive `0.2.84-drowse.41`, the fork manifest, compiler recipe
+unit calls answer), the WebLLM archive `0.2.84-drowse.46`, the fork manifest, compiler recipe
 and LLVM identities. It stays `feasibility-required` until every v5 library's converted revision,
 converted-manifest digest and library digest are filled (`prepare-hosted-candidate-lock.mjs`,
 below); `check-runtime-lock.mjs --release` lists what is still pending. Exact converted-model

@@ -7,7 +7,7 @@ index 0070bde..2b279d6 100644
 -  "name": "@mlc-ai/web-llm",
 -  "version": "0.2.84",
 +  "name": "@drowse/web-llm",
-+  "version": "0.2.84-drowse.40",
++  "version": "0.2.84-drowse.46",
    "lockfileVersion": 3,
    "requires": true,
    "packages": {
@@ -15,7 +15,7 @@ index 0070bde..2b279d6 100644
 -      "name": "@mlc-ai/web-llm",
 -      "version": "0.2.84",
 +      "name": "@drowse/web-llm",
-+      "version": "0.2.84-drowse.40",
++      "version": "0.2.84-drowse.46",
        "license": "Apache-2.0",
        "dependencies": {
 -        "loglevel": "^1.9.1"
