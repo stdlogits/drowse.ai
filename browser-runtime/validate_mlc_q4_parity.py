@@ -10,6 +10,14 @@ import numpy as np
 import torch
 
 from mlc_q4_torch import build_transformers_model
+from q4_unit_parity import (
+    UNIT_RESULT_KEYS,
+    has_unit_sites,
+    site_width,
+    split_sites,
+    unit_parity,
+    validate_units_member,
+)
 
 
 # The q4 libraries of the runtime lock: each one's parity record is `productionQ4Parity`, bound to
@@ -37,6 +45,12 @@ def validate(
 ) -> dict[str, Any]:
     metadata = load_capture_metadata(capture_directory)
     validate_capture_model_identity(model_directory, metadata)
+    architecture = model_architecture(model_directory)
+    if has_unit_sites(architecture) != ("units" in metadata):
+        raise ValueError(
+            "a units library's capture carries its block sites and static reads, a residual "
+            "library's none"
+        )
     for threshold in (maximum_capture_relative_error, maximum_probe_relative_error,
                       maximum_probe_capture_relative_error):
         if not finite_number(threshold) or threshold <= 0:
@@ -184,6 +198,27 @@ def validate(
             f"dequantized MLC q4 greedy-token parity failed: browser={browser_greedy_ids}, torch={torch_greedy_ids}"
         )
 
+    # B1 §4.3 item 2 on a units library: act, z and mid, the static reads and unit activity.
+    units: dict[str, Any] = dict.fromkeys(UNIT_RESULT_KEYS)
+    if "units" in metadata:
+        member = validate_units_member(
+            metadata["units"], layers=layers, num_layers=len(model.model.layers),
+        )
+        browser_sites = split_sites(
+            load_residuals(
+                capture_directory / "sites.f32",
+                member["sites_sha256"],
+                len(layers),
+                len(positions),
+                site_width(member["block"], hidden_size),
+            ),
+            member["block"],
+            hidden_size,
+        )
+        units = unit_parity(
+            model, architecture, member, browser_sites, layers, positions, input_ids, selected_device,
+        )
+
     return {
         "modelId": metadata["model_id"],
         "runtimeIdentitySha256": metadata["runtime_identity_sha256"],
@@ -201,7 +236,15 @@ def validate(
         "browserProbeCaptureRelativeErrorByLayer": browser_probe_capture_errors,
         "browserGreedyTokenIds": browser_greedy_ids,
         "torchGreedyTokenIds": torch_greedy_ids,
+        **units,
     }
+
+
+def model_architecture(model_directory: Path) -> str:
+    architecture = json.loads((model_directory / "mlc-chat-config.json").read_text()).get("model_type")
+    if not isinstance(architecture, str):
+        raise ValueError("converted model names no architecture")
+    return architecture
 
 
 def validate_capture_model_identity(model_directory: Path, metadata: dict) -> None:
@@ -228,15 +271,10 @@ def validate_capture_model_identity(model_directory: Path, metadata: dict) -> No
         "hiddenSize": manifest["hiddenSize"],
         "layerMap": manifest["layerMap"],
     }
-    abis = [manifest["runtimeAbi"]]
-    if manifest["runtimeAbi"] in {"drowse-web-runtime-v1", "saklas-web-runtime-v1", "polythetic-web-runtime-v1"}:
-        abis = [f"{brand}-web-runtime-v1" for brand in ("drowse", "saklas", "polythetic")]
-    fingerprints = {
-        hashlib.sha256(json.dumps({**identity, "runtimeAbi": abi}, sort_keys=True,
-                                 ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
-        for abi in abis
-    }
-    if metadata["runtime_identity_sha256"] not in fingerprints or metadata["layer_map"] != identity["layerMap"] or metadata["hidden_size"] != identity["hiddenSize"]:
+    fingerprint = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+    if metadata["runtime_identity_sha256"] != fingerprint or metadata["layer_map"] != identity["layerMap"] or metadata["hidden_size"] != identity["hiddenSize"]:
         raise ValueError("capture belongs to a different model artifact identity")
 
 
@@ -257,8 +295,8 @@ def load_capture_metadata(capture_directory: Path) -> dict[str, Any]:
         "steering_program",
         "greedy",
     }
-    allowed = required | {"named_role_capture", "runtime_lock"}
-    if set(metadata) - allowed or not required.issubset(metadata) or metadata["schema_version"] != 4:
+    allowed = required | {"named_role_capture", "runtime_lock", "units"}
+    if set(metadata) - allowed or not required.issubset(metadata) or metadata["schema_version"] != 5:
         raise ValueError("browser residual fixture has an invalid schema")
     if (
         metadata["model_id"] not in PARITY_MODEL_IDS
@@ -602,6 +640,7 @@ def release_evidence_receipt(
             "maxProbeRelativeError": result["maxProbeRelativeError"],
             "maxCaptureRelativeError": result["maxCaptureRelativeError"],
             "steeringDirectionCosine": result["steeringDirectionCosine"],
+            **{key: result[key] for key in UNIT_RESULT_KEYS},
         },
     }
 

@@ -19,19 +19,26 @@ assert _MLC_SPEC is not None and _MLC_SPEC.loader is not None
 _MLC_MODULE = importlib.util.module_from_spec(_MLC_SPEC)
 sys.modules["mlc_q4_torch"] = _MLC_MODULE
 _MLC_SPEC.loader.exec_module(_MLC_MODULE)
+_UNITS_SPEC = importlib.util.spec_from_file_location("q4_unit_parity", _RUNTIME_ROOT / "q4_unit_parity.py")
+assert _UNITS_SPEC is not None and _UNITS_SPEC.loader is not None
+_UNITS = importlib.util.module_from_spec(_UNITS_SPEC)
+sys.modules["q4_unit_parity"] = _UNITS
+_UNITS_SPEC.loader.exec_module(_UNITS)
 _VALIDATOR_SPEC = importlib.util.spec_from_file_location(
     "validate_mlc_q4_parity", _RUNTIME_ROOT / "validate_mlc_q4_parity.py"
 )
 assert _VALIDATOR_SPEC is not None and _VALIDATOR_SPEC.loader is not None
 _VALIDATOR = importlib.util.module_from_spec(_VALIDATOR_SPEC)
 _VALIDATOR_SPEC.loader.exec_module(_VALIDATOR)
+# What validate() reports for a residual library: no unit measures.
+_UNITLESS = dict.fromkeys(_UNITS.UNIT_RESULT_KEYS)
 
 
 def capture_metadata(
     model_id: str = "qwen3-1.7b",
 ) -> dict[str, Any]:
     metadata = {
-        "schema_version": 4,
+        "schema_version": 5,
         "produced_at": "2026-08-30T20:00:00.000Z",
         "model_id": model_id,
         "runtime_identity_sha256": "1" * 64,
@@ -82,7 +89,7 @@ def test_every_q4_library_records_production_q4_parity(tmp_path: Path, model_id:
     (tmp_path / "capture.json").write_text(json.dumps(metadata))
     assert _VALIDATOR.load_capture_metadata(tmp_path) == metadata
     result = {"modelId": model_id, "runtimeIdentitySha256": "1" * 64, "maxProbeRelativeError": 0.001,
-              "maxCaptureRelativeError": 0.002, "steeringDirectionCosine": 0.999}
+              "maxCaptureRelativeError": 0.002, "steeringDirectionCosine": 0.999, **_UNITLESS}
     receipt = _VALIDATOR.release_evidence_receipt(result, metadata, "productionQ4Parity", "fixture.json")
     assert receipt["evidenceType"] == "productionQ4Parity"
     assert receipt["results"]["modelId"] == model_id
@@ -277,6 +284,7 @@ def test_release_receipt_retains_observed_runtime_identity() -> None:
         "maxProbeRelativeError": 0.005,
         "maxCaptureRelativeError": 0.006,
         "steeringDirectionCosine": 0.999,
+        **_UNITLESS,
     }
     receipt = _VALIDATOR.release_evidence_receipt(
         result,
@@ -296,6 +304,7 @@ def test_release_receipt_rejects_runtime_lock_override() -> None:
         "maxProbeRelativeError": 0.005,
         "maxCaptureRelativeError": 0.006,
         "steeringDirectionCosine": 0.999,
+        **_UNITLESS,
     }
     try:
         _VALIDATOR.release_evidence_receipt(
@@ -308,3 +317,20 @@ def test_release_receipt_rejects_runtime_lock_override() -> None:
         assert "checked-in repository runtime lock" in str(error)
     else:
         raise AssertionError("runtime-lock override was accepted as release evidence")
+
+
+@pytest.mark.parametrize(("architecture", "units"), [("qwen3", False), ("gemma3_text", False), ("qwen3_5", True)])
+def test_capture_carries_unit_sites_exactly_for_a_units_library(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, architecture: str, units: bool,
+) -> None:
+    metadata = capture_metadata()
+    if units:
+        metadata["units"] = {
+            "block": {"d_ff": 4, "n_heads": 1, "head_dim": 2}, "sites_sha256": "7" * 64,
+            "static_reads": [{"layer": 0, "neuron": 0, "ids": list(range(8)), "probabilities": [0.1] * 8}],
+        }
+    (tmp_path / "capture.json").write_text(json.dumps(metadata))
+    (tmp_path / "mlc-chat-config.json").write_text(json.dumps({"model_type": architecture}))
+    monkeypatch.setattr(_VALIDATOR, "validate_capture_model_identity", lambda *_: None)
+    with pytest.raises(ValueError, match="units library's capture carries its block sites"):
+        _VALIDATOR.validate(tmp_path, tmp_path)
