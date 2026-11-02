@@ -855,6 +855,9 @@ try {
       spec, refusal: null, layerCount: 2, statistics, scales: readingScales(statistics, spec, 2),
       neuronWrite: (layer, index) => (layer === 1 && index === 2 ? Float32Array.from([1, 0.5]) : null),
       slensAtom: () => null,
+      slensIdentity: () => null,
+      prepare: async () => undefined,
+      prepareProbe: async () => undefined,
     };
     compiler.setUnitSource(source);
     const program = compiler.compile("0.5 !neuron/L1n2 + !head/L0h1@before");
@@ -889,6 +892,7 @@ try {
     const slensSource = {
       ...source,
       slensAtom: (word) => (word === "e" ? { tokenId: 72, directions: new Map([[0, Float32Array.from([0.5, 0.25])], [1, Float32Array.from([0, 1])]]) } : null),
+      slensIdentity: (layers) => ({ lens: "s-lens", centre: `centre:${layers.join(",")}`, mask: "tokenizer" }),
     };
     compiler.setUnitSource(slensSource);
     const slensPush = compiler.compile("0.2 slens/e");
@@ -899,6 +903,16 @@ try {
     const slensGated = compiler.compile("!neuron/L1n2@when:slens/e>1");
     assert.equal(slensGated.controls.units[0].gate.scoreKey, "slens/e");
     assert.equal(slensGated.measurementSchema.probes.filter((probe) => probe !== null).length, 0, "no GPU slot");
+    // Unit and slens/ probes carry native's digests (units-readout-v2, slens-footprint-z-v3).
+    const digests = await server.ssrLoadModule("/src/hosted/runtime/units/probeDigest.ts");
+    const scales = readingScales(statistics, spec, 2);
+    assert.deepEqual(compiler.probeHashes(), {
+      "neuron/L0n1": digests.unitProbeDigest(request.model.id, "neuron/L0n1", scales.detail, [scales.neuron[1], scales.neuron[4 + 1]]),
+      "slens/e": digests.slensProbeDigest(request.model.id, "e", 72, [0, 1], { lens: "s-lens", centre: "centre:0,1", mask: "tokenizer" }),
+    });
+    compiler.setUnitSource({ ...slensSource, slensIdentity: () => null });
+    assert.equal(compiler.probeHashes()["slens/e"], undefined, "a swapped source omits the digest, it never throws");
+    compiler.setUnitSource(slensSource);
     // A unit outside the model is native's 400; a library without unit sites is native's 422.
     assert.throws(() => compiler.compile("!neuron/L1n9"), (error) => error.status === 400 && /neuron 9 is outside block 1/.test(error.message));
     compiler.setUnitSource({ ...source, spec: null, refusal: "layer 0: the attention projections are fused (qkv)" });

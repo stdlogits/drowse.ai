@@ -173,6 +173,7 @@ function synthesizedPacks(file: TinyModelFile & { neutral: { statements: string[
   };
   const lensOf = (family: "R" | "S") => ({
     source: `fixture:${family.toLowerCase()}`,
+    identity: `fixture-${family.toLowerCase()}-lens`,
     sites: (["out", "mid"] as const).filter((site) => lenses.has(`${family}:${site}`)),
     layers: (site: "out" | "mid") => [...(lenses.get(`${family}:${site}`)?.keys() ?? [])].sort((a, b) => a - b),
     fetch: async (site: "out" | "mid", layer: number) => lenses.get(`${family}:${site}`)!.get(layer)!,
@@ -182,7 +183,7 @@ function synthesizedPacks(file: TinyModelFile & { neutral: { statements: string[
     statistics: async () => ({ statistics: neutral.statistics, absent: null }),
     means: async () => ({ out: neutral.out, mid: neutral.mid }),
     lens: lensOf,
-    embeddingStatistics: async () => ({ ...stats, source: "tokenizer", detail: "the fixture's byte vocabulary" }),
+    embeddingStatistics: async () => ({ ...stats, source: "tokenizer", detail: "the fixture's byte vocabulary", maskDigest: "tokenizer" }),
     layerArtifacts: async (layer) => artifacts(layer),
     nullProjector: async () => new Float32Array(d * d),
     headKeptIds: async () => kept,

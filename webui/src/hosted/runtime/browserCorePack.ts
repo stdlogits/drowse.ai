@@ -92,6 +92,7 @@ import {
   unitTap,
   type BrowserUnitProgramSource,
 } from "./units/unitProgram";
+import { slensProbeDigest, unitProbeDigest } from "./units/probeDigest";
 import { unitName, type UnitRef } from "./units/unitReader";
 
 interface CoreManifold {
@@ -507,14 +508,49 @@ export class BrowserFeasibilityCorePackCompiler {
   probeHashes(): Record<string, string> {
     const hashes: Record<string, string> = {};
     for (const [name, probe] of this.attachedProbes) {
-      // A unit probe's digest (native `units-readout-v2`: model, unit, scale source and values)
-      // is the registry's to compute once it learns unit probes (B6); until then it has none.
-      if (probe.family === "units") continue;
-      hashes[name] = probe.family === "geometry"
-        ? this.geometryProbeHash(probe)
-        : this.instruments.probeHash(this.modelId, probe);
+      if (probe.family === "geometry") {
+        hashes[name] = this.geometryProbeHash(probe);
+      } else if (probe.family === "units") {
+        hashes[name] = this.unitProbeHash(probe);
+      } else if (probe.family === "lens" && probe.namespace === "slens") {
+        const digest = this.slensProbeHash(probe);
+        if (digest !== null) hashes[name] = digest;
+      } else {
+        hashes[name] = this.instruments.probeHash(this.modelId, probe);
+      }
     }
     return hashes;
+  }
+
+  /** Native `UnitsInstrument.probe_hash` (`units-readout-v2`): the unit and the reading scale
+   *  its reading divides by (the scales' detail and the unit's raw values). */
+  private unitProbeHash(probe: Extract<ProbeInfo, { family: "units" }>): string {
+    const source = this.unitSource;
+    const scales = source?.scales ?? null;
+    if (source === null || scales === null || source.spec === null) return unitProbeDigest(this.modelId, probe.unit, "", []);
+    const raw = probe.kind === "neuron"
+      ? [scales.neuron[(probe.layer * 2) * source.spec.dFF + probe.index], scales.neuron[(probe.layer * 2 + 1) * source.spec.dFF + probe.index]]
+      : [scales.head[probe.layer * source.spec.nHeads + probe.index]];
+    return unitProbeDigest(this.modelId, probe.unit, scales.detail, raw);
+  }
+
+  /** Native `LensInstrument.probe_hash` for an `slens/` probe (`slens-footprint-z-v3`): null when
+   *  the unit source has not prepared the S identity (a source swapped since the attach). */
+  private slensProbeHash(probe: Extract<ProbeInfo, { family: "lens" }>): string | null {
+    if (probe.token_id === null) return null;
+    const identity = this.unitSource?.slensIdentity(probe.layers) ?? null;
+    return identity === null ? null : slensProbeDigest(this.modelId, probe.word, probe.token_id, probe.layers, identity);
+  }
+
+  /** Reads off the device what `expression`'s `neuron/` pushes and `slens/` atoms and gates
+   *  need before the synchronous compile (the unit source's `prepare`). */
+  async prepareUnitSelectors(expression: string): Promise<void> {
+    await this.unitSource?.prepare(expression);
+  }
+
+  /** The same for one probe selector (an `slens/` probe's atom and digest identity). */
+  async prepareUnitProbe(selector: string): Promise<void> {
+    await this.unitSource?.prepareProbe(selector);
   }
 
   hasAttachedProbes(): boolean {

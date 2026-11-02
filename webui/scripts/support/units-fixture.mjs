@@ -59,6 +59,7 @@ export function unitsPackSource(fx, arch, whiteners, options = {}) {
     if (sites.length === 0) return null;
     return {
       source: `local:${family.toLowerCase()}`,
+      identity: `units-tiny-${arch}-${family.toLowerCase()}`,
       sites,
       layers: (site) => [...(fx.lenses.get(`${family}:${site}`)?.keys() ?? [])].sort((a, b) => a - b),
       fetch: async (site, layer) => fx.lenses.get(`${family}:${site}`).get(layer),
@@ -84,6 +85,7 @@ export function unitsPackSource(fx, arch, whiteners, options = {}) {
       mask,
       source: slens.mask.source,
       detail: slens.mask.detail,
+      maskDigest: "tokenizer",
     }),
     layerArtifacts: async (layer) => tables.get(layer),
     nullProjector: async () => Float32Array.from(decode(artifacts.null.projector)),

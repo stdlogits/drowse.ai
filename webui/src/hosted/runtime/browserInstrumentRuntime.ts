@@ -250,6 +250,7 @@ export class BrowserInstrumentRuntime {
         this.jlensResolver,
       );
     }
+    if (selector?.startsWith("slens/")) await this.compiler.prepareUnitProbe(selector);
     return this.compiler.attachProbe(request);
   }
 

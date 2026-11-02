@@ -29,6 +29,15 @@ export interface BrowserUnitProgramSource {
   neuronWrite(layer: number, index: number): Float32Array | null;
   /** `{L: K^{out}_L ẽ_v}` of a prepared `slens/<word>`, else null. */
   slensAtom(word: string): { readonly tokenId: number; readonly directions: ReadonlyMap<number, Float32Array> } | null;
+  /** What an attached `slens/` probe's digest binds besides its word (native
+   *  `LensInstrument.probe_hash`): the S lens identity, the centring out means' digest at the
+   *  probe's layers, the token mask's digest. Null until a `slens/` atom or probe was prepared. */
+  slensIdentity(layers: readonly number[]): { lens: string; centre: string; mask: string } | null;
+  /** Reads off the device what `expression`'s `neuron/` pushes and `slens/` atoms and gates
+   *  need, so the synchronous compile finds them (`neuronWrite`, `slensAtom`). */
+  prepare(expression: string): Promise<void>;
+  /** The same for one probe selector (`slens/<word>`: its atom and its digest's identity). */
+  prepareProbe(selector: string): Promise<void>;
 }
 
 /** A `neuron/…` or `head/…` atom's unit, refused as native refuses it: 422 on a library

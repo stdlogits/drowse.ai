@@ -20,6 +20,7 @@ import { noLensText } from "./referenceContext";
 import { readingScales, type UnitScales, type UnitStatistics } from "./scales";
 import { parseSteeringExpression } from "../steeringExpression";
 import { slensAtomDirections } from "./slens";
+import { centreDigest } from "./probeDigest";
 import type { BrowserUnitProgramSource } from "./unitProgram";
 import { NO_CATALOG, parseUnit, unitCatalogStatus, UnitReader, UnitRequestError, type UnitLayerArtifacts } from "./unitReader";
 
@@ -46,6 +47,9 @@ export const MAX_LABEL_UNITS = 128;
 export interface UnitsPackLens {
   /** The source label the anatomy's binding names (`local:r`, a pack id). */
   readonly source: string;
+  /** Native `lens_identity(sidecar)` (the pack registry's `lensIdentity(manifest)`): what an
+   *  `slens/` probe's digest binds. */
+  readonly identity: string;
   readonly sites: readonly LensSite[];
   layers(site: LensSite): readonly number[];
   /** `[d, d]` fp32 (`J_L` or `K_L`). */
@@ -66,6 +70,9 @@ export interface UnitsPackSource {
     mask: Uint32Array;
     source: string;
     detail: string;
+    /** Native `LensInstrument._mask_digest()`: the first 16 hex of sha256 over the counts
+     *  (int64 LE) and `|{min_count}`, or `"tokenizer"` without counts. */
+    maskDigest: string;
   }>;
   layerArtifacts(layer: number): Promise<UnitLayerArtifacts>;
   nullProjector(): Promise<Float32Array>;
@@ -298,7 +305,7 @@ export class BrowserUnitsService {
    *  over the loaded library: its block spec or refusal, the unit statistics, and the
    *  directions `prepare(expression)` reads off the device before a compile (each neuron push's
    *  write, each `slens/` atom's footprints over the S:out layers). */
-  async programSource(): Promise<BrowserUnitProgramSource & { prepare(expression: string): Promise<void> }> {
+  async programSource(): Promise<BrowserUnitProgramSource> {
     const backend = this.options.blockSites();
     const capabilities = backend.capabilities();
     if (capabilities === null || capabilities.blockSpec === null) {
@@ -310,13 +317,30 @@ export class BrowserUnitsService {
         scales: null,
         neuronWrite: () => null,
         slensAtom: () => null,
+        slensIdentity: () => null,
         prepare: async () => undefined,
+        prepareProbe: async () => undefined,
       };
     }
     const session = await this.open();
     const writes = new Map<string, Float32Array>();
     const atoms = new Map<string, { tokenId: number; directions: ReadonlyMap<number, Float32Array> }>();
+    let identity: { lens: string; mask: string; means: Float32Array } | null = null;
     const { statistics } = await session.packs.statistics();
+    const d = session.context.hiddenSize;
+    const prepareSlens = async (word: string) => {
+      if (!atoms.has(word)) {
+        const tokenId = this.options.resolveToken(word);
+        atoms.set(word, { tokenId, directions: await slensAtomDirections(session.context, word, tokenId) });
+      }
+      if (identity === null) {
+        const lens = session.packs.lens("S");
+        const means = session.context.means.out;
+        if (lens === null || means === null) return;
+        const { maskDigest } = await session.packs.embeddingStatistics();
+        identity = { lens: lens.identity, mask: maskDigest, means };
+      }
+    };
     return {
       spec: session.spec,
       refusal: null,
@@ -325,6 +349,9 @@ export class BrowserUnitsService {
       scales: session.scales,
       neuronWrite: (layer, index) => writes.get(`${layer}:${index}`) ?? null,
       slensAtom: (word) => atoms.get(word) ?? null,
+      slensIdentity: (layers) => identity === null
+        ? null
+        : { lens: identity.lens, centre: centreDigest(identity.means, d, layers), mask: identity.mask },
       prepare: async (expression) => {
         if (!expression.trim()) return;
         const parsed = parseSteeringExpression(expression);
@@ -339,12 +366,15 @@ export class BrowserUnitsService {
                 writes.set(key, Float32Array.from(rows.data));
               }
             }
-            if (atom.namespace === "slens" && !atoms.has(atom.concept)) {
-              const tokenId = this.options.resolveToken(atom.concept);
-              atoms.set(atom.concept, { tokenId, directions: await slensAtomDirections(session.context, atom.concept, tokenId) });
-            }
+            if (atom.namespace === "slens") await prepareSlens(atom.concept);
           }
+          const gate = term.trigger?.gate?.probe;
+          if (gate?.startsWith("slens/")) await prepareSlens(gate.slice("slens/".length));
         }
+      },
+      prepareProbe: async (selector) => {
+        const trimmed = selector.trim();
+        if (trimmed.startsWith("slens/")) await prepareSlens(trimmed.slice("slens/".length));
       },
     };
   }
