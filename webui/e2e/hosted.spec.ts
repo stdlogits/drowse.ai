@@ -1090,6 +1090,22 @@ test("first run includes J-lens and SAE while additional model tools remain mana
   ]);
 });
 
+/** Opens a reply token and checks the Token view read it through the installed lens and SAE:
+ *  each layer's reading, the across-layer chips and the fixture's features, with no error. */
+async function expectTokenReadings(page: Page, text: string): Promise<void> {
+  const token = await inspectToken(page, text);
+  const layers = token.getByRole("region", { name: "Layer by layer", exact: true });
+  await expect(layers).toContainText("L0");
+  await expect(layers).toContainText("L1");
+  await expect(token.getByRole("region", { name: "Across layers", exact: true })).toContainText(/fixture/);
+  const features = token.getByRole("region", { name: "Features", exact: true });
+  const rows = features.getByRole("listitem");
+  await expect(rows.filter({ hasText: "f7" })).toHaveCount(1);
+  await expect(rows.filter({ hasText: "f12" })).toHaveCount(1);
+  await expect(rows.first()).toContainText(/fixture feature|local behavior/);
+  await expect(token.getByRole("alert")).toHaveCount(0);
+}
+
 test("installed lens and SAE packs are usable without preparation errors", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -1126,19 +1142,34 @@ test("installed lens and SAE packs are usable without preparation errors", async
 
   await sendMessage(page, "Measure installed instruments");
   await expect(lens.getByRole("list", { name: "Lens probe tokens" })).toBeVisible();
-  const token = await inspectToken(page, "deterministic");
-  await expect(token.getByRole("region", { name: "Across layers", exact: true })).toBeVisible();
-  await expect(token.getByRole("region", { name: "Features", exact: true })).toBeVisible();
+  await expectTokenReadings(page, "deterministic");
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Reroll assistant message" }).click();
   await waitForReply(page);
+  // Both assistant branches carry the watched word's and feature's readings on every token row.
   await expect.poll(async () => page.evaluate(async (moduleUrl) => {
     const stores = await import(moduleUrl);
     const user = [...stores.loomTree.nodes.values()].find(
       (node: { text: string }) => node.text === "Measure installed instruments",
     );
-    return user ? (stores.loomTree.children_of.get(user.id) ?? []).length : 0;
-  }, toastModuleUrl)).toBe(2);
+    if (!user) return [];
+    return (stores.loomTree.children_of.get(user.id) ?? []).map((id: string) => {
+      const node = stores.loomTree.nodes.get(id);
+      const rows: { measurements?: { scores?: Record<string, number> } }[] = node?.tokens ?? [];
+      const keys = rows.map((row) => Object.keys(row.measurements?.scores ?? {}));
+      return {
+        role: node?.role,
+        rows: rows.length > 0,
+        lens: rows.length > 0 && keys.every((names) => names.some((name) => /^(jlens|R)\/fixture$/.test(name))),
+        sae: rows.length > 0 && keys.every((names) => names.some((name) => /^sae\/7$/.test(name))),
+      };
+    });
+  }, toastModuleUrl)).toEqual([
+    { role: "assistant", rows: true, lens: true, sae: true },
+    { role: "assistant", rows: true, lens: true, sae: true },
+  ]);
+  // The rerolled reply's token reads through both packs too.
+  await expectTokenReadings(page, "deterministic");
   await expect(page.getByText(/Fake runtime method .* is not implemented/)).toHaveCount(0);
   expect(pageErrors).toEqual([]);
 });
@@ -1411,14 +1442,29 @@ test("reload during generation restores the stable user turn without a partial a
   await expect(page.locator(".msg .dw-said").last()).not.toHaveText(fixtureResponse);
 
   await openInstalledFixtureWorkbench(page);
-  await expect(
-    page.locator(".chat .log").getByText(prompt, { exact: true }),
-  ).toBeVisible();
-  await expect(page.locator('.role-chip[title="assistant"]')).toHaveCount(0);
+  const log = page.locator(".chat .log");
+  await expect(log.getByText(prompt, { exact: true })).toBeVisible();
+  // Only the stable user turn comes back: no assistant turn in the log or the Loom tree.
+  await expect(log.locator(".dw-turn.msg")).toHaveCount(1);
+  await expect(log.locator(".dw-turn.msg.user")).toHaveCount(1);
+  await expect(log.locator(".dw-said")).toHaveCount(0);
+  const restoredRoles = async () => page.evaluate(async (moduleUrl) => {
+    const stores = await import(moduleUrl);
+    return [...stores.loomTree.nodes.values()]
+      .map((node: { role: string }) => node.role)
+      .filter((role: string) => role !== "system");
+  }, toastModuleUrl);
+  expect(await restoredRoles()).toEqual(["user"]);
 
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Continue after recovery");
   await sendButton(page).click();
   await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
+  // 6.0 appends authored text to a trailing same-role message, so the restored user turn grows
+  // and the one reply follows it.
+  await expect(log.locator(".dw-turn.msg")).toHaveCount(2);
+  await expect(log.locator(".dw-turn.msg.user")).toContainText(`${prompt}Continue after recovery`);
+  await expect(log.locator(".dw-said")).toHaveCount(1);
+  await expect.poll(restoredRoles).toEqual(["user", "assistant"]);
 });
 
 test("reroll creates an assistant sibling under the original user turn", async ({ page }) => {
