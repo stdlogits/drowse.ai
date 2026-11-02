@@ -32,9 +32,16 @@ const LOCAL_LENS_V7_KEYS = [
   "n_prompts", "raw_corpus_sha256", "raw_prompt_count", "seq_len", "sites",
   "usable_prompt_count",
 ].sort();
+const LOCAL_LENS_V7_SITES = ["out", "mid"];
 const LOCAL_LENS_V7_SITE_KEYS = ["layers", "tensor_files", "tensor_sha256"];
-// The browser reads output-site Jacobian lenses: the standard J and the RelP R.
+// The v7 reader rule frozen with drowse 6.0: a site may also carry its fit's
+// `split_half` ({layer: difference}). `odd` belongs only to a checkpoint, so a
+// durable manifest (every pack's) that carries it is malformed.
+const LOCAL_LENS_V7_OPTIONAL_SITE_KEYS = ["split_half"];
+// The browser reads the R family (the RelP R and the standard J) at the out
+// site. A mid site is validated and skipped.
 const BROWSER_LENS_KINDS = new Set(["J", "R"]);
+const BROWSER_LENS_SITE = "out";
 const JLENS_DIRECTION_CACHE_MAX_ENTRIES = 64;
 const JLENS_DIRECTION_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 
@@ -145,10 +152,17 @@ export function saeDecoderDirection(
 interface BrowserJlens {
   readonly source: string;
   readonly displayName: string;
+  /** The lens kind: the RelP R or the standard J, both of the R family. */
+  readonly kind: "J" | "R";
+  readonly nPrompts: number;
+  /** The fit's split-half difference per out-site layer, when recorded. */
+  readonly splitHalf: Readonly<Record<string, number>> | null;
   readonly hiddenSize: number;
   readonly layerMap: readonly number[];
   readonly runtimeLayerMap: readonly number[];
   readonly bindingId: string;
+  /** drowse's `lens_identity` of the pack's manifest. */
+  readonly identity: string;
   readonly jacobians: ReadonlyMap<number, Float32Array>;
   readonly words: Map<string, { row: number; tokenId: number }>;
   readonly unembedding: Float32Array;
@@ -212,7 +226,7 @@ export class BrowserInstrumentRegistry {
     if (candidate === undefined) {
       throw instrumentError(
         "JLENS_SOURCE_UNAVAILABLE",
-        `J-lens source ${source} is not installed for this model`,
+        `Lens source ${source} is not installed for this model`,
       );
     }
     this.jlens = await loadJlens(candidate, this.loadRequest);
@@ -227,7 +241,10 @@ export class BrowserInstrumentRegistry {
     jlens: {
       source: string;
       displayName: string;
+      kind: "J" | "R";
       layers: number[];
+      nPrompts: number;
+      splitHalf: Record<string, number> | null;
       words: Array<{ word: string; tokenId: number }>;
     } | null;
   } {
@@ -247,7 +264,10 @@ export class BrowserInstrumentRegistry {
         : {
             source: this.jlens.source,
             displayName: this.jlens.displayName,
+            kind: this.jlens.kind,
             layers: [...this.jlens.layerMap],
+            nPrompts: this.jlens.nPrompts,
+            splitHalf: this.jlens.splitHalf === null ? null : { ...this.jlens.splitHalf },
             words: [...this.jlens.words].map(([word, value]) => ({
               word,
               tokenId: value.tokenId,
@@ -293,7 +313,7 @@ export class BrowserInstrumentRegistry {
     if (fitted.length !== jlens.layerMap.length) {
       throw instrumentError(
         "JLENS_PACK_LAYER_MISMATCH",
-        "The installed J-lens layer map does not match the loaded runtime",
+        "The installed R lens's layer map does not match the loaded runtime",
       );
     }
     return {
@@ -314,7 +334,7 @@ export class BrowserInstrumentRegistry {
       if (token === undefined) {
         throw instrumentError(
           "JLENS_TOKEN_UNAVAILABLE",
-          `J-lens token ${JSON.stringify(word)} must be prepared before it is pinned`,
+          `Lens token ${JSON.stringify(word)} must be prepared before it is pinned`,
         );
       }
       pinned.add(token.tokenId);
@@ -338,19 +358,34 @@ export class BrowserInstrumentRegistry {
     modelId: string,
     probe: Exclude<ProbeInfo, { family: "geometry" }>,
   ): string {
+    if (probe.family === "units") {
+      throw instrumentError(
+        "INSTRUMENT_PACK_UNAVAILABLE",
+        `Unit probe ${probe.name} needs unit reads, which this browser runtime does not have`,
+      );
+    }
     if (probe.family === "lens") {
       if (probe.token_id === null) {
         throw instrumentError(
           "JLENS_TOKEN_UNAVAILABLE",
-          `J-lens probe ${probe.name} has no resolved token identity`,
+          `Lens probe ${probe.name} has no resolved token identity`,
         );
       }
+      if (probe.namespace === "slens" || this.jlens === null) {
+        throw instrumentError(
+          "JLENS_PACK_UNAVAILABLE",
+          `Lens probe ${probe.name} needs ${probe.namespace === "slens" ? "an S" : "an R"} lens, which is not loaded`,
+        );
+      }
+      // drowse's `LensInstrument.probe_hash`: the readout channel binds the
+      // resident lens, so the same word through another lens is another probe.
       return pythonTupleDigest([
-        "jlens-readout-v2",
+        "jlens-readout-v5",
         modelId,
         probe.word,
         probe.token_id,
         [...probe.layers],
+        this.jlens.identity,
       ]);
     }
     const sae = this.sae;
@@ -431,14 +466,14 @@ export class BrowserInstrumentRegistry {
     if (requested.length > JLENS_DIRECTION_CACHE_MAX_ENTRIES) {
       throw instrumentError(
         "JLENS_PREPARATION_LIMIT",
-        `Prepare at most ${JLENS_DIRECTION_CACHE_MAX_ENTRIES} J-lens words at once`,
+        `Prepare at most ${JLENS_DIRECTION_CACHE_MAX_ENTRIES} lens words at once`,
       );
     }
     const jlens = this.jlens;
     if (jlens === null) {
       throw instrumentError(
         "JLENS_PACK_UNAVAILABLE",
-        "Install the compatible J-lens pack to use jlens/<word>",
+        "Install a compatible R-lens pack to use jlens/<word>",
       );
     }
     const tokenIds = new Map<string, number>();
@@ -448,7 +483,7 @@ export class BrowserInstrumentRegistry {
       if (curated !== undefined && curated.tokenId !== tokenId) {
         throw instrumentError(
           "JLENS_VOCABULARY_INVALID",
-          `The installed J-lens vocabulary token for ${JSON.stringify(word)} does not match the loaded tokenizer`,
+          `The installed R lens's vocabulary token for ${JSON.stringify(word)} does not match the loaded tokenizer`,
         );
       }
       tokenIds.set(word, tokenId);
@@ -474,7 +509,7 @@ export class BrowserInstrumentRegistry {
         ) {
           throw instrumentError(
             "JLENS_DIRECTION_INVALID",
-            "The loaded model runtime returned invalid J-lens token directions",
+            "The loaded model runtime returned invalid R-lens token directions",
           );
         }
         batch.forEach((tokenId, tokenIndex) => {
@@ -502,7 +537,7 @@ export class BrowserInstrumentRegistry {
   jlensToken(word: string): BrowserJlensToken {
     const jlens = this.jlens;
     if (jlens === null) {
-      throw instrumentError("JLENS_PACK_UNAVAILABLE", "Install the compatible J-lens pack to use jlens/<word>");
+      throw instrumentError("JLENS_PACK_UNAVAILABLE", "Install a compatible R-lens pack to use jlens/<word>");
     }
     const normalized = normalizeJlensWord(word);
     const cached = jlens.cache.get(normalized);
@@ -515,7 +550,7 @@ export class BrowserInstrumentRegistry {
     if (entry === undefined) {
       throw instrumentError(
         "JLENS_TOKEN_UNAVAILABLE",
-        `J-lens token ${JSON.stringify(normalized)} has not been prepared with the loaded tokenizer`,
+        `Lens token ${JSON.stringify(normalized)} has not been prepared with the loaded tokenizer`,
       );
     }
     const resolved = touchJlensDirections(jlens, entry.tokenId);
@@ -555,7 +590,7 @@ export class BrowserInstrumentRegistry {
     if (names.length === 0 && !includeFullVocabularyReadout) return null;
     const jlens = this.jlens;
     if (jlens === null) {
-      throw instrumentError("JLENS_PACK_UNAVAILABLE", "Install the compatible J-lens pack to use probability readouts");
+      throw instrumentError("JLENS_PACK_UNAVAILABLE", "Install a compatible R-lens pack to use probability readouts");
     }
     const fitted: number[] = [];
     runtimeLayerMap.forEach((layer, programIndex) => {
@@ -565,7 +600,7 @@ export class BrowserInstrumentRegistry {
     if (fitted.length === 0) {
       throw instrumentError(
         "JLENS_PACK_LAYER_MISMATCH",
-        "The installed J-lens has no fitted layer in the loaded runtime",
+        "The installed R lens has no fitted layer in the loaded runtime",
       );
     }
     const layerIndices = Int32Array.from(fitted);
@@ -776,59 +811,243 @@ function reconstructSaeCentroids(
   };
 }
 
+/** One site of a lens v7 manifest: its layers, their shards, and the fit's
+ *  split-half difference per layer when the fit recorded one. */
+export interface LensManifestSite {
+  readonly layers: number[];
+  readonly tensorFiles: Readonly<Record<string, string>>;
+  readonly tensorDigests: Readonly<Record<string, string>>;
+  readonly splitHalf: Readonly<Record<string, number>> | null;
+}
+
+/**
+ * The sites of a durable lens v7 manifest under the reader rule drowse 6.0
+ * froze (`store.py::_validate_manifest`): each site holds exactly the
+ * required keys plus, optionally, `split_half` (every layer, finite and
+ * non-negative); `odd` is a checkpoint's and never valid here. `null` when
+ * any site is malformed.
+ */
+export function lensManifestSites(
+  manifest: Record<string, unknown>,
+): Map<string, LensManifestSite> | null {
+  const sites = manifest.sites;
+  if (
+    !isRecord(sites) || Object.keys(sites).length === 0 ||
+    Object.keys(sites).some((site) => !LOCAL_LENS_V7_SITES.includes(site))
+  ) return null;
+  const parsed = new Map<string, LensManifestSite>();
+  for (const name of LOCAL_LENS_V7_SITES) {
+    if (!(name in sites)) continue;
+    const site = sites[name];
+    if (!isRecord(site)) return null;
+    const keys = Object.keys(site);
+    if (
+      LOCAL_LENS_V7_SITE_KEYS.some((key) => !keys.includes(key)) ||
+      keys.some((key) => !LOCAL_LENS_V7_SITE_KEYS.includes(key) &&
+        !LOCAL_LENS_V7_OPTIONAL_SITE_KEYS.includes(key))
+    ) return null;
+    const { layers, tensor_files: tensorFiles, tensor_sha256: tensorDigests } = site;
+    if (!integerList(layers) || !isRecord(tensorFiles) || !isRecord(tensorDigests)) return null;
+    const layerKeys = layers.map(String).sort();
+    if (
+      !sameStrings(Object.keys(tensorFiles).sort(), layerKeys) ||
+      !sameStrings(Object.keys(tensorDigests).sort(), layerKeys) ||
+      Object.values(tensorFiles).some((file) => typeof file !== "string" || !safeBasename(file)) ||
+      Object.values(tensorDigests).some((digest) =>
+        typeof digest !== "string" || !/^[0-9a-f]{64}$/u.test(digest))
+    ) return null;
+    let splitHalf: Record<string, number> | null = null;
+    if ("split_half" in site) {
+      const values = site.split_half;
+      if (
+        !isRecord(values) || !sameStrings(Object.keys(values).sort(), layerKeys) ||
+        Object.values(values).some((value) =>
+          typeof value !== "number" || !Number.isFinite(value) || value < 0)
+      ) return null;
+      splitHalf = values as Record<string, number>;
+    }
+    parsed.set(name, {
+      layers,
+      tensorFiles: tensorFiles as Record<string, string>,
+      tensorDigests: tensorDigests as Record<string, string>,
+      splitHalf,
+    });
+  }
+  return parsed;
+}
+
+/**
+ * drowse's `lens_identity` (`lens/store.py`) of a manifest file's text: the
+ * sha256 of `json.dumps(json.loads(text), sort_keys=True, separators=(",", ":"))`.
+ * `JSON.parse` loses Python's int/float split, so this reads the text itself
+ * and takes each number's type from its spelling, as `json.loads` does: a
+ * fraction or an exponent makes a float, anything else an int.
+ */
+export function lensIdentity(manifestText: string): string {
+  return bytesToHex(sha256(new TextEncoder().encode(pythonCanonicalJson(manifestText))));
+}
+
+function pythonCanonicalJson(text: string): string {
+  let index = 0;
+  const skipSpace = () => {
+    while (index < text.length && " \t\n\r".includes(text[index])) index += 1;
+  };
+  const expect = (character: string) => {
+    skipSpace();
+    if (text[index] !== character) invalidManifestJson();
+    index += 1;
+  };
+  const string = (): string => {
+    skipSpace();
+    const start = index;
+    if (text[index] !== '"') invalidManifestJson();
+    index += 1;
+    while (index < text.length && text[index] !== '"') index += text[index] === "\\" ? 2 : 1;
+    if (index >= text.length) invalidManifestJson();
+    index += 1;
+    try {
+      return JSON.parse(text.slice(start, index)) as string;
+    } catch {
+      return invalidManifestJson();
+    }
+  };
+  // Each container ends at its closing bracket or continues past a comma.
+  const more = (close: string): boolean => {
+    skipSpace();
+    if (text[index] === close) {
+      index += 1;
+      return false;
+    }
+    expect(",");
+    return true;
+  };
+  const value = (): string => {
+    skipSpace();
+    const character = text[index];
+    if (character === "{") {
+      index += 1;
+      skipSpace();
+      const entries = new Map<string, string>();
+      if (text[index] === "}") index += 1;
+      else {
+        do {
+          const key = string();
+          expect(":");
+          entries.set(key, value());
+        } while (more("}"));
+      }
+      return `{${[...entries.keys()].sort(compareCodePoints).map((key) =>
+        `${pythonJsonString(key)}:${entries.get(key)}`).join(",")}}`;
+    }
+    if (character === "[") {
+      index += 1;
+      skipSpace();
+      const items: string[] = [];
+      if (text[index] === "]") index += 1;
+      else {
+        do items.push(value());
+        while (more("]"));
+      }
+      return `[${items.join(",")}]`;
+    }
+    if (character === '"') return pythonJsonString(string());
+    for (const literal of ["true", "false", "null"]) {
+      if (text.startsWith(literal, index)) {
+        index += literal.length;
+        return literal;
+      }
+    }
+    const number = /-?(?:0|[1-9]\d*)(\.\d+)?([eE][-+]?\d+)?/uy;
+    number.lastIndex = index;
+    const match = number.exec(text);
+    if (match === null) return invalidManifestJson();
+    index = number.lastIndex;
+    return match[1] === undefined && match[2] === undefined
+      ? BigInt(match[0]).toString()
+      : pythonNumberRepr(Number(match[0]), true);
+  };
+  const canonical = value();
+  skipSpace();
+  if (index !== text.length) invalidManifestJson();
+  return canonical;
+}
+
+function invalidManifestJson(): never {
+  throw instrumentError("INSTRUMENT_PROBE_IDENTITY_INVALID", "The lens manifest is not JSON Python reads");
+}
+
+// Python orders str keys by code point; `Array.prototype.sort` by UTF-16 unit.
+function compareCodePoints(left: string, right: string): number {
+  const a = Array.from(left, (character) => character.codePointAt(0)!);
+  const b = Array.from(right, (character) => character.codePointAt(0)!);
+  for (let index = 0; index < Math.min(a.length, b.length); index += 1) {
+    if (a[index] !== b[index]) return a[index] - b[index];
+  }
+  return a.length - b.length;
+}
+
+// json.dumps's ensure_ascii string form: the short escapes, then \uXXXX
+// (lowercase, UTF-16) for every character outside printable ASCII.
+function pythonJsonString(value: string): string {
+  const short: Record<string, string> = {
+    '"': '\\"', "\\": "\\\\", "\n": "\\n", "\r": "\\r", "\t": "\\t", "\b": "\\b", "\f": "\\f",
+  };
+  let output = '"';
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    const code = value.charCodeAt(index);
+    output += short[character] ??
+      (code >= 0x20 && code <= 0x7e ? character : `\\u${code.toString(16).padStart(4, "0")}`);
+  }
+  return `${output}"`;
+}
+
 async function loadJlens(
   pack: BrowserInstrumentPackArtifacts,
   request: BrowserModelLoadRequest,
 ): Promise<BrowserJlens> {
   assertArtifactClosure(pack);
   const manifestArtifact = uniqueArtifact(pack.artifacts, (artifact) =>
-    artifact.manifest.path.endsWith("/manifest.json"), "J-lens manifest");
+    artifact.manifest.path.endsWith("/manifest.json"), "Lens manifest");
   const vocabularyArtifact = uniqueArtifact(pack.artifacts, (artifact) =>
-    artifact.manifest.path.endsWith("/browser-vocabulary.json"), "J-lens browser vocabulary");
-  const [manifest, vocabulary] = await Promise.all([
-    jsonArtifact(manifestArtifact, request.signal),
+    artifact.manifest.path.endsWith("/browser-vocabulary.json"), "Lens browser vocabulary");
+  const [manifestText, vocabulary] = await Promise.all([
+    textArtifact(manifestArtifact, request.signal),
     jsonArtifact(vocabularyArtifact, request.signal),
   ]);
+  const manifest = jsonObject(manifestArtifact, manifestText);
   const hiddenSize = request.variant.runtimeIdentity.hiddenSize;
-  const sites = manifest.sites;
-  const site = isRecord(sites) && sameStrings(Object.keys(sites), ["out"]) ? sites.out : null;
+  const sites = lensManifestSites(manifest);
+  const site = sites?.get(BROWSER_LENS_SITE);
   if (
+    site === undefined ||
     !sameStrings(Object.keys(manifest).sort(), LOCAL_LENS_V7_KEYS) ||
     manifest.format_version !== 7 || !BROWSER_LENS_KINDS.has(manifest.kind as string) ||
     manifest.checkpoint !== false || manifest.consumed_prefix_sha256 !== null ||
     manifest.dtype !== "float32" || manifest.d_model !== hiddenSize ||
-    !isRecord(site) || !sameStrings(Object.keys(site).sort(), LOCAL_LENS_V7_SITE_KEYS) ||
-    !integerList(site.layers) || !isRecord(site.tensor_files) || !isRecord(site.tensor_sha256) ||
+    !nonnegativeInteger(manifest.n_prompts) ||
     !matchesRuntimeFingerprint(manifest.model_fingerprint, request) ||
     manifest.model_source_fingerprint !== request.variant.runtimeIdentity.sourceRevision ||
     manifest.model_layer_count !== request.variant.runtimeIdentity.layerMap.length
   ) {
-    throw instrumentError("JLENS_PACK_INVALID", "The J-lens pack does not match the local v7 fp32 schema");
+    throw instrumentError(
+      "JLENS_PACK_INVALID",
+      "The lens pack is not an R-family lens in drowse's v7 fp32 format with an out site",
+    );
   }
   const layerMap = site.layers;
-  const tensorFiles = site.tensor_files;
-  const tensorDigests = site.tensor_sha256;
-  const layerKeys = layerMap.map(String).sort();
-  if (
-    !sameStrings(Object.keys(tensorFiles).sort(), layerKeys) ||
-    !sameStrings(Object.keys(tensorDigests).sort(), layerKeys)
-  ) {
-    throw instrumentError("JLENS_PACK_INVALID", "The J-lens shard maps do not match its layers");
-  }
   if (layerMap.some((layer) => !request.variant.runtimeIdentity.layerMap.includes(layer))) {
-    throw instrumentError("JLENS_PACK_LAYER_MISMATCH", "The J-lens contains layers outside this model's layer map");
+    throw instrumentError("JLENS_PACK_LAYER_MISMATCH", "The R lens has layers outside this model's layer map");
   }
   const jacobians = new Map<number, Float32Array>();
   const grouped = new Map<BrowserModelArtifact, number[]>();
   for (const layer of layerMap) {
-    const file = tensorFiles[String(layer)];
-    const digest = tensorDigests[String(layer)];
-    if (typeof file !== "string" || !safeBasename(file) || typeof digest !== "string") {
-      throw instrumentError("JLENS_PACK_INVALID", `J-lens layer ${layer} has invalid shard metadata`);
-    }
-    const artifact = artifactAt(pack.artifacts, siblingPath(manifestArtifact.manifest.path, file));
-    if (artifact.manifest.sha256 !== digest) {
-      throw instrumentError("JLENS_PACK_INVALID", `J-lens layer ${layer} has a mismatched tensor digest`);
+    const artifact = artifactAt(
+      pack.artifacts,
+      siblingPath(manifestArtifact.manifest.path, site.tensorFiles[String(layer)]),
+    );
+    if (artifact.manifest.sha256 !== site.tensorDigests[String(layer)]) {
+      throw instrumentError("JLENS_PACK_INVALID", `R-lens layer ${layer} has a mismatched tensor digest`);
     }
     grouped.set(artifact, [...(grouped.get(artifact) ?? []), layer]);
   }
@@ -836,7 +1055,7 @@ async function loadJlens(
     const tensors = await tensorArtifactReader(artifact, request.signal);
     const expected = layers.map((layer) => `layer_${layer}`).sort();
     if (!sameStrings(tensors.keys, expected)) {
-      throw instrumentError("JLENS_PACK_INVALID", `J-lens shard ${artifact.manifest.path} has unexpected tensor keys`);
+      throw instrumentError("JLENS_PACK_INVALID", `R-lens shard ${artifact.manifest.path} has unexpected tensor keys`);
     }
     for (const layer of layers) {
       jacobians.set(layer, tensors.tensor(`layer_${layer}`, [hiddenSize, hiddenSize]).data);
@@ -852,7 +1071,7 @@ async function loadJlens(
     typeof vocabulary.tensor_sha256 !== "string" || !Array.isArray(vocabulary.words) ||
     vocabulary.words.length === 0
   ) {
-    throw instrumentError("JLENS_VOCABULARY_INVALID", "The J-lens browser vocabulary manifest is invalid");
+    throw instrumentError("JLENS_VOCABULARY_INVALID", "The lens browser vocabulary manifest is invalid");
   }
   const words = new Map<string, { row: number; tokenId: number }>();
   vocabulary.words.forEach((entry, index) => {
@@ -860,7 +1079,7 @@ async function loadJlens(
       !isRecord(entry) || typeof entry.word !== "string" || !entry.word ||
       entry.row !== index || !nonnegativeInteger(entry.token_id) || words.has(entry.word)
     ) {
-      throw instrumentError("JLENS_VOCABULARY_INVALID", "J-lens vocabulary words and rows must be unique and contiguous");
+      throw instrumentError("JLENS_VOCABULARY_INVALID", "Lens vocabulary words and rows must be unique and contiguous");
     }
     words.set(entry.word, { row: index, tokenId: entry.token_id });
   });
@@ -869,19 +1088,23 @@ async function loadJlens(
     vocabulary.tensor_file,
   ));
   if (tensorArtifact.manifest.sha256 !== vocabulary.tensor_sha256) {
-    throw instrumentError("JLENS_VOCABULARY_INVALID", "The J-lens vocabulary tensor digest does not match");
+    throw instrumentError("JLENS_VOCABULARY_INVALID", "The lens vocabulary tensor digest does not match");
   }
   const vocabularyTensors = await tensorArtifactReader(tensorArtifact, request.signal);
   if (!sameStrings(vocabularyTensors.keys, ["unembedding"])) {
-    throw instrumentError("JLENS_VOCABULARY_INVALID", "The J-lens vocabulary must contain one unembedding tensor");
+    throw instrumentError("JLENS_VOCABULARY_INVALID", "The lens vocabulary must contain one unembedding tensor");
   }
   return {
     source: pack.pack.id,
     displayName: pack.pack.displayName,
+    kind: manifest.kind as "J" | "R",
+    nPrompts: manifest.n_prompts,
+    splitHalf: site.splitHalf,
     hiddenSize,
     layerMap,
     runtimeLayerMap: [...request.variant.runtimeIdentity.layerMap],
     bindingId: manifestArtifact.manifest.sha256,
+    identity: lensIdentity(manifestText),
     jacobians,
     words,
     unembedding: vocabularyTensors.tensor("unembedding", [words.size, hiddenSize]).data,
@@ -1003,7 +1226,7 @@ async function resolveJlensWordToken(
     ) {
       throw instrumentError(
         "JLENS_TOKENIZATION_INVALID",
-        "The loaded tokenizer returned invalid J-lens token IDs",
+        "The loaded tokenizer returned invalid lens token IDs",
       );
     }
     if (ids.length === 1 && (await resolver.decodeTokens(ids)).trim() === word) {
@@ -1015,14 +1238,14 @@ async function resolveJlensWordToken(
     "MULTI_TOKEN_WORD",
     `${JSON.stringify(word)} is not a single token in this vocabulary` +
       (pieces.length > 0 ? ` (token IDs: ${pieces.join(", ")})` : "") +
-      ". The Jacobian lens needs a word that encodes as one token.",
+      ". A lens word must encode as one token.",
   );
 }
 
 function normalizeJlensWord(word: string): string {
   const normalized = word.trim().normalize("NFC");
   if (normalized.length === 0) {
-    throw instrumentError("JLENS_TOKEN_UNAVAILABLE", "J-lens words must be non-empty");
+    throw instrumentError("JLENS_TOKEN_UNAVAILABLE", "Lens words must be non-empty");
   }
   return normalized;
 }
@@ -1141,14 +1364,23 @@ async function jsonArtifact(
   artifact: BrowserModelArtifact,
   signal: AbortSignal,
 ): Promise<Record<string, unknown>> {
+  return jsonObject(artifact, await textArtifact(artifact, signal));
+}
+
+async function textArtifact(artifact: BrowserModelArtifact, signal: AbortSignal): Promise<string> {
   signal.throwIfAborted();
+  const text = await artifact.file.text();
+  signal.throwIfAborted();
+  return text;
+}
+
+function jsonObject(artifact: BrowserModelArtifact, text: string): Record<string, unknown> {
   let value: unknown;
   try {
-    value = JSON.parse(await artifact.file.text());
+    value = JSON.parse(text);
   } catch {
     throw instrumentError("INSTRUMENT_PACK_INVALID", `${artifact.manifest.path} is not valid JSON`);
   }
-  signal.throwIfAborted();
   if (!isRecord(value)) throw instrumentError("INSTRUMENT_PACK_INVALID", `${artifact.manifest.path} must contain an object`);
   return value;
 }

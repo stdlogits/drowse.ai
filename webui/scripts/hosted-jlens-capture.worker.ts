@@ -110,7 +110,7 @@ self.onmessage = async (event: MessageEvent<CaptureRequest>) => {
         capture.layerCount !== event.data.runtimeIdentity.layerMap.length ||
         capture.positionCount !== count ||
         capture.hiddenSize !== event.data.runtimeIdentity.hiddenSize
-      ) throw new Error("runtime returned an incompatible J-lens residual capture");
+      ) throw new Error("runtime returned an incompatible lens residual capture");
       const bytes = new Uint8Array(
         capture.values.buffer,
         capture.values.byteOffset,

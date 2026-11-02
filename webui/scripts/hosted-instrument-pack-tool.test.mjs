@@ -64,7 +64,7 @@ try {
   assert.ok(runtimeWorker.code.includes("setSaeDictionary"));
   assert.ok(runtimeWorker.code.includes("standard-v3 exact-readout-v1"));
   assert.ok(
-    runtimeWorker.code.includes("exact full-vocabulary J-lens readout"),
+    runtimeWorker.code.includes("exact full-vocabulary R-lens readout"),
   );
   assert.ok(runtimeWorker.code.includes("exact full-dictionary SAE readout"));
   assert.ok(runtimeWorker.code.includes("artifact_staging"));

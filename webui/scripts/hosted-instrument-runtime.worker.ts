@@ -61,7 +61,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
       event.data.jlensFiles.length === 0
     ) {
       throw new Error(
-        "the focused physical proof requires a precomputed J-lens pack",
+        "the focused physical proof requires a precomputed R-lens pack",
       );
     }
     if (
@@ -134,7 +134,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
         pack: {
           id: `${event.data.modelId}-jlens`,
           kind: "jlens",
-          displayName: `${event.data.modelId} J-lens`,
+          displayName: `${event.data.modelId} R lens`,
           runtimeIdentitySha256: fingerprint,
           files: jlensArtifacts.map(({ manifest }) => manifest),
         },
@@ -198,7 +198,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
           jlensDictionary === null
         ) {
           throw new Error(
-            "The verified precomputed J-lens pack exposed no GPU dictionary",
+            "The verified precomputed R-lens pack exposed no GPU dictionary",
           );
         }
         if (jlensDictionary !== null) {
@@ -347,7 +347,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
             (typeof saeReading !== "number" || !Number.isFinite(saeReading)))
         ) {
           throw new Error(
-            "one-token exact readout lost its pinned J-lens or SAE reading",
+            "one-token exact readout lost its pinned lens or SAE reading",
           );
         }
         const chatArtifact = modelArtifacts.find((entry) => entry.manifest.role === "chat_template")!;
@@ -405,7 +405,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
           !program.jLensLayerIndices?.length
         ) {
           throw new Error(
-            "precomputed J-lens and SAE steering did not lower into GPU controls",
+            "precomputed R-lens and SAE steering did not lower into GPU controls",
           );
         }
         const gatedSlots = program.controls.affine.flatMap((control, index) =>
@@ -485,7 +485,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
           measurements === null
         ) {
           throw new Error(
-            "two-token generation did not activate every J-lens/SAE GPU gate from prior-step readings",
+            "two-token generation did not activate every lens/SAE GPU gate from prior-step readings",
           );
         }
         const lensReading =
@@ -499,7 +499,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
           !Number.isFinite(saeReading)
         ) {
           throw new Error(
-            "gated generation lost its physical J-lens or SAE reading",
+            "gated generation lost its physical lens or SAE reading",
           );
         }
         return {
@@ -719,15 +719,15 @@ function limitJlensLayers(
   if (limit === null) return program;
   const layerIndices = program.jLensLayerIndices;
   if (layerIndices === undefined || program.jLensBindingId === undefined) {
-    throw new Error("The diagnostic J-lens layer limit requires a J-lens program");
+    throw new Error("The diagnostic R-lens layer limit requires an R-lens program");
   }
   if (limit > layerIndices.length) {
     throw new Error(
-      `The diagnostic J-lens layer limit ${limit} exceeds the ${layerIndices.length} fitted layers`,
+      `The diagnostic R-lens layer limit ${limit} exceeds the ${layerIndices.length} fitted layers`,
     );
   }
   if (program.probeKind.length % modelLayerCount !== 0) {
-    throw new Error("The diagnostic J-lens program has an invalid probe layout");
+    throw new Error("The diagnostic R-lens program has an invalid probe layout");
   }
   const probesPerLayer = program.probeKind.length / modelLayerCount;
   const retainedLayers = new Set(layerIndices.slice(0, limit));
@@ -753,7 +753,7 @@ function limitJlensDictionary(
   if (dictionary === null || limit === null) return dictionary;
   if (limit > dictionary.layerIndices.length) {
     throw new Error(
-      `The diagnostic J-lens layer limit ${limit} exceeds the ${dictionary.layerIndices.length} fitted layers`,
+      `The diagnostic R-lens layer limit ${limit} exceeds the ${dictionary.layerIndices.length} fitted layers`,
     );
   }
   return {
@@ -771,7 +771,7 @@ function limitDescriptorLayers(
 ): ReturnType<BrowserFeasibilityCorePackCompiler["instrumentDescriptor"]> {
   if (limit === null) return descriptor;
   if (descriptor.jlens === null || limit > descriptor.jlens.layers.length) {
-    throw new Error("The diagnostic J-lens layer limit exceeds the fitted descriptor");
+    throw new Error("The diagnostic R-lens layer limit exceeds the fitted descriptor");
   }
   return {
     ...descriptor,
@@ -801,7 +801,7 @@ function requireExactReadouts(
       !Array.isArray(layers) ||
       layers.length !== descriptor.jlens.layers.length
     ) {
-      throw new Error("The GPU returned no exact full-vocabulary J-lens readout");
+      throw new Error("The GPU returned no exact full-vocabulary R-lens readout");
     }
     result.exactJlensAggregateTokens = aggregate.length;
     result.exactJlensLayerRows = layers.length;

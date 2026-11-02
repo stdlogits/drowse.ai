@@ -368,7 +368,7 @@ test("unmeasured reading cards fit narrow phone screens", async ({ page }) => {
   await lens.getByRole("textbox", { name: "Watch a prediction word" }).fill("fixture");
   await lens.getByRole("button", { name: "Watch word", exact: true }).click();
   await expect(lens.getByText("Not measured", { exact: true })).toBeVisible();
-  await expectNoHorizontalOverflow(lens.getByRole("list", { name: "J-lens probe tokens" }));
+  await expectNoHorizontalOverflow(lens.getByRole("list", { name: "Lens probe tokens" }));
   await expectNoPageOverflow(page);
   await tabs.getByRole("button", { name: "SAE", exact: true }).click();
   const sae = page.getByLabel("Model feature controls");

@@ -142,7 +142,7 @@ def create_vocabulary(
 ) -> None:
     words = json.loads(words_path.read_text())
     if not isinstance(words, list) or not words or any(not isinstance(word, str) for word in words):
-        raise ValueError("J-lens words must be a non-empty string list")
+        raise ValueError("lens words must be a non-empty string list")
     tokenizer = AutoTokenizer.from_pretrained(
         str(model_directory), local_files_only=True, trust_remote_code=False,
     )
