@@ -184,7 +184,10 @@ the distinct triggers in first-registration order. The upload is the arrays' byt
 host's trigger evaluation (phase, generated-token count, thinking state, the prior step's gate
 scores; `createStructuredHookControlEvaluator` returns it as `unitActive`). Prefill rows see the
 prefill state; a decode forward one state for all its rows. A unit gate reads the prior step's
-scaled unit reading through `priorScores[unit]`.
+scaled unit reading through `priorScores[unit]`. Native's step count (`loom/replay.py`): the
+prefill is step 0 and the decode forward that reads the k-th generated token (1-based) is
+`gen_step = k`, so `@first:2` covers the first decode forward only and `@after:n` starts at the
+n-th; the goldens' `triggers` case pins this on both arches.
 
 **Position targeting** (browser only). `position_spans`/`position_indices` gate unit terms as they
 gate affine and curve terms: prefill splits chunks at span boundaries and outside a span the
@@ -214,7 +217,8 @@ head slot   = sqrt(max(0, z_hᵀ G_h z_h)) · r_ao
 ```
 
 `tap_grams[i]` holds `G_h` of the `i`-th tap-head entry in CSR order, built by
-`drowse_head_write_grams` when the program is bound (`bindStructuredProgram`). The tap rides the
+`drowse_head_write_grams` when the program is bound (`bindStructuredProgram`; until that static
+read exists the caller supplies the grams and an all-zero gram fails the bind). The tap rides the
 existing measurement-bundle readback (one sync per token, `BlockSitesForwardReadback`). The host
 divides by the soft floored reading scale (neuron pole by `sign(act)`); scales never reach the GPU
 on the live path. 64 slots, at most 16 heads; more is `UNIT_TAP_CAPACITY` before generation.
@@ -409,15 +413,22 @@ keeps every unit kernel within 8:
 
 | kernel (per layer) | bindings |
 |---|---|
-| neuron site: ablate + tap | `act` in, `positions`, `unit_meta`, `unit_coeff`, `unit_active`, `act` out, `unit_taps` in/out = 7 |
-| head site: ablate (before `o_proj`) | `z` in, `positions`, `unit_meta`, `unit_coeff`, `unit_active`, `z` out = 6 |
-| head tap (after `o_proj`) | `z`, `attn_o`, `unit_meta`, `tap_grams`, `unit_taps` in/out = 5 (Qwen3 4); never fused with the ablation |
+| `drowse_head_ablate_L` (before `o_proj`) | `z` in/out, `positions`, `unit_meta`, `unit_coeff`, `unit_active` = 5 (in place) |
+| `drowse_neuron_ablate_L` (before `down_proj`) | `act` in/out, `positions`, `unit_meta`, `unit_coeff`, `unit_active` = 5 (in place) |
+| `drowse_unit_tap_L` (after the ablations) | `z`, `attn_o`, `act`, `unit_meta`, `tap_grams`, `unit_taps` in/out = 6 (both families; Qwen3 binds `attn_o` without reading it) |
 | anatomy store (per site) | `x`, `positions`, `replay_meta`, `anatomy_taps` in/out = 4 |
 | activity, neurons | `act`, `positions`, `replay_meta`, `unit_scales`, `activity_state`, `traces`, `population` = 7 |
 | activity, heads A (values) | `z`, `attn_o`, `head_grams`, `unit_scales`, `head_values` out = 5 (Qwen3 4) |
 | activity, heads B (reduce) | `head_values`, `positions`, `replay_meta`, `activity_state`, `traces`, `population` = 6 |
 | pattern K capture | `qkv`, `positions`, `replay_meta`, `pattern_keys`, `pattern_q` = 5 |
 | `drowse_slens_probes` | hidden, means, `K` chunk, layer ids, `ẽ`, `Σ_E`, output = 7 |
+
+As built (B4, stage 1): three dispatches per layer in the units pair. The neuron and head taps
+share one kernel run after both ablations, so it reads the ablated `z` and `act` and the
+pre-norm `attn_o` (Gemma's `r_ao`); one workgroup per tap slot, barriers only under control flow
+that depends on the workgroup id (WGSL uniformity), and the ablations are in place, so a row
+whose position is below `UNIT_POSITIONS_FROM` is untouched. The upstream graph is otherwise
+unchanged: every v4 kernel is byte-identical in a v5 library (binding names aside).
 
 Largest buffers (`blockSitesBufferElements`): `head_grams` 72 MiB and a pattern key slot 16 MiB
 (qwen3-4b, 4096 tokens: `pattern_keys` whole is 128 MiB, the default binding limit, so the bridge
