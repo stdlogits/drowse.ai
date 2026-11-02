@@ -129,9 +129,15 @@ export function deriveCandidateRuntimeLock(runtimeLock, modelId, {
   // (HOOK_ABI.md §6); the chat config WebLLM runs the library with must carry the same value.
   differs("prefillChunkSize", manifest.prefillChunkSize, model.prefillChunkSize);
   differs("mlc-chat-config prefill_chunk_size", chatConfig?.prefill_chunk_size, model.prefillChunkSize);
-  const configModel = chatConfig?.model_config?.text_config ?? chatConfig?.model_config;
-  if (configModel && "prefill_chunk_size" in configModel) {
-    differs("mlc-chat-config model_config prefill_chunk_size", configModel.prefill_chunk_size, model.prefillChunkSize);
+  // The prefill the library was compiled with: MLC takes model_config's own value when it is
+  // positive and only otherwise its text_config's (Gemma3Config.__post_init__), so a converted
+  // Gemma config may keep the source's text_config value (8192) under a compiled 1024.
+  const compiledConfig = chatConfig?.model_config;
+  const compiledPrefill = compiledConfig?.prefill_chunk_size > 0
+    ? compiledConfig.prefill_chunk_size
+    : compiledConfig?.text_config?.prefill_chunk_size;
+  if (compiledPrefill !== undefined) {
+    differs("mlc-chat-config model_config prefill_chunk_size", compiledPrefill, model.prefillChunkSize);
   }
   if (model.hiddenSize !== null) differs("hiddenSize", manifest.hiddenSize, model.hiddenSize);
   if (model.layerMap !== null) differs("layerMap", manifest.layerMap, model.layerMap);

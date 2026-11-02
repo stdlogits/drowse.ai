@@ -116,6 +116,18 @@ assert.throws(
   /mlc-chat-config prefill_chunk_size differs/,
 );
 assert.throws(() => derive(runtimeLock, basePt, { closure: { prefillChunkSize: 2048 } }), /prefillChunkSize differs/);
+// MLC compiles model_config's own prefill when it is positive, else its text_config's: a converted
+// Gemma config keeps the source's 8192 in text_config under the compiled 1024.
+const nested = (own, text) => {
+  const config = chatConfig(model(basePt));
+  config.model_config = { ...config.model_config, ...(own === undefined ? {} : { prefill_chunk_size: own }) };
+  config.model_config.text_config = { ...(config.model_config.text_config ?? {}), prefill_chunk_size: text };
+  return { chatConfig: config };
+};
+assert.doesNotThrow(() => derive(runtimeLock, basePt, nested(1024, 8192)));
+assert.throws(() => derive(runtimeLock, basePt, nested(2048, 1024)), /model_config prefill_chunk_size differs/);
+assert.throws(() => derive(runtimeLock, basePt, nested(undefined, 8192)), /model_config prefill_chunk_size differs/);
+assert.throws(() => derive(runtimeLock, basePt, nested(-1, 2048)), /model_config prefill_chunk_size differs/);
 // The lock refuses a prefill chunk above its smallest context, or none.
 const overPrefill = structuredClone(runtimeLock);
 overPrefill.models.find((entry) => entry.id === qwen).prefillChunkSize = 4096;
