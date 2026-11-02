@@ -253,6 +253,7 @@ def test_build_transformers_model_binds_exact_special_token_ids(
             return self
 
     fake_transformers = types.SimpleNamespace(
+        __version__="5.0.0",
         Gemma3ForCausalLM=FakeModel,
         Gemma3TextConfig=FakeConfig,
         LlamaConfig=FakeConfig,
@@ -412,3 +413,11 @@ def test_mlc_linear_runs_exact_metal_kernel_for_supported_dtype(
         rtol=0,
         atol=0,
     )
+
+
+def test_build_transformers_model_refuses_transformers_4(monkeypatch: pytest.MonkeyPatch) -> None:
+    import transformers
+
+    monkeypatch.setattr(transformers, "__version__", "4.52.4")
+    with pytest.raises(ValueError, match="needs Transformers 5"):
+        _MODULE.build_transformers_model(Path("unused"))

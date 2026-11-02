@@ -16,7 +16,8 @@
 
 The C TVM VM runs the library's Relax graph and drowse kernels (serialized), not the WebGPU
 shaders: this checks the conversion, the graph and the constants, and leaves the WGSL to the
-WebGPU harness.
+WebGPU harness. The PyTorch reference runs in its own process (`--reference-python`, CPU only),
+since `mlc_q4_torch` needs Transformers 5 and the compiler toolchain pins 4.52.
 """
 
 from __future__ import annotations
@@ -52,6 +53,12 @@ BASE_ARCHITECTURES = ("gpt2", "gpt_neox", "qwen3_5")
 
 def main() -> None:
     args = parse_args()
+    if args.reference_out is not None:
+        reference(args.model.resolve(strict=True), json.loads(args.input.read_text()),
+                  args.greedy_tokens, args.reference_out)
+        return
+    if args.mlc_repository is None or args.tvm_repository is None:
+        raise SystemExit("--mlc-repository and --tvm-repository are required")
     mlc_repository = args.mlc_repository.resolve(strict=True)
     tvm_repository = args.tvm_repository.resolve(strict=True)
     model_dir = args.model.resolve(strict=True)
@@ -91,7 +98,8 @@ def main() -> None:
         if arch not in UNIT_ARCHITECTURES:
             raise SystemExit(f"{arch} attests standard-v4-residual: no block sites to compare")
         parity_input = json.loads(args.input.read_text())
-        report["checks"].update(parity(env, model_dir, parity_input, args.greedy_tokens, failures))
+        report["checks"].update(parity(env, model_dir, args.input, parity_input, args.greedy_tokens,
+                                       args.reference_python, failures))
     report["seconds"] = round(time.time() - started, 1)
     report["passed"] = not failures
     report["failures"] = failures
@@ -105,8 +113,8 @@ def main() -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mlc-repository", required=True, type=Path)
-    parser.add_argument("--tvm-repository", required=True, type=Path)
+    parser.add_argument("--mlc-repository", type=Path)
+    parser.add_argument("--tvm-repository", type=Path)
     parser.add_argument("--model", required=True, type=Path,
                         help="a build-production-webgpu.py model directory")
     parser.add_argument("--library", type=Path, help="defaults to MODEL/model.wasm")
@@ -116,6 +124,10 @@ def parse_args() -> argparse.Namespace:
                         / "fixtures/production-q4-parity-input-v1.json")
     parser.add_argument("--greedy-tokens", type=int, default=4)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--reference-python", type=Path, default=Path(sys.executable),
+                        help="the interpreter of the PyTorch reference (Transformers 5)")
+    parser.add_argument("--reference-out", type=Path,
+                        help="internal: run only the PyTorch reference and write it here (.npz)")
     return parser.parse_args()
 
 
@@ -177,15 +189,14 @@ def library_descriptor(env, chat: dict) -> list[int]:
 
 # --------------------------------------------------------------------------- parity (§4.3) ---
 
-def parity(env, model_dir: Path, parity_input: dict, greedy_tokens: int, failures: list) -> dict:
-    import torch
+def parity(env, model_dir: Path, input_path: Path, parity_input: dict, greedy_tokens: int,
+           reference_python: Path, failures: list) -> dict:
+    import subprocess
+    import tempfile
 
     import units_goldens as ug
-    from mlc_q4_torch import build_transformers_model
     from static_reads import Device
-    from validate_mlc_q4_parity import greedy_token_ids
 
-    torch.set_num_threads(int(os.environ.get("TORCH_NUM_THREADS", "4")))
     ids = [int(value) for value in parity_input["inputIds"]]
     checks: dict = {}
 
@@ -201,9 +212,19 @@ def parity(env, model_dir: Path, parity_input: dict, greedy_tokens: int, failure
     checks["cvmForwardSeconds"] = round(time.time() - timer, 1)
 
     timer = time.time()
-    model = build_transformers_model(model_dir, "cpu")
-    torch_sites, torch_logits = torch_forward(model, ids, block["sandwich"])
-    checks["torchForwardSeconds"] = round(time.time() - timer, 1)
+    with tempfile.TemporaryDirectory() as scratch:
+        out = Path(scratch) / "reference.npz"
+        subprocess.run([str(reference_python), "-I", str(Path(__file__).resolve()), "--model", str(model_dir),
+                        "--input", str(input_path), "--greedy-tokens", str(greedy_tokens),
+                        "--reference-out", str(out)],
+                       check=True, env={**os.environ, "CUDA_VISIBLE_DEVICES": "", "PYTHONPATH": ""})
+        with np.load(out) as saved:
+            torch_sites = {name: saved[name] for name in ("act", "z", "mid", "out")}
+            torch_logits = saved["logits"]
+            torch_greedy = [int(v) for v in saved["greedy"]]
+            eos_ids = {int(v) for v in saved["eos"]}
+            checks["reference"] = {"transformers": str(saved["transformers"]), "torch": str(saved["torch"])}
+    checks["torchReferenceSeconds"] = round(time.time() - timer, 1)
 
     site_errors = {}
     for name in ("act", "z", "mid", "out"):
@@ -219,15 +240,11 @@ def parity(env, model_dir: Path, parity_input: dict, greedy_tokens: int, failure
     checks["sites"] = site_errors
 
     timer = time.time()
-    eos = model.config.eos_token_id
-    eos_ids = {int(eos)} if isinstance(eos, int) else {int(value) for value in eos or []}
     vm_greedy = cvm_greedy(vm, ids, empty, greedy_tokens, eos_ids)
-    torch_greedy = greedy_token_ids(model, ids, greedy_tokens, "cpu")
     checks["greedy"] = {"cvm": vm_greedy, "torch": torch_greedy, "equal": vm_greedy == torch_greedy,
                         "seconds": round(time.time() - timer, 1)}
     if vm_greedy != torch_greedy:
         failures.append(f"greedy tokens differ: cvm {vm_greedy}, torch {torch_greedy}")
-    del model
 
     timer = time.time()
     tensors = ug.load_tensor_cache(model_dir)
@@ -235,6 +252,27 @@ def parity(env, model_dir: Path, parity_input: dict, greedy_tokens: int, failure
     checks["staticReads"] = static_reads(Device(vm), weights, sites, failures)
     checks["staticReads"]["seconds"] = round(time.time() - timer, 1)
     return checks
+
+
+def reference(model_dir: Path, parity_input: dict, greedy_tokens: int, out: Path) -> None:
+    """The PyTorch half: sites, last logits and greedy tokens on the dequantized MLC tensors."""
+    import torch
+    import transformers
+
+    from mlc_q4_torch import build_transformers_model
+    from validate_mlc_q4_parity import greedy_token_ids
+
+    torch.set_num_threads(int(os.environ.get("TORCH_NUM_THREADS", "4")))
+    ids = [int(value) for value in parity_input["inputIds"]]
+    model = build_transformers_model(model_dir, "cpu")
+    chat = json.loads((model_dir / "mlc-chat-config.json").read_text())
+    sites, logits = torch_forward(model, ids, chat["model_type"] == "gemma3_text")
+    eos = model.config.eos_token_id
+    eos_ids = [int(eos)] if isinstance(eos, int) else [int(value) for value in eos or []]
+    greedy = greedy_token_ids(model, ids, greedy_tokens, "cpu")
+    np.savez(out, **sites, logits=logits, greedy=np.asarray(greedy, np.int64),
+             eos=np.asarray(eos_ids, np.int64), transformers=transformers.__version__,
+             torch=torch.__version__)
 
 
 def torch_forward(model, ids: list[int], sandwich: bool):

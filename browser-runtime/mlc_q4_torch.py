@@ -466,6 +466,14 @@ def qwen35_state_dict(cache, config, direct_dtype):
 
 
 def build_transformers_model(directory: Path, device: str = "cpu") -> torch.nn.Module:
+    import transformers
+
+    if int(transformers.__version__.split(".")[0]) < 5:
+        # 4.x drops `rope_parameters` silently: Gemma 3 4B's global layers would lose their
+        # linear RoPE scaling (factor 8) and the reference would be wrong from layer 5 on.
+        raise ValueError(
+            f"the MLC q4 reference needs Transformers 5 (found {transformers.__version__})"
+        )
     from transformers import (
         Gemma3ForCausalLM,
         Gemma3TextConfig,
