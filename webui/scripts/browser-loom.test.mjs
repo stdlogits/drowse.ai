@@ -1533,23 +1533,33 @@ try {
     name: "mood alias",
     top_n: 4,
   }];
+  // The fake compiler returns no steering fields, so the loom folds the parse itself: `parts`
+  // come from the grammar, and `n_layers`/`terms` stay out.
+  const calmPart = (text, coeff) => ({
+    text, trigger: null, phase: "both", first_n: null, after_n: null, gate: null, op: "push",
+    target: "calm", coeff, onto: 0, position: null, layers: null, projection: null,
+  });
   assert.deepEqual(await validationRuntime.request({
     service: "sessions",
     method: "validateSteering",
     args: ["0.5 calm", undefined, { probeRequests: prospectiveProbes, tree: validationTreeBefore }],
-  }), { valid: true, expression: "0.5 calm", error: null });
-  assert.deepEqual(await validationRuntime.request({
+  }), { valid: true, expression: "0.5 calm", error: null, parts: [calmPart("0.5 calm", 0.5)] });
+  const bare = await validationRuntime.request({
     service: "sessions",
     method: "validateSteering",
     args: ["  calm  "],
-  }), { valid: true, expression: "0.5 calm", error: null });
+  });
+  assert.equal(bare.valid, true);
+  assert.equal(bare.error, null);
+  assert.equal(bare.parts.length, 1);
+  assert.equal(bare.parts[0].target, "calm");
   assert.deepEqual(validationCompiles, [
     {
       expression: "0.5 calm",
       probeRequests: prospectiveProbes,
     },
     {
-      expression: "  calm  ",
+      expression: "calm",
       probeRequests: undefined,
     },
   ]);

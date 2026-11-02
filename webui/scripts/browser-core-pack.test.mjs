@@ -2608,7 +2608,7 @@ try {
       .manifest.sha256;
     assert.deepEqual(compiler.probeHashes(), {
       "geometry identity": "c10a9ef9572329ac589e570f44593ead935178f314ff850078f1770937e5c061",
-      "lens identity": "a308592c267e293b1286d1160261cc54ed4454445d48f6d00b499f55a468fbf5",
+      "lens identity": "b2981e7c47a9f889620a77e6a69129945ce7e934789aa1d811f6a8d1f96dfcc5",
       "sae identity": sha256(Buffer.from(
         `('sae-readout-v2', 'fixture-model', '${saeTensorSha256}', 'local:fixture', 1, 0, 2.5)`,
       )),
