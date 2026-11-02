@@ -42,7 +42,9 @@ def toolchain_environment(mlc: Path, tvm: Path) -> dict[str, str]:
     return {
         **keep,
         "PYTHONPATH": f"{tvm / 'python'}{os.pathsep}{mlc / 'python'}",
-        "TVM_LIBRARY_PATH": str(tvm / "build"),
+        # A source build keeps its shared libraries in build/lib (CMake's install layout) or, older,
+        # in build itself.
+        "TVM_LIBRARY_PATH": str(tvm / "build" / "lib" if (tvm / "build" / "lib").is_dir() else tvm / "build"),
         "TVM_DEVICE_BACKEND_AUTOLOAD": "0",
         "SKIP_LOADING_MLCLLM_SO": "1",
         "PYTHONUNBUFFERED": "1",
@@ -109,8 +111,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--tvm-repository", type=Path, required=True)
     parser.add_argument("--units-fixtures", type=Path, required=True)
     args = parser.parse_args(argv)
-    for name in ("python", "mlc_repository", "tvm_repository", "units_fixtures"):
+    for name in ("mlc_repository", "tvm_repository", "units_fixtures"):
         setattr(args, name, getattr(args, name).resolve(strict=True))
+    # The interpreter keeps the path it was given: a virtual environment's python is a symlink to
+    # its base interpreter, and resolving it would drop the environment's packages.
+    args.python = args.python.expanduser().absolute()
+    if not args.python.is_file():
+        raise SystemExit(f"--python {args.python} is not a file")
     return args
 
 
