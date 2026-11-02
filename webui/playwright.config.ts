@@ -42,7 +42,7 @@ export default defineConfig({
     {
       name: "webkit-ios-layout",
       // "ios-layout" also matches every *.ios-layout.spec.ts.
-      testMatch: /(ios-layout|hosted-onboarding|site-pages|chat-library|technical-controls|completion-selection|chat-name-stability|loom-search|token-inspector|mobile-sheet|model-downloads|new-chat-start|storage-persistence|theme-default|public-header|saved-chat-menu|contact|workbench-rooms)\.spec\.ts/,
+      testMatch: /(ios-layout|hosted-onboarding|site-pages|chat-library|technical-controls|completion-selection|chat-name-stability|loom-search|token-inspector|mobile-sheet|model-downloads|new-chat-start|storage-persistence|theme-default|public-header|saved-chat-menu|contact|workbench-rooms|sae-descriptions)\.spec\.ts/,
       use: {
         ...devices["iPhone 13"],
       },
