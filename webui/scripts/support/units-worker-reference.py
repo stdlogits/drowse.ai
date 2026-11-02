@@ -44,7 +44,12 @@ sys.path.insert(0, str(ROOT / "drowse"))
 
 from build_hosted_packs import KINDS, NativeModel, build  # noqa: E402
 from tests.support.browser_units import (  # noqa: E402
+    CHAT,
     DECODE_STEPS,
+    RAW_FIRST,
+    _activity_diagnostics,
+    _all_units,
+    _check_activity,
     SHORT_TEXT,
     FixtureError,
     _find,
@@ -240,11 +245,19 @@ def main() -> None:
             entry: dict[str, Any] = {"steering": steering, "tokens": [int(t) for t in tokens], "raw": raw,
                                      "anatomy": anatomy, **fields}
             if activity:
-                entry["activity"] = ranked(
+                # The goldens' rule (`_check_activity` over every unit's peak row): a listed or
+                # traced unit whose peak row has no margin is named, and its row is not compared.
+                full = jsonable(session.unit_activity(node, top=1024, units=_all_units(fx), raw=raw))
+                diag = _activity_diagnostics(full, {full["sink_raw_index"]} - {None})
+                found: list[dict[str, Any]] = []
+                read = ranked(
                     lambda top: session.unit_activity(node, top=top, units=ACTIVITY["units"],
                                                       raw_index=ACTIVITY["raw_index"], layers=ACTIVITY["layers"],
                                                       raw=raw),
-                    around("top", ACTIVITY["top"]), f"nodes.{name}.activity", ties)
+                    around("top", ACTIVITY["top"]), f"nodes.{name}.activity", found)
+                tied = _check_activity(read["result"], diag, name, f"nodes.{name}.activity", found)
+                ties.extend(found)
+                entry["activity"] = {**read, "tied_peak_rows": tied}
             return entry
 
         if chat:
@@ -329,6 +342,12 @@ def main() -> None:
 
         json.dump(jsonable({
             "arch": arch, "chat": chat, "text": text, "generations": generations, "nodes": nodes,
+            # What the goldens feed (browser-units-worker.mjs --goldens): the chat prompt, the short
+            # prompt as raw text (BOS piece included), the raw first turn's byte.
+            "golden_inputs": {"system": CHAT[0]["content"], "user": CHAT[1]["content"],
+                              "short_text": native_text, "raw_first": RAW_FIRST[arch],
+                              "anatomy_steering": ANATOMY_STEERING, "segmented_steering": "!neuron/L1n5@prompt",
+                              "decode_steps": DECODE_STEPS},
             "reads": reads, "top": tops, "find": finds, "declared_ties": ties,
             "settings": {"push": PUSH, "ablate": ABLATE_RESPONSE, "slens": SLENS_GATED,
                          "slensWord": SLENS_WORD, "probes": list(PROBES), "anatomySteering": ANATOMY_STEERING,

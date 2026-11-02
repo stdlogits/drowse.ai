@@ -275,7 +275,7 @@ index 6bf8d4f..69bf5db 100644
  }
  
 diff --git a/src/config.ts b/src/config.ts
-index 6c45add..45a6e87 100644
+index 6c45add..160fc73 100644
 --- a/src/config.ts
 +++ b/src/config.ts
 @@ -1,3 +1,5 @@
@@ -335,22 +335,27 @@ index 6c45add..45a6e87 100644
  }
  
  export function postInitAndCheckGenerationConfigValues(
-@@ -171,6 +189,44 @@ export function postInitAndCheckGenerationConfigValues(
-     // if we use `if value` directly, `value` being 0 evaluates to false, violating semantics
+@@ -172,16 +190,53 @@ export function postInitAndCheckGenerationConfigValues(
      return value !== undefined && value !== null;
    }
-+  if (
+   if (
+-    config.frequency_penalty &&
+-    (config.frequency_penalty < -2.0 || config.frequency_penalty > 2.0)
 +    _hasValue(config.drowse_generation_role) &&
 +    (typeof config.drowse_generation_role !== "string" ||
 +      !/^[a-z0-9._-]+$/.test(config.drowse_generation_role))
-+  ) {
+   ) {
+-    throw new RangeError("frequency_penalty", -2.0, 2.0);
 +    throw new TypeError("drowse_generation_role must be a lowercase role slug");
-+  }
-+  if (
+   }
+   if (
+-    config.presence_penalty &&
+-    (config.presence_penalty < -2.0 || config.presence_penalty > 2.0)
 +    _hasValue(config.drowse_generation_seat) &&
 +    config.drowse_generation_seat !== "user" &&
 +    config.drowse_generation_seat !== "assistant"
-+  ) {
+   ) {
+-    throw new RangeError("presence_penalty", -2.0, 2.0);
 +    throw new TypeError("drowse_generation_seat must be `user` or `assistant`");
 +  }
 +  for (const index of [
@@ -377,10 +382,20 @@ index 6c45add..45a6e87 100644
 +      throw new TypeError(`${name} must contain non-negative token IDs`);
 +    }
 +  }
-   if (
-     config.frequency_penalty &&
-     (config.frequency_penalty < -2.0 || config.frequency_penalty > 2.0)
-@@ -189,11 +245,27 @@ export function postInitAndCheckGenerationConfigValues(
++  // Drowse: any finite penalty, as drowse's sampler takes one (its goldens decode distinct
++  // tokens with a presence penalty of 1e4); OpenAI's [-2, 2] does not bind it.
++  for (const name of ["frequency_penalty", "presence_penalty"] as const) {
++    const value = config[name];
++    if (
++      _hasValue(value) &&
++      (typeof value !== "number" || !Number.isFinite(value))
++    ) {
++      throw new TypeError(`${name} must be a finite number`);
++    }
+   }
+   if (_hasValue(config.repetition_penalty) && config.repetition_penalty! <= 0) {
+     throw new MinValueError("repetition_penalty", 0);
+@@ -189,11 +244,27 @@ export function postInitAndCheckGenerationConfigValues(
    if (_hasValue(config.max_tokens) && config.max_tokens! <= 0) {
      throw new MinValueError("max_tokens", 0);
    }
@@ -411,7 +426,7 @@ index 6c45add..45a6e87 100644
    }
    // If only one of frequency or presence penatly is set, make the other one 0.0
    if (
-@@ -235,9 +307,16 @@ export function postInitAndCheckGenerationConfigValues(
+@@ -235,9 +306,16 @@ export function postInitAndCheckGenerationConfigValues(
      if (!config.logprobs) {
        throw new DependencyError("top_logprobs", "logprobs", true);
      }
@@ -431,7 +446,7 @@ index 6c45add..45a6e87 100644
      }
    }
    // If defined logprobs but not top_logprobs, simply make it 0
-@@ -305,6 +384,14 @@ export interface ModelRecord {
+@@ -305,6 +383,14 @@ export interface ModelRecord {
   * - "sync": require OPFS sync access handles.
   * - "auto": use sync access handles when available and fall back to async OPFS otherwise.
   *
@@ -446,7 +461,7 @@ index 6c45add..45a6e87 100644
   * @note Note that the Cache API is the most well-tested in WebLLM as of now.
   */
  export type CacheBackend = "cache" | "indexeddb" | "cross-origin" | "opfs";
-@@ -314,6 +401,9 @@ export interface AppConfig {
+@@ -314,6 +400,9 @@ export interface AppConfig {
    model_list: Array<ModelRecord>;
    cacheBackend?: CacheBackend;
    opfsAccessMode?: OPFSAccessMode;
@@ -13394,7 +13409,7 @@ index 43b9e95..ee2ca61 100644
      const engine = createEngineWithMultiplePipelines();
      await expect(
 diff --git a/tests/generation_config.test.ts b/tests/generation_config.test.ts
-index e48b225..9940976 100644
+index e48b225..c3056b0 100644
 --- a/tests/generation_config.test.ts
 +++ b/tests/generation_config.test.ts
 @@ -5,6 +5,33 @@ import {
@@ -13454,7 +13469,7 @@ index e48b225..9940976 100644
    });
  
    test("top_logprobs set without setting logprobs", () => {
-@@ -74,6 +110,21 @@ describe("Check generation config illegal values", () => {
+@@ -74,6 +110,33 @@ describe("Check generation config illegal values", () => {
  });
  
  describe("Check generation post init", () => {
@@ -13473,6 +13488,18 @@ index e48b225..9940976 100644
 +      drowse_score_token_ids: [17, 23],
 +    });
 +  });
++  test("penalties take any finite value, as drowse's sampler does", () => {
++    const genConfig: GenerationConfig = {
++      presence_penalty: 1e4,
++      frequency_penalty: -3,
++    };
++    postInitAndCheckGenerationConfigValues(genConfig);
++    expect(genConfig.presence_penalty).toBe(1e4);
++    expect(() =>
++      postInitAndCheckGenerationConfigValues({ presence_penalty: Infinity }),
++    ).toThrow("presence_penalty must be a finite number");
++  });
++
    test("Only set one of presence or frequency penalty", () => {
      const genConfig: GenerationConfig = {
        frequency_penalty: 1.5,

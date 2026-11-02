@@ -1199,8 +1199,9 @@ function validateSampling(value: WSSampling | null | undefined): WSSampling {
     0,
     BROWSER_RETURN_TOP_K_MAX,
   );
-  optionalFiniteRange(sampling.presence_penalty, "presence_penalty", -2, 2);
-  optionalFiniteRange(sampling.frequency_penalty, "frequency_penalty", -2, 2);
+  // Any finite penalty, as native's sampling params take (`FiniteFloat`).
+  optionalFinite(sampling.presence_penalty, "presence_penalty");
+  optionalFinite(sampling.frequency_penalty, "frequency_penalty");
   optionalBoolean(sampling.return_probe_readings, "return_probe_readings");
   optionalBoolean(sampling.persist_per_layer_scores, "persist_per_layer_scores");
   optionalBoolean(sampling.persist_subspace_coords, "persist_subspace_coords");
