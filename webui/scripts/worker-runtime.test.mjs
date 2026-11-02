@@ -1358,10 +1358,11 @@ try {
     assert.equal(typeof client.instruments.startPreparation, "function");
     assert.equal(client.instruments.startPreparaton, undefined);
 
-    // The unit and anatomy reads are in the contract, routed and refused: the
-    // client the UI holds withholds them, so its capability checks see them absent.
-    const withheld = ["tokenAnatomy", "unitActivity", "unitRead", "unitTop", "unitFind", "unitCatalog", "unitLabels"];
-    for (const method of withheld) {
+    // The unit and anatomy reads are in the contract, routed and refused until the model load
+    // wires BrowserUnitsService (B4): the client the UI holds withholds them, so its capability
+    // checks see them absent.
+    const unitMembers = ["tokenAnatomy", "unitActivity", "unitRead", "unitTop", "unitFind", "unitCatalog", "unitLabels"];
+    for (const method of unitMembers) {
       assert.equal(
         operationPolicyModule.runtimeServiceRoute({ service: "instruments", method, args: [] }),
         "unavailable",
@@ -1384,15 +1385,31 @@ try {
     assert.equal(refused.error.code, "RUNTIME_METHOD_UNAVAILABLE");
     assert.equal(refused.error.status, 501);
 
+    // The fixture answers them through the real host ports on the tiny fixture model.
     const fixture = new fakeRuntimeModule.DeterministicFakeRuntime();
-    const offered = operationPolicyModule.offeredRuntimeClient(fixture);
-    for (const method of withheld) {
-      assert.equal(typeof fixture.instruments[method], "function");
-      await assert.rejects(fixture.instruments[method](), { code: "RUNTIME_METHOD_UNAVAILABLE" });
-      assert.equal(offered.instruments[method], undefined, `the fixture view withholds ${method}`);
-      assert.equal(method in offered.instruments, false);
+    assert.equal(operationPolicyModule.offeredRuntimeClient(fixture).instruments.unitRead, undefined);
+    const offered = operationPolicyModule.offeredRuntimeClient(
+      fixture,
+      new Set(unitMembers.map((method) => `instruments.${method}`)),
+    );
+    for (const method of unitMembers) {
+      assert.equal(typeof offered.instruments[method], "function", `the fixture view offers ${method}`);
     }
-    assert.equal(contracts.unitReadsAvailable(offered), false);
+    assert.equal(contracts.unitReadsAvailable(offered), true);
+    const neuron = await offered.instruments.unitRead("neuron/L1n5", { k: 4 });
+    assert.equal(neuron.unit, "neuron/L1n5");
+    assert.equal(neuron.poles.length, 2);
+    assert.equal(neuron.poles[0].writes.s.tokens.length, 4);
+    const head = await offered.instruments.unitRead("head/L1h3", { k: 3 });
+    assert.equal(head.kind, "head");
+    assert.equal(head.copies.r.unit, "own_token_z");
+    const top = await offered.instruments.unitTop("e", { by: "fires", k: 5 });
+    assert.equal(top.hits.length, 5);
+    const found = await offered.instruments.unitFind({ vector: Array.from({ length: 64 }, (_, i) => Math.sin(i)), layer: 2, k: 3 });
+    assert.equal(found.layers["2"].neurons.length, 3);
+    assert.equal((await offered.instruments.unitCatalog()).available, false);
+    assert.deepEqual((await offered.instruments.unitLabels(["neuron/L1n5"])).labels, []);
+    await assert.rejects(offered.instruments.unitRead("neuron/L9n0"), { status: 400 });
     assert.equal(offered.mode, "fake");
     assert.equal(typeof offered.instruments.tokenReadout, "function");
     assert.deepEqual(

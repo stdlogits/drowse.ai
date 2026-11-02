@@ -141,6 +141,7 @@ try {
       const word = request.selector.slice("jlens/".length);
       const probe = {
         family: "lens",
+        namespace: "jlens",
         name: request.name || request.selector,
         layers: [0, 1],
         intrinsic_dim: 1,
@@ -204,6 +205,7 @@ try {
       const probe = request.selector.startsWith("jlens/")
         ? {
             family: "lens",
+            namespace: "jlens",
             name: request.name || request.selector,
             layers: [0, 1],
             intrinsic_dim: 1,

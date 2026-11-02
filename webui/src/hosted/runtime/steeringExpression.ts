@@ -260,15 +260,30 @@ function lex(source: string): Token[] {
 
 const LAYER_ENTRY = /^([0-9]+)[ \t\n\r\f\v]*(?:-[ \t\n\r\f\v]*([0-9]+))?$/u;
 
-class LayerSelectorError extends Error {
+/** `model/layers.py::LayerSelectorError` (a `RequestError`: 400 at a route). */
+export class LayerSelectorError extends Error {
   constructor(message: string, readonly offset: number | null) {
     super(message);
   }
 }
 
-/** `model/layers.py::parse_layer_selector(text, allow_sample=False)`: `"4-6,11"` → `[4, 5, 6, 11]`
- *  in written order; `all` / `workspace` pass through lower-cased; blank is `null`. */
-function parseLayerSelector(text: string): number[] | "all" | "workspace" | null {
+/** A layer selector as `model/layers.py` passes it around: an index list (written order), a
+ *  lower-cased mode, or `null` for the caller's default. */
+export type LayerSelector = readonly number[] | "all" | "workspace" | "sample" | null;
+
+/** How many layers `sample` picks (`SAMPLE_COUNT`). */
+const SAMPLE_COUNT = 9;
+
+function layerModesText(allowSample: boolean): string {
+  return allowSample ? "all, workspace, sample" : "all, workspace";
+}
+
+/** `model/layers.py::parse_layer_selector`: `"4-6,11"` → `[4, 5, 6, 11]` in written order; a mode
+ *  (`all`, `workspace`, and `sample` when allowed) passes through lower-cased; blank is `null`.
+ *  An empty entry, a negative index, a reversed range or a layer named twice is refused. */
+export function parseLayerSelector(text: string, allowSample: true): number[] | "all" | "workspace" | "sample" | null;
+export function parseLayerSelector(text: string, allowSample?: false): number[] | "all" | "workspace" | null;
+export function parseLayerSelector(text: string, allowSample = false): number[] | "all" | "workspace" | "sample" | null {
   // Offsets count code points and whitespace is Python's `str.isspace`, as `parse_layer_selector`
   // sees the clause body.
   const stripped = pythonStrip(text);
@@ -276,6 +291,7 @@ function parseLayerSelector(text: string): number[] | "all" | "workspace" | null
   const lowered = stripped.toLowerCase();
   if (lowered === "all" || lowered === "workspace") return lowered;
   if (lowered === "sample") {
+    if (allowSample) return lowered;
     throw new LayerSelectorError(
       `unknown layer mode ${pythonStringRepr(stripped)} (want all, workspace, or an index list)`,
       codePointLength(text.slice(0, text.indexOf(stripped))),
@@ -299,7 +315,7 @@ function parseLayerSelector(text: string): number[] | "all" | "workspace" | null
       }
       throw new LayerSelectorError(
         `malformed layers ${pythonStringRepr(text)} (want comma-separated indices or a-b ranges, ` +
-          "or one of all, workspace)",
+          `or one of ${layerModesText(allowSample)})`,
         offset,
       );
     }
@@ -320,6 +336,56 @@ function parseLayerSelector(text: string): number[] | "all" | "workspace" | null
     }
   }
   return layers;
+}
+
+/** `model/layers.py::resolve_layer_selector`: `selector` against the `available` layers (`null`
+ *  and `all` are all of them, `workspace` the band of them, `sample` nine spread over them); an
+ *  index list comes back as given. */
+export function resolveLayerSelector(
+  selector: LayerSelector,
+  available: readonly number[],
+  nLayers: number,
+  allowSample = true,
+): number[] {
+  const pool = [...available];
+  if (selector === null || selector === "all") return pool;
+  if (typeof selector === "string") {
+    if (selector === "workspace") return workspaceLayerIndices(pool, nLayers);
+    if (selector === "sample" && allowSample) {
+      if (pool.length <= SAMPLE_COUNT) return pool;
+      const step = (pool.length - 1) / (SAMPLE_COUNT - 1);
+      const picked = new Set<number>();
+      for (let i = 0; i < SAMPLE_COUNT; i += 1) picked.add(pool[roundHalfEven(i * step)]);
+      return [...picked].sort((a, b) => a - b);
+    }
+    throw new LayerSelectorError(
+      `unknown layer mode ${pythonStringRepr(selector)} (want ${layerModesText(allowSample)}, or an index list)`,
+      null,
+    );
+  }
+  return [...selector];
+}
+
+/** `model/layers.py::resolve_model_layers` on a parsed selector: a request against every layer of
+ *  the model (`null`: all of them), sorted and de-duplicated; `sample` is refused, and so is a
+ *  layer outside the model. */
+export function resolveModelLayers(selector: LayerSelector, nLayers: number): number[] {
+  const all = Array.from({ length: nLayers }, (_, layer) => layer);
+  const requested = [...new Set(resolveLayerSelector(selector, all, nLayers, false))].sort((a, b) => a - b);
+  if (requested.length === 0) throw new LayerSelectorError("layers must name at least one layer", null);
+  if (requested[0] < 0 || requested[requested.length - 1] >= nLayers) {
+    throw new LayerSelectorError(`layers must lie in [0, ${nLayers}); got [${requested.join(", ")}]`, null);
+  }
+  return requested;
+}
+
+/** Python's `round(x)` on a float: half to even. */
+function roundHalfEven(value: number): number {
+  const floor = Math.floor(value);
+  const fraction = value - floor;
+  if (fraction > 0.5) return floor + 1;
+  if (fraction < 0.5) return floor;
+  return floor % 2 === 0 ? floor : floor + 1;
 }
 
 /** The canonical `{…}` clause of a scope (`format_layer_clause`); `""` for every fitted layer. */

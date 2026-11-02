@@ -156,10 +156,13 @@ export function runtimeServiceOperationPolicy(
 
 /**
  * Whether this runtime offers a contract method. An `"unavailable"` route is
- * one the worker answers with a refusal: the browser runtime does not compute
- * it yet (units, token anatomy). The client the shared UI holds omits these
- * members, because the UI decides availability by `typeof member ===
- * "function"` (`replayCapabilities`, `unitReadsAvailable`).
+ * one the worker answers with a refusal: the units members and token anatomy
+ * until the model load builds `BrowserUnitsService` and calls
+ * `configureUnits` (B4's wiring; the ports, the members and the 422 refusals
+ * on a library without unit sites are in place, so the flip to `"model"` lands
+ * with that wiring). The client the shared UI holds omits such members,
+ * because the UI decides availability by `typeof member === "function"`
+ * (`replayCapabilities`, `unitReadsAvailable`).
  */
 export function isOfferedRuntimeMethod(service: RuntimeServiceName, method: string): boolean {
   const route = runtimeServiceRoute({ service, method, args: [] });
@@ -194,10 +197,15 @@ export function unavailableRuntimeMethod(
 
 /**
  * The client the shared UI holds: every member of `client` except the
- * `"unavailable"` routes'. The fixture runtime implements those members (as
- * refusals, for the contract inventory) and reaches the UI through this view.
+ * `"unavailable"` routes', unless `served` names it (`"service.method"`): a
+ * member that `client` answers itself. The fixture runtime reaches the UI
+ * through this view and serves the units members through the real host ports
+ * on the tiny fixture model, so the e2e fixture mode shows them.
  */
-export function offeredRuntimeClient<T extends RuntimeClient>(client: T): T {
+export function offeredRuntimeClient<T extends RuntimeClient>(
+  client: T,
+  served: ReadonlySet<string> = new Set(),
+): T {
   const views = new Map<RuntimeServiceName, object>();
   return new Proxy(client, {
     get(target, property) {
@@ -208,7 +216,7 @@ export function offeredRuntimeClient<T extends RuntimeClient>(client: T): T {
       const name = property as RuntimeServiceName;
       let view = views.get(name);
       if (!view) {
-        view = offeredServiceView(name, value as object);
+        view = offeredServiceView(name, value as object, served);
         views.set(name, view);
       }
       return view;
@@ -216,11 +224,12 @@ export function offeredRuntimeClient<T extends RuntimeClient>(client: T): T {
   });
 }
 
-function offeredServiceView(name: RuntimeServiceName, service: object): object {
+function offeredServiceView(name: RuntimeServiceName, service: object, served: ReadonlySet<string>): object {
   const withheld = (method: string | symbol): boolean =>
     typeof method === "string" &&
     isRuntimeServiceMethod(name, method) &&
-    !isOfferedRuntimeMethod(name, method);
+    !isOfferedRuntimeMethod(name, method) &&
+    !served.has(`${name}.${method}`);
   return new Proxy(service, {
     get(target, method) {
       if (withheld(method)) return undefined;

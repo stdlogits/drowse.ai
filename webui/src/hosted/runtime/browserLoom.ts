@@ -1,3 +1,4 @@
+import type { UnitsNodeReplay, UnitsNodeReplayPort } from "./units/unitsService";
 import type { RuntimeProgressEvent, RuntimeServiceRequest } from "../../../../drowse/webui/src/lib/runtime/contracts";
 import {
   clampOutputTokenCount,
@@ -80,6 +81,11 @@ function holdsTokens(node: LoomNodeJSON): boolean {
 
 type BrowserHookProgram = RankOneHookProgramBuffers | StructuredHookProgramBuffers;
 
+/** A drowse-structured-v4 program: the only kind a block-sites replay runs. */
+function isStructuredHookProgram(program: BrowserHookProgram): program is StructuredHookProgramBuffers {
+  return (program as StructuredHookProgramBuffers).format === "drowse-structured-v4";
+}
+
 interface GenerationReservation {
   anchorId: string;
   rootId: string | null;
@@ -100,6 +106,11 @@ export interface BrowserGenerationPort {
   runtimeCapabilities?(): WebLlmRuntimeCapabilities;
   tokenizeText?(text: string): Promise<number[]>;
   decodeTokens?(tokenIds: readonly number[]): Promise<string>;
+  /** The token ids the engine prefills for a generation plan's input (its chat template, roles
+   *  and thinking state), so a node replays on the block-sites backend exactly as it ran. */
+  renderPromptTokenIds?(
+    plan: Pick<WebLlmGenerationPlan, "input" | "thinking" | "generationSeat" | "generationRoleName">,
+  ): Promise<number[]>;
 }
 
 export interface BrowserLoomOptions {
@@ -1521,6 +1532,72 @@ export class BrowserLoomRuntime {
       );
     }
     return node;
+  }
+
+  /** The units members' node replays (B5), or null when the engine cannot render a prompt to
+   *  token ids or the session has no steering compiler. */
+  unitsNodeReplay(): UnitsNodeReplayPort | null {
+    if (!this.generation.renderPromptTokenIds || !this.compileSteering) return null;
+    return { nodeForward: (nodeId, rawIndex, options) => this.unitsNodeForward(nodeId, rawIndex, options) };
+  }
+
+  private async unitsNodeForward(
+    nodeId: string,
+    rawIndex: number | null,
+    options: { steered: boolean; raw: boolean; label: string; produced: boolean },
+  ): Promise<UnitsNodeReplay> {
+    return this.withReplayLock(async () => {
+      const authored = this.requireNode(nodeId);
+      if (authored.recipe === null && (authored.role === "user" || authored.role === "assistant")) {
+        // Native `NodeReplayer.forward` replays an authored turn's captured prompt tokens
+        // (`resolve_prompt_anchor`). The browser measures no prompts, so its authored turns hold
+        // no capture, and drowse refuses such a turn in these words.
+        throw Object.assign(
+          new Error(`${options.label}: '${authored.id}' is an authored turn no generation has measured yet, so it has no prompt tokens to replay`),
+          { code: "INVALID_NODE_OPERATION", status: 400, recoverable: false },
+        );
+      }
+      const node = this.replayableNode(nodeId);
+      const raw = node.raw_token_ids!;
+      const anchor = rawIndex ?? raw.length - 1;
+      if (!(Number.isSafeInteger(anchor) && anchor >= 0 && anchor < raw.length)) {
+        throw loomError("INVALID_NODE_OPERATION", `Raw token index ${anchor} is outside node ${node.id}`);
+      }
+      const settings = replaySettings(this.session, node, anchor + 1, options.steered, this.maxOutputTokens);
+      let program: StructuredHookProgramBuffers | null = null;
+      if (settings.steering) {
+        const compiled = await this.compileRequiredSteering(settings.steering);
+        if (!isStructuredHookProgram(compiled)) {
+          throw loomError(
+            "TOKEN_REPLAY_UNAVAILABLE",
+            "The node's steering did not lower to a structured hook program the replay can run",
+          );
+        }
+        program = compiled;
+      }
+      const raw_ = this.session.is_base_model || options.raw;
+      const promptIds = await this.generation.renderPromptTokenIds!({
+        input: generationInput({ type: "generate", input: null, raw: raw_ }, this.tree, node.parent_id!, settings.systemPrompt),
+        thinking: settings.thinking,
+        generationSeat: raw_ ? null : node.role as ChatRole,
+        generationRoleName: raw_ ? null : node.role_label,
+      });
+      const ids = Int32Array.from([...promptIds, ...raw.slice(0, anchor)]);
+      return {
+        forward: {
+          ids,
+          promptLength: promptIds.length,
+          rawIds: Int32Array.from(raw),
+          rawIndex: anchor,
+          spans: [{ firstRow: 0, stopRow: raw.length, at: promptIds.length - 1 }],
+          // Position-targeted steering replays with its recorded spans (B1 §2.3, §3.1).
+          positionSpans: program === null ? null : settings.positionSpans ?? null,
+        },
+        program,
+        steering: settings.steering ?? null,
+        canThink: settings.thinking === true,
+      };
+    });
   }
 
   private async withReplayLock<T>(operation: () => Promise<T>): Promise<T> {

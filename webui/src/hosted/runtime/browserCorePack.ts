@@ -51,7 +51,9 @@ import {
 import {
   compileStructuredHookProgram,
   saeFeatureProbe,
+  structuredUnitAblationTerm,
   validateStructuredHookProgram,
+  withStructuredUnitSection,
   type StructuredAffineGroup,
   type StructuredCurve,
   type StructuredCurveAxis,
@@ -87,6 +89,14 @@ import {
   type SteeringTrigger,
 } from "./steeringExpression";
 import { instrumentAtomUnavailable } from "./hookCapabilities";
+import {
+  resolveUnitAtom,
+  unitMean,
+  unitTap,
+  type BrowserUnitProgramSource,
+} from "./units/unitProgram";
+import { slensProbeDigest, unitProbeDigest } from "./units/probeDigest";
+import { unitName, type UnitRef } from "./units/unitReader";
 
 interface CoreManifold {
   key: string;
@@ -126,9 +136,11 @@ interface ResolvedManifoldAtom {
 interface ResolvedInstrumentAtom {
   kind: "instrument";
   key: string;
-  family: "sae" | "jlens";
+  family: "sae" | "jlens" | "units" | "slens";
   directions: ReadonlyMap<number, Float32Array>;
   saeFeature: BrowserSaeFeature | null;
+  /** A `neuron/…` or `head/…` atom's unit (its push direction, if any, is `directions`). */
+  unit?: UnitRef;
 }
 
 type ResolvedCoreAtom = ResolvedManifoldAtom | ResolvedInstrumentAtom;
@@ -192,6 +204,8 @@ export class BrowserFeasibilityCorePackCompiler {
   private lensLiveLayers: readonly number[] | null = null;
   private saeLive = false;
   private compiledProgram: { key: string; program: BrowserHookProgramBuffers } | null = null;
+  private unitSource: BrowserUnitProgramSource | null = null;
+  private unitSourceVersion = 0;
   private readonly attachedProbes = new Map<string, ProbeInfo>();
 
   private constructor(
@@ -303,7 +317,7 @@ export class BrowserFeasibilityCorePackCompiler {
       manifolds.push(...await loadInstalledManifolds(archive, request, this.structuredHookProfile));
     }
     signal.throwIfAborted();
-    return new BrowserFeasibilityCorePackCompiler(
+    const next = new BrowserFeasibilityCorePackCompiler(
       this.modelId,
       this.hiddenSize,
       this.layerMap,
@@ -314,6 +328,10 @@ export class BrowserFeasibilityCorePackCompiler {
       this.loadRequest,
       this.coreManifolds,
     );
+    // The loaded library's unit sites outlive a manifold refresh (unit and slens/ probes
+    // re-attach to the new compiler through them).
+    next.setUnitSource(this.unitSource);
+    return next;
   }
 
   fittingWhiteners(): ReadonlyMap<number, SerializedMahalanobisWhitener> {
@@ -369,7 +387,8 @@ export class BrowserFeasibilityCorePackCompiler {
 
   async refreshJlensProbes(resolver: BrowserJlensRuntimeResolver): Promise<void> {
     const probes = [...this.attachedProbes.values()].filter(
-      (probe): probe is Extract<ProbeInfo, { family: "lens" }> => probe.family === "lens",
+      (probe): probe is Extract<ProbeInfo, { family: "lens" }> =>
+        probe.family === "lens" && probe.namespace === "jlens",
     );
     await this.instruments.prepareJlensWords(probes.map((probe) => probe.word), resolver);
     for (const probe of probes) {
@@ -518,11 +537,49 @@ export class BrowserFeasibilityCorePackCompiler {
   probeHashes(): Record<string, string> {
     const hashes: Record<string, string> = {};
     for (const [name, probe] of this.attachedProbes) {
-      hashes[name] = probe.family === "geometry"
-        ? this.geometryProbeHash(probe)
-        : this.instruments.probeHash(this.modelId, probe);
+      if (probe.family === "geometry") {
+        hashes[name] = this.geometryProbeHash(probe);
+      } else if (probe.family === "units") {
+        hashes[name] = this.unitProbeHash(probe);
+      } else if (probe.family === "lens" && probe.namespace === "slens") {
+        const digest = this.slensProbeHash(probe);
+        if (digest !== null) hashes[name] = digest;
+      } else {
+        hashes[name] = this.instruments.probeHash(this.modelId, probe);
+      }
     }
     return hashes;
+  }
+
+  /** Native `UnitsInstrument.probe_hash` (`units-readout-v2`): the unit and the reading scale
+   *  its reading divides by (the scales' detail and the unit's raw values). */
+  private unitProbeHash(probe: Extract<ProbeInfo, { family: "units" }>): string {
+    const source = this.unitSource;
+    const scales = source?.scales ?? null;
+    if (source === null || scales === null || source.spec === null) return unitProbeDigest(this.modelId, probe.unit, "", []);
+    const raw = probe.kind === "neuron"
+      ? [scales.neuron[(probe.layer * 2) * source.spec.dFF + probe.index], scales.neuron[(probe.layer * 2 + 1) * source.spec.dFF + probe.index]]
+      : [scales.head[probe.layer * source.spec.nHeads + probe.index]];
+    return unitProbeDigest(this.modelId, probe.unit, scales.detail, raw);
+  }
+
+  /** Native `LensInstrument.probe_hash` for an `slens/` probe (`slens-footprint-z-v3`): null when
+   *  the unit source has not prepared the S identity (a source swapped since the attach). */
+  private slensProbeHash(probe: Extract<ProbeInfo, { family: "lens" }>): string | null {
+    if (probe.token_id === null) return null;
+    const identity = this.unitSource?.slensIdentity(probe.layers) ?? null;
+    return identity === null ? null : slensProbeDigest(this.modelId, probe.word, probe.token_id, probe.layers, identity);
+  }
+
+  /** Reads off the device what `expression`'s `neuron/` pushes and `slens/` atoms and gates
+   *  need before the synchronous compile (the unit source's `prepare`). */
+  async prepareUnitSelectors(expression: string): Promise<void> {
+    await this.unitSource?.prepare(expression);
+  }
+
+  /** The same for one probe selector (an `slens/` probe's atom and digest identity). */
+  async prepareUnitProbe(selector: string): Promise<void> {
+    await this.unitSource?.prepareProbe(selector);
   }
 
   hasAttachedProbes(): boolean {
@@ -559,6 +616,40 @@ export class BrowserFeasibilityCorePackCompiler {
         feature_space: "readout",
         word: token.word,
         token_id: token.tokenId,
+      };
+    } else if (selector.startsWith("slens/")) {
+      // An S-lens probe reads the residuals each block wrote, post-forward on the host side of
+      // the device (B1 §2.1): no GPU measurement slot, gates read its score by name.
+      if (this.unitSource === null) throw instrumentAtomUnavailable("slens");
+      const word = selector.slice("slens/".length);
+      const prepared = this.unitSource.slensAtom(word);
+      if (prepared === null) {
+        throw coreError("SLENS_ATOM_UNPREPARED", `${selector} was not resolved before attaching`);
+      }
+      probe = {
+        family: "lens",
+        namespace: "slens",
+        name,
+        layers: [...prepared.directions.keys()].sort((left, right) => left - right),
+        intrinsic_dim: 1,
+        feature_space: "readout",
+        word,
+        token_id: prepared.tokenId,
+      };
+    } else if (selector.startsWith("neuron/") || selector.startsWith("head/")) {
+      const namespace = selector.startsWith("neuron/") ? "neuron" : "head";
+      if (this.unitSource === null) throw instrumentAtomUnavailable(namespace);
+      const unit = resolveUnitAtom(this.unitSource, namespace, selector.slice(namespace.length + 1));
+      probe = {
+        family: "units",
+        name,
+        unit: unitName(unit),
+        kind: unit.kind,
+        layer: unit.layer,
+        index: unit.index,
+        layers: [unit.layer],
+        intrinsic_dim: 1,
+        feature_space: "unit-readout",
       };
     } else if (selector.startsWith("sae/")) {
       const rawFeature = selector.slice("sae/".length);
@@ -886,6 +977,16 @@ export class BrowserFeasibilityCorePackCompiler {
     };
   }
 
+  /** The loaded library's unit sites and the core pack's unit statistics (B5): `neuron/`,
+   *  `head/` and `slens/` atoms, unit probes and unit gates lower through it; without one they
+   *  are refused (`instrumentAtomUnavailable`). Directions it serves are prepared by the caller
+   *  (async, on the device) before a compile. */
+  setUnitSource(source: BrowserUnitProgramSource | null): void {
+    this.unitSource = source;
+    this.unitSourceVersion += 1;
+    this.compiledProgram = null;
+  }
+
   compile(
     expression: string,
     probeRequests?: readonly ProbeRequest[],
@@ -900,7 +1001,7 @@ export class BrowserFeasibilityCorePackCompiler {
   ): BrowserHookProgramBuffers {
     const key = JSON.stringify([
       expression, probeRequests ?? this.listProbes(),
-      this.instrumentLiveState(), this.instrumentDescriptor(),
+      this.instrumentLiveState(), this.instrumentDescriptor(), this.unitSourceVersion,
     ]);
     if (this.compiledProgram?.key === key) return this.compiledProgram.program;
     const program = this.compileUncached(expression, probeRequests);
@@ -1001,8 +1102,22 @@ export class BrowserFeasibilityCorePackCompiler {
   }
 
   private compileStructured(
-    terms: readonly ResolvedCoreTerm[],
+    allTerms: readonly ResolvedCoreTerm[],
   ): StructuredHookProgramBuffers {
+    // Unit ablations (`!neuron/…`, `!head/…`) act inside the block (the unit section, B1 §3.1);
+    // every other term lowers to the post-block program.
+    const unitTerms = allTerms.filter((term) =>
+      term.ablation && term.base.kind === "instrument" && term.base.family === "units"
+    );
+    const terms = allTerms.filter((term) => !unitTerms.includes(term));
+    for (const term of terms) {
+      if (term.base.kind === "instrument" && term.base.family === "units" && term.base.directions.size === 0) {
+        throw coreError(
+          "UNIT_DIRECTION_UNPREPARED",
+          `${term.base.key}'s write was not read off the model before compiling`,
+        );
+      }
+    }
     if (this.whiteners.size !== this.layerMap.length) {
       throw coreError(
         "CORE_PACK_WHITENER_UNAVAILABLE",
@@ -1024,9 +1139,16 @@ export class BrowserFeasibilityCorePackCompiler {
         `The browser GPU program supports at most ${this.structuredHookProfile.maxAffineGroups} independently gated affine groups`,
       );
     }
-    const requiredGateNames = [...new Set(terms.flatMap((term) =>
+    // A gate on a unit reads the live unit tap (priorScores[unit]), not a measurement probe.
+    const allGateNames = [...new Set(allTerms.flatMap((term) =>
       term.trigger?.gate ? [term.trigger.gate.probe] : []
     ))];
+    const unitGateNames = allGateNames.filter((name) => this.isUnitGate(name));
+    // An S-lens gate reads the post-forward slens/ score by name (`scoreKey`), as a unit gate does.
+    const slensGateNames = allGateNames.filter((name) => this.isSlensGate(name));
+    const requiredGateNames = allGateNames.filter((name) =>
+      !unitGateNames.includes(name) && !slensGateNames.includes(name)
+    );
     if (requiredGateNames.length > this.structuredHookProfile.maxProbes) {
       throw coreError(
         "CORE_PACK_PROBE_LIMIT",
@@ -1065,16 +1187,21 @@ export class BrowserFeasibilityCorePackCompiler {
 
     const curveMaps = curved.map((term) => this.structuredCurves(term));
     const curvedBasisByLayer = new Map<number, ArrayLike<number>[]>();
+    // drowse's `OverlappingManifoldError` (steering/hooks.py), naming the layer's first curved
+    // manifold and the one that overlaps it.
+    const curvedOwner = new Map<number, string>();
     curveMaps.forEach((curves, curveIndex) => {
+      const name = (curved[curveIndex].base as ResolvedManifoldAtom).manifold.name;
       for (const [programIndex, curve] of curves) {
         const previous = curvedBasisByLayer.get(programIndex) ?? [];
         const overlap = maximumBasisOverlap(curve.basis, previous);
         if (overlap > 1e-3) {
-          throw coreError(
+          throw Object.assign(coreError(
             "CORE_PACK_CURVED_OVERLAP",
-            `Curved terms ${curveIndex} and an earlier term overlap at model layer ${this.layerMap[programIndex]} (max |cosine| ${overlap.toFixed(3)}); curved terms sharing a layer must be orthogonal`,
-          );
+            `manifolds '${curvedOwner.get(programIndex)}' and '${name}' both cover layer ${this.layerMap[programIndex]} with non-orthogonal subspaces (max |cosine| = ${overlap.toFixed(3)} > 0.001); curved manifolds sharing a layer must be orthogonal`,
+          ), { status: 422, recoverable: false });
         }
+        if (!curvedOwner.has(programIndex)) curvedOwner.set(programIndex, name);
         curvedBasisByLayer.set(programIndex, [...previous, ...curve.basis]);
       }
     });
@@ -1144,13 +1271,73 @@ export class BrowserFeasibilityCorePackCompiler {
     }
     program.controls = { affine: affineControls, curve: curveControls };
     validateStructuredHookProgram(program);
-    return program;
+    return this.withUnitSection(program, unitTerms, unitGateNames, gateSlots);
+  }
+
+  private isSlensGate(name: string): boolean {
+    const attached = this.attachedProbes.get(name);
+    if (attached !== undefined) return attached.family === "lens" && attached.namespace === "slens";
+    if (!name.startsWith("slens/")) return false;
+    if (this.unitSource === null) throw instrumentAtomUnavailable("slens");
+    return true;
+  }
+
+  private isUnitGate(name: string): boolean {
+    const attached = this.attachedProbes.get(name);
+    if (attached !== undefined) return attached.family === "units";
+    return name.startsWith("neuron/") || name.startsWith("head/");
+  }
+
+  /** The unit section (B1 §3.1, §2.2): one ablation per unit term, grouped by trigger in first
+   *  registration order (≤ `maxUnitGroups`), and a live tap for each attached unit probe and
+   *  each unit a gate reads. Capacities and duplicates refuse in the encoder's words. */
+  private withUnitSection(
+    program: StructuredHookProgramBuffers,
+    unitTerms: readonly ResolvedCoreTerm[],
+    unitGateNames: readonly string[],
+    gateSlots: ReadonlyMap<string, readonly StructuredMeasurementSlot[]>,
+  ): StructuredHookProgramBuffers {
+    const tapped: Array<{ name: string; unit: UnitRef }> = [];
+    for (const [name, probe] of this.attachedProbes) {
+      if (probe.family === "units") tapped.push({ name, unit: { kind: probe.kind, layer: probe.layer, index: probe.index } });
+    }
+    for (const name of unitGateNames) {
+      if (tapped.some((entry) => entry.name === name)) continue;
+      const namespace = name.startsWith("neuron/") ? "neuron" : "head";
+      const source = this.unitSource;
+      if (source === null) throw instrumentAtomUnavailable(namespace);
+      tapped.push({ name, unit: resolveUnitAtom(source, namespace, name.slice(namespace.length + 1)) });
+    }
+    if (unitTerms.length === 0 && tapped.length === 0) return program;
+    const source = this.unitSource;
+    if (source === null || source.spec === null) {
+      throw instrumentAtomUnavailable(unitTerms.length > 0 ? unitTerms[0].base.key.split("/")[0] : "neuron");
+    }
+    const triggers: string[] = [];
+    const controls: Array<StructuredHookControl | null> = [];
+    const ablations = unitTerms.map((term) => {
+      const unit = (term.base as ResolvedInstrumentAtom).unit!;
+      const key = JSON.stringify(term.trigger);
+      let group = triggers.indexOf(key);
+      if (group < 0) {
+        group = triggers.length;
+        triggers.push(key);
+        controls.push(term.trigger === null ? null : hookControl(term.trigger, gateSlots));
+      }
+      return structuredUnitAblationTerm(unit.kind, unit.layer, unit.index, term.coefficient, unitMean(source, unit), group);
+    });
+    const taps = tapped.map((entry, slot) => unitTap(source, entry.name, entry.unit, slot));
+    return withStructuredUnitSection(
+      program,
+      { dFF: source.spec.dFF, nHeads: source.spec.nHeads, headDim: source.spec.headDim },
+      { ablations, taps, controls },
+    );
   }
 
   private syncPinnedJlensWords(): void {
     this.instruments.setPinnedJlensWords(
       [...this.attachedProbes.values()].flatMap((probe) =>
-        probe.family === "lens" ? [probe.word] : []
+        probe.family === "lens" && probe.namespace === "jlens" ? [probe.word] : []
       ),
     );
   }
@@ -1159,6 +1346,7 @@ export class BrowserFeasibilityCorePackCompiler {
     const names = [...required];
     for (const [name, probe] of this.attachedProbes) {
       if (probe.family === "geometry" && !this.geometryLive) continue;
+      if (probe.family === "units" || (probe.family === "lens" && probe.namespace === "slens")) continue;
       if (!names.includes(name)) names.push(name);
     }
     if (names.length > this.structuredHookProfile.maxProbes) {
@@ -2491,7 +2679,7 @@ export class BrowserFeasibilityCorePackCompiler {
    *  degenerate `onto`). */
   private termFittedLayers(term: ResolvedCoreTerm): number[] {
     const atomLayers = (atom: ResolvedCoreAtom): number[] => atom.kind === "instrument"
-      ? [...atom.directions.keys()]
+      ? atom.unit !== undefined ? [atom.unit.layer] : [...atom.directions.keys()]
       : fittedLayerNumbers(atom.manifold.tensors);
     const base = atomLayers(term.base);
     if (term.projection?.operator !== "~") return [...base].sort((a, b) => a - b);
@@ -2631,6 +2819,41 @@ export class BrowserFeasibilityCorePackCompiler {
         key: token.key,
         family: "jlens",
         directions: token.directions,
+        saeFeature: null,
+      };
+    }
+    if (atom.namespace === "neuron" || atom.namespace === "head") {
+      const source = this.unitSource;
+      if (source === null) throw instrumentAtomUnavailable(atom.namespace);
+      if (atom.variant !== "raw") {
+        throw coreError("CORE_PACK_VARIANT_UNAVAILABLE", "Unit atoms do not take manifold variants");
+      }
+      const unit = resolveUnitAtom(source, atom.namespace, atom.concept);
+      const write = unit.kind === "neuron" ? source.neuronWrite(unit.layer, unit.index) : null;
+      return {
+        kind: "instrument",
+        key: unitName(unit),
+        family: "units",
+        directions: write === null ? new Map() : new Map([[unit.layer, write]]),
+        saeFeature: null,
+        unit,
+      };
+    }
+    if (atom.namespace === "slens") {
+      const source = this.unitSource;
+      if (source === null) throw instrumentAtomUnavailable(atom.namespace);
+      if (atom.variant !== "raw") {
+        throw coreError("CORE_PACK_VARIANT_UNAVAILABLE", "S-lens atoms do not take manifold variants");
+      }
+      const prepared = source.slensAtom(atom.concept);
+      if (prepared === null) {
+        throw coreError("SLENS_ATOM_UNPREPARED", `slens/${atom.concept} was not resolved before compiling`);
+      }
+      return {
+        kind: "instrument",
+        key: `slens/${atom.concept}`,
+        family: "slens",
+        directions: prepared.directions,
         saeFeature: null,
       };
     }

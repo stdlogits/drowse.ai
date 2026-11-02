@@ -16,6 +16,7 @@ import { rankCatalogModels } from "../../lib/runtime/recommendation";
 import { initialRuntimeSnapshot } from "../../lib/runtime/state";
 import { DeterministicFakeRuntime } from "./fakeRuntime";
 import { offeredRuntimeClient } from "./operationPolicy";
+import { UNITS_SERVICE_METHODS } from "./units/unitsService";
 import type { HostedRuntimeBundle } from "./hostedController";
 
 const SHA = "a".repeat(64);
@@ -361,6 +362,10 @@ class FixtureHostedController implements HostedController {
   }
 }
 
+const FIXTURE_UNITS_MEMBERS: ReadonlySet<string> = new Set(
+  UNITS_SERVICE_METHODS.map((method) => `instruments.${method}`),
+);
+
 export function createFixtureHostedRuntime(withInstruments = false, baseModel = false): HostedRuntimeBundle {
   const controller = new FixtureHostedController(withInstruments);
   const runtime = new DeterministicFakeRuntime({
@@ -375,7 +380,9 @@ export function createFixtureHostedRuntime(withInstruments = false, baseModel = 
   let disposed = false;
   return {
     controller,
-    runtime: offeredRuntimeClient(runtime),
+    // The fake runtime serves the units members through the real host ports on the tiny
+    // fixture model (units/fixtureUnits.ts), ahead of the worker's routes.
+    runtime: offeredRuntimeClient(runtime, FIXTURE_UNITS_MEMBERS),
     async dispose() {
       if (disposed) return;
       disposed = true;
