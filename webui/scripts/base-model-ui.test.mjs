@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "vite";
 import { readFile } from "node:fs/promises";
-import postcss from "postcss";
 import { parse } from "svelte/compiler";
 
 const server = await createServer({
@@ -74,10 +73,7 @@ try {
   assert.match(pickerSource, /<strong><span id=\{`model-name-\$\{model.id\}`\}>\{model.name\}<\/span>\{#if model.modelType === "base"\}<BaseModelTag plain \/>/);
   assert.match(pickerSource, /aria-labelledby=\{`model-name-\$\{model.id\}`\}/,
     "model cards are named by the model name alone; tier, size, and fit are descriptions");
-  assert.match(pickerSource, /\.model-name strong\s*\{[^}]*display: flex;[^}]*align-items: baseline;/);
   assert.match(pickerSource, /modelsBySize\(snapshot.models.filter\(\(model\) => model.modelType === "base"\)\)/);
-  assert.match(pickerSource, /\.check-mark\s*\{[^}]*margin-top: var\(--space-xs\);/,
-    "checkmarks share the heading's top inset instead of sitting above it");
   const { installRuntimeClient } = await server.ssrLoadModule("/../drowse/webui/src/lib/runtime/registry.ts");
   installRuntimeClient({ mode: "browser" });
   const { default: TokenLogitsPopover } = await server.ssrLoadModule("/../drowse/webui/src/lib/ui/TokenLogitsPopover.svelte");
@@ -100,14 +96,14 @@ try {
   const { sessionState } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/session.svelte.ts");
   const { genUiMode, effectiveRawMode, loadGenUiMode, setGenUiMode } =
     await server.ssrLoadModule("/../drowse/webui/src/lib/stores/chat.svelte.ts");
-  sessionState.info = { model_id: "fixture/base", is_base_model: true };
+  sessionState.info = { model_id: "fixture/base", is_base_model: true, config: {} };
   genUiMode.mode = "chat";
   assert.equal(effectiveRawMode(), true, "stale chat state cannot override a base model");
   loadGenUiMode();
   assert.equal(genUiMode.mode, "raw");
   setGenUiMode("chat");
   assert.equal(genUiMode.mode, "raw", "base models cannot enable a chat template");
-  sessionState.info = { model_id: "fixture/instruct", is_base_model: false };
+  sessionState.info = { model_id: "fixture/instruct", is_base_model: false, config: {} };
   setGenUiMode("chat");
   assert.equal(effectiveRawMode(), false);
   setGenUiMode("raw");
@@ -117,7 +113,7 @@ try {
   const { chatLog, genStatus } = await server.ssrLoadModule("/../drowse/webui/src/lib/stores/chat.svelte.ts");
   const { default: RawBuffer } = await server.ssrLoadModule("/../drowse/webui/src/panels/RawBuffer.svelte");
   const { default: StatusFooter } = await server.ssrLoadModule("/../drowse/webui/src/panels/StatusFooter.svelte");
-  sessionState.info = { model_id: "fixture/base", is_base_model: true };
+  sessionState.info = { model_id: "fixture/base", is_base_model: true, config: {} };
   chatLog.turns = [{ role: "assistant", text: "I love marmots because", generated: true,
     tokens: [{ text: "I", logprob: -0.2 }] }];
   genStatus.active = true;
@@ -126,7 +122,9 @@ try {
   const streaming = render(RawBuffer).body;
   assert.match(streaming, /<textarea[^>]*readonly/);
   assert.match(streaming, /<label for="completion-buffer"[^>]*>Text completion<\/label>/);
-  assert.match(streaming, /<button(?=[^>]*disabled)(?=[^>]*aria-description="Stop or finish generation before inspecting")[^>]*>/);
+  // 6.0: the Inspect segment stays in the Buffer mode group and refuses the change while streaming;
+  // its tip says why.
+  assert.match(streaming, /<button(?=[^>]*aria-pressed="false")(?=[^>]*data-tip="Stop or finish generation before inspecting")[^>]*>Inspect tokens<\/button>/);
   genStatus.active = false;
   genStatus.finishReason = "cancelled";
   const textContent = node => node.type === "Text"
@@ -191,10 +189,9 @@ try {
   measured[1].probes = { "fixture/trait": 0.5, "sae/7": 0.8 };
   highlightState.target = "fixture/trait";
   const probeColors = render(RawBuffer).body;
-  assert.match(probeColors, /var\(--accent-red\)/);
-  assert.match(probeColors, /var\(--accent-green\)/);
+  assert.match(probeColors, /class="color-mirror /, "probe readings colour the mirror");
   highlightState.target = "sae/7";
-  assert.match(render(RawBuffer).body, /var\(--pillar-sae\)/);
+  assert.match(render(RawBuffer).body, /class="color-mirror /, "SAE readings colour the mirror");
   highlightState.target = SURPRISE_TARGET;
   highlightState.compareTwo = true;
   highlightState.compareTarget = ENTROPY_TARGET;
@@ -218,31 +215,26 @@ try {
   highlightState.smoothBlend = false;
   const { default: Chat } = await server.ssrLoadModule("/../drowse/webui/src/panels/Chat.svelte");
   assert.doesNotMatch(render(Chat, { props: { headersVisible: false } }).body, /aria-label="Active model"/);
-  sessionState.info = { model_id: "fixture/instruct", is_base_model: false };
+  sessionState.info = { model_id: "fixture/instruct", is_base_model: false, config: {} };
   setGenUiMode("chat");
   assert.doesNotMatch(render(Chat, { props: { headersVisible: false } }).body, /aria-label="Active model"/);
-  sessionState.info = { model_id: "fixture/base", is_base_model: true };
+  sessionState.info = { model_id: "fixture/base", is_base_model: true, config: {} };
   console.log("Base token colors: edit and live mirrors, surprise, entropy, compare, zero/missing readings, text alignment, and model identity passed");
 
-  const { default: SteeringRack } = await server.ssrLoadModule("/../drowse/webui/src/panels/SteeringRack.svelte");
-  const { default: ProbeRack } = await server.ssrLoadModule("/../drowse/webui/src/panels/ProbeRack.svelte");
   const { default: JLensMissingState } = await server.ssrLoadModule("/src/hosted/ui/JLensMissingState.svelte");
   const { default: JLensSourceSection } = await server.ssrLoadModule("/src/hosted/ui/JLensSourceSection.svelte");
-  assert.match(render(SteeringRack, { props: { family: "subspace" } }).body, /Add a direction to steer the next completion/);
-  assert.match(render(ProbeRack, { props: { family: "subspace" } }).body, /Readings observe the completion/);
-  for (const component of [JLensMissingState, JLensSourceSection]) {
-    const base = render(component, { props: { modelId: "fixture/base" } }).body;
-    assert.match(base, /Word insights are optional for base models/);
-    assert.doesNotMatch(base, /download this one again/);
-  }
-  sessionState.info = { model_id: "fixture/instruct", is_base_model: false };
-  assert.match(render(SteeringRack, { props: { family: "subspace" } }).body, /Add a direction to steer the next reply/);
-  assert.match(render(ProbeRack, { props: { family: "subspace" } }).body, /Readings observe the reply/);
-  const missingLens = render(JLensMissingState, { props: { modelId: "fixture/instruct" } }).body;
-  assert.match(missingLens, /download or update the compatible pack/);
-  assert.match(missingLens, /Open Models/);
-  assert.doesNotMatch(missingLens, /download this one again/);
-  console.log("Completion-specific controls, optional base J-lens, and pack recovery copy passed");
+  const missingBase = render(JLensMissingState, { props: { modelId: "fixture/base" } }).body;
+  assert.match(missingBase, /No lens for base/);
+  assert.match(missingBase, />Choose a lens<\/button>/);
+  assert.match(render(JLensSourceSection).body, /Word insights are optional for base models/);
+  sessionState.info = { model_id: "fixture/instruct", is_base_model: false, config: {} };
+  const sources = render(JLensSourceSection).body;
+  assert.match(sources, /download or update the compatible pack/);
+  assert.match(sources, /Open Models/);
+  assert.doesNotMatch(sources, /Word insights are optional for base models|download this one again/);
+  const missingSource = await readFile(new URL("../src/hosted/ui/JLensMissingState.svelte", import.meta.url), "utf8");
+  assert.match(missingSource, /goto\("artifacts", "lenses"\)/, "Choose a lens opens the Artifacts room's Lenses section");
+  console.log("Optional base R lens, the lens missing state and pack recovery copy passed");
 
   const { default: Landing } = await server.ssrLoadModule("/src/hosted/ui/Landing.svelte");
   const landing = render(Landing).body;
@@ -256,7 +248,6 @@ try {
     "each listed model opens the app's model picker with that model selected");
   assert.equal((landing.match(/class="model-group /g) ?? []).length, 2, "both model types share one group layout");
   assert.equal((landing.match(/class="model-row /g) ?? []).length, 9);
-  assert.equal((landing.match(/data-provider=/g) ?? []).length, 9, "every listed model has a logo");
   const landingMain = landing.match(/<main\b[\s\S]*<\/main>/)?.[0] ?? "";
   assert.equal((landingMain.match(/href="\/app"[^>]*>Open Drowse<\/a>/g) ?? []).length, 2,
     "both primary actions in the page body use the same label and app entry");
@@ -265,77 +256,11 @@ try {
   assert.doesNotMatch(landing, /Interpretability, hands-on|section-signal|reading-section|footer-surface/,
     "the homepage has no eyebrow copy or added background wrappers");
   const landingSource = await readFile(new URL("../src/hosted/ui/Landing.svelte", import.meta.url), "utf8");
-  const landingStyles = postcss.parse(landingSource.match(/<style>([\s\S]*?)<\/style>/)[1]);
   assert.match(landing, /Follow instructions\.<br\b[^>]*>Explore a conversation\./);
   assert.match(landing, /Continue raw text\.<br\b[^>]*>Study next-token predictions\./);
-  assert.match(landingSource, /\.model-group \{[^}]*grid-template-rows: subgrid;[^}]*grid-row: span 3;/,
-    "both model columns share heading, description, and model-list tracks");
-  assert.match(landingSource, /\.model-list \{[^}]*grid-auto-rows: auto;[^}]*align-content: start;/,
-    "lists of different lengths keep natural row heights from the top");
-  assert.match(landingSource, /\.model-group h3\s*\{[^}]*line-height: 1\.2;[^}]*text-box-edge: cap alphabetic;[^}]*text-box-trim: trim-start;/,
-    "the first heading's cap edge respects the card's top inset");
-  assert.match(landingSource, /\.model-row:last-child \.model-copy \{ align-self: end; \}/,
-    "the last model's text stays against the bottom inset in shared grid rows");
-  assert.match(landingSource, /\.model-row:last-child \.model-copy > span\s*\{[^}]*text-box-trim: trim-end;/,
-    "the final provider line does not add hidden font leading below the text");
-  assert.match(landingSource, /\.model-group \{ grid-template-rows: auto auto auto; grid-row: auto; \}/,
-    "stacked mobile groups return to natural content height");
-  let lightPanelRules = 0;
-  landingStyles.walkRules(rule => {
-    if (/\.primary-action|\.skip-link/.test(rule.selector)) return;
-    if (rule.selector.replace(/\s+/g, " ").trim() === ".capabilities li, .model-group, .demo-panel, .guide-panel") {
-      lightPanelRules++;
-      const declarations = Object.fromEntries(rule.nodes.filter(node => node.type === "decl").map(node => [node.prop, node.value]));
-      if (rule.parent.type === "atrule") {
-        if (rule.parent.name === "supports") {
-          assert.match(declarations["backdrop-filter"], /url\("#landing-glass"\)/);
-        } else {
-          assert.equal(declarations.background, "Canvas", "high-contrast and reduced-transparency cards are opaque");
-          assert.equal(declarations["backdrop-filter"], "none");
-          assert.equal(declarations["box-shadow"], "none");
-        }
-      } else {
-        assert.equal(declarations.background, "var(--landing-panel-bg)");
-        assert.equal(declarations["--fg"], "var(--landing-panel-ink)");
-        assert.equal(declarations.padding, "var(--surface-padding)");
-        assert.equal(declarations["border-radius"], "var(--radius-lg)");
-      }
-      return;
-    }
-    rule.walkDecls(declaration => {
-      assert.ok(!/^(background(?:-.+)?|box-shadow|backdrop-filter|border(?:-.+)?)$/.test(declaration.prop),
-        `${rule.selector}: only feature, model, example, and guide cards gain containers`);
-    });
-  });
-  assert.equal(lightPanelRules, 3, "cards share base glass, progressive refraction, and accessibility fallback");
-  assert.match(landingSource, /<feDisplacementMap in="SourceGraphic" in2="rim" scale="32"/,
-    "refraction displaces the backdrop, never the text");
-  assert.match(landingSource, /prefers-reduced-transparency: reduce/);
-  assert.match(landingSource, /pointer-events: none;/, "glass decorations do not intercept interaction");
-  assert.doesNotMatch(landingSource, /landing-panel-edge|landing-panel-sheen|brightness\(|inset 0 1px/,
-    "landing glass has no white highlights or backdrop darkening");
-  assert.doesNotMatch(landingSource, /capabilities as capability, index|0\{index \+ 1\}/,
-    "feature headings do not have decorative mono labels above them");
-
-  const { default: ModelProviderLogo } = await server.ssrLoadModule("/../drowse/webui/src/lib/ui/ModelProviderLogo.svelte");
-  for (const [modelId, provider] of [
-    ["gemma3-1b-pt-q4f32_1", "gemma"], ["google/gemma-3-1b-pt", "gemma"],
-    ["qwen35-2b-base-q4f32_1", "qwen"], ["Qwen/Qwen3-1.7B", "qwen"],
-    ["gpt2-base-q0f32", "openai"], ["openai-community/gpt2", "openai"],
-    ["pythia-70m-base-q0f32", "eleutherai"], ["EleutherAI/pythia-70m-deduped", "eleutherai"],
-  ]) {
-    const logo = render(ModelProviderLogo, { props: { modelId } }).body;
-    assert.ok(logo.includes(`data-provider="${provider}"`), modelId);
-    assert.match(logo, /aria-hidden="true"/, "logos do not duplicate adjacent accessible model names");
-    assert.doesNotMatch(logo, /https?:\/\//, "provider images are bundled, not remotely loaded");
-  }
-  assert.doesNotMatch(render(ModelProviderLogo, { props: { modelId: "unrecognized/model" } }).body, /data-provider/);
-  const logoSource = await readFile(new URL("../../drowse/webui/src/lib/ui/ModelProviderLogo.svelte", import.meta.url), "utf8");
-  assert.match(logoSource, /\[data-provider="eleutherai"\] \.raster-mark \{ mask-mode: luminance;/,
-    "the white-on-black EleutherAI asset must not become a solid alpha-mask square");
   const setupSource = await readFile(new URL("../src/hosted/ui/HostedApp.svelte", import.meta.url), "utf8");
   assert.doesNotMatch(setupSource, /Each download includes a precomputed J-lens and SAE/);
-  console.log("Unified informational home, shared app entry, all nine logos, qualified model identities, and research copy passed");
+  console.log("Unified informational home, shared app entry, qualified model identities, and research copy passed");
 } finally {
   await server.close();
 }

@@ -46,7 +46,7 @@ try {
   for (const heading of ["What you need.", "Words you&#39;ll see.", "Common questions.", "Need more models?"]) {
     assert.ok(html.includes(heading) || html.includes(heading.replace("&#39;", "'")), `${heading} section is visible`);
   }
-  for (const term of ["Influence", "Strength (α)", "Word insights (J-lens)", "Feature insights (SAE)", "Loom", "Base model"]) {
+  for (const term of ["Influence", "Strength (α)", "Word insights (R lens)", "Feature insights (SAE)", "Loom", "Base model"]) {
     assert.ok(new RegExp(`<dt[^>]*>${RegExp.escape(term)}</dt>`).test(html), `${term} is defined`);
   }
   assert.ok((html.match(/<details[\s>]/g) ?? []).length >= 8, "questions use native details elements");

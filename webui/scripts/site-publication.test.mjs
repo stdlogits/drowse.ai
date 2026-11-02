@@ -363,6 +363,8 @@ test("prerender preserves the actual landing content without visible machine-res
     assert.ok(!assets.has(path.slice(1)), `Landing must not expose machine resource ${href}`);
     if (guidePages.some(page => page.path === path)) assert.ok(publicPaths.includes(path), `Landing links to ${href}, which has no HTML page`);
   }
-  assert.ok(images.length > 0);
+  // The landing draws no images in Ledger (the mark is the name set in type); any it imports must be
+  // emitted as assets, which assetUrl above checks.
+  assert.ok(images.every(image => !image.includes("model-providers")), "provider logos left with Ledger");
   assert.match(css, /\.landing-shell\.svelte-/);
 });

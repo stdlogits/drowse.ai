@@ -25,7 +25,6 @@ try {
   assert.match(credits, /name: "GPT-5\.6 Sol", provider: "openai"/);
   assert.doesNotMatch(credits, /GPT-6 Sol/);
   assert.match(credits, /name: "GPT-6 Astra", provider: "openai"/);
-  assert.match(await readFile("../drowse/webui/src/lib/style/tokens.css", "utf8"), /--brand-openai:\s*#000;/);
   for (const [handle, status] of [["_a9lim", "blue"], ["treetowntree", "blue"], ["transkatgirl", "blue"], ["voooooogel", "blue"], ["motion_so", "gold"]]) {
     assert.match(credits, new RegExp(`handle: "@${handle}"[^\\n]+verification: "${status}"`));
   }
@@ -37,18 +36,25 @@ try {
   const thanks = credits.split("const thanks = [")[1].split("] as const")[0];
   assert.deepEqual([...thanks.matchAll(/handle: "(@[^"]+)"/g)].map(match => match[1]),
     ["@transkatgirl", "@voooooogel", "@motion_so"]);
-  for (const heading of ["Models", "Research Drowse builds on", "Interpretability tools and data", "Software, fonts and icons", "Cite Drowse"]) {
+  for (const heading of ["Models", "Research Drowse builds on", "Interpretability tools and data", "Software and type", "Cite Drowse"]) {
     assert.ok(credits.includes(`title: "${heading}"`) || credits.includes(`>${heading}</h2>`), `Credits has a ${heading} section`);
   }
   for (const source of ["arxiv.org/abs/2310.01405", "github.com/vgel/repeng", "arxiv.org/abs/2502.02716", "arxiv.org/abs/2605.05115", "arxiv.org/abs/2601.10387", "transformer-circuits.pub/2026/workspace"]) {
     assert.ok(credits.includes(source), `research lineage links ${source}`);
   }
   assert.match(credits, /Gemma is provided under and subject to the Gemma Terms of Use found at ai\.google\.dev\/gemma\/terms\./, "Gemma attribution notice is shown");
-  for (const file of ["/LICENSE-Wix-Madefor.txt", "/LICENSE-Martian-Mono.txt", "/LICENSE-Fluent-System-Icons.txt", "/LICENSE-Torph.txt"]) {
+  // Torph ships inside Ledger's MorphText, so its notice stays; no icon set or monospace face ships.
+  for (const file of ["/LICENSE-Wix-Madefor.txt", "/LICENSE-Torph.txt"]) {
     assert.ok(credits.includes(file), `Credits links ${file}`);
     assert.ok((await readFile(`public-hosted${file}`)).length > 0, `${file} ships with the hosted site`);
   }
-  assert.match(credits, /class="sr-only"> by \{providerNames\[model\.provider\]\}/, "screen readers hear who made each credited model");
+  for (const gone of ["Blobatar", "Martian Mono", "Fluent"]) {
+    assert.doesNotMatch(credits, new RegExp(gone), `${gone} no longer ships, so it leaves Credits`);
+  }
+  for (const gone of ["LICENSE-Martian-Mono.txt", "LICENSE-Fluent-Icons.txt", "LICENSE-Fluent-System-Icons.txt"]) {
+    await assert.rejects(readFile(`public-hosted/${gone}`), { code: "ENOENT" }, `${gone} is not published`);
+  }
+  assert.match(credits, /<span class="model-by">\{providerNames\[model\.provider\]\}<\/span>/, "each credited model names who made it");
   assert.match(credits, /role="status">\{citationStatus\}/, "copying the citation is announced");
   assert.doesNotMatch(credits, /<svelte:head>/, "Credits updates the existing description instead of adding a second one");
   assert.doesNotMatch(credits, /__DROWSE_SOURCE_URL__/, "Contribute goes to the on-site guide");
