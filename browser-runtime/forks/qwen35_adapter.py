@@ -53,6 +53,8 @@ class _SpecView:
         self.head = head
 
     def __getattr__(self, name):
+        if name == "_drowse_block_spec":
+            return self.head._drowse_block_spec
         method = getattr(Qwen3LMHeadModel, name, None)
         if callable(method):
             return MethodType(method, self.head)
@@ -76,6 +78,8 @@ class InstrumentedQwen35LMHeadModel(Qwen35LMHeadModel):
         from hybrid_state_kernels import install_candidate_state_kernels
         install_candidate_state_kernels()
         super().__init__(config)
+        self.drowse_context_window_size = config.context_window_size
+        self.drowse_prefill_chunk_size = config.prefill_chunk_size
 
     def get_default_spec(self):
         native = super().get_default_spec()
@@ -102,3 +106,6 @@ for _name, _method in vars(Qwen3LMHeadModel).items():
         continue
     setattr(InstrumentedQwen35LMHeadModel, _name,
             _hybrid_forward(_method) if "paged_kv_cache" in inspect.signature(_method).parameters else _method)
+
+# Linear attention layers: no unit sites, the residual descriptor (`standard-v4-residual`).
+InstrumentedQwen35LMHeadModel._drowse_block_spec = lambda self: None

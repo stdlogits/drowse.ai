@@ -14,6 +14,7 @@ import { BrowserLoomRuntime, type BrowserGenerationPort } from "./browserLoom";
 import {
   rejectingBlockSitesBackend,
   UnsupportedBlockError,
+  type BlockSitesCapabilities,
   type BrowserBlockSitesBackend,
   type BrowserGenerationPerformance,
   type BrowserGenerationStopReason,
@@ -26,6 +27,7 @@ import type { RankOneHookProgramBuffers } from "./rankOneHookProgram";
 import type { StructuredHookProgramBuffers } from "./structuredHookProgram";
 import type { SteeringManifoldEntry } from "./steeringExpression";
 import { DrowseWebLlmRuntime, type DrowseWebLlmModule } from "./webLlmEngine";
+import { webLlmBlockSitesBackend, type WebLlmBlockSitesDevice } from "./webLlmBlockSites";
 import type { WebLlmCaptureRuntimePort } from "./webLlmActivationCapture";
 import type { BrowserInstrumentRuntime } from "./browserInstrumentRuntime";
 import type { WebLlmRuntimeCapabilities } from "./webLlmGeneration";
@@ -45,6 +47,10 @@ interface DrowseWebLlmRuntimePort extends BrowserGenerationPort, WebLlmCaptureRu
     tokenIds: readonly number[],
   ): Promise<Float32Array>;
   generationPerformance(): BrowserGenerationPerformance;
+  /** Hook ABI v5's attested surface, or null when the loaded library predates it. */
+  blockSitesCapabilities?(): BlockSitesCapabilities | null;
+  /** The loaded model's block-sites bridge (replay, residents), or null without one. */
+  blockSitesDevice?(): WebLlmBlockSitesDevice | null;
 }
 
 export interface BrowserAuthoringRequestContext {
@@ -178,13 +184,24 @@ export class DrowseWebLlmBackend implements BrowserModelBackend {
     this.clearLoadedState();
   }
 
-  // Hook ABI v5 seam placeholder (lane C0): B4 replaces it with the bridge's surface.
   private readonly v4BlockSites = rejectingBlockSitesBackend(
     () => new UnsupportedBlockError("the loaded model library predates hook ABI block-sites-v5"),
   );
+  private blockSitesSurface: {
+    capabilities: BlockSitesCapabilities;
+    backend: BrowserBlockSitesBackend;
+  } | null = null;
 
   blockSites(): BrowserBlockSitesBackend {
-    return this.v4BlockSites;
+    const capabilities = this.runtime.blockSitesCapabilities?.() ?? null;
+    if (capabilities === null) return this.v4BlockSites;
+    if (this.blockSitesSurface?.capabilities !== capabilities) {
+      this.blockSitesSurface = {
+        capabilities,
+        backend: webLlmBlockSitesBackend(capabilities, this.runtime.blockSitesDevice?.() ?? null),
+      };
+    }
+    return this.blockSitesSurface.backend;
   }
 
   private clearLoadedState(): void {

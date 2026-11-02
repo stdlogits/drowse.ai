@@ -1,4 +1,3 @@
-import { DROWSE_HOOK_ABI } from "./rankOneHookProgram";
 import type {
   SteeringComparisonOperator,
   SteeringPhase,
@@ -14,28 +13,23 @@ import {
   type StructuredHookCapacityProfile,
 } from "./structuredHookProfile";
 
-export const STRUCTURED_HOOK_FORMAT_V2 = "drowse-structured-v2" as const;
-export const STRUCTURED_HOOK_FORMAT = "drowse-structured-v3" as const;
-/** v3 plus the unit section (B1 §3.1, §3.4); the only format a `block-sites-v5` library takes. */
-export const STRUCTURED_HOOK_FORMAT_V4 = "drowse-structured-v4" as const;
-export type StructuredHookFormat =
-  | typeof STRUCTURED_HOOK_FORMAT_V2
-  | typeof STRUCTURED_HOOK_FORMAT
-  | typeof STRUCTURED_HOOK_FORMAT_V4;
-export type StructuredHookAbi = typeof DROWSE_HOOK_ABI | typeof BLOCK_SITES_HOOK_ABI;
+/** The one program format hook ABI `block-sites-v5` runs: the affine, curve, probe and geometry
+ *  buffers, plus the optional unit section (B1 §3.1, §3.4). */
+export const STRUCTURED_HOOK_FORMAT = "drowse-structured-v4" as const;
+export type StructuredHookFormat = typeof STRUCTURED_HOOK_FORMAT;
+export type StructuredHookAbi = typeof BLOCK_SITES_HOOK_ABI;
 
-/** The hook ABI and format a program compiled under `profile` carries: `standard-v1` takes v2,
- *  `standard-v2`/`-v3` take v3 (hook ABI v4), and both v4 profiles take v4 (hook ABI v5). */
+/** The hook ABI and format of a program compiled under `profile`: only the v4 profiles compile
+ *  (`standard-v4`, `standard-v4-residual`); the v1-v3 profiles' libraries cannot load. */
 export function structuredHookIdentity(
   profile: StructuredHookCapacityProfile,
 ): { hookAbi: StructuredHookAbi; format: StructuredHookFormat } {
-  if (isBlockSitesProfile(profile)) {
-    return { hookAbi: BLOCK_SITES_HOOK_ABI, format: STRUCTURED_HOOK_FORMAT_V4 };
+  if (!isBlockSitesProfile(profile)) {
+    throw new TypeError(
+      `Hook ABI ${BLOCK_SITES_HOOK_ABI} compiles standard-v4 programs, not ${profile.id}`,
+    );
   }
-  return {
-    hookAbi: DROWSE_HOOK_ABI,
-    format: profile.maxGeometryProbes > 0 ? STRUCTURED_HOOK_FORMAT : STRUCTURED_HOOK_FORMAT_V2,
-  };
+  return { hookAbi: BLOCK_SITES_HOOK_ABI, format: STRUCTURED_HOOK_FORMAT };
 }
 
 export type StructuredProbeKind =
@@ -251,13 +245,6 @@ export interface StructuredHookProgramBuffers {
   measurementSchema?: StructuredMeasurementSchema;
   controls?: StructuredHookControls;
 }
-
-/** A program for a `post-block-residual-v4` library (`standard-v1`…`-v3`), the shape the v4
- *  WebLLM bridge takes. Goes with the v1-v3 profiles once v5 libraries exist (B4). */
-export type StructuredHookProgramV3Buffers = StructuredHookProgramBuffers & {
-  hookAbi: typeof DROWSE_HOOK_ABI;
-  format: typeof STRUCTURED_HOOK_FORMAT | typeof STRUCTURED_HOOK_FORMAT_V2;
-};
 
 export interface StructuredMeasurementSlot {
   layer: number;
@@ -1272,7 +1259,7 @@ function compileLayer(
     geometryProbes.length > 0
   ) {
     if (program.format !== STRUCTURED_HOOK_FORMAT) {
-      throw new TypeError("Geometry probes require the drowse-structured-v3 program");
+      throw new TypeError("Geometry probes require a drowse-structured-v4 program");
     }
     if (input.geometryWhitener === undefined || input.geometryWhitener === null) {
       throw new TypeError("Geometry probes require one exact layer whitener");
@@ -3389,6 +3376,40 @@ export function structuredTapGramHeads(
       index: program.unitMeta![layout.meta.tapHeadIndex.offset + entry],
     }),
   );
+}
+
+/** Refuses a program whose tapped heads still carry the zero tap grams `withStructuredUnitSection`
+ *  leaves: each tapped head's `G_h = Bᵀ B` has a positive trace, and a zero block would read every
+ *  write norm as 0. `bindStructuredProgram` fills them; installing without it fails closed. */
+export function assertStructuredTapGramsBound(
+  program: StructuredHookProgramBuffers,
+  model: {
+    readonly profile: StructuredHookCapacityProfile;
+    readonly layerCount: number;
+    readonly headDim: number | undefined;
+  } = { profile: program.profile, layerCount: program.layerCount, headDim: program.unitShape?.headDim },
+): void {
+  if (program.unitMeta === undefined) return;
+  if (model.headDim === undefined || program.tapGrams === undefined) {
+    throw new TypeError("Structured hook unit section is incomplete");
+  }
+  const hd = model.headDim;
+  const heads = structuredTapGramHeads({
+    ...program,
+    profile: model.profile,
+    layerCount: model.layerCount,
+    unitShape: { dFF: 0, nHeads: 0, headDim: hd },
+  });
+  heads.forEach(({ layer, index }, slot) => {
+    let trace = 0;
+    for (let k = 0; k < hd; k += 1) trace += program.tapGrams![(slot * hd + k) * hd + k];
+    if (!(trace > 0)) {
+      throw Object.assign(
+        new Error(`The tap of head/L${layer}h${index} has no write gram: bind the program to the loaded model first`),
+        { code: "TAP_GRAMS_UNBOUND" },
+      );
+    }
+  });
 }
 
 /** Native's unit tables (`UnitOp` per module and trigger), as the B3 goldens record them:

@@ -73,7 +73,7 @@ try {
     summaryMeasurements,
     tokenRowMeasurements,
   } = await server.ssrLoadModule("/src/hosted/runtime/measurementRows.ts");
-  const { compileStructuredHookProgram } = await server.ssrLoadModule(
+  const { compileStructuredHookProgram, withStructuredUnitSection } = await server.ssrLoadModule(
     "/src/hosted/runtime/structuredHookProgram.ts",
   );
   const {
@@ -88,9 +88,7 @@ try {
     "/../drowse/webui/src/lib/runtime/samplingCapabilities.ts",
   );
   const {
-    STANDARD_STRUCTURED_HOOK_PROFILE,
-    STANDARD_STRUCTURED_HOOK_PROFILE_V2,
-    STANDARD_STRUCTURED_HOOK_PROFILE_V3,
+    STANDARD_STRUCTURED_HOOK_PROFILE_V4,
   } = await server.ssrLoadModule(
     "/src/hosted/runtime/structuredHookProfile.ts",
   );
@@ -985,7 +983,7 @@ try {
       kappa: [0],
     }],
     probes: [{ kind: "linear", direction: [1], bias: 0 }],
-  }], STANDARD_STRUCTURED_HOOK_PROFILE);
+  }], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
   gatedProgram.controls = {
     affine: [{
       enabled: true,
@@ -1047,6 +1045,45 @@ try {
   assert.equal(measuredTokens[0].measurements.scope, "token");
   assert.equal(measuredResult.measurements.scope, "aggregate");
   assert.equal(measuredTokens[0].measurements.scope, "token");
+
+  // A unit-only program (no affine or curve term) with phased groups: prompt-only ablation
+  // turns off at the first decode step, a response-only one turns on there, and the caller's
+  // `unitActive` is never written (a later run of the same program starts from it).
+  const unitOnlyProgram = withStructuredUnitSection(
+    compileStructuredHookProgram(1, [{}], STANDARD_STRUCTURED_HOOK_PROFILE_V4),
+    { dFF: 4, nHeads: 1, headDim: 1 },
+    {
+      ablations: [
+        { kind: "neuron", layer: 0, index: 1, keep: 0, bias: 0, group: 0 },
+        { kind: "neuron", layer: 0, index: 2, keep: 0, bias: 0, group: 1 },
+      ],
+      taps: [],
+      controls: [
+        { enabled: true, phase: { kind: "prompt_only" }, gate: null },
+        { enabled: true, phase: { kind: "generated_only" }, gate: null },
+      ],
+    },
+  );
+  const unitActiveBefore = Array.from(unitOnlyProgram.unitActive);
+  for (let run = 0; run < 2; run += 1) {
+    const unitInstalls = [];
+    const unitUpdates = [];
+    await streamWebLlmGeneration(engine, {
+      async clear() {},
+      async interrupt() {},
+      async install(program) { unitInstalls.push(Array.from(program.unitActive)); },
+      async updateControls(_affine, _curve, unitActive) { unitUpdates.push(Array.from(unitActive)); },
+      async read() { return new Float32Array(8); },
+      assertSteeringSupported() {},
+    }, {
+      input: { kind: "chat", messages: [{ role: "user", content: "Hi" }] },
+      hookProgram: unitOnlyProgram,
+    }, () => {});
+    assert.deepEqual(unitInstalls, [[1, 0, 0, 0]], `run ${run}: prefill ablates the prompt-only group`);
+    assert.deepEqual(unitUpdates, [[0, 1, 0, 0]], `run ${run}: decode swaps the groups once`);
+    assert.deepEqual(Array.from(unitOnlyProgram.unitActive), unitActiveBefore,
+      "generation must not write the caller's unit groups");
+  }
 
   const measurementOnlyProgram = { ...gatedProgram, controls: undefined };
   const tokenOnlyMeasurements = [];
@@ -1361,11 +1398,11 @@ try {
       { kind: "sae", direction: [1], bias: 0 },
       { kind: "jlens", direction: [0], bias: 0 },
     ],
-  }], STANDARD_STRUCTURED_HOOK_PROFILE_V2, {
+  }], STANDARD_STRUCTURED_HOOK_PROFILE_V4, {
     bindingId: "a".repeat(64),
     layerIndices: Int32Array.of(0),
     tokenIds: Int32Array.from(
-      { length: STANDARD_STRUCTURED_HOOK_PROFILE_V2.maxProbes },
+      { length: STANDARD_STRUCTURED_HOOK_PROFILE_V4.maxProbes },
       (_, index) => index === 1 ? 17 : 0,
     ),
   });
@@ -1381,8 +1418,8 @@ try {
     saeSource: "fixture-sae",
   };
   scopedProgram.controls = {
-    affine: new Array(STANDARD_STRUCTURED_HOOK_PROFILE_V2.maxAffineGroups).fill(null),
-    curve: new Array(STANDARD_STRUCTURED_HOOK_PROFILE_V2.maxCurves).fill(null),
+    affine: new Array(STANDARD_STRUCTURED_HOOK_PROFILE_V4.maxAffineGroups).fill(null),
+    curve: new Array(STANDARD_STRUCTURED_HOOK_PROFILE_V4.maxCurves).fill(null),
   };
   const scopedReads = [];
   const scopedTokens = [];
@@ -1435,7 +1472,7 @@ try {
       along: 0.5,
       kappa: [0],
     }],
-  }], STANDARD_STRUCTURED_HOOK_PROFILE);
+  }], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
   staticProgram.controls = {
     affine: [{
       enabled: true,
@@ -1470,7 +1507,7 @@ try {
   assert.equal(staticControlUpdates, 0);
 
   const oriented = measurementEnvelope({
-    format: "drowse-structured-v2",
+    format: "drowse-structured-v4",
     layerCount: 2,
     probeKind: Uint32Array.of(1, 3, 2, 1, 3, 2),
     measurementSchema: {
@@ -1514,7 +1551,7 @@ try {
   assert.equal(oriented.instruments.sae.readout, undefined);
 
   const preciseProgram = {
-    format: "drowse-structured-v2", layerCount: 2,
+    format: "drowse-structured-v4", layerCount: 2,
     probeKind: Uint32Array.of(3, 2, 3, 2),
     measurementSchema: {
       layerMap: [0, 1], modelLayerCount: 2,
@@ -1579,7 +1616,7 @@ try {
   const exactReadoutProgram = compileStructuredHookProgram(
     1,
     [{}, {}, {}],
-    STANDARD_STRUCTURED_HOOK_PROFILE_V3,
+    STANDARD_STRUCTURED_HOOK_PROFILE_V4,
     {
       bindingId: "a".repeat(64),
       layerIndices: Int32Array.of(0, 2),
@@ -1931,7 +1968,7 @@ try {
           coordinateBias: [0, 0],
         }],
       })),
-      STANDARD_STRUCTURED_HOOK_PROFILE_V2,
+      STANDARD_STRUCTURED_HOOK_PROFILE_V4,
     );
     program.measurementSchema = {
       layerMap,
@@ -2048,7 +2085,7 @@ try {
         coordinateBias: [0],
       }],
     })),
-    STANDARD_STRUCTURED_HOOK_PROFILE_V2,
+    STANDARD_STRUCTURED_HOOK_PROFILE_V4,
   );
   const sharedProbeCount = sharedProgram.profile.maxProbes;
   for (let layer = 0; layer < sharedProgram.layerCount; layer += 1) {
@@ -2386,9 +2423,9 @@ try {
   geometryValues.set([1, 0.25, 0.2, 0.8, 0.2, 0.4, 0, 0, 1, 3], 0);
   geometryValues.set([1, 0.75, 0.4, 0.6, 0.8, 0.6, 0, 0, 3, 1], 8 * 41);
   const geometryEnvelope = measurementEnvelope({
-    format: "drowse-structured-v3",
+    format: "drowse-structured-v4",
     layerCount: 2,
-    profile: STANDARD_STRUCTURED_HOOK_PROFILE_V2,
+    profile: STANDARD_STRUCTURED_HOOK_PROFILE_V4,
     probeKind: new Uint32Array(16),
     measurementSchema: {
       layerMap: [4, 9],
@@ -2446,7 +2483,7 @@ try {
       along: 0.5,
       kappa: [0],
     }],
-  }], STANDARD_STRUCTURED_HOOK_PROFILE);
+  }], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
   thinkingProgram.controls = {
     affine: [{
       enabled: true,
@@ -2949,9 +2986,9 @@ try {
     async reload() {},
     async interruptGenerate() {},
     async resetChat() {},
-    async supportsDrowseRankOneHooks() { return true; },
-    async setDrowseRankOneProgram() {},
-    async clearDrowseRankOneProgram() {},
+    async supportsDrowseStructuredHooks() { return true; },
+    async setDrowseStructuredProgram() {},
+    async clearDrowseProgram() {},
     async readDrowseMeasurements() { return undefined; },
   };
   const runtime = new DrowseWebLlmRuntime({

@@ -15,6 +15,7 @@ SPEC = importlib.util.spec_from_file_location("build_production_webgpu", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 TOOL = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(TOOL)
+import overlay_checks as CHECKS  # noqa: E402  (the production script put forks/ on sys.path)
 
 
 def test_webllm_gemma_uses_global_context_without_top_level_sliding_window():
@@ -253,6 +254,29 @@ def test_gemma_conversion_preserves_source_attention_settings(tmp_path: Path, wr
         TOOL.validate_gemma_attention_config(tmp_path, tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("source_patch", "compiled_patch", "message"),
+    [
+        ({"rope_scaling": {"rope_type": "yarn", "factor": 4.0}}, {}, "rope_scaling"),
+        ({"use_sliding_window": True, "sliding_window": 4096}, {}, "use_sliding_window"),
+        ({}, {"sliding_window_size": 4096}, "sliding_window_size"),
+    ],
+)
+def test_validate_qwen3_attention_config_refuses_scaled_or_windowed_rope(
+    tmp_path: Path, source_patch: dict, compiled_patch: dict, message: str
+):
+    source = {"rope_theta": 1000000, "rope_scaling": None, "use_sliding_window": False,
+              "sliding_window": None}
+    (tmp_path / "config.json").write_text(json.dumps(source))
+    (tmp_path / "mlc-chat-config.json").write_text(json.dumps({"sliding_window_size": -1}))
+    TOOL.validate_qwen3_attention_config(tmp_path, tmp_path)
+    (tmp_path / "config.json").write_text(json.dumps({**source, **source_patch}))
+    (tmp_path / "mlc-chat-config.json").write_text(
+        json.dumps({"sliding_window_size": -1, **compiled_patch}))
+    with pytest.raises(SystemExit, match=message):
+        TOOL.validate_qwen3_attention_config(tmp_path, tmp_path)
+
+
 def test_validate_source_closes_sharded_weights_and_optional_tokenizer_inputs(tmp_path: Path):
     revision = "c" * 40
     metadata = tmp_path / ".cache/huggingface/download"
@@ -305,9 +329,9 @@ def test_verify_build_manifest_closes_and_hashes_every_artifact(tmp_path: Path):
     }
     manifest = {
         "schemaVersion": 1,
-        "runtimeAbi": "drowse-web-runtime-v1",
-        "hookAbi": "post-block-residual-v4",
-        "structuredHookProfile": TOOL.STANDARD_STRUCTURED_HOOK_PROFILE,
+        "runtimeAbi": TOOL.RUNTIME_ABI,
+        "hookAbi": TOOL.HOOK_ABI,
+        "structuredHookProfile": "standard-v4",
         "thinkingProfile": thinking_profile,
         "architecture": "qwen3",
         "quantization": "q4f16_1",
@@ -350,8 +374,8 @@ def test_gemma_unquantized_manifest_requires_precise_normalization_provenance(tm
     tensor_cache = tmp_path / "tensor-cache.json"
     tensor_cache.write_text(json.dumps({"records": [{"records": [{"format": "raw", "dtype": "float32"}]}]}))
     manifest = {
-        "schemaVersion": 1, "runtimeAbi": "drowse-web-runtime-v1",
-        "hookAbi": "post-block-residual-v4", "structuredHookProfile": TOOL.STANDARD_STRUCTURED_HOOK_PROFILE,
+        "schemaVersion": 1, "runtimeAbi": TOOL.RUNTIME_ABI,
+        "hookAbi": TOOL.HOOK_ABI, "structuredHookProfile": "standard-v4",
         "thinkingProfile": None, "architecture": "gemma3_text", "quantization": "q0f32",
         "weightEncoding": "raw", "toolchain": TOOL.toolchain_manifest("gemma3_text"),
         "files": [{"path": tensor_cache.name, "bytes": tensor_cache.stat().st_size,
@@ -401,7 +425,7 @@ def test_verify_compiled_library_requires_wasm_and_every_drowse_export(tmp_path:
             for binding in range(3)
         )
         + b"\n"
-        + TOOL.TOPK_WORKGROUP_LINE
+        + CHECKS.TOPK_WORKGROUP_LINE
         + b"\nfn drowse_exact_top8_tiles_kernel() {\n"
         + b"var<workgroup> best_values : array<f32, 64>;\n"
         + b"var<workgroup> best_indices : array<i32, 64>;\n"
@@ -415,7 +439,7 @@ def test_verify_compiled_library_requires_wasm_and_every_drowse_export(tmp_path:
             for binding in range(4)
         )
         + b"\n"
-        + TOOL.TOPK_WORKGROUP_LINE
+        + CHECKS.TOPK_WORKGROUP_LINE
         + b"\nfn drowse_exact_top8_merge_kernel() {\n"
         + b"var<workgroup> best_values : array<f32, 64>;\n"
         + b"var<workgroup> best_indices : array<i32, 64>;\n"
@@ -429,7 +453,7 @@ def test_verify_compiled_library_requires_wasm_and_every_drowse_export(tmp_path:
             for binding in range(3)
         )
         + b"\n"
-        + TOOL.JLENS_TRANSPORT_WORKGROUP_LINE
+        + CHECKS.JLENS_TRANSPORT_WORKGROUP_LINE
         + b"\nfn drowse_jlens_transport_kernel() {\n"
         + b"var<workgroup> partial : array<f32, 128>;\nworkgroupBarrier();\nfor (var source_coordinate : i32 = 0i; source_coordinate < 8i; source_coordinate++) {\n"
         + b"let transported = fma(1.0f, 1.0f, 0.0f);\n}\n}\n"
@@ -438,32 +462,32 @@ def test_verify_compiled_library_requires_wasm_and_every_drowse_export(tmp_path:
         b"// Function: drowse_geometry_measurements_kernel\n"
         + b"\n".join(
             f"@group(0) @binding({binding}) var<storage, read> buffer_{binding}: array<f32>;".encode()
-            for binding in range(TOOL.MAX_WEBGPU_STORAGE_BINDINGS_PER_STAGE)
+            for binding in range(CHECKS.MAX_WEBGPU_STORAGE_BINDINGS_PER_STAGE)
         )
         + b"\n@compute @workgroup_size(1) fn main() {}\n"
     )
     output.write_bytes(
         b"\x00asm" + b"".join(
             len(function.encode()).to_bytes(8, "little") + function.encode()
-            for function in sorted(TOOL.REQUIRED_FUNCTIONS)
+            for function in sorted(CHECKS.required_functions("qwen3"))
         ) + tile_shader + merge_shader + transport_shader + geometry_shader
     )
-    TOOL.verify_compiled_library(output)
+    TOOL.verify_compiled_library(output, "qwen3")
 
     output.write_bytes(output.read_bytes().replace(b"fma(", b"mul(", 1))
     with pytest.raises(SystemExit, match="bounded cooperative fp32 schedule"):
-        TOOL.verify_compiled_library(output)
+        TOOL.verify_compiled_library(output, "qwen3")
 
     output.write_bytes(b"not wasm")
     with pytest.raises(SystemExit, match="valid WebAssembly"):
-        TOOL.verify_compiled_library(output)
+        TOOL.verify_compiled_library(output, "qwen3")
 
     function = "drowse_prefill"
     output.write_bytes(
         b"\x00asm" + len(function.encode()).to_bytes(8, "little") + function.encode()
     )
     with pytest.raises(SystemExit, match="lacks Drowse VM function metadata"):
-        TOOL.verify_compiled_library(output)
+        TOOL.verify_compiled_library(output, "qwen3")
 
 
 def test_copy_notices_packages_full_declared_model_license(tmp_path: Path):

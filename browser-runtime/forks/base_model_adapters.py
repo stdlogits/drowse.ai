@@ -195,6 +195,8 @@ class InstrumentedGPT2LMHeadModel(GPT2LMHeadModel):
         self.vocab_size = config.vocab_size
         # The upstream GPT-2 loader materializes the tied head under lm_head.
         self.tie_word_embeddings = False
+        self.drowse_context_window_size = config.context_window_size
+        self.drowse_prefill_chunk_size = config.prefill_chunk_size
 
     @property
     def model(self):
@@ -210,6 +212,8 @@ class InstrumentedGPTNeoXForCausalLM(GPTNeoXForCausalLM):
         self.gpt_neox = InstrumentedGPTNeoXModel(config)
         self.embed_out = PairwiseOutputLinear(config.hidden_size, "vocab_size", bias=False, dtype="float32")
         self.tie_word_embeddings = False
+        self.drowse_context_window_size = config.context_window_size
+        self.drowse_prefill_chunk_size = config.prefill_chunk_size
 
     @property
     def model(self):
@@ -229,6 +233,8 @@ for _head in (InstrumentedGPT2LMHeadModel, InstrumentedGPTNeoXForCausalLM):
             _name.startswith(("drowse_", "_drowse_")) or _name == "_get_logits"
         ):
             setattr(_head, _name, _method)
+    # Fused q/k/v and LayerNorm: no unit sites, the residual descriptor (`standard-v4-residual`).
+    _head._drowse_block_spec = lambda self: None
 
 
 CANDIDATE_MODELS = {

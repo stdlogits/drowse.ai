@@ -38,13 +38,13 @@ export function validateManifest(manifest) {
   if (manifest?.schemaVersion !== 1 || manifest.status !== "feasibility-overlay") {
     throw new Error("unsupported fork overlay manifest");
   }
-  if (manifest.hookAbi !== "post-block-residual-v4") {
+  if (manifest.hookAbi !== "block-sites-v5") {
     throw new Error("unexpected fork overlay hook ABI");
   }
-  if (manifest.structuredHookProfile !== "standard-v3") {
+  if (manifest.structuredHookProfile !== "standard-v4") {
     throw new Error("unexpected fork overlay structured-hook profile");
   }
-  if (manifest.exactReadoutAbi !== "exact-readout-v1") {
+  if (manifest.exactReadoutAbi !== "exact-readout-v2") {
     throw new Error("unexpected fork overlay exact-readout ABI");
   }
   if (manifest.tvmRepository !== "https://github.com/apache/tvm.git") {

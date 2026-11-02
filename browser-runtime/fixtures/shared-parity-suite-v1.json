@@ -2,7 +2,6 @@
   "schemaVersion": 1,
   "description": "Paired Python/browser parity corpus used by the sharedGoldenResults release observer.",
   "fixtures": [
-    "drowse/tests/fixtures/browser/post-block-rank-one-v2.json",
     "drowse/tests/fixtures/browser/structured-program-parity-v1.json",
     "drowse/tests/fixtures/browser/measurement-envelope-v2.json",
     "drowse/tests/fixtures/browser/loom-operation-transcript-v1.json",

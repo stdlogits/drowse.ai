@@ -115,6 +115,8 @@ RUN make -C /opt/mlc-llm/web clean \
     && TVM_HOME=/opt/tvm make -C /opt/tvm/web
 
 COPY fixtures /opt/drowse/fixtures
+COPY forks/manifest.json /opt/drowse/manifest.json
+COPY forks/overlay_checks.py /opt/drowse/overlay_checks.py
 COPY forks/verify-mlc-hook.py /opt/drowse/verify-mlc-hook.py
 COPY forks/compile-tiny-webgpu.py /opt/drowse/compile-tiny-webgpu.py
 COPY forks/create-tiny-webgpu-model.py /opt/drowse/create-tiny-webgpu-model.py
@@ -123,7 +125,6 @@ COPY forks/verify-tvm-attention.py /opt/drowse/verify-tvm-attention.py
 RUN python /opt/drowse/verify-tvm-attention.py \
     && python /opt/drowse/verify-mlc-hook.py \
       --mlc-repository /opt/mlc-llm --tvm-repository /opt/tvm \
-      --fixture /opt/drowse/fixtures/post-block-rank-one-v2.json \
     && python /opt/drowse/compile-tiny-webgpu.py \
       --mlc-repository /opt/mlc-llm --tvm-repository /opt/tvm \
       --architecture qwen3 --output /tmp/drowse-tiny-qwen3.wasm \

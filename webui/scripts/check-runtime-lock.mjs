@@ -77,6 +77,10 @@ const tinyCompilerToolPath = new URL(
   "../../browser-runtime/forks/compile-tiny-webgpu.py",
   import.meta.url,
 );
+const overlayChecksPath = new URL(
+  "../../browser-runtime/forks/overlay_checks.py",
+  import.meta.url,
+);
 const runtimeLockBytes = await readFile(lockPath);
 const lock = JSON.parse(runtimeLockBytes.toString("utf8"));
 const distribution = JSON.parse(await readFile(distributionPath, "utf8"));
@@ -104,6 +108,7 @@ const forkManifest = JSON.parse(forkManifestBytes.toString("utf8"));
 const compilerRecipe = await readFile(compilerRecipePath);
 const tinyModelTool = await readFile(tinyModelToolPath, "utf8");
 const tinyCompilerTool = await readFile(tinyCompilerToolPath, "utf8");
+const overlayChecks = await readFile(overlayChecksPath, "utf8");
 const COMMIT = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const IMAGE_DIGEST = /^sha256:[0-9a-f]{64}$/;
@@ -235,7 +240,7 @@ async function main() {
       "runtime lock identity fixture does not match the canonical status-free runtime lock",
     );
   }
-  validateFixtureToolPins(forkManifest, tinyModelTool, tinyCompilerTool);
+  validateFixtureToolPins(forkManifest, tinyModelTool, tinyCompilerTool, overlayChecks);
   validateToolchainBindings(
     lock.toolchain,
     forkManifest,
@@ -2108,11 +2113,11 @@ function requireTrueResults(results, fields, label) {
   }
 }
 
-export function validateFixtureToolPins(manifest, modelTool, compilerTool) {
+export function validateFixtureToolPins(manifest, modelTool, compilerTool, overlayChecks) {
   if (
-    manifest?.hookAbi !== "post-block-residual-v4" ||
-    manifest?.structuredHookProfile !== "standard-v3" ||
-    manifest?.exactReadoutAbi !== "exact-readout-v1"
+    manifest?.hookAbi !== "block-sites-v5" ||
+    manifest?.structuredHookProfile !== "standard-v4" ||
+    manifest?.exactReadoutAbi !== "exact-readout-v2"
   ) {
     throw new Error(
       "fork overlay manifest does not attest the production exact-readout profile",
@@ -2128,22 +2133,19 @@ export function validateFixtureToolPins(manifest, modelTool, compilerTool) {
   ) {
     throw new Error("MLC overlay manifest is unavailable to fixture tools");
   }
-  for (const [path, digest] of Object.entries(overlay.resultFiles)) {
-    if (
-      typeof digest !== "string" ||
-      !SHA256.test(digest) ||
-      !modelTool.includes(JSON.stringify(path)) ||
-      !modelTool.includes(JSON.stringify(digest)) ||
-      !compilerTool.includes(JSON.stringify(path)) ||
-      !compilerTool.includes(JSON.stringify(digest))
-    ) {
-      throw new Error(
-        `browser fixture tools do not pin current MLC result ${path}`,
-      );
-    }
+  // The fixture tools take every pin from overlay_checks.py, which reads the manifest itself.
+  if (
+    !overlayChecks.includes('with_name("manifest.json")') ||
+    !overlayChecks.includes('RESULT_DIGESTS = dict(_OVERLAYS["mlc-llm-drowse"]["resultFiles"])') ||
+    !modelTool.includes("from overlay_checks import") ||
+    !compilerTool.includes("from overlay_checks import") ||
+    !modelTool.includes("verify_sources(mlc_repository, tvm_repository)") ||
+    !compilerTool.includes("verify_sources(mlc_repository, tvm_repository)")
+  ) {
+    throw new Error("browser fixture tools do not pin the manifest's MLC results");
   }
   for (const name of REQUIRED_DROWSE_VM_FUNCTIONS) {
-    if (!compilerTool.includes(JSON.stringify(name))) {
+    if (!overlayChecks.includes(JSON.stringify(name))) {
       throw new Error(
         `browser fixture compiler does not require VM function ${name}`,
       );
