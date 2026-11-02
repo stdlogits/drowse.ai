@@ -1,4 +1,5 @@
 import {
+  rejectingBlockSitesBackend,
   type BrowserModelLoadRequest,
   type BrowserModelBackend,
 } from "./modelBackend";
@@ -133,8 +134,19 @@ export function createLazyBrowserModelBackend(
       if (backend !== null) await backend.stop(reason);
       else if (pending !== null) await (await pending).stop(reason);
     },
+    blockSites() {
+      return backend?.blockSites() ?? notLoadedBlockSites;
+    },
   };
 }
+
+const notLoadedBlockSites = rejectingBlockSitesBackend(() =>
+  Object.assign(new Error("No browser model session is loaded"), {
+    code: "MODEL_NOT_LOADED",
+    status: 409,
+    recoverable: true,
+  }),
+);
 
 export function createDrowseBrowserModelBackend(
   module: DrowseWebLlmModule,

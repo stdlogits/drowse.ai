@@ -11,12 +11,15 @@ import type {
   WSSubmitRequest,
 } from "../../../../drowse/webui/src/lib/types";
 import { BrowserLoomRuntime, type BrowserGenerationPort } from "./browserLoom";
-import type {
-  BrowserGenerationPerformance,
-  BrowserGenerationStopReason,
-  BrowserModelBackend,
-  BrowserModelLoadRequest,
-  BrowserModelLoadResult,
+import {
+  rejectingBlockSitesBackend,
+  UnsupportedBlockError,
+  type BrowserBlockSitesBackend,
+  type BrowserGenerationPerformance,
+  type BrowserGenerationStopReason,
+  type BrowserModelBackend,
+  type BrowserModelLoadRequest,
+  type BrowserModelLoadResult,
 } from "./modelBackend";
 import { runtimeServiceRoute } from "./operationPolicy";
 import type { RankOneHookProgramBuffers } from "./rankOneHookProgram";
@@ -173,6 +176,15 @@ export class DrowseWebLlmBackend implements BrowserModelBackend {
   async unload(): Promise<void> {
     await this.runtime.unload();
     this.clearLoadedState();
+  }
+
+  // Hook ABI v5 seam placeholder (lane C0): B4 replaces it with the bridge's surface.
+  private readonly v4BlockSites = rejectingBlockSitesBackend(
+    () => new UnsupportedBlockError("the loaded model library predates hook ABI block-sites-v5"),
+  );
+
+  blockSites(): BrowserBlockSitesBackend {
+    return this.v4BlockSites;
   }
 
   private clearLoadedState(): void {

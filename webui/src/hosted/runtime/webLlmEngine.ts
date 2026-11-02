@@ -16,6 +16,7 @@ import {
   STRUCTURED_HOOK_FORMAT,
   STRUCTURED_HOOK_FORMAT_V2,
   type StructuredHookProgramBuffers,
+  type StructuredHookProgramV3Buffers,
 } from "./structuredHookProgram";
 import {
   EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
@@ -119,7 +120,7 @@ export interface DrowseWebLlmEngineInstance extends WebLlmGenerationEngine {
     modelId?: string,
   ): Promise<void>;
   setDrowseStructuredProgram(
-    program: StructuredHookProgramBuffers,
+    program: StructuredHookProgramV3Buffers,
     modelId?: string,
   ): Promise<void>;
   updateDrowseStructuredControls(
@@ -769,7 +770,7 @@ export class DrowseWebLlmRuntime {
       if (program.saeBindingId !== undefined) {
         await this.ensureSaeDictionaryResident(program.saeBindingId);
       }
-      await this.requireEngine().setDrowseStructuredProgram(program);
+      await this.requireEngine().setDrowseStructuredProgram(program as StructuredHookProgramV3Buffers);
       return;
     }
     await this.installRankOneHookProgram(program);
