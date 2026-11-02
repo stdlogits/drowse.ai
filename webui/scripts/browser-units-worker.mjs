@@ -37,8 +37,10 @@
 // goldens' chat node (system and user, six distinct greedy tokens: presence penalty 1e4) unsteered,
 // steered and segmented (`!neuron/L1n5@prompt`) and the raw first turn, generated through the
 // hosted loom; token-anatomy's local:r cases, unit-activity's generated, sink, sink-population and
-// segmented cases, every unit-reads read, top and find, and unit-ablation's cases as raw greedy
-// generations of the short prompt (each forward's token and logprob against the golden's logits).
+// segmented cases, every unit-reads read, top and find, and unit-ablation's cases as raw
+// generations of the short prompt (each forward's greedy token against the golden logits' argmax;
+// the prefill's top eight log-probabilities at temperature 1 against their log-softmax: a token
+// row's logprob is the sampler's, native's too, one-hot at temperature 0).
 // Not reachable through the worker: token-anatomy no-r-mid (a second R source), unit-activity
 // authored (the browser measures no prompts) and its hand-built forwards, neuron-push's lowering
 // and unit-ablation mixed (the fixture session's registered direction).
@@ -516,25 +518,40 @@ function compareGoldens(ours, goldens) {
     { root: `top[${i}].result`, ties: reads.declared_ties }));
   reads.find.forEach((entry, i) => record(`golden unit-reads find ${entry.target}`, ours.find[i], entry.result,
     { root: `find[${i}].result`, ties: reads.declared_ties }));
-  // unit-ablation: each forward's greedy token is the golden logits' argmax, its logprob their
-  // log-softmax there (fp32 logits; the library tolerance).
+  // unit-ablation: every forward's greedy token is the golden logits' argmax; the prefill's top
+  // eight log-probabilities at temperature 1 are the golden logits' log-softmax (the library
+  // tolerance on fp32 logits).
   goldens.ablation.cases.filter((entry) => entry.name !== "mixed").forEach((entry, i) => {
-    const frames = ours.ablation[i] ?? [];
+    const mine = ours.ablation[i] ?? { tokens: null, prefill: null };
     const problems = [];
-    let worstLogprob = 0;
-    entry.forwards.forEach((forward, step) => {
-      const logits = Array.from(decode(forward.logits));
-      const best = logits.reduce((at, value, index) => (value > logits[at] ? index : at), 0);
-      const max = logits[best];
+    const logSoftmax = (encoded) => {
+      const logits = Array.from(decode(encoded));
+      const max = Math.max(...logits);
       const lse = max + Math.log(logits.reduce((sum, value) => sum + Math.exp(value - max), 0));
-      const frame = frames.find(([raw]) => raw === step);
-      if (frame === undefined) return problems.push(`forward ${step}: no token frame`);
-      if (frame[1] !== best) problems.push(`forward ${step}: token ${frame[1]} != ${best}`);
-      const delta = Math.abs(frame[2] - (logits[best] - lse));
-      worstLogprob = Math.max(worstLogprob, delta);
-      if (!(delta <= tol.atol + tol.rtol * Math.abs(logits[best] - lse))) problems.push(`forward ${step}: logprob off by ${delta}`);
+      return logits.map((value) => value - lse);
+    };
+    entry.forwards.forEach((forward, step) => {
+      const logp = logSoftmax(forward.logits);
+      const best = logp.reduce((at, value, index) => (value > logp[at] ? index : at), 0);
+      if (mine.tokens?.[step] !== best) problems.push(`forward ${step}: token ${mine.tokens?.[step]} != ${best}`);
     });
-    worst.set("golden unit-ablation logprob", Math.max(worst.get("golden unit-ablation logprob") ?? 0, worstLogprob));
+    const logp = logSoftmax(entry.forwards[0].logits);
+    const want = logp.map((value, id) => [id, value]).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    if (mine.prefill === null) problems.push("the temperature-1 prefill streamed no token frame");
+    else {
+      let worstLogprob = 0;
+      const alts = mine.prefill.alts ?? [];
+      want.forEach(([id, value], rank) => {
+        const alt = alts.find((item) => item.id === id);
+        if (alt === undefined) return problems.push(`prefill: token ${id} (rank ${rank}) missing from the top alternatives`);
+        const delta = Math.abs(alt.logprob - value);
+        worstLogprob = Math.max(worstLogprob, delta);
+        if (!(delta <= tol.atol + tol.rtol * Math.abs(value))) problems.push(`prefill: token ${id} logprob off by ${delta}`);
+      });
+      const chosen = Math.abs(mine.prefill.logprob - logp[mine.prefill.token]);
+      if (!(chosen <= tol.atol + tol.rtol * Math.abs(logp[mine.prefill.token]))) problems.push(`prefill: sampled token logprob off by ${chosen}`);
+      worst.set("golden unit-ablation prefill logprob", Math.max(worst.get("golden unit-ablation prefill logprob") ?? 0, worstLogprob, chosen));
+    }
     check(`golden unit-ablation ${entry.name} (${entry.steering}): ${entry.forwards.length} forwards`, problems.length === 0,
       problems.slice(0, 4).join("; "));
   });
@@ -702,10 +719,24 @@ async function driveWorker(plan) {
     for (const entry of g.top) result.top.push(await service("instruments", "unitTop", entry.token, { by: entry.by, k: entry.k }));
     for (const entry of g.find) result.find.push(await service("instruments", "unitFind", entry));
     for (const entry of g.ablation) {
+      // The greedy decode under the case's program (its node's record), and the prefill once more
+      // at temperature 1: a token row's logprobs are the sampler's (native's too), which only then
+      // are the model's log-softmax, read through its top alternatives.
       const run = await generate({
-        input: g.short_text, raw: true, stateless: true, steering: entry.steering, sampling: greedy(entry.steps + 1),
+        input: g.short_text, raw: true, stateless: false, parent_node_id: root, steering: entry.steering,
+        sampling: greedy(entry.steps + 1),
       });
-      result.ablation.push(run.tokens.map((frame) => [frame.raw_index, frame.token_id, frame.logprob]));
+      const tokens = await recordedTokens(run.done?.node_id ?? run.tokens.at(-1)?.node_id);
+      // A sampled lone UTF-8 byte streams no frame of its own: another seed then.
+      let first;
+      for (let seed = 0; first === undefined && seed < 8; seed += 1) {
+        const sampled = await generate({
+          input: g.short_text, raw: true, stateless: true, steering: entry.steering,
+          sampling: { temperature: 1, top_p: 1, top_k: 0, max_tokens: 1, seed, return_top_k: 8 },
+        });
+        first = sampled.tokens[0];
+      }
+      result.ablation.push({ tokens, prefill: first === undefined ? null : { token: first.token_id, logprob: first.logprob, alts: first.top_alts } });
     }
     return result;
   };
