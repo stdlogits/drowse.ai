@@ -33,6 +33,7 @@ const runtimeFeasibilityClosure = Object.freeze([
   "webui/scripts/hosted-residual-capture.worker.ts",
   "browser-runtime/forks/create-tiny-webgpu-model.py",
   "browser-runtime/forks/compile-tiny-webgpu.py",
+  "browser-runtime/forks/overlay_checks.py",
   "browser-runtime/forks/manifest.json",
   "drowse/tests/fixtures/browser/post-block-rank-one-v2.json",
   "drowse/tests/fixtures/browser/structured-program-parity-v1.json",

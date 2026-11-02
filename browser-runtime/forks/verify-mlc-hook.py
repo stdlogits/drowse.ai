@@ -1,55 +1,22 @@
 #!/usr/bin/env python3
 
 import argparse
-import hashlib
 import json
 import os
 import subprocess
 import sys
-import types
 from pathlib import Path
 
 import numpy as np
 
-MLC_BASE_COMMIT = "9fa644f54b04983adea4d0168f49fc6af4a893ba"
-TVM_COMMIT = "68ba2b31c2a6d202fcd44e5780ef10ce08721dd5"
-TVM_FFI_COMMIT = "12dbf053b3d9ba4ebd9da3123b1aeca79cf74229"
-RESULT_DIGESTS = {
-    "python/mlc_llm/interface/convert_weight.py": "dffc4af8487f54087bc27f9a35f959df318a70c4c33326b65d4a6d9f6479a1b5",
-    "python/mlc_llm/interface/compile.py": "435876d96e9ba6fbc3f02dd6f5ed858df559ebded169ce91c5cdd8151e610d32",
-    "python/mlc_llm/op/moe_misc.py": "4141be404d6d31b1ee152ef495fd5bdfc75b16af968ad01e07c3d1d26637ef92",
-    "python/mlc_llm/model/llama/llama_model.py": "2a34402c81074ce0a773f9a73dc95aea20a7a0533b2561708d32ceeb72aec7dc",
-    "python/mlc_llm/model/qwen3/qwen3_model.py": "0621190a80fc12ec58ca3fd5d439411135815c4f4f6596a5a0d258475b5c7291",
-    "python/mlc_llm/model/gemma3/gemma3_model.py": "fd219c4779b1a7497fa533b264d5c77a973c5a1f46f41ed29923c312d6220f18",
-    "python/mlc_llm/model/drowse_hooks.py": "4fadef9db1c875c81ca9cde76dfdbc477a3755f4d982ba9d097ccc730f6778b1",
-}
-REQUIRED_FUNCTIONS = {
-    "drowse_hook_profile",
-    "drowse_prefill",
-    "drowse_decode",
-    "drowse_batch_prefill",
-    "drowse_batch_decode",
-    "drowse_capture_prefill",
-    "drowse_capture_decode",
-    "drowse_capture_batch_prefill",
-    "drowse_capture_batch_decode",
-    "drowse_rank_one_capture_prefill_v1",
-    "drowse_rank_one_capture_decode_v1",
-    "drowse_rank_one_capture_batch_prefill_v1",
-    "drowse_rank_one_capture_batch_decode_v1",
-    "drowse_structured_batch_prefill",
-    "drowse_structured_batch_decode",
-    "drowse_geometry_batch_prefill",
-    "drowse_geometry_batch_decode",
-    "drowse_curved_batch_prefill",
-    "drowse_curved_batch_decode",
-    "drowse_jlens_probabilities",
-    "drowse_jlens_readout_accumulate",
-    "drowse_jlens_readout_topk",
-    "drowse_jlens_directions",
-    "drowse_sae_readout_accumulate",
-    "drowse_sae_jump_relu_readout_accumulate",
-}
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from overlay_checks import (  # noqa: E402
+    REQUIRED_FUNCTIONS,
+    bootstrap_mlc_package,
+    ensure_import_roots,
+    require_llvm,
+    verify_sources,
+)
 
 
 def main() -> None:
@@ -57,11 +24,7 @@ def main() -> None:
     mlc_repository = args.mlc_repository.resolve(strict=True)
     tvm_repository = args.tvm_repository.resolve(strict=True)
     fixture_path = args.fixture.resolve(strict=True)
-    require_commit(mlc_repository, MLC_BASE_COMMIT, "MLC-LLM")
-    require_commit(tvm_repository, TVM_COMMIT, "TVM")
-    require_commit(tvm_repository / "3rdparty/tvm-ffi", TVM_FFI_COMMIT, "TVM-FFI")
-    verify_result_files(mlc_repository)
-    verify_portable_topk_source(mlc_repository)
+    verify_sources(mlc_repository, tvm_repository)
     verify_exact_parallel_topk_cpu_golden()
     ensure_import_roots(mlc_repository, tvm_repository)
     os.environ.setdefault("SKIP_LOADING_MLCLLM_SO", "1")
@@ -72,7 +35,7 @@ def main() -> None:
         from tvm.relax.frontend import nn
         from tvm.relax.frontend.nn import op, spec
         from tvm.runtime import tensor as tvm_tensor
-        bootstrap_mlc_package(mlc_repository)
+        bootstrap_mlc_package(mlc_repository, "verification")
         from mlc_llm import op as op_ext
         from mlc_llm.model.gemma3.gemma3_model import (
             Gemma3Config,
@@ -97,8 +60,7 @@ def main() -> None:
         )
     except (ImportError, OSError) as error:
         raise SystemExit(f"exact MLC/TVM toolchain is unavailable: {error}") from error
-    if tvm.target.codegen.llvm_version_major() != 18:
-        raise SystemExit("TVM compiler must be built against LLVM 18")
+    require_llvm(tvm)
 
     if args.export_only is not None:
         model, label = create_tiny_model(
@@ -1546,63 +1508,6 @@ def strip_gpu_thread_bindings(module, tvm):
     return module
 
 
-def require_commit(repository: Path, expected: str, label: str) -> None:
-    actual = subprocess.check_output(
-        ["git", "-C", str(repository), "rev-parse", "HEAD"], text=True
-    ).strip()
-    if actual != expected:
-        raise SystemExit(f"{label} checkout must be exact commit {expected}, found {actual}")
-
-
-def verify_result_files(repository: Path) -> None:
-    for relative_path, expected in RESULT_DIGESTS.items():
-        path = repository / relative_path
-        actual = hashlib.sha256(path.read_bytes()).hexdigest()
-        if actual != expected:
-            raise SystemExit(f"MLC overlay result digest differs for {relative_path}")
-
-
-def verify_portable_topk_source(repository: Path) -> None:
-    moe_source = (repository / "python/mlc_llm/op/moe_misc.py").read_text(encoding="utf-8")
-    if (
-        moe_source.count("TX = 1024") < 2
-        or "T.buffer_store(local_top_k_index, -1, indices=[t])" not in moe_source
-        or "T.buffer_store(local_top_k_index, t, indices=[-1])" in moe_source
-    ):
-        raise SystemExit("generic MLC MoE top-k differs from upstream scheduling or safe initialization")
-    hooks_source = (
-        repository / "python/mlc_llm/model/drowse_hooks.py"
-    ).read_text(encoding="utf-8")
-    exact_source = hooks_source.split("def exact_readout_topk", 1)[-1].split(
-        "def structured_geometry_payload_layout", 1
-    )[0]
-    for fragment in (
-        "EXACT_READOUT_TOPK_BLOCK_SIZE = 256",
-        "candidate_count = T.ceildiv(column_count, EXACT_READOUT_TOPK_BLOCK_SIZE)",
-        '"drowse_exact_top8_tiles"',
-        '"drowse_exact_top8_merge"',
-        "_exact_readout_is_better",
-        "while candidate_count > 1:",
-        'for thread in T.thread_binding(0, 64, "threadIdx.x"):',
-        "T.And(",
-        "T.Or(",
-    ):
-        if fragment not in hooks_source:
-            raise SystemExit(f"Drowse exact tiled top-8 omits {fragment}")
-    if 'scope="shared"' not in exact_source or "tvm_storage_sync" not in exact_source:
-        raise SystemExit("Drowse exact tiled top-8 requires bounded cooperative reduction")
-    for relative_path in (
-        "python/mlc_llm/model/llama/llama_model.py",
-        "python/mlc_llm/model/qwen3/qwen3_model.py",
-    ):
-        model_source = (repository / relative_path).read_text(encoding="utf-8")
-        if (
-            model_source.count("exact_readout_topk") != 5
-            or "op_ext.moe_misc.gating_topk(" in model_source
-        ):
-            raise SystemExit(f"{relative_path} does not route every exact readout through Drowse top-8")
-
-
 def verify_exact_parallel_topk_cpu_golden() -> None:
     block_size = 256
     top_k = 8
@@ -1650,29 +1555,6 @@ def verify_exact_parallel_topk_cpu_golden() -> None:
         expected_indices = np.argsort(-row, kind="stable")[:top_k]
         np.testing.assert_array_equal(actual_indices, expected_indices)
         np.testing.assert_array_equal(actual_values, row[expected_indices])
-
-
-def ensure_import_roots(mlc_repository: Path, tvm_repository: Path) -> None:
-    expected = [(tvm_repository / "python").resolve(), (mlc_repository / "python").resolve()]
-    import_roots = {Path(path).resolve() for path in sys.path if path}
-    missing = [str(path) for path in expected if path not in import_roots]
-    if missing:
-        raise SystemExit(
-            "exact source roots are missing from PYTHONPATH: " + os.pathsep.join(missing)
-        )
-
-
-def bootstrap_mlc_package(mlc_repository: Path) -> None:
-    if "mlc_llm" in sys.modules:
-        raise SystemExit("mlc_llm was imported before the source-only verification bootstrap")
-    package = types.ModuleType("mlc_llm")
-    package.__path__ = [str(mlc_repository / "python/mlc_llm")]
-    package.__package__ = "mlc_llm"
-    sys.modules["mlc_llm"] = package
-    model_package = types.ModuleType("mlc_llm.model")
-    model_package.__path__ = [str(mlc_repository / "python/mlc_llm/model")]
-    model_package.__package__ = "mlc_llm.model"
-    sys.modules["mlc_llm.model"] = model_package
 
 
 def verify_model_exports(model, label: str, tvm):

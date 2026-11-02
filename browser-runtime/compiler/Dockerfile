@@ -115,6 +115,8 @@ RUN make -C /opt/mlc-llm/web clean \
     && TVM_HOME=/opt/tvm make -C /opt/tvm/web
 
 COPY fixtures /opt/drowse/fixtures
+COPY forks/manifest.json /opt/drowse/manifest.json
+COPY forks/overlay_checks.py /opt/drowse/overlay_checks.py
 COPY forks/verify-mlc-hook.py /opt/drowse/verify-mlc-hook.py
 COPY forks/compile-tiny-webgpu.py /opt/drowse/compile-tiny-webgpu.py
 COPY forks/create-tiny-webgpu-model.py /opt/drowse/create-tiny-webgpu-model.py

@@ -15,6 +15,7 @@ SPEC = importlib.util.spec_from_file_location("build_production_webgpu", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 TOOL = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(TOOL)
+import overlay_checks as CHECKS  # noqa: E402  (the production script put forks/ on sys.path)
 
 
 def test_webllm_gemma_uses_global_context_without_top_level_sliding_window():
@@ -401,7 +402,7 @@ def test_verify_compiled_library_requires_wasm_and_every_drowse_export(tmp_path:
             for binding in range(3)
         )
         + b"\n"
-        + TOOL.TOPK_WORKGROUP_LINE
+        + CHECKS.TOPK_WORKGROUP_LINE
         + b"\nfn drowse_exact_top8_tiles_kernel() {\n"
         + b"var<workgroup> best_values : array<f32, 64>;\n"
         + b"var<workgroup> best_indices : array<i32, 64>;\n"
@@ -415,7 +416,7 @@ def test_verify_compiled_library_requires_wasm_and_every_drowse_export(tmp_path:
             for binding in range(4)
         )
         + b"\n"
-        + TOOL.TOPK_WORKGROUP_LINE
+        + CHECKS.TOPK_WORKGROUP_LINE
         + b"\nfn drowse_exact_top8_merge_kernel() {\n"
         + b"var<workgroup> best_values : array<f32, 64>;\n"
         + b"var<workgroup> best_indices : array<i32, 64>;\n"
@@ -429,7 +430,7 @@ def test_verify_compiled_library_requires_wasm_and_every_drowse_export(tmp_path:
             for binding in range(3)
         )
         + b"\n"
-        + TOOL.JLENS_TRANSPORT_WORKGROUP_LINE
+        + CHECKS.JLENS_TRANSPORT_WORKGROUP_LINE
         + b"\nfn drowse_jlens_transport_kernel() {\n"
         + b"var<workgroup> partial : array<f32, 128>;\nworkgroupBarrier();\nfor (var source_coordinate : i32 = 0i; source_coordinate < 8i; source_coordinate++) {\n"
         + b"let transported = fma(1.0f, 1.0f, 0.0f);\n}\n}\n"
@@ -438,7 +439,7 @@ def test_verify_compiled_library_requires_wasm_and_every_drowse_export(tmp_path:
         b"// Function: drowse_geometry_measurements_kernel\n"
         + b"\n".join(
             f"@group(0) @binding({binding}) var<storage, read> buffer_{binding}: array<f32>;".encode()
-            for binding in range(TOOL.MAX_WEBGPU_STORAGE_BINDINGS_PER_STAGE)
+            for binding in range(CHECKS.MAX_WEBGPU_STORAGE_BINDINGS_PER_STAGE)
         )
         + b"\n@compute @workgroup_size(1) fn main() {}\n"
     )
