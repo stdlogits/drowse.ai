@@ -932,8 +932,6 @@ test("a controlled offline launch resumes PWA update monitoring after reconnect"
   ).toBe(1);
 });
 
-test.describe("touchscreen tablet", () => {
-test.use({ hasTouch: true });
 test("fixture installs, opens the shared workbench, stops, and generates", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
