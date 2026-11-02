@@ -4,7 +4,7 @@
 // (check, catalog, download, download_pack, load, probes, live state, generate, the units members).
 //
 //   node scripts/browser-units-worker.mjs --fixtures DIR --arch qwen3|gemma3 \
-//     --quantization q0f32|q4f32_1 --work DIR [--port N] [--headed] [--python python3]
+//     --quantization q0f32|q4f32_1 --work DIR [--chat] [--port N] [--headed] [--python python3]
 //
 // DIR is what browser-core-build.mjs takes (support/units-webgpu-stage.mjs). The harness:
 // 1. stages the library as a hosted base model and has drowse build its packs bound to that
@@ -20,8 +20,17 @@
 //    ablation at @response and an S-lens-gated push with an `slens/` probe attached (tokens and the
 //    aggregate's units and lens channels); generated nodes' token anatomy and unit activity
 //    (unsteered, steered, S-lens-gated with slens/ attached, whose replay steps its gate, and
-//    S-lens-gated with nothing attached, whose gate never fires); and unitRead, unitTop and
-//    unitFind. Tolerances are each golden's.
+//    S-lens-gated with nothing attached, whose gate never fires; J-lens- and geometry-gated with
+//    their probes attached: drowse loads this run's browser-fitted manifold, and each gate's
+//    threshold is set from drowse's own per-step gate readings so it opens at the anatomy's
+//    forward and shuts elsewhere); and unitRead, unitTop and unitFind. Tolerances are each golden's.
+//
+// `--chat` stages the library as the instruct model drowse's fixture chat template makes
+// (support/units-webgpu-stage.mjs `chatConversation`) and replaces the raw cases with chat nodes,
+// generated through the hosted loom and replayed through renderPromptTokenIds: the goldens'
+// prompt (system and user) unsteered and steered, the user turn alone, a second assistant turn and
+// a user-seat turn under the first (unsteered and steered); each node's tokens, token anatomy and
+// unit activity against drowse's on the same model and template (the reference's `chat` mode).
 import { execFile } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -41,8 +50,9 @@ const options = parseArguments(process.argv.slice(2));
 const webui = fileURLToPath(new URL("..", import.meta.url));
 const repository = resolve(webui, "..");
 const stage = await stageUnitsFixture(options);
+const modelType = options.chat ? "chat" : "base";
 const { artifacts: modelFiles, blockSpec, contextTokens, runtimeIdentity, modelDirectory } = stage;
-const modelId = `units-${options.arch}`;
+const modelId = `units-${options.arch}${options.chat ? "-chat" : ""}`;
 const variantId = `${modelId}-${options.quantization}`;
 const revision = "a".repeat(40);
 const goldenFile = async (name) => JSON.parse(await readFile(resolve(goldensDirectory, `${name}-${options.arch}-v1.json`), "utf8"));
@@ -68,7 +78,7 @@ const fingerprint = catalogModule.runtimeIdentitySha256(runtimeIdentity);
 const binding = catalogModule.contextBindingSha256(fingerprint, contextTokens);
 
 // ------------------------------------------------- 1. drowse's packs and references ---
-const nativeDirectory = resolve(options.work, `${stage.fixture}-native`);
+const nativeDirectory = resolve(options.work, `${stage.fixture}${options.chat ? "-chat" : ""}-native`);
 await rm(nativeDirectory, { recursive: true, force: true });
 await mkdir(nativeDirectory, { recursive: true });
 await writeFile(resolve(nativeDirectory, "runtime.json"), JSON.stringify({
@@ -77,7 +87,7 @@ await writeFile(resolve(nativeDirectory, "runtime.json"), JSON.stringify({
 console.log(`drowse: packs and references for ${stage.fixture} (${fingerprint.slice(0, 12)})`);
 await exec(options.python, [
   resolve(webui, "scripts/support/units-worker-reference.py"), options.arch, nativeDirectory,
-  resolve(nativeDirectory, "runtime.json"),
+  resolve(nativeDirectory, "runtime.json"), ...(options.chat ? ["chat"] : []),
 ], {
   maxBuffer: 1 << 26,
   env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONPATH: resolve(repository, "drowse") },
@@ -184,7 +194,7 @@ try {
       instance.postMessage(payload);
     });
   }, {
-    type: "run", modelId, modelType: "base", artifacts: modelFiles,
+    type: "run", modelId, modelType, artifacts: modelFiles,
     baselinePrompts: ["Hi.", "Go on.", "Say it."], contexts: [contextTokens], rows: [],
     nativeNeutralRows: true, runtimeIdentity, quantization: options.quantization, requiredFeatures: [],
     structuredHookProfile: "standard-v4", thinkingProfile: null, blockSpec, unitRefusal: null,
@@ -194,7 +204,7 @@ try {
   check("core concepts and whitener through the release worker", core.type === "done", core.message ?? "");
   if (core.type !== "done") throw new Error("the core build failed");
   const [coreContext] = core.result.contexts;
-  const coreDirectory = resolve(options.work, `${stage.fixture}-core`);
+  const coreDirectory = resolve(options.work, `${stage.fixture}${options.chat ? "-chat" : ""}-core`);
   await rm(coreDirectory, { recursive: true, force: true });
   await mkdir(resolve(coreDirectory, String(contextTokens)), { recursive: true });
   await mkdir(resolve(coreDirectory, "manifolds", String(contextTokens)), { recursive: true });
@@ -220,6 +230,20 @@ try {
   }));
   await writeFile(resolve(coreDirectory, coreStatistics.tensor_file),
     await readFile(resolve(packsDirectory, "core", coreStatistics.tensor_file)));
+
+  // Gated replays: drowse gates on the very manifold this core build fitted (its own loader on
+  // the archive's fitted pair) and on the R pack's lens; its nodes join the reference's.
+  if (!options.chat) {
+    console.log("drowse: gated references on the browser's fitted manifold");
+    await exec(options.python, [
+      resolve(webui, "scripts/support/units-worker-reference.py"), options.arch, nativeDirectory,
+      resolve(nativeDirectory, "runtime.json"), "gated",
+      resolve(coreDirectory, "manifolds", String(contextTokens), "local-calm.alert.drowse"),
+    ], { maxBuffer: 1 << 26, env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONPATH: resolve(repository, "drowse") } });
+    const gated = JSON.parse(await readFile(resolve(nativeDirectory, "gated-reference.json"), "utf8"));
+    Object.assign(reference.nodes, gated.nodes);
+    reference.declared_ties.push(...gated.declared_ties);
+  }
 
   // ------------------------------------------------------------- the catalog and lock ---
   const catalogFile = (prefix, file, role) => {
@@ -264,7 +288,7 @@ try {
       schemaVersion: 1, sequence: 1, issuedAt: "2026-01-01T00:00:00.000Z", expiresAt: "2099-01-01T00:00:00.000Z",
       runtimeAbi: runtimeIdentity.runtimeAbi,
       models: [{
-        id: modelId, modelType: "base", displayName: `Units tiny ${options.arch}`, description: "B4's tiny v5 fixture",
+        id: modelId, modelType, displayName: `Units tiny ${options.arch}`, description: "B4's tiny v5 fixture",
         sourceUrl: "https://huggingface.co/drowse/units-tiny", license: "AGPL-3.0-or-later", languages: ["en"],
         variants: [variant],
       }],
@@ -283,7 +307,7 @@ try {
       limits: { manifoldFitMaxIntrinsicDim: 4 },
     },
     runtimeLockModels: [{
-      modelType: "base", runtimeIdentity, structuredHookProfile: "standard-v4", thinkingProfile: null,
+      modelType, runtimeIdentity, structuredHookProfile: "standard-v4", thinkingProfile: null,
       convertedRepository: "drowse/units-tiny", convertedRevision: revision, contextProfiles: [contextTokens],
       blockSpec, unitRefusal: null,
     }],
@@ -292,12 +316,14 @@ try {
   // ------------------------------------------------- 3. the hosted runtime worker ---
   const unitProbes = await goldenFile("unit-probes");
   const plan = {
-    variantId, contextTokens, packIds: packs.slice(1).map((entry) => entry.id),
+    chat: options.chat, variantId, contextTokens, packIds: packs.slice(1).map((entry) => entry.id),
     text: reference.text, probes: reference.settings.probes, unitProbes: unitProbes.probes,
     probeCases: unitProbes.cases.map((entry) => ({ name: entry.name, steering: entry.steering })),
     generations: Object.entries(reference.generations).map(([name, entry]) => ({ name, steering: entry.steering })),
     nodes: Object.entries(reference.nodes).map(([name, entry]) => ({
-      name, steering: entry.steering, probes: entry.probes, anatomyKnobs: entry.anatomy.knobs, activityKnobs: entry.activity?.knobs ?? null,
+      name, steering: entry.steering, probes: entry.probes, input: entry.input, system: entry.system,
+      parent: entry.parent, seat: entry.seat, raw: entry.raw,
+      anatomyKnobs: entry.anatomy.knobs, activityKnobs: entry.activity?.knobs ?? null,
     })),
     settings: reference.settings,
     reads: reference.reads.map((entry) => ({ unit: entry.unit, k: entry.read.knobs.k, hideHubs: entry.hide_hubs })),
@@ -310,8 +336,10 @@ try {
     throw new Error(run.error);
   }
   check("worker installs and loads the v5 library with its packs", true, run.loaded);
-  check("a plain greedy generation through the worker", JSON.stringify(run.plain) === JSON.stringify(unitProbes.cases[0].tokens.slice(0, 2)),
-    `${JSON.stringify(run.plain)} vs ${JSON.stringify(unitProbes.cases[0].tokens.slice(0, 2))}`);
+  if (!options.chat) {
+    check("a plain greedy generation through the worker", JSON.stringify(run.plain) === JSON.stringify(unitProbes.cases[0].tokens.slice(0, 2)),
+      `${JSON.stringify(run.plain)} vs ${JSON.stringify(unitProbes.cases[0].tokens.slice(0, 2))}`);
+  }
   compareRun(run, unitProbes);
 } finally {
   await browser.close();
@@ -332,8 +360,9 @@ function compareRun(run, unitProbes) {
     if (/probability$|\.p$/.test(path)) return tol.probability_atol + 2e-6;
     return tol.z_atol + 2e-6;
   };
-  const record = (label, actual, expected, options = {}) => {
+  const record = (label, value, expected, options = {}) => {
     const deltas = [];
+    const actual = withoutUnderflow(value);
     const problems = compareRecord(actual, expected, {
       numberTol: (path, e) => {
         return numberTol(path, e);
@@ -345,7 +374,7 @@ function compareRun(run, unitProbes) {
     return deltas;
   };
   // unit-probes: tokens, every forward's units channel, gate scalars through the gate case, aggregate.
-  for (const [index, golden] of unitProbes.cases.entries()) {
+  for (const [index, golden] of run.probeCases.length === 0 ? [] : unitProbes.cases.entries()) {
     const ours = run.probeCases[index];
     // Frames by raw index: a piece whose text completes in a later token (a split UTF-8 byte)
     // rides that token's frame, so a forward can have no frame of its own.
@@ -379,7 +408,7 @@ function compareRun(run, unitProbes) {
   for (const ours of run.nodes) {
     const native = reference.nodes[ours.name];
     check(`node ${ours.name}: tokens`, JSON.stringify(ours.tokens) === JSON.stringify(native.tokens),
-      `${JSON.stringify(ours.tokens)} vs ${JSON.stringify(native.tokens)}`);
+      `${JSON.stringify(ours.tokens)} vs ${JSON.stringify(native.tokens)} (frames ${JSON.stringify(ours.frameTypes)})`);
     record(`node ${ours.name}: token anatomy`, withoutSources(ours.anatomy), withoutSources(native.anatomy.result),
       { root: `nodes.${ours.name}.anatomy.result`, ties: reference.declared_ties });
     if (native.activity) {
@@ -424,6 +453,18 @@ function populationProblems(actual, expected) {
     }
   });
   return problems;
+}
+
+/** `value` without probability entries that underflowed to exactly 0 (the reference's
+ *  `without_underflow`): which zero-probability tokens fill a list is arbitrary. */
+function withoutUnderflow(value) {
+  if (Array.isArray(value)) return value.map(withoutUnderflow);
+  if (value === null || typeof value !== "object") return value;
+  const probability = value.unit === "probability";
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key,
+    probability && Array.isArray(child)
+      ? child.filter((item) => !(item && typeof item === "object" && item.value === 0))
+      : withoutUnderflow(child)]));
 }
 
 /** The lens sources' labels are each runtime's own (native `local:r`, a pack id here). */
@@ -520,11 +561,13 @@ async function driveWorker(plan) {
     await service("instruments", "setLive", "units", { enabled: true });
     const out = { loaded: `${plan.packIds.length} optional packs`, probeCases: [], generations: [], nodes: [] };
     // A plain greedy generation first: no program, no probes.
-    const plain = await generate({ input: plan.text, raw: true, stateless: true, steering: null, sampling: greedy(2) });
-    out.plain = plain.tokens.map((frame) => frame.token_id);
+    if (!plan.chat) {
+      const plain = await generate({ input: plan.text, raw: true, stateless: true, steering: null, sampling: greedy(2) });
+      out.plain = plain.tokens.map((frame) => frame.token_id);
+    }
 
-    for (const unit of plan.unitProbes) await service("probes", "attach", { selector: unit });
-    for (const entry of plan.probeCases) {
+    for (const unit of plan.chat ? [] : plan.unitProbes) await service("probes", "attach", { selector: unit });
+    for (const entry of plan.chat ? [] : plan.probeCases) {
       const result = await generate({ input: plan.text, raw: true, stateless: true, steering: entry.steering, sampling: greedy(5) });
       out.probeCases.push({
         name: entry.name,
@@ -533,7 +576,7 @@ async function driveWorker(plan) {
         aggregate: result.done?.result?.measurements ?? null,
       });
     }
-    await service("probes", "attach", { selector: `slens/${plan.settings.slensWord}` });
+    if (!plan.chat) await service("probes", "attach", { selector: `slens/${plan.settings.slensWord}` });
     for (const entry of plan.generations) {
       const result = await generate({ input: plan.text, raw: true, stateless: true, steering: entry.steering, sampling: greedy(plan.settings.steps) });
       out.generations.push({
@@ -543,24 +586,36 @@ async function driveWorker(plan) {
         aggregate: result.done?.result?.measurements ?? null,
       });
     }
-    for (const name of [...plan.unitProbes, `slens/${plan.settings.slensWord}`]) await service("probes", "detach", name);
+    if (!plan.chat) {
+      for (const name of [...plan.unitProbes, `slens/${plan.settings.slensWord}`]) await service("probes", "detach", name);
+    }
 
     const root = (await service("tree", "get")).root_id;
+    const nodeIds = new Map();
     for (const entry of plan.nodes) {
       // The node's probes stay attached through its generation and its replays, as drowse's.
       for (const selector of entry.probes) await service("probes", "attach", { selector });
-      // Each node from the root, as drowse's reference navigates there first.
+      // From the root (or the named parent node), as drowse's reference generates it.
       const result = await generate({
-        input: plan.text, raw: true, stateless: false, parent_node_id: root, steering: entry.steering,
+        input: entry.input, raw: entry.raw, stateless: false,
+        parent_node_id: entry.parent === null ? root : nodeIds.get(entry.parent), steering: entry.steering,
         sampling: greedy(plan.settings.decodeSteps),
+        ...(entry.raw ? {} : { system_prompt: entry.system, generate_seat: entry.seat }),
       });
       const nodeId = result.done?.node_id ?? result.tokens.at(-1)?.node_id;
-      const node = { name: entry.name, nodeId, tokens: result.tokens.map((frame) => frame.token_id) };
-      node.anatomy = await service("instruments", "tokenAnatomy", nodeId, plan.settings.anatomyIndex, entry.anatomyKnobs);
+      nodeIds.set(entry.name, nodeId);
+      // The node's raw token record (what its replays feed): a piece whose UTF-8 never completes
+      // (a lone lead byte, repeated) streams no token frame of its own.
+      const recorded = (await service("tree", "get")).nodes.find((item) => item.id === nodeId);
+      const node = { name: entry.name, nodeId, tokens: recorded?.raw_token_ids ?? null,
+        frameTypes: result.frames.map((frame) => `${frame.type}${frame.thinking ? ":thinking" : ""}`) };
+      node.anatomy = await service("instruments", "tokenAnatomy", nodeId, plan.settings.anatomyIndex,
+        { ...entry.anatomyKnobs, raw: entry.raw });
       if (entry.activityKnobs !== null) {
         const activity = plan.settings.activity;
         node.activity = await service("instruments", "unitActivity", nodeId, {
           top: entry.activityKnobs.top, units: activity.units, rawIndex: activity.raw_index, layers: activity.layers,
+          raw: entry.raw,
         });
       }
       for (const selector of entry.probes) await service("probes", "detach", selector);
@@ -581,10 +636,11 @@ async function driveWorker(plan) {
 }
 
 function parseArguments(args) {
-  const out = { port: 0, headed: false, python: process.env.PYTHON ?? "python3" };
+  const out = { port: 0, headed: false, chat: false, python: process.env.PYTHON ?? "python3" };
   for (let i = 0; i < args.length; i += 1) {
     const flag = args[i];
     if (flag === "--headed") out.headed = true;
+    else if (flag === "--chat") out.chat = true;
     else if (["--fixtures", "--arch", "--quantization", "--work", "--port", "--python"].includes(flag)) {
       out[flag.slice(2)] = flag === "--port" ? Number(args[++i]) : args[++i];
     } else throw new Error(`unknown argument ${flag}`);
