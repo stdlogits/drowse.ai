@@ -650,7 +650,15 @@ try {
           ...lensManifestBody,
           kind: "R",
           estimator_policy: { direction: "output", rules: { half_rule: true }, skip_first_positions: 0 },
-          sites: lensSite(rLensFile.sha256),
+          n_prompts: 64,
+          sites: {
+            out: {
+              ...lensSite(rLensFile.sha256).out,
+              split_half: Object.fromEntries(
+                [...jlensLayers].reverse().map((layer) => [String(layer), 0.01 * (layer + 1)]),
+              ),
+            },
+          },
         });
         const rLensManifestFile = instrumentFile("packs/rlens/manifest.json", rLensManifest);
         const rVocabularyTensorFile = instrumentFile(
@@ -2115,6 +2123,42 @@ try {
     assert.deepEqual(compiler.instrumentLiveState().lensLayers, [1]);
   });
 
+  test("lists an inactive lens pack whose manifest fails the loader without coverage", async () => {
+    const { request } = await fixture({ withWhitener: true, withJlens: true });
+    request.optionalPacks.push(instrumentPack(
+      "fixture-k-lens",
+      "jlens",
+      [instrumentFile("packs/klens/manifest.json", jsonBytes({ format_version: 7, kind: "K" }))],
+      request.variant.runtimeIdentitySha256,
+    ));
+    const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+    const runtime = new BrowserInstrumentRuntime(compiler, {});
+    const { sources } = runtime.request({
+      service: "instruments",
+      method: "sources",
+      args: ["lens"],
+    }, () => null);
+    assert.deepEqual(sources.map((row) => [row.source, row.active, row.sites]), [
+      ["fixture-jlens", true, ["out"]],
+      ["fixture-k-lens", false, []],
+    ]);
+    // Native's row for a manifest that no longer validates: its family and no coverage.
+    assert.deepEqual(sources[1], {
+      source: "fixture-k-lens",
+      kind: "catalog",
+      name: "fixture-k-lens",
+      family: "R",
+      sites: [],
+      active: false,
+      provider: "catalog",
+    });
+    await assert.rejects(
+      () => compiler.activateJlensSource("fixture-k-lens"),
+      (error) => error.code === "JLENS_PACK_INVALID" || error.code === "JLENS_VOCABULARY_INVALID" ||
+        /Lens browser vocabulary/.test(error.message),
+    );
+  });
+
   test("swaps installed standard and R-lens packs without fitting or losing probes", async () => {
     const { request } = await fixture({
       withWhitener: true,
@@ -2144,16 +2188,44 @@ try {
     compiler.setInstrumentLive("lens", true, [1]);
 
     assert.equal(runtime.blocks()[1].capabilities.source_switch, true);
-    assert.deepEqual(runtime.request({
+    // 6.0's rows (lens/sources.py::list_lens_sources) for every installed source, the inactive one
+    // read from its manifest: kind, family R, the out site the browser reads, its layers,
+    // documents and (when the fit recorded it) the split-half difference by ascending layer.
+    const rRow = {
+      source: "fixture-rlens",
+      kind: "catalog",
+      name: "fixture-rlens",
+      lens: "R",
+      family: "R",
+      sites: ["out"],
+      layers: { out: [0, 1] },
+      n_prompts: 64,
+      split_half: { out: { 0: 0.01, 1: 0.02 } },
+      provider: "catalog",
+    };
+    const listed = runtime.request({
       service: "instruments",
       method: "sources",
       args: ["lens"],
-    }, () => null), {
+    }, () => null);
+    assert.deepEqual(listed, {
       sources: [
-        { source: "fixture-jlens", name: "fixture-jlens", kind: "catalog", provider: "catalog", active: true },
-        { source: "fixture-rlens", name: "fixture-rlens", kind: "catalog", provider: "catalog", active: false },
+        {
+          source: "fixture-jlens",
+          kind: "catalog",
+          name: "fixture-jlens",
+          lens: "J",
+          family: "R",
+          sites: ["out"],
+          layers: { out: [0, 1] },
+          n_prompts: 1,
+          active: true,
+          provider: "catalog",
+        },
+        { ...rRow, active: false },
       ],
     });
+    assert.deepEqual(Object.keys(listed.sources[1].split_half.out), ["0", "1"]);
 
     const switched = await runtime.request({
       service: "instruments",
@@ -2171,7 +2243,11 @@ try {
       method: "sources",
       args: ["lens"],
     }, () => null).sources;
-    assert.equal(sources.find((source) => source.source === "fixture-rlens").active, true);
+    assert.deepEqual(sources.find((source) => source.source === "fixture-rlens"), {
+      ...rRow,
+      active: true,
+    });
+    assert.equal(sources.find((source) => source.source === "fixture-jlens").lens, "J");
     const refreshed = await compiler.withInstalledManifolds([], request.signal);
     await runtime.replaceCompiler(refreshed);
     assert.equal(installedDictionaries.length, 1);

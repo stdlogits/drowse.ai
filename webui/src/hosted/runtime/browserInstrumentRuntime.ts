@@ -285,17 +285,7 @@ export class BrowserInstrumentRuntime {
     const family = instrumentFamily(args[0]);
     const descriptor = this.compiler.instrumentDescriptor();
     if (family === "geometry") return { sources: [] };
-    if (family === "lens") {
-      return {
-        sources: this.lensSources().map((source) => ({
-          source: source.source,
-          name: source.displayName,
-          kind: "catalog",
-          provider: "catalog",
-          active: source.active,
-        })),
-      };
-    }
+    if (family === "lens") return { sources: this.lensSources().map(lensSourceRow) };
     if (family === "sae" && descriptor.sae !== null) {
       return {
         sources: [{
@@ -365,6 +355,12 @@ export class BrowserInstrumentRuntime {
           source: descriptor.source,
           displayName: descriptor.displayName,
           active: true,
+          summary: {
+            kind: descriptor.kind,
+            layers: descriptor.layers,
+            nPrompts: descriptor.nPrompts,
+            splitHalf: descriptor.splitHalf,
+          },
         }];
   }
 
@@ -825,6 +821,42 @@ function tokenReadoutOptions(value: unknown): TokenReadoutOptions {
     throw instrumentError("INVALID_INSTRUMENT_REQUEST", "Token replay layers must be a non-empty string");
   }
   return input as TokenReadoutOptions;
+}
+
+/** A hosted lens pack's row in 6.0's shape (`lens/sources.py::list_lens_sources`): every hosted
+ *  pack is of the R family and the browser reads its `out` site only, so `sites` is `["out"]`
+ *  and `layers`/`split_half` key that site. A pack whose manifest does not pass the loader's
+ *  checks keeps native's coverage-free row (`sites: []`). */
+function lensSourceRow(
+  source: ReturnType<BrowserFeasibilityCorePackCompiler["jlensSources"]>[number],
+): InstrumentSourceJSON {
+  const summary = source.summary;
+  return {
+    source: source.source,
+    kind: "catalog",
+    name: source.displayName,
+    ...(summary === null ? {} : { lens: summary.kind }),
+    family: "R",
+    sites: summary === null ? [] : ["out"],
+    ...(summary === null
+      ? {}
+      : {
+          layers: { out: [...summary.layers] },
+          n_prompts: summary.nPrompts,
+          ...(summary.splitHalf === null || Object.keys(summary.splitHalf).length === 0
+            ? {}
+            : { split_half: { out: splitHalfByLayer(summary.splitHalf) } }),
+        }),
+    active: source.active,
+    provider: "catalog",
+  };
+}
+
+/** `{layer: difference}` in ascending layer order, as native sorts it. */
+function splitHalfByLayer(values: Readonly<Record<string, number>>): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(values).sort(([left], [right]) => Number(left) - Number(right)),
+  );
 }
 
 function instrumentFamily(value: unknown): "geometry" | "lens" | "sae" {

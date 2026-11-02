@@ -339,12 +339,18 @@ export class DeterministicFakeRuntime implements RuntimeClient {
     const lensPack = lensPacks[0];
     const saePack = packs.find((pack) => pack.kind === "sae");
     if (lensPack) {
+      // The browser runtime's row shape: an R-family pack read at its out site.
       this.sourcesByFamily.lens = lensPacks.map((pack, index) => ({
         source: pack.id,
-        name: pack.displayName,
         kind: "catalog",
-        provider: "catalog",
+        name: pack.displayName,
+        lens: "R",
+        family: "R",
+        sites: ["out"],
+        layers: { out: [0, 1] },
+        n_prompts: 64,
         active: index === 0,
+        provider: "catalog",
       }));
       const block = this.instrumentBlock("lens");
       block.source = lensPack.id;
