@@ -1,7 +1,12 @@
 # Hosted instrument release corpora
 
+Hosted R and S lenses are drowse's native fits over the pinned FineWeb-Edu corpus that
+`native-lens-corpus.json` records (`browser-runtime/README.md`, "Lens, units and core
+packs"); its `attributionApproval` stays null until a named reviewer approves the ODC-By
+attribution. `jlens-word-seeds.txt` is also the R pack's curated browser vocabulary.
+
 `prepare_hosted_release_corpus.py` produces the bounded JSON inputs consumed by
-the hosted SAE and J-lens builders. It is deliberately offline and fail closed:
+the hosted SAE builder. It is deliberately offline and fail closed:
 the exact source snapshot, pinned license evidence, project word seeds, and all
 release tokenizers must match the manifest before it writes anything. Each
 declared tokenizer must match its entry in the runtime lock, and the target
@@ -65,6 +70,6 @@ python3 webui/scripts/prepare_hosted_release_corpus.py \
   --tokenizer qwen3-1.7b=/snapshots/qwen3-1.7b
 ```
 
-Pass `sae-corpus.json` to `build-hosted-sae.mjs`. Pass
-`jlens-corpus.json` and `jlens-words.json` to `build-hosted-jlens.mjs`.
+Pass `sae-corpus.json` to `build-hosted-sae.mjs`. Its `jlens-corpus.json` and
+`jlens-words.json` fed the retired capture-based lens builder and are unused.
 Preserve `release-corpus.json` with the release evidence and instrument packs.
