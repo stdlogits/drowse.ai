@@ -5892,7 +5892,7 @@ index 00000000..29d20f3b
 +        setattr(cls, name, _method(function, with_model))
 diff --git a/python/mlc_llm/model/drowse_units.py b/python/mlc_llm/model/drowse_units.py
 new file mode 100644
-index 00000000..46d630e9
+index 00000000..523e7baf
 --- /dev/null
 +++ b/python/mlc_llm/model/drowse_units.py
 @@ -0,0 +1,1342 @@
@@ -5922,7 +5922,7 @@ index 00000000..46d630e9
 +UNIT_MAX_HEAD_TAPS = 16
 +UNIT_MAX_ACTIVITY_TRACES = 32
 +UNIT_MAX_ACTIVITY_SPANS = 4
-+UNIT_MAX_PATTERN_LAYERS = 8
++UNIT_MAX_PATTERN_LAYERS = 16
 +UNIT_MAX_PATTERN_HEADS = 16
 +UNIT_MAX_LENS_READ_TOP_K = 256
 +UNIT_MAX_ANATOMY_UNITS = 64
