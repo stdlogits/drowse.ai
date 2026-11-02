@@ -43,7 +43,7 @@ try {
           controls: [null],
         });
       }
-      const anatomy = await anatomyModule.tokenAnatomy(fx.context, { spec: fx.model.spec, scales, backend: fx.backend }, forward, program, entry.knobs, {
+      const { anatomy } = await anatomyModule.tokenAnatomy(fx.context, { spec: fx.model.spec, scales, backend: fx.backend }, forward, program, entry.knobs, {
         sources: { R: entry.lens, S: "local:s" }, steering: entry.steering,
       });
       const envelope = { measurements: { version: 2, scope: "replay", provenance: "replayed", instruments: {}, anatomy } };

@@ -1393,7 +1393,7 @@ function sourcedFamily(family: Exclude<InstrumentFamily, "geometry">): SourcedFa
 function fakeUnitsUnavailable(): Error & { code: string } {
   return fakeError(
     "INSTRUMENT_FAMILY_UNAVAILABLE",
-    "The browser runtime does not read neurons and heads yet",
+    "units have no source lifecycle or preparations in the browser runtime (neurons and heads are the model's own parts; their statistics ride the neutral cache)",
   );
 }
 

@@ -56,7 +56,9 @@ function unitRow(kind: "neuron" | "head", layer: number, index: number, contribu
   };
 }
 
-/** The `scope="replay"` envelope's `anatomy` record for one token. */
+/** The `scope="replay"` envelope's `anatomy` record for one token, and the block outputs it read
+ *  (`out` `[L, d]` at the anatomy position, after the steering), which the envelope's lens
+ *  probes are scored over (native `score_probes({L: taps.out[L]})`). */
 export async function tokenAnatomy(
   context: UnitsReadContext,
   model: { readonly spec: BlockSpec; readonly scales: UnitScales | null; readonly backend: BrowserBlockSitesBackend },
@@ -65,7 +67,7 @@ export async function tokenAnatomy(
   options: TokenAnatomyOptions,
   binding: { readonly sources: Readonly<Record<"R" | "S", string | null>>; readonly steering: string | null },
   replayOptions: { canThink?: boolean; gateScores?: ReplayGateScores; signal?: AbortSignal } = {},
-): Promise<Record<string, unknown>> {
+): Promise<{ anatomy: Record<string, unknown>; out: Float32Array }> {
   checkAnatomyOptions(options);
   const { spec, scales, backend } = model;
   const n = context.nLayers;
@@ -225,7 +227,9 @@ export async function tokenAnatomy(
       heads: heads.get(layer) ?? [],
     };
   });
-  return {
+  const out = new Float32Array(n * d);
+  for (let layer = 0; layer < n; layer += 1) out.set(tap(layer, layout.out, d), layer * d);
+  const anatomy = {
     token: {
       raw_index: forward.rawIndex,
       token_id: tokenId,
@@ -242,6 +246,7 @@ export async function tokenAnatomy(
     patterns,
     context: contextTokens,
   };
+  return { anatomy, out };
 }
 
 /** The pattern pass: replay again capturing keys at the chosen heads' layers (at most the

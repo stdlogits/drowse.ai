@@ -21,6 +21,7 @@ import { readingScales, type UnitScales, type UnitStatistics } from "./scales";
 import { parseLayerSelector, parseSteeringExpression, resolveModelLayers, type LayerSelector } from "../steeringExpression";
 import { slensAtomDirections } from "./slens";
 import { centreDigest } from "./probeDigest";
+import { lensProbeReadings, UNIT_MEAN_FOOTPRINT_Z, type LensProbe } from "./replayProbes";
 import type { BrowserUnitProgramSource } from "./unitProgram";
 import { layerRequest, NO_CATALOG, parseUnit, unitCatalogStatus, UnitReader, UnitRequestError, type UnitLayerArtifacts } from "./unitReader";
 
@@ -372,7 +373,13 @@ export class BrowserUnitsService {
     return port;
   }
 
-  async request(method: UnitsServiceMethod, args: readonly unknown[]): Promise<unknown> {
+  /** `context.lensProbes`: the session's attached lens probes, which the anatomy envelope scores
+   *  over the replay (the instrument runtime passes its compiler's). */
+  async request(
+    method: UnitsServiceMethod,
+    args: readonly unknown[],
+    context: { readonly lensProbes?: readonly LensProbe[] } = {},
+  ): Promise<unknown> {
     switch (method) {
       case "unitCatalog":
         return this.catalog();
@@ -393,7 +400,7 @@ export class BrowserUnitsService {
       case "unitFind":
         return this.find(args[0]);
       case "tokenAnatomy":
-        return this.anatomy(args[0], args[1], args[2]);
+        return this.anatomy(args[0], args[1], args[2], context.lensProbes ?? []);
       case "unitActivity":
         return this.activity(args[0], args[1]);
     }
@@ -438,7 +445,7 @@ export class BrowserUnitsService {
     return session.reader.find({ vector: Float32Array.from(body.vector as number[]), layer }, k, layers);
   }
 
-  private async anatomy(nodeId: unknown, rawIndex: unknown, value: unknown): Promise<unknown> {
+  private async anatomy(nodeId: unknown, rawIndex: unknown, value: unknown, lensProbes: readonly LensProbe[]): Promise<unknown> {
     const options = optionalRecord(value, "token anatomy options");
     const knobs = {
       k: integer(options.k, 8, "k"),
@@ -455,16 +462,27 @@ export class BrowserUnitsService {
       label: "session.token_anatomy",
       produced: true,
     });
-    const anatomy = await tokenAnatomy(session.context, { spec: session.spec, scales: session.scales, backend: session.backend }, node.forward, node.program, knobs, {
+    const { anatomy, out } = await tokenAnatomy(session.context, { spec: session.spec, scales: session.scales, backend: session.backend }, node.forward, node.program, knobs, {
       sources: session.sources,
       steering: node.steering,
     }, { canThink: node.canThink, ...(this.options.gateScores ? { gateScores: this.options.gateScores } : {}) });
+    // The attached lens probes read the residual each block wrote, after the steering, as the
+    // live capture does (native `build_measurements(lens_readings=...)`).
+    const readings = await lensProbeReadings(session.context, out, lensProbes);
+    const families = [...new Set(Object.values(readings).map((reading) => reading.unit === UNIT_MEAN_FOOTPRINT_Z ? "S" : "R"))].sort();
+    const instruments = Object.keys(readings).length === 0 ? {} : {
+      lens: {
+        readings,
+        binding: { sources: Object.fromEntries(families.map((family) => [family, session.sources[family as "R" | "S"]])), steering: node.steering },
+      },
+    };
     return {
       measurements: {
         version: 2,
         scope: "replay",
         provenance: "replayed",
-        instruments: {},
+        instruments,
+        ...(Object.keys(readings).length === 0 ? {} : { scores: Object.fromEntries(Object.entries(readings).map(([name, reading]) => [name, reading.value])) }),
         anatomy,
       },
     };

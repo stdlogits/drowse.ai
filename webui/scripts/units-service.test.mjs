@@ -22,8 +22,11 @@ try {
   for (const method of service.UNITS_SERVICE_METHODS) {
     assert.equal(policy.isOfferedRuntimeMethod("instruments", method), false, `${method} is withheld`);
   }
+  let attached = [];
   const stubCompiler = {
     instrumentDescriptor: () => ({ jlens: null, sae: null }),
+    instrumentLiveState: () => ({ geometry: false, lens: false, lensLayers: null, sae: false }),
+    listProbes: () => attached,
     setInstrumentLive() {},
   };
   const arch = "gemma3";
@@ -65,7 +68,20 @@ try {
 
   // Before a service is configured: native's 422 for a library without unit sites.
   await assert.rejects(call("unitRead", "neuron/L1n5"), (error) => error.status === 422 && error.code === "UnsupportedBlockError");
+  assert.equal(instruments.blocks().some((block) => block.family === "units"), false);
   instruments.configureUnits(units);
+  // Native `family_block("units")`: no source, live on by default, its probes; all-or-nothing live.
+  attached = [{ family: "units", name: "n", unit: "neuron/L1n5", kind: "neuron", layer: 1, index: 5, layers: [1], intrinsic_dim: 1, feature_space: "unit-readout" }];
+  assert.deepEqual(instruments.blocks().find((block) => block.family === "units"), {
+    family: "units", live: { enabled: true }, source: null, probes: ["n"],
+    capabilities: { sources: false, preparations: [], token_readout: false, source_switch: false },
+  });
+  attached = [];
+  assert.equal(instruments.unitsLiveEnabled(), true);
+  assert.deepEqual(await call("setLive", "units", { enabled: false }), { enabled: false });
+  assert.equal(instruments.unitsLiveEnabled(), false);
+  await assert.rejects(async () => call("setLive", "units", { enabled: true, layers: [1] }), /units live does not accept layers/);
+  await call("setLive", "units", { enabled: true });
 
   // ------------------------------------------------------------------ static reads ---
   const reads = archGolden("unit-reads", arch);
@@ -117,6 +133,31 @@ try {
   assert.equal(envelope.measurements.scope, "replay");
   assert.deepEqual(envelope.measurements.anatomy.token, anatomyCase.envelope.measurements.anatomy.token);
   assert.equal(envelope.measurements.anatomy.units.length, anatomyCase.knobs.units);
+  assert.deepEqual(envelope.measurements.instruments, {}, "no attached lens probe, no lens channel");
+  assert.equal("scores" in envelope.measurements, false);
+  // Attached jlens/ and slens/ probes are scored over the replayed block outputs (native
+  // `score_probes({L: taps.out[L]})`): at layer 1 each reads what the anatomy's own residual read
+  // of its token reads there (drowse's numbers).
+  const asRead = anatomyCase.envelope.measurements.anatomy.layers[1].reads_as;
+  const [rTop, sTop] = [asRead.r.tokens[0], asRead.s.tokens[0]];
+  attached = [
+    { family: "lens", namespace: "jlens", name: "watch r", word: rTop.token, token_id: rTop.token_id, layers: [1], intrinsic_dim: 1, feature_space: "readout" },
+    { family: "lens", namespace: "slens", name: "watch s", word: sTop.token, token_id: sTop.token_id, layers: [0, 1], intrinsic_dim: 1, feature_space: "readout" },
+  ];
+  const probed = (await call("tokenAnatomy", "node-1", anatomyGolden.raw_index, anatomyCase.knobs)).measurements;
+  const tol = anatomyGolden.tolerance.library;
+  const lensChannel = probed.instruments.lens;
+  assert.deepEqual(Object.keys(lensChannel.readings).sort(), ["watch r", "watch s"]);
+  assert.deepEqual(lensChannel.binding, { sources: { R: "local:r", S: "local:s" }, steering: null });
+  assert.equal(lensChannel.readings["watch r"].unit, "mean_token_probability");
+  assert.ok(Math.abs(lensChannel.readings["watch r"].per_layer["1"] - rTop.value) <= tol.probability_atol + 2e-6);
+  assert.equal(lensChannel.readings["watch r"].value, lensChannel.readings["watch r"].per_layer["1"]);
+  assert.equal(lensChannel.readings["watch s"].unit, "mean_footprint_z");
+  assert.ok(Math.abs(lensChannel.readings["watch s"].per_layer["1"] - sTop.value) <= tol.z_atol + 2e-6);
+  assert.equal(lensChannel.readings["watch s"].depth.basis, "footprint_z");
+  assert.deepEqual(probed.scores, { "watch r": lensChannel.readings["watch r"].value, "watch s": lensChannel.readings["watch s"].value });
+  assert.deepEqual(probed.anatomy, envelope.measurements.anatomy);
+  attached = [];
   const generated = activityGolden.cases[0];
   const activity = await call("unitActivity", "node-1", {
     top: generated.arguments.top, units: generated.arguments.units, rawIndex: generated.arguments.raw_index, layers: generated.arguments.layers,

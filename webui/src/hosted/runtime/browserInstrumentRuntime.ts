@@ -40,6 +40,8 @@ export class BrowserInstrumentRuntime {
   private readonly preparation = new Map<string, PreparationStatusJSON>();
   private tokenReplay: TokenReplay | null = null;
   private units: BrowserUnitsService | null = null;
+  /** Per-token unit readings (native `UnitsInstrument` live, on by default). */
+  private unitsLive = true;
 
   constructor(
     private compiler: BrowserFeasibilityCorePackCompiler,
@@ -109,10 +111,26 @@ export class BrowserInstrumentRuntime {
     return this.compiler.probeHashes();
   }
 
+  /** Whether the generation loop fills the units channel (B4): a configured service and the
+   *  family live. */
+  unitsLiveEnabled(): boolean {
+    return this.units !== null && this.unitsLive;
+  }
+
   blocks(): InstrumentFamilyBlock[] {
     const descriptor = this.compiler.instrumentDescriptor();
     const live = this.compiler.instrumentLiveState();
     const probes = this.compiler.listProbes();
+    // Native `family_block("units")` once the model load configured the units service: no
+    // source (the model's own parts); no preparations (the browser fetches no unit catalogs);
+    // no token readout (the units channel rides generation and the anatomy replay).
+    const units: InstrumentFamilyBlock[] = this.units === null ? [] : [{
+      family: "units",
+      live: { enabled: this.unitsLive },
+      source: null,
+      probes: probes.filter((probe) => probe.family === "units").map((probe) => probe.name),
+      capabilities: { sources: false, preparations: [], token_readout: false, source_switch: false },
+    }];
     return [
       {
         family: "geometry",
@@ -157,6 +175,7 @@ export class BrowserInstrumentRuntime {
           source_switch: false,
         },
       },
+      ...units,
     ];
   }
 
@@ -184,7 +203,9 @@ export class BrowserInstrumentRuntime {
       if (this.units === null) {
         return Promise.reject(new UnsupportedBlockError("the loaded model library predates hook ABI block-sites-v5"));
       }
-      return this.units.request(method, args);
+      return this.units.request(method, args, {
+        lensProbes: this.compiler.listProbes().filter((probe) => probe.family === "lens"),
+      });
     }
     throw instrumentError(
       "BROWSER_SERVICE_UNAVAILABLE",
@@ -269,6 +290,19 @@ export class BrowserInstrumentRuntime {
   }
 
   private setLive(args: unknown[]): unknown {
+    if (args[0] === "units" && this.units !== null) {
+      // Native `UnitsInstrument.set_live`: all or nothing, no extras.
+      const body = record(args[1], "instrument live settings");
+      if (typeof body.enabled !== "boolean") {
+        throw instrumentError("INVALID_INSTRUMENT_REQUEST", "Instrument live state must be a boolean");
+      }
+      const extras = Object.keys(body).filter((key) => key !== "enabled");
+      if (extras.length > 0) {
+        throw instrumentError("INVALID_INSTRUMENT_REQUEST", `units live does not accept ${extras.sort().join(", ")}`);
+      }
+      this.unitsLive = body.enabled;
+      return { enabled: this.unitsLive };
+    }
     const family = instrumentFamily(args[0]);
     const body = record(args[1], "instrument live settings");
     if (typeof body.enabled !== "boolean") {
@@ -882,10 +916,12 @@ function splitHalfByLayer(values: Readonly<Record<string, number>>): Record<stri
 
 function instrumentFamily(value: unknown): "geometry" | "lens" | "sae" {
   if (value === "units") {
-    // In the contract (`InstrumentFamily`); neurons and heads are not read here yet.
+    // In the contract (`InstrumentFamily`); its live state is `setLive`'s once the units service
+    // is configured, and it has no sources or preparations here (native: the model's own parts;
+    // the browser fetches no unit catalogs).
     throw instrumentError(
       "INSTRUMENT_FAMILY_UNAVAILABLE",
-      "The browser runtime does not read neurons and heads yet",
+      "units have no source lifecycle or preparations in the browser runtime (neurons and heads are the model's own parts; their statistics ride the neutral cache)",
     );
   }
   if (value !== "geometry" && value !== "lens" && value !== "sae") {
