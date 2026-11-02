@@ -327,12 +327,16 @@ class PackFiles {
   }
 }
 
-/** Least-recently-read decoded files, bounded by bytes, one decode per key at a time. A load
- *  runs under the model load's lifetime, not one reader's: a reader that gives up stops waiting,
- *  and the layer still lands in the cache for the next. */
+/** Least-recently-read decoded files, bounded by bytes, one decode per key at a time. Readers of
+ *  a key share its load; the load (a fetch, possibly) runs while any of them still waits and is
+ *  aborted when the last gives up, so nothing outlives the reads that wanted it. */
 class DecodedCache<T> {
   private readonly entries = new Map<string, { value: T; bytes: number }>();
-  private readonly pending = new Map<string, Promise<T>>();
+  private readonly pending = new Map<string, {
+    readonly promise: Promise<T>;
+    readonly controller: AbortController;
+    waiters: number;
+  }>();
   private bytes = 0;
 
   constructor(private readonly maxBytes: number) {}
@@ -340,7 +344,7 @@ class DecodedCache<T> {
   async get(
     key: string,
     signal: AbortSignal,
-    load: () => Promise<{ value: T; bytes: number }>,
+    load: (signal: AbortSignal) => Promise<{ value: T; bytes: number }>,
   ): Promise<T> {
     signal.throwIfAborted();
     const hit = this.entries.get(key);
@@ -350,15 +354,34 @@ class DecodedCache<T> {
       return hit.value;
     }
     const running = this.pending.get(key) ?? this.start(key, load);
+    running.waiters += 1;
     return new Promise<T>((resolve, reject) => {
-      const abort = () => reject(signal.reason);
+      let waiting = true;
+      const leave = () => {
+        if (!waiting) return;
+        waiting = false;
+        signal.removeEventListener("abort", abort);
+        running.waiters -= 1;
+      };
+      const abort = () => {
+        leave();
+        if (running.waiters === 0) running.controller.abort(signal.reason);
+        reject(signal.reason);
+      };
       signal.addEventListener("abort", abort, { once: true });
-      running.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+      running.promise.then(
+        (value) => { leave(); resolve(value); },
+        (error) => { leave(); reject(error); },
+      );
     });
   }
 
-  private start(key: string, load: () => Promise<{ value: T; bytes: number }>): Promise<T> {
-    const promise = load().then(({ value, bytes }) => {
+  private start(
+    key: string,
+    load: (signal: AbortSignal) => Promise<{ value: T; bytes: number }>,
+  ): { promise: Promise<T>; controller: AbortController; waiters: number } {
+    const controller = new AbortController();
+    const promise = load(controller.signal).then(({ value, bytes }) => {
       this.entries.set(key, { value, bytes });
       this.bytes += bytes;
       while (this.bytes > this.maxBytes && this.entries.size > 1) {
@@ -368,9 +391,10 @@ class DecodedCache<T> {
       }
       return value;
     }).finally(() => this.pending.delete(key));
-    this.pending.set(key, promise);
     promise.catch(() => undefined);
-    return promise;
+    const running = { promise, controller, waiters: 0 };
+    this.pending.set(key, running);
+    return running;
   }
 
   clear(prefix: string): void {
@@ -530,9 +554,8 @@ export class BrowserInstrumentRegistry {
       if (resident !== undefined) return resident;
     }
     const hiddenSize = this.loadRequest.variant.runtimeIdentity.hiddenSize;
-    const lifetime = this.loadRequest.signal;
-    return this.lensLayers.get(`${family}:${lens.bindingId}:${site}:${layer}`, signal, async () => {
-      const data = await readLensShard(lens.files, lens.manifestPath, entry, layer, hiddenSize, lifetime);
+    return this.lensLayers.get(`${family}:${lens.bindingId}:${site}:${layer}`, signal, async (shared) => {
+      const data = await readLensShard(lens.files, lens.manifestPath, entry, layer, hiddenSize, shared);
       return { value: data, bytes: data.byteLength };
     });
   }
@@ -602,12 +625,11 @@ export class BrowserInstrumentRegistry {
     if (entry === undefined) {
       throw instrumentError("UNITS_LAYER_UNAVAILABLE", `The units pack has no layer ${layer}`);
     }
-    const lifetime = this.loadRequest.signal;
-    return this.unitsLayers.get(`${part}:${layer}`, signal, async () => {
+    return this.unitsLayers.get(`${part}:${layer}`, signal, async (shared) => {
       if (units.files.sha256(entry.path) !== entry.sha256) {
         throw instrumentError("UNITS_PACK_INVALID", `units ${part} layer ${layer} has a mismatched digest`);
       }
-      const reader = await tensorArtifactReader(await units.files.file(entry.path, lifetime), lifetime);
+      const reader = await tensorArtifactReader(await units.files.file(entry.path, shared), shared);
       if (!sameStrings(reader.keys, Object.keys(entry.shapes).sort())) {
         throw instrumentError("UNITS_PACK_INVALID", `units ${part} layer ${layer} has unexpected tensors`);
       }

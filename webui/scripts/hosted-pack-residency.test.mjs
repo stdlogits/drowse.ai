@@ -170,6 +170,33 @@ try {
   assert.deepEqual(Object.keys(source.summary.coverage.sites), ["out", "mid"]);
   assert.deepEqual(source.summary.coverage.sites.mid.layers, layerMap);
 
+  // Readers share a layer's fetch: one giving up leaves it to the other; the last giving up
+  // aborts the fetch itself.
+  let release;
+  let fetchSignal;
+  const gated = await load(async (file, fetchAbort) => {
+    fetchSignal = fetchAbort;
+    await new Promise((resolve) => { release = resolve; });
+    fetchAbort.throwIfAborted();
+    return new File([files.get(file.path)], file.path);
+  });
+  const quitter = new AbortController();
+  const first = gated.lensMatrix("R", "mid", 2, quitter.signal);
+  const second = gated.lensMatrix("R", "mid", 2, signal);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  quitter.abort(new Error("reader left"));
+  await assert.rejects(first, /reader left/u);
+  assert.equal(fetchSignal.aborted, false, "another reader still waits");
+  release();
+  assert.equal((await second)[0], 250);
+  const lone = new AbortController();
+  const abandoned = gated.lensMatrix("R", "mid", 3, lone.signal);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  lone.abort(new Error("gone"));
+  await assert.rejects(abandoned, /gone/u);
+  assert.equal(fetchSignal.aborted, true, "the last reader leaving aborts the fetch");
+  release();
+
   const offline = await load(undefined);
   await assert.rejects(offline.lensMatrix("R", "mid", 0, signal), { code: "INSTRUMENT_PACK_LAYER_UNAVAILABLE" });
 

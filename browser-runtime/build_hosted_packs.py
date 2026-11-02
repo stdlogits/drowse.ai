@@ -505,11 +505,12 @@ def check_weights(model: NativeModel, runtime: Mapping[str, Any], model_path: st
         raise PackBuildError(f"{model_path} is not the runtime's source model {identity['sourceModel']}")
     from huggingface_hub import hf_hub_download
 
-    # drowse loads the Hub id at `main`; that must resolve to the runtime's pinned revision.
-    loaded = Path(hf_hub_download(identity["sourceModel"], "config.json"))
-    if loaded.parent.name != identity["sourceRevision"]:
+    # drowse resolves the Hub id's revision before reading any weight and stamps it on the live
+    # config (`model/load.py`): the weights loaded must be the runtime's pinned revision.
+    loaded = getattr(getattr(model.session.model, "config", None), "_commit_hash", None)
+    if loaded != identity["sourceRevision"]:
         raise PackBuildError(
-            f"{identity['sourceModel']} main is {loaded.parent.name}, not the runtime's {identity['sourceRevision']}",
+            f"{identity['sourceModel']} loaded at {loaded}, not the runtime's {identity['sourceRevision']}",
         )
     tokenizer = Path(hf_hub_download(identity["sourceModel"], "tokenizer.json",
                                      revision=identity["sourceRevision"]))
