@@ -658,10 +658,12 @@ export const UNITS_GOLDEN_SUITES = Object.freeze([
   "attention-patterns",
   "block-sites",
   "lens-reads",
+  "neuron-push",
   "slens",
   "token-anatomy",
   "unit-ablation",
   "unit-activity",
+  "unit-artifacts",
   "unit-probes",
   "unit-reads",
 ]);

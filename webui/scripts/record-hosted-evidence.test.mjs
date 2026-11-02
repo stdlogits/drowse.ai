@@ -1028,6 +1028,11 @@ test("hook ABI v5 runtime evidence: units goldens per backend and each productio
   const short = structuredClone(cvm);
   delete short.results.libraries["gemma3-q0f32"].suites["token-anatomy"];
   await assert.rejects(validateRuntimeGateResults("cVmGoldens", bound(short), fixtureRoot, runtimeLock), /lacks a units golden suite/);
+  for (const suite of ["neuron-push", "unit-artifacts"]) {
+    const without = structuredClone(cvm);
+    delete without.results.libraries["qwen3-q0f32"].suites[suite];
+    await assert.rejects(validateRuntimeGateResults("cVmGoldens", bound(without), fixtureRoot, runtimeLock), /lacks a units golden suite/);
+  }
   const broken = structuredClone(cvm);
   broken.results.libraries["gemma3-q0f32"].suites.slens = 0.5;
   await assert.rejects(validateRuntimeGateResults("cVmGoldens", bound(broken), fixtureRoot, runtimeLock), /exceeds/);
