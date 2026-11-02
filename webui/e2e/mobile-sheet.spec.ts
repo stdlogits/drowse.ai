@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { waitForReply } from "./workbench-navigation";
 const sheet = (page: Page) => page.locator('.sheet-host[data-mobile-sheet="true"].present');
 const handle = (page: Page) => sheet(page).getByRole("button", { name: /^Resize word details:/ });
 
@@ -29,7 +30,7 @@ async function generate(page: Page) {
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain language models.");
   await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
   await expect(page.locator(".msg .response-body").last()).toHaveText("This is a deterministic local Drowse runtime fixture.");
-  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
 }
 
 test("sheet overlays the unchanged workspace with stepped swipes, focus containment, and dismissal", async ({ page }, info) => {

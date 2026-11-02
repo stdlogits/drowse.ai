@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Locator, type Page, type TestInfo } from "@playwright/test";
 import { resolve } from "node:path";
 import { selectWorkspaceView } from "./workbench-navigation";
+import { waitForReply } from "./workbench-navigation";
 
 const devUrl = "http://127.0.0.1:4176";
 const moduleUrl = (path: string) => `/@fs${resolve(path)}`;
@@ -194,7 +195,7 @@ async function populatedWorkbench(page: Page, theme: string) {
   await setTheme(page, theme);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("A contrast check with a populated conversation.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
 }
 
 for (const theme of ["dark", "light"]) {

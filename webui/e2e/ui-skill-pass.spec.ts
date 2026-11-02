@@ -7,6 +7,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
 import { buffer as readStreamBuffer, text as readStreamText } from "node:stream/consumers";
 import { siteTitle } from "../scripts/site-metadata.mjs";
+import { waitForReply } from "./workbench-navigation";
 
 const devUrl = "http://127.0.0.1:4176";
 const storesUrl = `/@fs/${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
@@ -160,7 +161,7 @@ test("chat backups download, import separately, and reopen the entire Loom", asy
   await page.getByRole("textbox", { name: /^Compose as / }).fill("A complete local backup");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(page.locator('.chat[aria-label="Chat"]')).toContainText("This is a deterministic local Drowse runtime fixture.");
-  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
   const libraryUrl = `/@fs${resolve("../drowse/webui/src/lib/stores/savedConversations.svelte.ts")}`;
   const original = await page.evaluate(async ({ libraryUrl, workspaceUrl }) => {
     const { conversationLibrary, flushConversationAutosave } = await import(libraryUrl);
@@ -224,7 +225,7 @@ test("chat backups download, import separately, and reopen the entire Loom", asy
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Continue only the imported copy");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect.poll(() => page.evaluate(async url => (await (await import(url)).apiTree.get()).nodes.length, `/@fs${resolve("../drowse/webui/src/lib/runtime/services.ts")}`)).toBe(original.snapshot.tree.nodes.length + 2);
-  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
   await page.evaluate(async url => (await import(url)).flushConversationAutosave(), libraryUrl);
   const continued = await records();
   expect(continued.find((record: any) => record.id === original.id)).toEqual(original);
@@ -235,7 +236,7 @@ async function emptyGeometry(page: Page, authoring = false) {
   await workbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain language models.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
   await page.evaluate(async ({ storesUrl, registryUrl, authoring }) => {
     const { chatLog, probeRack } = await import(storesUrl);
     probeRack.active = [];
@@ -339,7 +340,7 @@ test("geometry setup attaches a probe and hides unsupported training", async ({ 
   await sheet.locator(".drawer-close").click();
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Read this new reply with the attached probe.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
   await openDrawer(page, "token_drilldown", { turnIdx: 3, tokenIdx: 0 });
   await expect(sheet.locator(".geo-list")).toContainText("local/test-concept");
 });
@@ -730,7 +731,7 @@ test.describe("saved chat card interactions", () => {
     await page.getByRole("textbox", { name: /^Compose as / }).fill("Hello, I love marmots!");
     await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
     await expect(page.getByRole("status").filter({ hasText: "Response complete." })).toBeVisible();
-    await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+    await waitForReply(page);
     await mountHome();
     const card = page.locator("[data-saved-conversation]").first();
     await expect(card).toBeVisible();
@@ -813,7 +814,7 @@ test("Loom cards fit wrapped tokens and keep the final row clear of the footer",
   await workbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Hello, I love marmots!");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
   await page.getByRole("button", { name: /^Loom\b/ }).click();
   await openWorkspaceMenu(page);
   await page.getByRole("button", { name: "Show Loom tools", exact: true }).click();
@@ -911,7 +912,7 @@ test("Geometry browses only recorded linear probe layers without changing the ag
   await workbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Inspect probe layers.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
   await page.evaluate(async url => {
     const { chatLog, probeRack } = await import(url);
     const reading = {
@@ -1002,7 +1003,7 @@ test("SAE stays on its recorded layer and automatically loads source-matched des
   await workbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Inspect feature activations.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
   await page.evaluate(async url => {
     const { chatLog } = await import(url);
     chatLog.turns.at(-1).tokens[0].measurements.instruments.sae = {
@@ -1099,7 +1100,7 @@ test.describe("token detail tooltip copy", () => {
     await workbench(page);
     await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain language models.");
     await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
-    await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+    await waitForReply(page);
     await openDrawer(page, "token_drilldown", { turnIdx: 1, tokenIdx: 0 });
     const sheet = page.locator('aside[aria-label="Token drilldown"]');
     await expect(sheet.locator('.scrub[title]')).toHaveCount(0);
@@ -1138,7 +1139,7 @@ test("token details scroll past branching controls in every analysis tab", async
   await workbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain language models.");
   await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
-  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
   await openDrawer(page, "token_drilldown", { turnIdx: 1, tokenIdx: 0 });
   const sheet = page.locator('aside[aria-label="Token drilldown"]');
   const branch = sheet.locator(".branch-point");
@@ -1236,7 +1237,7 @@ test("section headings stand alone without redundant eyebrow labels", async ({ p
   await workbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explain how language models work.");
   await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
-  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
   await selectWorkspaceView(page, "Controls");
   await expect(page.getByRole("heading", { name: "Generation settings", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Instruments", exact: true })).toBeVisible();
@@ -1314,7 +1315,7 @@ test("Loom depth fills the viewport through long pans, zoom, resize, and pointer
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explore the depth of the loom.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg .response-body").last()).toBeVisible();
-  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
   await selectWorkspaceView(page, "Loom");
   await page.getByRole("button", { name: /^Map/ }).click();
   const viewport = page.locator(".loom-viewport");
@@ -1420,7 +1421,7 @@ test("Loom shows a shared token prefix once and keeps continuation token actions
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Explore two endings.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg .response-body").last()).toBeVisible();
-  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
   const original = await page.evaluate(async url => {
     const stores = await import(url);
     const node = stores.loomTree.nodes.get(stores.loomTree.active_node_id);
@@ -1603,7 +1604,7 @@ test("workspace menu returns to chats and restores the current conversation", as
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Remember this path when I go home.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeEnabled();
-  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
   const reply = await page.locator(".msg .response-body").last().innerText();
   await page.screenshot({ path: testInfo.outputPath("home-navigation.png") });
   await returnToChats(page);
@@ -1652,7 +1653,7 @@ test("header download confirms filename and exact backup size without changing t
   await workbench(page);
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Preserve this chat in the backup.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
   const menu = page.getByRole("button", { name: "Workspace menu", exact: true });
   const button = page.getByRole("button", { name: "Download chat", exact: true });
   const before = await page.evaluate(async url => (await import(url)).captureConversationSnapshot(), `/@fs/${resolve("../drowse/webui/src/lib/conversationWorkspace.ts")}`);
@@ -1811,7 +1812,7 @@ test("generation statistics and Loom zoom remain readable in both themes", async
   }
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Show a path in the Loom.");
   await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
-  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
   await selectWorkspaceView(page, "Loom");
   await showWorkspaceTools(page, "Loom");
   await selectLoomView(page, /^Map/);
@@ -1948,7 +1949,7 @@ for (const theme of ["light", "dark"] as const) {
     await audit("Conversation, empty", ".conversation-page");
     await page.getByRole("textbox", { name: /^Compose as / }).fill("A clear explanation of how language models work.");
     await page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ }).click();
-    await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+    await waitForReply(page);
     await audit("Conversation, generated", ".conversation-page");
     await page.getByRole("button", { name: /^Loom\b/ }).click();
     await audit("Loom, Weave", ".loom-sidebar");

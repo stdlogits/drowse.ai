@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
 import { chooseFixtureModel, openWorkspaceMenu } from "./workbench-navigation";
+import { waitForReply } from "./workbench-navigation";
 
 const devUrl = "http://127.0.0.1:4176";
 
@@ -13,7 +14,7 @@ test("stale J-lens is repaired without downloading the model or losing chats", a
   await expect(composer).toBeVisible();
   await composer.fill("Keep this chat during pack recovery");
   await page.getByRole("button", { name: "Send", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await waitForReply(page);
   const navigation = page.getByRole("navigation", { name: "Workspace", exact: true });
   const models = navigation.getByRole("button", { name: "Models", exact: true });
   for (const width of [1440, 760, 680, 390, 320]) {

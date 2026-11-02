@@ -4,6 +4,7 @@ import { openWorkspaceMenu } from "./workbench-navigation";
 import { setAppearance, showWorkspaceTools, openTokenDetails, selectLoomView } from "./workbench-navigation";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { resolve } from "node:path";
+import { waitForReply } from "./workbench-navigation";
 
 const devUrl = "http://127.0.0.1:4176";
 test.use({ hasTouch: true });
@@ -384,7 +385,7 @@ test("probability and lens meters keep labels, values and bars separated", async
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Inspect the next word.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg .response-body .tok").first()).toBeVisible();
-  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
   await page.evaluate(async url => {
     const { chatLog } = await import(url);
     chatLog.turns.at(-1).tokens[0].topAlts = [
@@ -421,7 +422,7 @@ test("SAE readout labels preserve metadata and activation bars never overlap val
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Inspect feature activations.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg .response-body .tok").first()).toBeVisible();
-  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
   const description = "References to opening delimiters in nested expressions, including brackets and parentheses.";
   await page.evaluate(async ({ url, description }) => {
     const { chatLog } = await import(url);

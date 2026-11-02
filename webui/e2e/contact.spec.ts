@@ -1,6 +1,7 @@
 import { setAppearance } from "./workbench-navigation";
 import { expect, test, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { waitForReply } from "./workbench-navigation";
 
 const dev = "http://127.0.0.1:4176";
 const endpoint = "https://drowse.ai/api/contact";
@@ -332,7 +333,7 @@ test("chat spacing and corners remain concentric at desktop, phone, and landscap
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Hello, this is a layout test.");
   await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
   await expect(page.locator(".msg").first()).toBeVisible();
-  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+  await waitForReply(page);
   expect(await page.locator(".chat").evaluate(chat => {
     const message = chat.querySelector(".msg")!.getBoundingClientRect();
     const composer = chat.querySelector(".input-row")!.getBoundingClientRect();

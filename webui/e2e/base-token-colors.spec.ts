@@ -1,5 +1,6 @@
 import { openWorkspaceMenu } from "./workbench-navigation";
 import { expect, test } from "@playwright/test";
+import { waitForReply } from "./workbench-navigation";
 
 const devUrl = "http://127.0.0.1:4176";
 
@@ -15,7 +16,7 @@ test("base completion colors match inspection, retain recorded readings through 
   await editor.fill("A field note: ");
   await page.getByRole("button", { name: "Continue text", exact: true }).click();
   await expect(mirror.locator("span[style*='background-color']").first()).toBeAttached();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await waitForReply(page);
   const text = await editor.inputValue();
   const colors = () => mirror.locator("span[style*='background-']").evaluateAll(elements => elements.map(element => element.getAttribute("style")));
   const editColors = await colors();
@@ -45,7 +46,7 @@ test("base completion colors match inspection, retain recorded readings through 
 
   await editor.fill(Array.from({ length: 30 }, (_, index) => `Field note ${index + 1}: the marmots gathered beside the rocks.\n`).join(""));
   await page.getByRole("button", { name: "Continue text", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await waitForReply(page);
   const expectAligned = async () => {
     await expect.poll(() => page.evaluate(() => {
       const editor = document.querySelector<HTMLTextAreaElement>("#completion-buffer")!;

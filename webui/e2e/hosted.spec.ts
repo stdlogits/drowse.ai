@@ -9,6 +9,7 @@ import { text as readStreamText } from "node:stream/consumers";
 import { test as pwaTest } from "./pwa-update-fixture";
 import { resolve } from "node:path";
 import { siteTitle } from "../scripts/site-metadata.mjs";
+import { waitForReply } from "./workbench-navigation";
 
 const devUrl = "http://127.0.0.1:4176";
 const fixtureResponse = "This is a deterministic local Drowse runtime fixture.";
@@ -1980,7 +1981,7 @@ test("token replacement streams its new continuation visibly on the Loom", async
   await page.getByRole("textbox", { name: /^Compose as / }).fill("Watch this branch grow.");
   await sendButton(page).click();
   await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeEnabled();
-  await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled({ timeout: 30_000 });
+  await waitForReply(page);
   const original = await page.evaluate(async url => {
     const stores = await import(url);
     const node = stores.loomTree.nodes.get(stores.loomTree.active_node_id);
