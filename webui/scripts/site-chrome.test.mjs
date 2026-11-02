@@ -69,7 +69,25 @@ try {
   // A saved chat's timestamp sits right before its options menu.
   const home = await readFile("src/hosted/ui/HostedHome.svelte", "utf8");
   assert.match(home, /class="chat-meta">\s*<time[\s\S]*?<\/time>\s*<SavedChatMenu/);
-  console.log("Site chrome: no hover titles, header and footer links, source offer, and saved-chat row order passed");
+
+  // The name: the mark in a header is "drowse" set in type, as the 6.0 dashboard draws it; running
+  // copy and metadata say "Drowse", as drowse's README and standardlogits.com do. Lowercase drowse
+  // stays for the package, the CLI and the server ("drowse serve").
+  const { siteName, siteTitle } = await import("./site-metadata.mjs");
+  const index = await readFile("hosted/index.html", "utf8");
+  const config = await readFile("vite.hosted.config.ts", "utf8");
+  assert.equal(siteName, "Drowse");
+  assert.match(siteTitle, /^Drowse \| /);
+  for (const name of ["apple-mobile-web-app-title", "application-name"]) assert.match(index, new RegExp(`<meta name="${name}" content="Drowse" />`));
+  assert.match(index, /<meta property="og:site_name" content="Drowse" \/>/);
+  assert.match(config, /name: "Drowse",\s*short_name: "Drowse",/);
+  const titles = [];
+  for (const file of await svelteFiles("src/hosted/ui")) {
+    for (const [, title] of (await readFile(file, "utf8")).matchAll(/document\.title = ([^;]+);/g)) titles.push(title);
+  }
+  assert.ok(titles.length >= 6, "the shell's pages set their titles");
+  for (const title of titles) assert.doesNotMatch(title, /\bdrowse\b(?![.-])/, `${title} names the product Drowse`);
+  console.log("Site chrome: no hover titles, header and footer links, source offer, saved-chat row order, and the name's casing passed");
 } finally {
   await server.close();
 }
