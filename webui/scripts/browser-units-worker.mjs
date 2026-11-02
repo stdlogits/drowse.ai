@@ -524,7 +524,7 @@ function compareGoldens(ours, goldens) {
   // log-softmax (the library tolerance on fp32 logits), so a decode forward's numbers count too: the
   // gated case differs from unsteered only in its last forward's logits.
   goldens.ablation.cases.filter((entry) => entry.name !== "mixed").forEach((entry, i) => {
-    const mine = ours.ablation[i] ?? { tokens: null, forwards: null, seeds: 0 };
+    const mine = ours.ablation[i] ?? { tokens: null, forwards: null, tried: 0, last: null };
     const problems = [];
     const logSoftmax = (encoded) => {
       const logits = Array.from(decode(encoded));
@@ -553,11 +553,12 @@ function compareGoldens(ours, goldens) {
       if (!tolerated(chosen, logp[read.token])) problems.push(`forward ${step}: sampled token logprob off by ${chosen}`);
     });
     if (mine.forwards === null) {
-      problems.push(`no temperature-1 run in ${mine.seeds} seeds followed the greedy path with a frame per token, so no forward's log-probabilities were read`);
+      problems.push(`no temperature-1 run in ${mine.tried} seeds followed the greedy path with a frame per token, so no forward's log-probabilities were read (last run: ${mine.last})`);
     } else {
       worst.set("golden unit-ablation logprob", Math.max(worst.get("golden unit-ablation logprob") ?? 0, worstLogprob));
     }
-    check(`golden unit-ablation ${entry.name} (${entry.steering}): ${entry.forwards.length} forwards, argmax and top-8 log-probabilities each`,
+    const at = mine.forwards === null ? "" : ` (read on seed ${mine.tried})`;
+    check(`golden unit-ablation ${entry.name} (${entry.steering}): ${entry.forwards.length} forwards, argmax and top-8 log-probabilities each${at}`,
       problems.length === 0, problems.slice(0, 4).join("; "));
   });
 }
@@ -735,18 +736,25 @@ async function driveWorker(plan) {
       });
       const tokens = await recordedTokens(run.done?.node_id ?? run.tokens.at(-1)?.node_id);
       let forwards = null;
-      let seed = 0;
-      for (; forwards === null && tokens !== null && seed < 64; seed += 1) {
+      let tried = 0;
+      let last = null;
+      for (let k = 0; forwards === null && tokens !== null && k < 32; k += 1) {
+        tried += 1;
+        // The bridge draws from TVM's LCG seeded with the request's seed (multiplier 48271, no
+        // increment), so a small seed's first draw is about 2.2e-5 × seed: the most probable
+        // token. Seeds a million apart spread the first draw over the distribution.
+        const seed = 1 + k * 1000003;
         const sampled = await generate({
           input: g.short_text, raw: true, stateless: true, steering: entry.steering,
           sampling: { temperature: 1, top_p: 1, top_k: 0, max_tokens: entry.steps + 1, seed, return_top_k: 8 },
         });
         const frames = sampled.tokens;
+        last = { done: sampled.done?.result ?? null, tokens: frames.map((frame) => [frame.raw_index, frame.token_id]) };
         const onPath = frames.length === tokens.length && frames.every((frame, step) =>
           frame.raw_index === step && (step === tokens.length - 1 || frame.token_id === tokens[step]));
         if (onPath) forwards = frames.map((frame) => ({ token: frame.token_id, logprob: frame.logprob, alts: frame.top_alts }));
       }
-      result.ablation.push({ tokens, forwards, seeds: seed });
+      result.ablation.push({ tokens, forwards, tried, last: forwards === null ? JSON.stringify(last).slice(0, 400) : null });
     }
     return result;
   };
