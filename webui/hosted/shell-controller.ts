@@ -63,7 +63,7 @@ const models: HostedModelOption[] = [
     remainingDownloadBytes: 625_000_000,
     firstRunPacks: [],
     setupComplete: false,
-    reason: "A compact model with compatible J-Lens and SAE tools.",
+    reason: "A compact model with compatible R lens and SAE packs.",
     language: "English",
   },
   {
@@ -496,7 +496,7 @@ export function createShellController(
       const pack = model.firstRunPacks.find((candidate) => candidate.id === packId);
       if (!pack) throw new Error("This additional tool is not available for the selected model");
       if (pack.requiredForSetup && !selected) {
-        throw new Error(`The compatible ${pack.kind === "sae" ? "SAE" : "J-lens"} is required for this hosted model`);
+        throw new Error(`The compatible ${pack.kind === "sae" ? "SAE" : "R lens"} is required for this hosted model`);
       }
       if (pack.installed && !selected) {
         throw new Error("Remove an installed addition from Model info");
@@ -1054,9 +1054,9 @@ function modelFromRecommendation(
   const setupIssue = context === null
     ? "This model has no compatible conversation profile."
     : !baseModel && compatibleJlens === undefined
-      ? "This model is not release-ready because it has no compatible precomputed J-lens."
+      ? "This model is not release-ready because it has no compatible precomputed R lens."
       : !baseModel && jlensHardwareBlock !== null
-        ? `This device cannot safely load the J-lens required for this model. ${jlensHardwareBlock.message}`
+        ? `This device cannot safely load the R lens this model needs. ${jlensHardwareBlock.message}`
         : undefined;
   const conservativeRuntime = capabilities.signals.appleMobile === true ||
     isPreviewDesktopRuntime(capabilities);

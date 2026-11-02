@@ -92,12 +92,12 @@
 
   const capabilities = [
     {
-      title: "Inspect the prediction",
-      body: "See which words the model could have chosen at each step. Add word insights (an R lens) to read predictions across layers, or feature insights (SAE) to inspect learned features.",
+      title: "Read every token",
+      body: "See which words the model could have chosen at each step, with each token's probe and feature readings. The R and S lenses show what every layer is about to say and what it has read.",
     },
     {
-      title: "Change an influence",
-      body: "An influence nudges the model's internal activity toward a concept, word, or feature while it writes. Strength sets how hard it pushes. The model's weights never change.",
+      title: "Add an influence",
+      body: "An influence nudges the model's internal activity toward a concept, word, or feature while it writes, or pushes or silences a single neuron or head. Strength sets how hard it pushes. The model's weights never change.",
     },
     {
       title: "Compare what changes",
@@ -158,7 +158,9 @@
   const glossary = [
     { term: "Influence", definition: "A change Drowse adds to the model's internal activity while it writes, pulling replies toward or away from a concept. Also called steering." },
     { term: "Strength (α)", definition: "How hard an influence pushes. 0 leaves the model unsteered; negative values push the other way." },
-    { term: "Word insights (R lens)", definition: "A lens that shows which words each layer is leaning toward, before the model makes its final prediction." },
+    { term: "Word insights (R lens)", definition: "A lens that shows which words each layer is leaning toward saying, before the model makes its final prediction." },
+    { term: "S lens", definition: "A lens that shows which words each layer looks like it has read. It is the faithful read early in the model, the R lens late." },
+    { term: "Neurons and heads", definition: "The model's own units. On Gemma 3 and Qwen3 models you can see which ones pushed a token, read what one writes, and push or silence it." },
     { term: "Feature insights (SAE)", definition: "A sparse autoencoder splits the model's activity into features: learned patterns that often match a recognizable idea." },
     { term: "Loom", definition: "A tree of continuations. Branch from any token, try another path, and compare the results." },
     { term: "Base model", definition: "A model trained only to continue text, without chat tuning. It predicts what comes next instead of following requests." },
@@ -296,8 +298,8 @@
     <section class="guide closing" id="python" aria-labelledby="python-title">
       <div class="python-band">
         <h2 id="python-title">Need more models?</h2>
-        <p>Drowse Local runs supported Hugging Face models with Python, fits your own lenses, trains SAEs, and serves OpenAI- and Ollama-compatible APIs.</p>
-        <a class="text-link" href={pythonInstall}>Install from source <span aria-hidden="true">↗</span></a>
+        <p>The Python edition runs supported Hugging Face models, fits your own lenses, trains SAEs, and serves OpenAI- and Ollama-compatible APIs.</p>
+        <a class="text-link" href={pythonInstall}>Install with pip <span aria-hidden="true">↗</span></a>
       </div>
       <div class="closing-action">
         <a class="primary-action" href="/app">Open Drowse</a>

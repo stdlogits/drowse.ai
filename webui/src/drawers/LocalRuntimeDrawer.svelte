@@ -157,9 +157,9 @@
         compatibleBindings.includes(binding)
       )
     );
-    // Lens packs are alternative readout sources. Keep the standard J-lens
-    // installed while downloading an R-lens so the user can switch between
-    // them without replacing either pack. SAEs remain one-per-model because
+    // Lens packs are alternative readout sources. Keep the installed lens
+    // while downloading another (a J-kind pack beside an R-kind one) so the user
+    // can switch between them without replacing either pack. SAEs remain one-per-model because
     // the runtime can hold only one active feature dictionary.
     const sameKind = pack.kind === "sae"
       ? concurrent.find((candidate) => candidate.kind === pack.kind)

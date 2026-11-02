@@ -1,12 +1,16 @@
 const repository = "https://github.com/stdlogits/drowse";
+const siteRepository = "https://github.com/stdlogits/drowse.ai";
+/** A file in drowse (the engine, the shared dashboard, its docs), at the path the pin has it. */
 const source = (path) => `${repository}/blob/main/${path}`;
+/** A file in this website's own repository (the browser runtime and the hosted shell). */
+const siteSource = (path) => `${siteRepository}/blob/main/${path}`;
 
 export const homeSummary = {
   heading: "A local workbench for mechanistic interpretability",
-  intro: "Drowse is an open-source workbench for mechanistic interpretability, activation steering, and local inference with language models. Run a compatible model in your browser, inspect tokens and internal representations, and compare how an intervention changes its output. A separate Python library and server support programmatic experiments.",
+  intro: "Drowse is an open-source workbench for mechanistic interpretability, activation steering, and local inference with language models. Run a compatible model in your browser, read every token through probes, sparse features and two lenses, steer it with concepts, words, features or single neurons and heads, and compare how the reply changes. A separate Python library and server support programmatic experiments.",
   links: [
-    { label: "Activation steering", href: "/learn/activation-steering", description: "Explore concept vectors, manifolds, feature steering, and probe gates." },
-    { label: "Inspect language models", href: "/learn/interpretability", description: "Read token probabilities, concept probes, sparse features, and layer predictions." },
+    { label: "Activation steering", href: "/learn/activation-steering", description: "Steer with concepts, manifolds, lens words, SAE features, neurons and heads, and probe gates." },
+    { label: "Inspect language models", href: "/learn/interpretability", description: "Read each token's alternatives, probes, SAE features, the R and S lenses, and the neurons and heads behind it." },
     { label: "Run a model in your browser", href: "/learn/browser-models", description: "Check WebGPU requirements, model choices, downloads, and local storage." },
     { label: "Compare experiments", href: "/learn/experiments", description: "Use branching conversations, token forks, and restricted-choice scoring." },
     { label: "Developers and browser agents", href: "/developers", description: "Discover WebMCP tools and the separate Python, OpenAI-compatible, and Ollama-compatible APIs." },
@@ -30,12 +34,17 @@ export const htmlGuides = [
       },
       {
         heading: "Choose an experiment",
-        bullets: ["Inspect a token's alternatives, concept readings, sparse features, or layer predictions.", "Apply a compatible concept, manifold position, word direction, or SAE feature during generation.", "Branch from a turn or token and compare continuations under controlled settings.", "Score named completion choices to inspect a distribution rather than only the sampled answer."],
+        bullets: ["Inspect a token's alternatives, its probe and feature readings, and what each layer reads and says through the S and R lenses.", "On Gemma 3 and Qwen3 models, find the neurons and heads that pushed a token, read what one writes, and push or silence it.", "Steer with a concept, a manifold position, a lens word, an SAE feature, or a single neuron, during the whole reply or only part of it.", "Branch from a turn or token and compare continuations under controlled settings.", "Score named completion choices to inspect a distribution rather than only the sampled answer."],
         links: [{ label: "Token and representation inspection", href: "/learn/interpretability" }, { label: "Activation steering guide", href: "/learn/activation-steering" }, { label: "Branching and comparison guide", href: "/learn/experiments" }],
       },
       {
+        heading: "Find your way around",
+        paragraphs: ["The workbench is where you talk to the model, with the Inspector beside the conversation. Five rooms read the same conversation token by token: Units (neurons and heads), Lens (each layer through both lenses), Probes (concepts, manifolds and SAE features), Artifacts (where packs, probes, templates and roles are prepared) and Model. A token chosen in one room is the token in the others."],
+        links: [{ label: "The dashboard", href: source("README.md#the-dashboard") }],
+      },
+      {
         heading: "Extend the workbench",
-        paragraphs: ["The hosted browser edition runs locally with WebGPU. The Python edition adds a programmatic interface, inference APIs, and instrument authoring. Visiting browser agents can use Drowse's experimental WebMCP tools when their browser supports them."],
+        paragraphs: ["The hosted browser edition runs locally with WebGPU. The Python edition adds a programmatic interface, inference APIs, and instrument authoring: fitting lenses, training SAEs and fetching published unit catalogs. Visiting browser agents can use Drowse's experimental WebMCP tools when their browser supports them."],
         links: [{ label: "Developer and agent guide", href: "/developers" }, { label: "Project documentation", href: source("README.md") }],
       },
     ],
@@ -43,59 +52,69 @@ export const htmlGuides = [
   {
     path: "/learn/activation-steering",
     title: "LLM activation steering, vectors and manifolds | Drowse",
-    description: "Explore activation steering without changing model weights: concept vectors, manifolds, SAE features, word directions, ablation, and probe gates.",
+    description: "Explore activation steering without changing model weights: concepts, manifolds, lens words, SAE features, neurons and heads, ablation, and probe gates.",
     heading: "Activation steering for language models",
-    intro: "Activation steering changes a language model's internal activity during inference. Drowse applies adjustable interventions to compatible model layers so you can test how a concept, direction, or feature affects a continuation without modifying the model's weights.",
+    intro: "Activation steering changes a language model's internal activity during inference. Drowse applies adjustable interventions to compatible model layers so you can test how a concept, word, feature or unit affects a continuation without modifying the model's weights.",
     sections: [
       {
-        heading: "Concept vectors and fitted manifolds",
-        paragraphs: ["A steering vector is a direction associated with a contrast, such as formal versus casual. Drowse represents these controls in one artifact family: the manifold. A flat one-dimensional subspace provides vector steering; larger flat subspaces and curved manifolds describe several related concepts or positions.", "Use installed controls or build a manifold from labeled examples. The browser supports generating concept examples, extracting contrasts, fitting manifolds, merging artifacts, and creating manifolds from completion templates. Fits belong to a particular model and must be compatible with the active runtime."],
-        links: [{ label: "Manifold and extraction documentation", href: source("README.md#concepts-subspaces-and-manifolds") }, { label: "Browser manifold fitting source", href: source("webui/src/hosted/runtime/browserManifoldFitting.ts") }],
+        heading: "Concepts and fitted manifolds",
+        paragraphs: ["A steering vector is a direction associated with a concept. Drowse represents these controls in one artifact family: the manifold. A two-pole concept such as formal.casual runs between its poles; a one-pole concept such as deceptive is measured from the model's own default answers, so a positive strength pushes toward it and a negative one past the default. Larger flat subspaces and curved manifolds describe several related concepts or positions.", "Use the bundled concepts or build a manifold from labeled examples. The browser supports generating concept examples, extracting concepts, fitting manifolds, merging artifacts, and creating manifolds from completion templates. Fits belong to a particular model and must be compatible with the active runtime."],
+        links: [{ label: "Concepts, subspaces and manifolds", href: source("README.md#concepts-subspaces-and-manifolds") }, { label: "Browser manifold fitting source", href: siteSource("webui/src/hosted/runtime/browserManifoldFitting.ts") }],
       },
       {
         heading: "Compose an intervention",
-        paragraphs: ["The visual steering rack and expression syntax describe the same interventions. Coefficients set strength; expressions can combine directions, keep or remove a shared component, mean-ablate a concept, or target a manifold node. Phase triggers restrict an intervention to part of generation, while probe gates condition it on available readings.", "For example, the expression below combines two installed concept controls. The values illustrate syntax; useful strengths depend on the model, fitted artifact, prompt, and desired behavior."],
-        code: "0.3 honest + 0.4 warm",
+        paragraphs: ["In the workbench, steering is built from chips above the composer: add a concept, a manifold position, a lens word, an SAE feature or a unit, then set its signed strength, the layers it acts at, when it acts (the prompt, the response, or the first or all but the first few tokens) and, optionally, a gate on a live probe's reading. A concept can also be kept along, or removed from, another, and any direction or unit can be removed. Agents, the HTTP APIs and Python write the same interventions as expressions.", "For example, the expression below steers the model away from its deceptive direction and toward warmth. The values illustrate the syntax; useful strengths depend on the model, the fitted artifact, the prompt, and the behavior you want."],
+        code: "-0.5 deceptive + 0.3 warm",
         links: [{ label: "Steering expression reference", href: source("README.md#steering-expressions") }],
       },
       {
-        heading: "Steer words and sparse features",
-        paragraphs: ["Compatible J-lens packs provide vocabulary directions for single-token words. Compatible sparse autoencoder packs expose learned feature directions. These controls share the workbench with concept steering, but their strengths and readout units differ. A feature description is an interpretation of that feature, not a guarantee about the resulting text."],
-        links: [{ label: "Understand the instruments", href: "/learn/interpretability" }, { label: "Instrument implementation", href: source("webui/src/hosted/runtime/browserInstrumentRuntime.ts") }],
+        heading: "Steer words, features, neurons and heads",
+        paragraphs: ["A lens word steers toward the model saying a token (its R-lens direction, jlens/) or toward having read it (its S-lens footprint, slens/). A compatible sparse autoencoder exposes learned feature directions to steer along. These controls share the workbench with concept steering, but their strengths and readout units differ. A feature description is an interpretation of that feature, not a guarantee about the resulting text.", "On Gemma 3 and Qwen3 models you can also steer a single unit: push a neuron along what it writes, or silence a neuron or an attention head by replacing its activity with its mean. GPT-2, Pythia and Qwen 3.5 2B Base don't support unit steering."],
+        links: [{ label: "Understand the instruments", href: "/learn/interpretability" }, { label: "Neurons and heads", href: source("README.md#neurons-and-heads") }],
       },
       {
         heading: "Compare behavior before drawing conclusions",
-        paragraphs: ["Start with an unsteered baseline and compare branches with the same model, prompt, parent, and sampling settings. Strong interventions can cause repetition or incoherent output. Prompt instructions, sampling settings, and activation steering affect different parts of generation; a saved recipe is not a fine-tuned model. A probe named honest does not verify factual accuracy."],
-        links: [{ label: "Design a comparison", href: "/learn/experiments" }, { label: "Control semantics and observed limitations", href: source("webui/docs/webmcp.md#choosing-controls") }],
+        paragraphs: ["Start with an unsteered baseline and compare branches with the same model, prompt, parent, and sampling settings. Strong interventions can cause repetition or incoherent output. Prompt instructions, sampling settings, and activation steering affect different parts of generation; a saved recipe is not a fine-tuned model. A probe named deceptive measures a fitted direction; it does not verify whether a statement is true."],
+        links: [{ label: "Design a comparison", href: "/learn/experiments" }, { label: "Control semantics and observed limitations", href: siteSource("webui/docs/webmcp.md#choosing-controls") }],
       },
     ],
   },
   {
     path: "/learn/interpretability",
-    title: "LLM interpretability: tokens, SAE features and J-lens | Drowse",
-    description: "Inspect token probabilities, concept probes, sparse autoencoder features, and Jacobian-lens layer predictions in Drowse's local LLM workbench.",
+    title: "LLM interpretability: tokens, lenses, SAE features and units | Drowse",
+    description: "Inspect token probabilities, concept probes, sparse autoencoder features, R- and S-lens layer reads, and the neurons and heads behind a token in Drowse's local LLM workbench.",
     heading: "Inspect tokens and internal representations",
-    intro: "Drowse combines token-level inspection with instruments for language-model representations. Use the workbench to examine what the model predicted, where an activation sits relative to a fitted concept, and how compatible layer or feature readouts change across a conversation.",
+    intro: "Drowse reads every token it generates. Use the workbench to examine what the model predicted, where an activation sits relative to a fitted concept, what each layer reads and is about to say, and which neurons and heads pushed the token.",
     sections: [
       {
         heading: "Token probabilities and alternative continuations",
-        paragraphs: ["Select a generated token to open its detail drawer. The logits view shows the chosen token and captured alternatives with log probabilities. Surprise highlighting makes unlikely generated tokens easier to spot. You can fork from a token to test a different continuation and move the inspection cursor across tokens and turns.", "Captured alternatives are a limited recorded set. Their count is separate from sampling top-k, which changes how the next token is selected. A high token probability expresses the model's preference in context; it does not establish that a statement is true."],
-        links: [{ label: "Token inspection documentation", href: source("README.md#token-level-inspection") }],
+        paragraphs: ["Click a generated token to open it in the Inspector. It shows the chosen token and the captured alternatives with log probabilities, and you can fork from any of them to test a different continuation. The token strip at the top of each room steps through the prompt and the reply, and the token chosen there is the token every room reads.", "Captured alternatives are a limited recorded set. Their count is separate from sampling top-k, which changes how the next token is selected. A high token probability expresses the model's preference in context; it does not establish that a statement is true."],
+        links: [{ label: "The dashboard", href: source("README.md#the-dashboard") }],
       },
       {
         heading: "Concept probes and representation geometry",
-        paragraphs: ["Geometry probes locate activations relative to fitted concepts, subspaces, and manifolds. The workbench exposes coordinates, nearby labels, and supported measures such as subspace fraction and manifold membership, with layer traces where available. Probe highlighting follows these measurements through generated text.", "Coordinates, distances, fractions, and assignment probabilities have different meanings. A label describes the fitted reference examples. It should not be treated as a direct measurement of a person's beliefs, a model's private intentions, or factual correctness."],
-        links: [{ label: "Geometry and measurement contract", href: source("drowse/web/AGENTS.md#wire-protocol") }, { label: "Control units and applicability", href: source("drowse/webui/src/lib/webmcp/controls.ts") }],
+        paragraphs: ["Geometry probes locate activations relative to fitted concepts, subspaces, and manifolds, at every token. The Probes room shows each probe's value at the token and its trace over the conversation, then where the token sits in each manifold's fitted geometry. A probe can also gate steering, so an intervention acts only while its reading crosses a threshold.", "Coordinates, distances, fractions, and assignment probabilities have different meanings. A label describes the fitted reference examples. It should not be treated as a direct measurement of a person's beliefs, a model's private intentions, or factual correctness."],
+        links: [{ label: "The measurement envelope", href: source("drowse/readout/AGENTS.md") }, { label: "Control units and applicability", href: source("webui/src/lib/webmcp/controls.ts") }],
       },
       {
-        heading: "Sparse autoencoders and Jacobian-lens readouts",
-        paragraphs: ["A compatible sparse autoencoder (SAE) pack exposes learned feature activations. Drowse can show feature strengths, attach probes, and apply feature steering. Available descriptions come from the matching dictionary; they remain interpretive labels.", "A compatible Jacobian-lens (J-lens) pack maps intermediate representations toward vocabulary predictions. Inspect per-layer token probabilities and an aggregate across fitted layers. The active source determines the lens used for readout and steering. Layer readouts are measurements derived from that instrument, not a transcript of hidden reasoning."],
-        links: [{ label: "SAE and lens source documentation", href: source("README.md#instruments") }, { label: "Feature description provenance", href: source("drowse/webui/src/lib/saeDescriptions.ts") }],
+        heading: "The R and S lenses",
+        paragraphs: ["A lens reads a vector inside the model as a ranking over tokens. The R lens reads what a layer is disposed to make the model say; the S lens reads which input tokens it looks like it has read. Each reads at two places in a layer: the block's output and the residual after attention. The S read is the faithful one early in the model and the R read late, so the Lens room shows each layer through both, weighted by depth.", "Lens readings are measurements derived from a fitted instrument, not a transcript of hidden reasoning. The browser uses precomputed lens packs fitted on the same quantized weights it runs."],
+        links: [{ label: "Jacobian lenses", href: source("README.md#jacobian-lenses") }, { label: "Verbalizable Representations and the Jacobian Lens", href: "https://transformer-circuits.pub/2026/workspace/index.html" }],
+      },
+      {
+        heading: "Neurons and heads",
+        paragraphs: ["On Gemma 3 and Qwen3 models, every MLP neuron and attention head is something you can read, probe and steer. A token's anatomy lists the units that pushed it, each one push or silence away. The Units room shows the strongest units at a token or over the reply, a whole layer at once, and a chosen unit's activity, what it writes through the lenses, and what it reads. GPT-2, Pythia and Qwen 3.5 2B Base are built differently and don't offer units.", "A unit's reading comes from its weights and its activity on your text. A label is a summary of that evidence, not proof of what the unit does in every context."],
+        links: [{ label: "Neurons and heads", href: source("README.md#neurons-and-heads") }, { label: "Neuron Lens", href: "https://neuron-lens.com" }],
+      },
+      {
+        heading: "Sparse autoencoder features",
+        paragraphs: ["A compatible sparse autoencoder (SAE) pack exposes learned feature activations. Drowse shows feature strengths at each token, attaches features as probes, and steers along them. Available descriptions come from the matching dictionary; they remain interpretive labels."],
+        links: [{ label: "Sparse autoencoders", href: source("README.md#sparse-autoencoders") }, { label: "Feature description provenance", href: source("webui/src/lib/saeDescriptions.ts") }],
       },
       {
         heading: "Live measurements and historical replay",
-        paragraphs: ["Enable compatible instruments for live readings, or inspect historical tokens using captured measurements and supported replay. Newly attached instruments may need a replay computation. Browser users install compatible precomputed SAE and lens packs; SAE training and J-lens fitting belong to the Python edition."],
-        links: [{ label: "Browser and Python boundaries", href: "/developers" }, { label: "Hosted instrument support", href: source("webui/hosted/README.md") }],
+        paragraphs: ["Readings are captured live as the model writes, and earlier tokens can be read again by replay, with or without the steering that produced them. Newly attached instruments may need a replay computation. Browser users install compatible precomputed SAE and lens packs; training SAEs and fitting lenses belong to the Python edition."],
+        links: [{ label: "Browser and Python boundaries", href: "/developers" }, { label: "Hosted instrument support", href: siteSource("webui/hosted/README.md") }],
       },
     ],
   },
@@ -109,22 +128,22 @@ export const htmlGuides = [
       {
         heading: "Choose a chat model or a base model",
         paragraphs: ["The model catalog includes Gemma 3 and Qwen3 chat models, plus base-model entries such as GPT-2, Pythia 70M, Gemma 3 1B PT, and Qwen 3.5 2B Base. The app determines which entries can be installed and loaded for your device and current release. A listed model is not a promise that every GPU can run it.", "Chat models use a conversation template and support model-specific role and instruction behavior. Base models continue a raw text buffer. System instructions and chat-role labels do not apply to that raw-completion workflow; use a textual scaffold or compatible activation steering."],
-        links: [{ label: "Open the model picker", href: "/app?choose=1" }, { label: "Model release status and limitations", href: source("README.md#hosted-browser-edition-status") }],
+        links: [{ label: "Open the model picker", href: "/app?choose=1" }, { label: "The browser edition", href: source("README.md#browser-edition") }],
       },
       {
         heading: "Check WebGPU and device requirements",
         paragraphs: ["Drowse checks for a secure context, browser workers, hardware WebGPU, and usable local storage before loading. Browser version, GPU support, available memory, and model context size affect compatibility. The compute check is a prerequisite, not a full model-load stress test.", "The browser edition requires hardware WebGPU and does not provide cloud or CPU-only inference fallback. iPhone inference remains a preview with device-specific memory constraints. If a model cannot load, follow the app's device guidance or use the Python edition on a suitable machine."],
-        links: [{ label: "Browser capability checks", href: source("webui/src/hosted/runtime/capabilities.ts") }, { label: "iPhone validation requirements", href: source("webui/README.md#physical-iphone-release-gate") }],
+        links: [{ label: "Browser capability checks", href: siteSource("webui/src/hosted/runtime/capabilities.ts") }],
       },
       {
         heading: "Download models and optional instruments",
-        paragraphs: ["Models and instrument packs are downloaded from the configured distribution providers and checked against the signed catalog and artifact hashes. Downloads support recovery and progress reporting. Compatible SAE and J-lens packs add feature and layer inspection; availability depends on the chosen model and pack.", "An installed app shell is not the same as installed model weights. Offline use depends on having the required model and runtime files stored locally. New downloads, remote artifact searches, and missing external feature descriptions need a connection."],
-        links: [{ label: "Hosted distribution and storage design", href: source("webui/hosted/README.md") }],
+        paragraphs: ["Models and instrument packs are downloaded from the configured distribution providers and checked against the signed catalog and artifact hashes. Downloads support recovery and progress reporting. Compatible lens and SAE packs add layer and feature inspection; availability depends on the chosen model and pack.", "An installed app shell is not the same as installed model weights. Offline use depends on having the required model and runtime files stored locally. New downloads, remote artifact searches, and missing external feature descriptions need a connection."],
+        links: [{ label: "Hosted distribution and storage design", href: siteSource("webui/hosted/README.md") }],
       },
       {
         heading: "Keep a backup of your work",
         paragraphs: ["Conversations autosave in this browser. Select Protect storage where available and download backups for work you want to keep. The browser can remove local data to free space, and local saves do not sync between devices."],
-        links: [{ label: "Privacy and storage details", href: "/privacy" }, { label: "Saved conversation implementation", href: source("webui/src/hosted/ui/HostedHome.svelte") }],
+        links: [{ label: "Privacy and storage details", href: "/privacy" }, { label: "Saved conversation implementation", href: siteSource("webui/src/hosted/ui/HostedHome.svelte") }],
       },
     ],
   },
@@ -138,22 +157,22 @@ export const htmlGuides = [
       {
         heading: "Branch from a turn or a token",
         paragraphs: ["Each authored or generated turn becomes a tree node. Navigate to an earlier turn, create a branch, regenerate a continuation, or compare nodes. Stars, notes, edge labels, and filters help organize a growing experiment. Saved chats preserve the tree so you can return to alternatives.", "A token fork begins at a selected generation position. Choose a captured alternative token or supply replacement text, then continue from that prefix. This makes a local change inspectable alongside its original branch."],
-        links: [{ label: "Conversation and token workflows", href: source("README.md#webui") }, { label: "Loom implementation", href: source("webui/src/hosted/runtime/browserLoom.ts") }],
+        links: [{ label: "Conversation and token workflows", href: source("README.md#the-dashboard") }, { label: "Loom implementation", href: siteSource("webui/src/hosted/runtime/browserLoom.ts") }],
       },
       {
         heading: "Change one control at a time",
         paragraphs: ["Keep the model, prompt, parent branch, seed, and sampling settings fixed when testing a steering coefficient. Compare an unsteered baseline with the intervention, then inspect both text quality and the relevant instrument readings. Save the recipe and annotate anything else that changed.", "Temperature, top-p, top-k, and repetition penalties affect token selection. System instructions affect chat context. Steering affects internal activations. Seeds help comparisons within a fixed environment; identical behavior across devices, model revisions, or runtime builds is not guaranteed. One successful example is limited evidence of a general effect."],
-        links: [{ label: "Activation steering guide", href: "/learn/activation-steering" }, { label: "Generation and comparison semantics", href: source("webui/docs/webmcp.md#choosing-controls") }],
+        links: [{ label: "Activation steering guide", href: "/learn/activation-steering" }, { label: "Generation and comparison semantics", href: siteSource("webui/docs/webmcp.md#choosing-controls") }],
       },
       {
         heading: "Score completion choices",
         paragraphs: ["The template lab defines a slot, candidate values, and one or more contexts. Restricted-choice scoring compares the model's likelihoods for those candidates, optionally under steering. Multi-token choices expose both summed log probability and a length-normalized view, with separate probabilities across the candidate set.", "Use this when you want to compare a distribution rather than only the sampled completion. The result is conditional on the chosen candidates and contexts. A template can also supply the examples for a fitted manifold, connecting authoring and evaluation."],
-        links: [{ label: "Browser template scoring source", href: source("webui/src/hosted/runtime/browserManifoldFitting.ts") }, { label: "Template format and validation", href: source("drowse/drowse/store/templates.py") }],
+        links: [{ label: "Browser template scoring source", href: siteSource("webui/src/hosted/runtime/browserManifoldFitting.ts") }, { label: "Template format and validation", href: source("drowse/store/templates.py") }],
       },
       {
         heading: "Record and share the evidence",
         paragraphs: ["Export conversations, transcripts, or compatible manifold archives for reuse. Correlation and pairwise geometry tools help compare supported fitted directions across layers. Record the model, artifact source, prompt, settings, and comparison method with your result. Exported files may contain your experiment text, so review their contents before sharing."],
-        links: [{ label: "Available analysis and export actions", href: source("drowse/webui/src/lib/webmcp/catalogue.ts") }, { label: "Python and agent workflows", href: "/developers" }],
+        links: [{ label: "Available analysis and export actions", href: source("webui/src/lib/webmcp/catalogue.ts") }, { label: "Python and agent workflows", href: "/developers" }],
       },
     ],
   },
@@ -167,12 +186,12 @@ export const htmlGuides = [
       {
         heading: "What stays in this browser",
         paragraphs: ["Saved conversations, settings, downloaded models, and fitted artifacts use browser-local storage. The hosted inference runtime does not upload prompts or transcripts for cloud generation or application telemetry. Local saves do not create an account backup or sync across devices.", "Select Protect storage where available and download a backup of important work. Clearing site data, closing a private browsing session, or browser cleanup can remove local files. Deleting a local chat does not delete backups you previously exported or copies you shared."],
-        links: [{ label: "Browser storage and saved chats", href: source("webui/src/hosted/ui/HostedHome.svelte") }, { label: "Hosted runtime design", href: source("webui/hosted/README.md") }],
+        links: [{ label: "Browser storage and saved chats", href: siteSource("webui/src/hosted/ui/HostedHome.svelte") }, { label: "Hosted runtime design", href: siteSource("webui/hosted/README.md") }],
       },
       {
         heading: "Downloads and external services",
         paragraphs: ["The model catalog, model weights, and compatible instrument packs are downloaded from Hugging Face and its delivery infrastructure, then checked against the signed catalog and artifact hashes. Hugging Face receives each file request; it does not receive your prompts, chats, or activations. Searching for remote manifold packs sends your search query to Hugging Face.", "SAE feature descriptions use bundled data when available. Opening a feature that has no bundled description can send an optional lookup to Neuronpedia. The request contains only the model name, SAE source, and feature number, without cookies, a referrer, your prompt, or your transcript. External links use the destination site's policies."],
-        links: [{ label: "Configured model distribution", href: source("browser-runtime/distribution-lock.json") }, { label: "Remote manifold search", href: source("webui/src/hosted/artifacts/hfManifolds.ts") }, { label: "SAE description lookups", href: source("drowse/webui/src/lib/saeDescriptions.ts") }],
+        links: [{ label: "Configured model distribution", href: siteSource("browser-runtime/distribution-lock.json") }, { label: "Remote manifold search", href: siteSource("webui/src/hosted/artifacts/hfManifolds.ts") }, { label: "SAE description lookups", href: source("webui/src/lib/saeDescriptions.ts") }],
       },
       {
         heading: "Hosting and network error reports",
@@ -182,12 +201,12 @@ export const htmlGuides = [
       {
         heading: "Contact messages leave your device",
         paragraphs: ["Submitting the contact or feedback form sends its fields and a submission reference to Drowse's contact endpoint, a Cloudflare Worker. This includes your message and optional reply email; chats and model data are not automatically attached. The Worker sends the message through Cloudflare Email to Drowse's contact inbox when delivery is enabled and accepted. Your reply email is used only as the reply address.", "The contact implementation uses rate limits and delivery receipts. Receipts store a content hash, status, and provider message identifier, and expire after seven days. Application logs record references and error codes, not your message or email address. The inbox retains delivered message contents under its own retention policy. Contact drafts remain in page memory. The form reports whether sending was confirmed."],
-        links: [{ label: "Contact delivery and privacy contract", href: source("webui/contact-worker/README.md#delivery-and-privacy-contract") }, { label: "Contact Drowse", href: "/contact" }],
+        links: [{ label: "Contact delivery and privacy contract", href: siteSource("webui/contact-worker/README.md#delivery-and-privacy-contract") }, { label: "Contact Drowse", href: "/contact" }],
       },
       {
         heading: "Browser agents, exports, and Python servers",
         paragraphs: ["A browser agent with access to Drowse's WebMCP tools can read relevant workspace data and perform exposed actions. Operation records use tab-local session storage for recovery. Information that the agent reads is also subject to that agent provider's handling. Review exported files and explicitly chosen messages before sharing them.", "In the Python edition, prompts and measurements pass between the dashboard and your configured Drowse server. If that server runs on another machine, it receives the data. Its operator controls the model, storage, and access settings."],
-        links: [{ label: "Agent interface and data boundaries", href: source("webui/docs/webmcp.md#integration-boundaries") }, { label: "Developer guide", href: "/developers" }],
+        links: [{ label: "Agent interface and data boundaries", href: siteSource("webui/docs/webmcp.md#integration-boundaries") }, { label: "Developer guide", href: "/developers" }],
       },
     ],
   },
@@ -196,7 +215,7 @@ export const htmlGuides = [
     title: "About Drowse, an open-source LLM interpretability workbench",
     description: "Drowse is an open-source workbench for local language models, activation steering, and mechanistic interpretability. Find source, licensing, and contributors.",
     heading: "About Drowse",
-    intro: "Drowse is an open-source workbench for exploring language models through generation, activation steering, and mechanistic interpretability. It brings branching conversations, token inspection, fitted concepts, sparse autoencoder features, and Jacobian-lens readouts into a shared interface.",
+    intro: "Drowse is an open-source workbench for exploring language models through generation, activation steering, and mechanistic interpretability. It brings branching conversations, token inspection, fitted concepts, sparse autoencoder features, the R and S lenses, and neuron- and head-level units into a shared interface.",
     sections: [
       {
         heading: "A workbench for questions about model behavior",
@@ -206,12 +225,12 @@ export const htmlGuides = [
       {
         heading: "People and source code",
         paragraphs: ["Drowse's public credits identify a9lim and treetown as the team building and maintaining the project, alongside contributors and acknowledgments. The canonical source repository is stdlogits/drowse on GitHub; this website's source is stdlogits/drowse.ai. The credits page links the team's public profiles."],
-        links: [{ label: "Team and credits", href: "/credits" }, { label: "Drowse source repository", href: repository }],
+        links: [{ label: "Team and credits", href: "/credits" }, { label: "Drowse source repository", href: repository }, { label: "Website source repository", href: siteRepository }],
       },
       {
         heading: "Research methods and citations",
-        paragraphs: ["The project documents its lineage in representation engineering, manifold steering, and the Jacobian lens. For published experiments, cite the relevant upstream methods alongside the Drowse version, exact model checkpoint, and fitted artifacts used."],
-        links: [{ label: "Drowse research lineage", href: source("README.md#research-lineage-and-credits") }, { label: "Representation Engineering", href: "https://arxiv.org/abs/2310.01405" }, { label: "Manifold Steering", href: "https://arxiv.org/abs/2605.05115" }, { label: "Verbalizable Representations and the Jacobian Lens", href: "https://transformer-circuits.pub/2026/workspace/index.html" }],
+        paragraphs: ["The project documents its lineage in representation engineering, manifold steering, the Jacobian lens, and Neuron Lens's unit reads. For published experiments, cite the relevant upstream methods alongside the Drowse version, exact model checkpoint, and fitted artifacts used."],
+        links: [{ label: "Drowse research lineage", href: source("README.md#research-lineage-and-credits") }, { label: "Representation Engineering", href: "https://arxiv.org/abs/2310.01405" }, { label: "Manifold Steering", href: "https://arxiv.org/abs/2605.05115" }, { label: "Verbalizable Representations and the Jacobian Lens", href: "https://transformer-circuits.pub/2026/workspace/index.html" }, { label: "Neuron Lens", href: "https://neuron-lens.com" }],
       },
       {
         heading: "Open-source license and contributions",
@@ -236,22 +255,22 @@ const developersGuide = {
       paragraphs: ["Open the app and load a compatible model before using the workspace example below. Start with state and action discovery, inspect a tool's schema and availability, then select its task group and discover the registered tools again. Public-page and model-onboarding tools are available before a workspace opens; steering tools require the loaded workspace. Selecting a group does not navigate or change model settings."],
       code: "drowse_get_state({})\ndrowse_list_actions({})\ndrowse_list_actions({action: \"drowse_set_steering\"})\ndrowse_select_tool_group({group: \"steering\"})\ndrowse_list_actions({group: \"steering\"})",
       bullets: ["Use drowse_explain_control to inspect units, applicability, defaults, and interactions before changing a setting.", "Groups cover chat, raw completion, steering, saved chats, appearance, models, artifacts, templates, profiles, conversation trees, analysis, instruments, files, interface controls, and authoring. Read the current group list from drowse_list_actions.", "Use drowse_list_actions with catalogue: true to inspect coverage, unavailable operations, and actions requiring a browser interaction."],
-      links: [{ label: "WebMCP integration guide", href: source("webui/docs/webmcp.md") }, { label: "Tool discovery implementation", href: source("drowse/webui/src/lib/webmcp/index.ts") }],
+      links: [{ label: "WebMCP integration guide", href: siteSource("webui/docs/webmcp.md") }, { label: "Tool discovery implementation", href: source("webui/src/lib/webmcp/index.ts") }],
     },
     {
       heading: "Track operations to completion",
       paragraphs: ["Tools return structured success or error results. Mutation tools accept expected_revision to reject stale edits and request_id to reconcile an uncertain invocation. Reuse a request ID only with identical input. Long operations return a job ID. Read status with drowse_get_job, or request cancellation with drowse_cancel_job.", "Job history may survive a reload in the same tab when browser storage permits. For an interrupted generation, open its original model and call drowse_reconcile_job with the job_id. This checks runtime receipts without repeating generation. It may restore the original system prompt after a comparison, while preserving newer prompt edits. Inspect the returned state and any partial results; reading status alone does not reconcile a job.", "Large-result handles can expire and do not survive reloads. Read their chunks with drowse_read_result before leaving. Preserve existing drafts and act within the user's authorization when sending a contact message or deleting their work."],
-      links: [{ label: "Job and recovery implementation", href: source("drowse/webui/src/lib/webmcp/jobs.ts") }, { label: "Revision and result contracts", href: source("webui/docs/webmcp.md#discovery-and-execution") }],
+      links: [{ label: "Job and recovery implementation", href: source("webui/src/lib/webmcp/jobs.ts") }, { label: "Revision and result contracts", href: siteSource("webui/docs/webmcp.md#discovery-and-execution") }],
     },
     {
       heading: "Understand WebMCP availability",
-      paragraphs: ["Drowse registers tools through document.modelContext.registerTool when the browser exposes that experimental API. Browser and agent support are separate requirements; unsupported browsers retain the ordinary interface. The hosted website does not expose a public remote MCP inference endpoint.", "Browser tools can generate, inspect, compare, and fit compatible manifolds and templates locally. SAE training and J-lens fitting require Python; the browser consumes compatible precomputed packs. File pickers, credential entry, and some archive operations retain their existing interaction requirements."],
-      links: [{ label: "Browser capability boundaries", href: source("webui/src/hosted/runtime/capabilities.ts") }, { label: "Chrome WebMCP documentation", href: "https://developer.chrome.com/docs/ai/webmcp" }],
+      paragraphs: ["Drowse registers tools through document.modelContext.registerTool when the browser exposes that experimental API. Browser and agent support are separate requirements; unsupported browsers retain the ordinary interface. The hosted website does not expose a public remote MCP inference endpoint.", "Browser tools can generate, inspect, compare, and fit compatible manifolds and templates locally. SAE training and lens fitting require Python; the browser consumes compatible precomputed packs. File pickers, credential entry, and some archive operations retain their existing interaction requirements."],
+      links: [{ label: "Browser capability boundaries", href: siteSource("webui/src/hosted/runtime/capabilities.ts") }, { label: "Chrome WebMCP documentation", href: "https://developer.chrome.com/docs/ai/webmcp" }],
     },
     {
       heading: "Use the Python library and local inference APIs",
-      paragraphs: ["The Python import and CLI are drowse; the distribution name is drowse.ai. DrowseSession supports programmatic steering and measurement. Running drowse serve starts the dashboard and OpenAI-compatible /v1/*, Ollama-compatible /api/*, and native /drowse/v1/* routes on the configured server.", "Inspect that server's /openapi.json and /docs for its HTTP schema. These are Python-server routes, not hosted-site inference services. Configure authentication and network access for your own installation, and follow the repository's current installation instructions."],
-      links: [{ label: "Python API", href: source("README.md#python-api") }, { label: "Server implementation and OpenAPI configuration", href: source("drowse/drowse/server/app.py") }, { label: "Install from source", href: source("README.md#quick-start") }],
+      paragraphs: ["Install it with pip install drowse.ai; the Python import and CLI are drowse. DrowseSession supports programmatic steering and measurement. Running drowse serve starts the dashboard and OpenAI-compatible /v1/*, Ollama-compatible /api/*, and native /drowse/v1/* routes on the configured server.", "Inspect that server's /openapi.json and /docs for its HTTP schema. These are Python-server routes, not hosted-site inference services. Configure authentication and network access for your own installation, and follow the current installation instructions."],
+      links: [{ label: "Python API", href: source("README.md#python-api") }, { label: "Server implementation and OpenAPI configuration", href: source("drowse/server/app.py") }, { label: "Installation", href: source("README.md#installation") }],
     },
   ],
 };
@@ -272,6 +291,6 @@ export const contributeLinks = {
   contributing: source("CONTRIBUTING.md"),
   goodFirstIssues: `${repository}/labels/good%20first%20issue`,
   securityPolicy: `${repository}/security/policy`,
-  hostedModels: source("browser-runtime/README.md"),
+  hostedModels: siteSource("browser-runtime/README.md"),
   repository,
 };

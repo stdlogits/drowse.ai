@@ -46,13 +46,13 @@ try {
   for (const heading of ["What you need.", "Words you&#39;ll see.", "Common questions.", "Need more models?"]) {
     assert.ok(html.includes(heading) || html.includes(heading.replace("&#39;", "'")), `${heading} section is visible`);
   }
-  for (const term of ["Influence", "Strength (α)", "Word insights (R lens)", "Feature insights (SAE)", "Loom", "Base model"]) {
+  for (const term of ["Influence", "Strength (α)", "Word insights (R lens)", "S lens", "Neurons and heads", "Feature insights (SAE)", "Loom", "Base model"]) {
     assert.ok(new RegExp(`<dt[^>]*>${RegExp.escape(term)}</dt>`).test(html), `${term} is defined`);
   }
   assert.ok((html.match(/<details[\s>]/g) ?? []).length >= 8, "questions use native details elements");
   assert.doesNotMatch(html, /application\/ld\+json|FAQPage/, "structured data is not added by the landing component");
   assert.match(html, /href="\/privacy"[^>]*>What leaves your device/);
-  assert.match(html, /href="https:\/\/github\.com\/[^"]+#installation"[^>]*>Install from source/);
+  assert.match(html, /href="https:\/\/github\.com\/[^"]+#installation"[^>]*>Install with pip/);
   assert.match(html, /<main id="main" tabindex="-1"[\s>]/);
   assert.doesNotMatch(landingSource, /scrollbar-width: none|::-webkit-scrollbar\) \{\s*display: none/);
 
