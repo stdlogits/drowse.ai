@@ -8,7 +8,17 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const browserRuntime = fileURLToPath(new URL("../../browser-runtime/", import.meta.url));
 const PREFLIGHT_ORIGIN = "https://drowse.invalid";
 
-export async function main(environment = process.env) {
+/** `--catalog-only`: the signed catalog at the lock's URL (signature, sequence floor, the lock's
+ *  models), without downloading its artifacts: what every deploy checks, so a build never ships
+ *  reading a catalog path that is not published. */
+export function parsePreflightArguments(args) {
+  if (args.length > 1 || (args.length === 1 && args[0] !== "--catalog-only")) {
+    throw new Error("usage: node preflight-hosted-distribution.mjs [--catalog-only]");
+  }
+  return { catalogOnly: args[0] === "--catalog-only" };
+}
+
+export async function main(environment = process.env, { catalogOnly = false } = {}) {
   const [distribution, runtimeLock] = await Promise.all([
     readJson(new URL("distribution-lock.json", `file://${browserRuntime}/`)),
     readJson(new URL("runtime-lock.json", `file://${browserRuntime}/`)),
@@ -66,6 +76,12 @@ export async function main(environment = process.env) {
       catalog.document.sequence,
       HOSTED_DISTRIBUTION_CONFIG.minimumAcceptedSequence,
     );
+    if (catalogOnly) {
+      console.log(
+        `Hosted catalog preflight passed: sequence ${catalog.document.sequence} at ${distribution.catalogUrl}`,
+      );
+      return;
+    }
     const files = uniqueCatalogFiles(catalog.document);
     let verifiedBytes = 0;
     for (const file of files) {
@@ -351,7 +367,7 @@ function positiveTimeout(value, fallback) {
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";
 if (invokedPath === fileURLToPath(import.meta.url)) {
-  await main().catch((error) => {
+  await Promise.resolve().then(() => main(process.env, parsePreflightArguments(process.argv.slice(2)))).catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
   });

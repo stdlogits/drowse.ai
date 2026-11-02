@@ -4,13 +4,21 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  catalogRepository,
   lockedCatalogModels,
   parseArguments,
   uploadCommitRevision,
   validateCatalogBundle,
   validateCatalogAdvance,
+  validatePublishedAdvance,
 } from "./publish-hosted-catalog.mjs";
+import {
+  CATALOG_DIRECTORIES,
+  CURRENT_CATALOG_URLS,
+  catalogLocation,
+  catalogUrls,
+  previousCatalogDirectories,
+} from "./hosted-catalog-location.mjs";
+import { readFile } from "node:fs/promises";
 import {
   catalogFixture,
   catalogRuntimeLockModels,
@@ -64,18 +72,40 @@ assert.equal(lockedModels[0].thinkingProfile, null);
 
 const repository = "stdlogits/drowse-web-catalog";
 const distribution = {
-  catalogUrl: `https://huggingface.co/${repository}/resolve/main/catalog.json`,
-  signatureUrl: `https://huggingface.co/${repository}/resolve/main/catalog.sig.json`,
+  ...catalogUrls("v2/"),
   minimumAcceptedSequence: 7,
   publicKeys: [],
 };
-assert.equal(catalogRepository(distribution), repository);
+// Runtime v2 publishes at its own directory, which the distribution lock names; the root keeps
+// what deployed v1 builds read.
+assert.deepEqual(CATALOG_DIRECTORIES, ["", "v2/"]);
+const lockFile = JSON.parse(await readFile(new URL("../../browser-runtime/distribution-lock.json", import.meta.url), "utf8"));
+assert.equal(lockFile.catalogUrl, CURRENT_CATALOG_URLS.catalogUrl);
+assert.equal(lockFile.signatureUrl, CURRENT_CATALOG_URLS.signatureUrl);
+assert.equal(CURRENT_CATALOG_URLS.catalogUrl, `https://huggingface.co/${repository}/resolve/main/v2/catalog.json`);
+assert.deepEqual(catalogLocation(distribution), { repository, directory: "v2/" });
+assert.deepEqual(catalogLocation(catalogUrls("")), { repository, directory: "" });
+assert.deepEqual(previousCatalogDirectories("v2/"), [""]);
+assert.deepEqual(previousCatalogDirectories(""), []);
 assert.throws(
-  () => catalogRepository({
+  () => catalogLocation({
     ...distribution,
-    signatureUrl: "https://huggingface.co/other/repo/resolve/main/catalog.sig.json",
+    signatureUrl: "https://huggingface.co/other/repo/resolve/main/v2/catalog.sig.json",
   }),
-  /one repository/,
+  /one directory of one repository/,
+);
+assert.throws(
+  () => catalogLocation({ ...distribution, signatureUrl: catalogUrls("").signatureUrl }),
+  /one directory of one repository/,
+);
+assert.throws(() => catalogLocation(catalogUrls("v3/")), /not a published catalog path/);
+assert.throws(
+  () => catalogLocation({ ...distribution, catalogUrl: `https://huggingface.co/${repository}/resolve/dev/v2/catalog.json` }),
+  /main-branch URL/,
+);
+assert.throws(
+  () => catalogLocation({ ...distribution, catalogUrl: `https://huggingface.co/${repository}/resolve/main/v2/../catalog.json` }),
+  /catalog and signature|main-branch URL/,
 );
 const uploadedRevision = "b".repeat(40);
 assert.equal(
@@ -146,6 +176,63 @@ try {
     })), distribution.publicKeys),
     /sequence is invalid/,
   );
+  // The first catalog at a new directory advances the sequence the previous directory published
+  // (deployed builds still read it), verified with the published keys; later ones advance their
+  // own directory's.
+  const published = new Map([["", [publishedBytes, publishedSignature]]]);
+  const fetchPair = async (directory) => published.get(directory) ?? [null, null];
+  assert.deepEqual(
+    await validatePublishedAdvance(7, "v2/", fetchPair, distribution.publicKeys),
+    { directory: "", previousSequence: 6 },
+  );
+  for (const sequence of [5, 6]) {
+    await assert.rejects(
+      () => validatePublishedAdvance(sequence, "v2/", fetchPair, distribution.publicKeys),
+      /must advance the published sequence 6/,
+    );
+  }
+  const { publicKey: strangerKey } = generateKeyPairSync("ed25519");
+  const strangerKeys = [{
+    keyId: "fixture-key",
+    ed25519PublicKeyBase64: strangerKey.export({ type: "spki", format: "der" }).subarray(-32).toString("base64"),
+  }];
+  await assert.rejects(
+    () => validatePublishedAdvance(7, "v2/", fetchPair, strangerKeys),
+    /signature is invalid/,
+  );
+  await assert.rejects(
+    () => validatePublishedAdvance(7, "v2/", fetchPair, []),
+    /not trusted/,
+  );
+  published.set("", [publishedBytes, null]);
+  await assert.rejects(
+    () => validatePublishedAdvance(7, "v2/", fetchPair, distribution.publicKeys),
+    /must both exist/,
+  );
+  published.set("", [publishedBytes, publishedSignature]);
+  const v2Bytes = Buffer.from(JSON.stringify({ ...document, sequence: 11 }));
+  published.set("v2/", [v2Bytes, Buffer.from(JSON.stringify({
+    ...envelope,
+    signature: sign(null, v2Bytes, privateKey).toString("base64"),
+  }))]);
+  assert.deepEqual(
+    await validatePublishedAdvance(12, "v2/", fetchPair, distribution.publicKeys),
+    { directory: "v2/", previousSequence: 11 },
+  );
+  await assert.rejects(
+    () => validatePublishedAdvance(11, "v2/", fetchPair, distribution.publicKeys),
+    /must advance the published sequence 11/,
+  );
+  // Nothing published anywhere: the first catalog ever.
+  assert.deepEqual(
+    await validatePublishedAdvance(1, "v2/", async () => [null, null], distribution.publicKeys),
+    { directory: null, previousSequence: null },
+  );
+  await assert.rejects(
+    () => validatePublishedAdvance(1, "v3/", fetchPair, distribution.publicKeys),
+    /not a published catalog path/,
+  );
+
   await Promise.all([
     writeFile(catalogPath, exactBytes),
     writeFile(signaturePath, `${JSON.stringify(envelope)}\n`),

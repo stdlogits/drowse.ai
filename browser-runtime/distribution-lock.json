@@ -2,8 +2,8 @@
   "$schema": "./distribution-lock.schema.json",
   "schemaVersion": 1,
   "status": "feasibility-required",
-  "catalogUrl": "https://huggingface.co/stdlogits/drowse-web-catalog/resolve/main/catalog.json",
-  "signatureUrl": "https://huggingface.co/stdlogits/drowse-web-catalog/resolve/main/catalog.sig.json",
+  "catalogUrl": "https://huggingface.co/stdlogits/drowse-web-catalog/resolve/main/v2/catalog.json",
+  "signatureUrl": "https://huggingface.co/stdlogits/drowse-web-catalog/resolve/main/v2/catalog.sig.json",
   "minimumAcceptedSequence": 11,
   "publicKeys": [
     {
