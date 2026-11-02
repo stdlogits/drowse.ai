@@ -193,6 +193,41 @@ const nativeLens = (kind) => ({
   sites: { out: site(every(kind === "R" ? depth - 1 : depth)), mid: site(every(depth)) },
   n_prompts: 64, usable_prompt_count: 64, seq_len: 128,
 });
+// The release closure is the pinned corpus and its attribution review: none ships while the
+// checked-in review is pending (attributionApproval null), and an approved review passes.
+const approval = {
+  reviewStatus: "approved", reviewedBy: "a9lim", reviewedAt: "2026-11-02T00:00:00Z",
+  attribution: "FineWeb-Edu (HuggingFaceFW), ODC-By 1.0",
+};
+const approvedCorpus = { ...nativeCorpus, attributionApproval: approval };
+for (const kind of ["jlens", "slens", "units"]) {
+  await assert.rejects(
+    validateReleaseInstrumentPack({
+      directory: join(root, `native-${kind}`), kind,
+      instrumentManifest: nativeLens(kind === "slens" ? "S" : "R"),
+      vocabularyManifest: { words: [{ word: "yes", row: 0, token_id: 1 }] }, runtimeLock, modelLock,
+      ...(nativeCorpus.attributionApproval === null ? {} : { nativeLensCorpus: { ...nativeCorpus, attributionApproval: null } }),
+    }),
+    /attribution review is not approved/,
+    `${kind} waits for the corpus review`,
+  );
+}
+for (const [label, corpus] of [
+  ["a pending review", { ...approvedCorpus, attributionApproval: { ...approval, reviewStatus: "pending" } }],
+  ["no reviewer", { ...approvedCorpus, attributionApproval: { ...approval, reviewedBy: "" } }],
+  ["an unpinned dataset", { ...approvedCorpus, dataset: { ...nativeCorpus.dataset, revision: "main" } }],
+  ["a spec off the dataset", { ...approvedCorpus, corpusSpec: "hf:other/x@" + "0".repeat(40) + ";preprocess=1" }],
+]) {
+  await assert.rejects(
+    validateReleaseInstrumentPack({
+      directory: join(root, "native-jlens"), kind: "jlens", instrumentManifest: nativeLens("R"),
+      vocabularyManifest: { words: [{ word: "yes", row: 0, token_id: 1 }] }, runtimeLock, modelLock,
+      nativeLensCorpus: corpus,
+    }),
+    /native lens corpus/,
+    label,
+  );
+}
 assert.deepEqual(await validateReleaseInstrumentPack({
   directory: join(root, "native-jlens"),
   kind: "jlens",
@@ -200,12 +235,14 @@ assert.deepEqual(await validateReleaseInstrumentPack({
   vocabularyManifest: { words: [{ word: "yes", row: 0, token_id: 1 }] },
   runtimeLock,
   modelLock,
+  nativeLensCorpus: approvedCorpus,
 }), {
-  source: "native", family: "R", corpusSpec: nativeCorpus.corpusSpec, attributionApproval: null,
+  source: "native", family: "R", corpusSpec: nativeCorpus.corpusSpec, attributionApproval: approval,
   prompts: 64, sequenceLength: 128, layers: { out: depth - 1, mid: depth }, words: 1,
 });
 assert.equal((await validateReleaseInstrumentPack({
   directory: join(root, "native-slens"), kind: "slens", instrumentManifest: nativeLens("S"), runtimeLock, modelLock,
+  nativeLensCorpus: approvedCorpus,
 })).layers.out, depth);
 for (const [label, change] of [
   ["an eight-layer pack", (manifest) => { manifest.sites.out = site([0, 1, 2, 3, 4, 5, 6, 7]); }],
@@ -220,6 +257,7 @@ for (const [label, change] of [
     validateReleaseInstrumentPack({
       directory: join(root, "native-jlens"), kind: "jlens", instrumentManifest: manifest,
       vocabularyManifest: { words: [{ word: "yes", row: 0, token_id: 1 }] }, runtimeLock, modelLock,
+      nativeLensCorpus: approvedCorpus,
     }),
     /full-depth native lens/,
     label,
@@ -230,6 +268,7 @@ await assert.rejects(
     directory: join(root, "native-jlens"), kind: "jlens",
     instrumentManifest: { ...nativeLens("R"), n_prompts: 32, usable_prompt_count: 32 },
     vocabularyManifest: { words: [{ word: "yes", row: 0, token_id: 1 }] }, runtimeLock, modelLock,
+    nativeLensCorpus: approvedCorpus,
   }),
   /at least 64 documents/,
 );
@@ -238,19 +277,23 @@ const unitsRecord = {
   layers: Object.fromEntries(every(depth).map((layer) => [String(layer), {}])), null: { rank: 6 },
   binding: {
     r_lens_identity: "a".repeat(64), s_lens_identity: "b".repeat(64),
-    embedding_statistics_sha256: "c".repeat(64), neutral: { sha256: "d".repeat(64) },
+    embedding_statistics_sha256: "c".repeat(64), neutral: { sha256: "d".repeat(64), rows_sha256: "e".repeat(64) },
   },
 };
 assert.deepEqual(await validateReleaseInstrumentPack({
   directory: join(root, "native-units"), kind: "units", instrumentManifest: unitsRecord, runtimeLock, modelLock,
-}), { source: "native", layers: depth, nullRank: 6 });
-await assert.rejects(
-  validateReleaseInstrumentPack({
-    directory: join(root, "native-units"), kind: "units",
-    instrumentManifest: { ...unitsRecord, binding: { ...unitsRecord.binding, neutral: {} } }, runtimeLock, modelLock,
-  }),
-  /bind its lenses/,
-);
+  nativeLensCorpus: approvedCorpus,
+}), { source: "native", layers: depth, nullRank: 6, attributionApproval: approval });
+for (const neutral of [{}, { sha256: "d".repeat(64) }]) {
+  await assert.rejects(
+    validateReleaseInstrumentPack({
+      directory: join(root, "native-units"), kind: "units",
+      instrumentManifest: { ...unitsRecord, binding: { ...unitsRecord.binding, neutral } }, runtimeLock, modelLock,
+      nativeLensCorpus: approvedCorpus,
+    }),
+    /bind its lenses/,
+  );
+}
 
 assert.deepEqual(await validateReleaseInstrumentPack({
   directory: join(root, "provider-sae"),

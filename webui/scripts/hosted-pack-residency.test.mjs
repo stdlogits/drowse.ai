@@ -220,33 +220,51 @@ try {
     const stored = shape.length > 2 ? [shape[0] * shape[1], shape[2]] : shape;
     return [name, { shape: stored, data: Array.from({ length: stored[0] * stored[1] }, (_, i) => i) }];
   })));
+  // Each context's whitener is the one the neutral rows gave (the units pack binds the rows).
+  const whitenerBytes = { 2048: new Uint8Array([1, 2, 3]), 4096: new Uint8Array([1, 2, 3]) };
+  const coreVariant = {
+    ...variant,
+    contextProfiles: [2048, 4096].map((contextTokens) => ({ contextTokens, bindingSha256: "9".repeat(64) })),
+  };
   const statisticsRecord = {
     format: "drowse-neutral-statistics-v1", runtime_identity_sha256: variant.runtimeIdentitySha256,
-    model_layer_count: L, n_documents: 96, neutral: { sha256: "c".repeat(64) }, shapes,
+    model_layer_count: L, n_documents: 96, neutral: { sha256: "c".repeat(64), rows_sha256: "d".repeat(64) }, shapes,
     tensor_file: "neutral-statistics.safetensors", tensor_sha256: sha(statisticsBytes),
+    whitener: {
+      rows_sha256: "d".repeat(64),
+      tensors_sha256: { 2048: sha(whitenerBytes[2048]), 4096: sha(whitenerBytes[4096]) },
+    },
   };
   const coreFile = (path, bytes) => ({
     manifest: { path, role: "core_pack", bytes: bytes.byteLength, sha256: sha(bytes) },
     file: new File([bytes], path),
   });
-  const statistics = await readNeutralStatistics([
-    coreFile("neutral-statistics.json", new TextEncoder().encode(JSON.stringify(statisticsRecord))),
+  const corePack = (record, whiteners = whitenerBytes) => [
+    coreFile("neutral-statistics.json", new TextEncoder().encode(JSON.stringify(record))),
     coreFile("neutral-statistics.safetensors", statisticsBytes),
-  ], { variant, signal });
+    ...Object.entries(whiteners).map(([context, bytes]) => coreFile(`${context}/neutral-whitener.safetensors`, bytes)),
+  ];
+  const statistics = await readNeutralStatistics(corePack(statisticsRecord), { variant: coreVariant, signal });
   assert.equal(statistics.nDocuments, 96);
   assert.deepEqual(statistics.tensors.get("neuron_scale").shape, [L, 2, 6]);
   assert.equal(statistics.tensors.get("neuron_scale").data.length, L * 12);
-  assert.equal(await readNeutralStatistics([], { variant, signal }), null, "a pack without units has none");
-  await assert.rejects(
-    readNeutralStatistics([
-      coreFile("neutral-statistics.json", new TextEncoder().encode(JSON.stringify({
-        ...statisticsRecord, runtime_identity_sha256: "0".repeat(64),
-      }))),
-      coreFile("neutral-statistics.safetensors", statisticsBytes),
-    ], { variant, signal }),
-    { code: "CORE_NEUTRAL_STATISTICS_INVALID" },
-  );
-  console.log("ok - core neutral statistics read back at their logical shapes and refuse another runtime");
+  assert.equal(await readNeutralStatistics([], { variant: coreVariant, signal }), null, "a pack without units has none");
+  for (const [label, pack] of [
+    ["another runtime", corePack({ ...statisticsRecord, runtime_identity_sha256: "0".repeat(64) })],
+    ["a whitener from other rows", corePack({
+      ...statisticsRecord, whitener: { ...statisticsRecord.whitener, rows_sha256: "e".repeat(64) },
+    })],
+    ["a refitted whitener", corePack(statisticsRecord, { ...whitenerBytes, 4096: new Uint8Array([9]) })],
+    ["a missing context", corePack(statisticsRecord, { 2048: whitenerBytes[2048] })],
+    ["no whitener binding", corePack({ ...statisticsRecord, whitener: undefined })],
+  ]) {
+    await assert.rejects(
+      readNeutralStatistics(pack, { variant: coreVariant, signal }),
+      { code: "CORE_NEUTRAL_STATISTICS_INVALID" },
+      label,
+    );
+  }
+  console.log("ok - core neutral statistics read back at their logical shapes, bound to their whitener, and refuse another runtime");
 } finally {
   await server.close();
 }

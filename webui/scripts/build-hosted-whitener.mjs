@@ -16,6 +16,7 @@ import {
 import { dirname, extname, join, resolve } from "node:path";
 import { createServer as createViteServer } from "vite";
 import { readCoreManifoldSource } from "./hosted-core-manifold-source.mjs";
+import { nativeFitModel } from "./hosted-native-models.mjs";
 import { lockedModelExecutionProfiles } from "./hosted-model-profiles.mjs";
 import {
   grantReleaseToolStorageQuota,
@@ -33,7 +34,8 @@ if (options.help) {
     "       --manifold-source DIR [--manifold-source DIR]... [--neutral-statistics DIR]\n" +
     "       [--browser-channel chrome] [--timeout-ms 1800000] [--runtime-lock PATH] [--manual-browser]\n" +
     "  --manifold-source  one core concept source each (browser-runtime/release-inputs/core-manifolds/*)\n" +
-    "  --neutral-statistics  the core/ directory build_hosted_packs.py wrote for this runtime\n",
+    "  --neutral-statistics  the core/ directory build_hosted_packs.py wrote for this runtime (required for\n" +
+    "                        Gemma 3 and Qwen 3; the whitener is fitted from its native neutral rows)\n",
   );
   process.exit(0);
 }
@@ -138,6 +140,13 @@ for (const source of options.manifoldSources) {
 if (new Set(manifolds.map((manifold) => `${manifold.namespace}/${manifold.name}`)).size !== manifolds.length) {
   throw new Error("the core concept sources repeat a manifold identity");
 }
+// A model drowse fits natively carries its neutral statistics, and its whitener is fitted from
+// the same native neutral rows the units pack's write norms were measured with.
+if (nativeFitModel(lock) !== (options.neutralStatistics !== null)) {
+  throw new Error(nativeFitModel(lock)
+    ? `${options.modelId} is fitted natively: --neutral-statistics (build_hosted_packs.py core/) is required`
+    : `${options.modelId} has no native neutral pass: --neutral-statistics does not apply`);
+}
 const neutralStatistics = options.neutralStatistics === null
   ? null
   : await readNeutralStatistics(resolve(options.neutralStatistics));
@@ -149,6 +158,7 @@ const captureRequest = {
   contexts: lock.contextProfiles,
   baselinePrompts,
   rows,
+  nativeNeutralRows: neutralStatistics !== null,
   runtimeIdentity,
   quantization: lock.quantization,
   requiredFeatures: lock.quantization === "q4f16_1" ? ["shader-f16"] : [],
@@ -181,6 +191,9 @@ const server = createHttpServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (request.method === "GET" && url.pathname === "/") {
       return send(response, pageHtml(), "text/html; charset=utf-8");
+    }
+    if (request.method === "GET" && url.pathname === "/neutral-rows" && neutralStatistics !== null) {
+      return send(response, neutralStatistics.rowsBytes, "application/octet-stream");
     }
     if (options.manualBrowser && request.method === "GET" && url.pathname === "/request") {
       return send(response, JSON.stringify(captureRequest), "application/json");
@@ -392,7 +405,20 @@ try {
     if (neutralStatistics.record.runtime_identity_sha256 !== result.runtimeIdentitySha256) {
       throw new Error("the neutral statistics were built for another runtime identity");
     }
-    await writeFile(resolve(stage, "neutral-statistics.json"), neutralStatistics.recordBytes);
+    // The shipped record names the whitener the rows gave in each context, which the units
+    // pack's binding reaches through it (browserInstrumentPacks.ts; validate-hosted-core-pack.mjs).
+    const shipped = {
+      ...neutralStatistics.record,
+      whitener: {
+        rows_sha256: neutralStatistics.record.neutral.rows_sha256,
+        tensors_sha256: Object.fromEntries(result.contexts.map((context) =>
+          [String(context.contextTokens), context.tensorsSha256])),
+      },
+    };
+    if (new Set(Object.values(shipped.whitener.tensors_sha256)).size !== 1) {
+      throw new Error("the native neutral rows gave different whiteners in different contexts");
+    }
+    await writeFile(resolve(stage, "neutral-statistics.json"), `${JSON.stringify(shipped, null, 2)}\n`);
     await writeFile(resolve(stage, neutralStatistics.record.tensor_file), neutralStatistics.tensorBytes);
   }
   await rename(stage, outputDirectory);
@@ -405,7 +431,9 @@ process.stdout.write(`${JSON.stringify({
   modelId: options.modelId,
   runtimeLockSource,
   outputDirectory,
-  rows: rows.length,
+  neutralRows: neutralStatistics === null
+    ? { source: "browser capture", rows: rows.length }
+    : { source: "native", rows: neutralStatistics.record.neutral_rows.rows, sha256: neutralStatistics.record.neutral.rows_sha256 },
   hiddenSize: lock.hiddenSize,
   layers: lock.layerMap.length,
   runtimeIdentitySha256: result.runtimeIdentitySha256,
@@ -486,7 +514,15 @@ async function readNeutralStatistics(directory) {
   if (sha256(tensorBytes) !== record.tensor_sha256) {
     throw new Error("the neutral statistics tensor does not match its record");
   }
-  return { record, recordBytes, tensorBytes };
+  if (
+    record.neutral_rows?.file !== "neutral-rows.safetensors" || "whitener" in record ||
+    !/^[0-9a-f]{64}$/u.test(record.neutral?.rows_sha256 ?? "")
+  ) throw new Error("neutral-statistics.json names no neutral rows");
+  const rowsBytes = await readFile(resolve(directory, record.neutral_rows.file));
+  if (sha256(rowsBytes) !== record.neutral.rows_sha256) {
+    throw new Error("the neutral rows do not match their record");
+  }
+  return { record, tensorBytes, rowsBytes };
 }
 
 async function requireFile(path, label) {

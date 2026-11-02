@@ -11,6 +11,10 @@ const RELEASE_CORPUS_ALGORITHM = "drowse-release-corpus-v1";
 const MINIMUM_SHARED_WORDS = 80;
 const MINIMUM_SAE_TOKENS = 50_000;
 const MINIMUM_SAE_SEQUENCE = 128;
+const NATIVE_LENS_CORPUS = JSON.parse(await readFile(
+  resolve(repositoryRoot, "browser-runtime/release-corpus/native-lens-corpus.json"),
+  "utf8",
+));
 
 export async function validateReleaseInstrumentPack({
   directory,
@@ -19,6 +23,7 @@ export async function validateReleaseInstrumentPack({
   vocabularyManifest = null,
   runtimeLock,
   modelLock,
+  nativeLensCorpus = NATIVE_LENS_CORPUS,
 }) {
   if (providerInstrument(kind, instrumentManifest)) {
     return validateProviderInstrument(
@@ -30,10 +35,13 @@ export async function validateReleaseInstrumentPack({
   }
   // R and S lenses and the units statistics are drowse's own artifacts, fitted natively on the
   // browser weights over the pinned lens corpus (release-corpus/native-lens-corpus.json).
-  if (kind === "jlens" || kind === "slens") {
-    return validateNativeLens(kind, instrumentManifest, vocabularyManifest, modelLock);
+  // Their release closure is the pinned corpus and its approved attribution review.
+  if (kind === "jlens" || kind === "slens" || kind === "units") {
+    const corpus = validateNativeLensCorpus(nativeLensCorpus);
+    return kind === "units"
+      ? validateNativeUnits(instrumentManifest, modelLock, corpus)
+      : validateNativeLens(kind, instrumentManifest, vocabularyManifest, modelLock, corpus);
   }
-  if (kind === "units") return validateNativeUnits(instrumentManifest, modelLock);
   const root = resolve(directory, "packs", kind);
   const [
     releaseBytes,
@@ -332,22 +340,45 @@ function validateSae(manifest, release, modelLock) {
   };
 }
 
-const NATIVE_LENS_CORPUS = JSON.parse(await readFile(
-  resolve(repositoryRoot, "browser-runtime/release-corpus/native-lens-corpus.json"),
-  "utf8",
-));
 
 /** A full-depth native lens (PLAN.md): every layer of the family at both sites (R:out stops one
  *  short of the last block, whose read is the logit lens), split-half recorded at each, fitted
  *  by drowse over the pinned corpus. */
-function validateNativeLens(kind, manifest, vocabulary, modelLock) {
+/** The pinned corpus the native lenses are fitted on: an immutable dataset revision named by the
+ *  corpus spec, its declared license, and an approved attribution review. No corpus text ships,
+ *  but the packs are fitted on it, so a release waits for the review, as a release corpus did. */
+function validateNativeLensCorpus(record) {
+  exactKeys(record, ["schemaVersion", "purpose", "corpusSpec", "dataset", "minimums", "attributionApproval"],
+    "native lens corpus");
+  const dataset = record.dataset ?? {};
+  exactKeys(dataset, ["repository", "config", "revision", "license", "url"], "native lens corpus dataset");
+  if (
+    record.schemaVersion !== 1 || !COMMIT.test(dataset.revision ?? "") ||
+    typeof record.corpusSpec !== "string" ||
+    !record.corpusSpec.startsWith(`hf:${dataset.repository}/${dataset.config}@${dataset.revision};`) ||
+    !nonempty(dataset.license) || !/^https:\/\//.test(dataset.url ?? "") ||
+    !positiveInteger(record.minimums?.prompts) || !positiveInteger(record.minimums?.sequenceLength)
+  ) throw new Error("the native lens corpus is not immutably identified");
+  const approval = record.attributionApproval;
+  if (approval === null || typeof approval !== "object") {
+    throw new Error("the native lens corpus's attribution review is not approved (attributionApproval is null)");
+  }
+  exactKeys(approval, ["reviewStatus", "reviewedBy", "reviewedAt", "attribution"], "native lens corpus attribution review");
+  if (
+    approval.reviewStatus !== "approved" || !nonempty(approval.reviewedBy) ||
+    !Number.isFinite(Date.parse(approval.reviewedAt)) || !nonempty(approval.attribution)
+  ) throw new Error("the native lens corpus's attribution review is incomplete");
+  return { corpusSpec: record.corpusSpec, minimums: record.minimums, attributionApproval: approval };
+}
+
+function validateNativeLens(kind, manifest, vocabulary, modelLock, corpus) {
   const family = kind === "jlens" ? "R" : "S";
   const layers = modelLock.layerMap.map((_, index) => index);
   const expected = { out: family === "R" ? layers.slice(0, -1) : layers, mid: layers };
   const sites = manifest?.sites ?? {};
   if (
     manifest?.format_version !== 7 || manifest.kind !== family || manifest.dtype !== "float32" ||
-    manifest.checkpoint !== false || manifest.corpus_spec !== NATIVE_LENS_CORPUS.corpusSpec ||
+    manifest.checkpoint !== false || manifest.corpus_spec !== corpus.corpusSpec ||
     manifest.corpus_hash_kind !== "token_ids_v1" ||
     manifest.d_model !== modelLock.hiddenSize || manifest.model_layer_count !== modelLock.layerMap.length ||
     manifest.estimator_policy?.direction !== (family === "R" ? "output" : "input") ||
@@ -358,7 +389,7 @@ function validateNativeLens(kind, manifest, vocabulary, modelLock) {
   ) {
     throw new Error(`the release ${family} lens is not a full-depth native lens over the pinned lens corpus`);
   }
-  const minimums = NATIVE_LENS_CORPUS.minimums;
+  const minimums = corpus.minimums;
   if (
     !positiveInteger(manifest.n_prompts) || manifest.n_prompts < minimums.prompts ||
     !positiveInteger(manifest.usable_prompt_count) || manifest.usable_prompt_count < minimums.prompts ||
@@ -375,7 +406,7 @@ function validateNativeLens(kind, manifest, vocabulary, modelLock) {
     source: "native",
     family,
     corpusSpec: manifest.corpus_spec,
-    attributionApproval: NATIVE_LENS_CORPUS.attributionApproval,
+    attributionApproval: corpus.attributionApproval,
     prompts: manifest.usable_prompt_count,
     sequenceLength: manifest.seq_len,
     layers: { out: expected.out.length, mid: expected.mid.length },
@@ -384,18 +415,24 @@ function validateNativeLens(kind, manifest, vocabulary, modelLock) {
 }
 
 /** A units pack covers every layer and binds the lenses, statistics and neutral pass it averages. */
-function validateNativeUnits(record, modelLock) {
+function validateNativeUnits(record, modelLock, corpus) {
   const binding = record?.binding ?? {};
   if (
     record?.format !== "drowse-units-pack-v1" || record.model_layer_count !== modelLock.layerMap.length ||
     record.d_model !== modelLock.hiddenSize ||
     Object.keys(record.layers ?? {}).length !== modelLock.layerMap.length ||
-    [binding.r_lens_identity, binding.s_lens_identity, binding.embedding_statistics_sha256, binding.neutral?.sha256]
+    [
+      binding.r_lens_identity, binding.s_lens_identity, binding.embedding_statistics_sha256,
+      binding.neutral?.sha256, binding.neutral?.rows_sha256,
+    ]
       .some((digest) => typeof digest !== "string" || !SHA256.test(digest))
   ) {
     throw new Error("the release units pack does not cover every layer or bind its lenses and neutral pass");
   }
-  return { source: "native", layers: modelLock.layerMap.length, nullRank: record.null?.rank };
+  return {
+    source: "native", layers: modelLock.layerMap.length, nullRank: record.null?.rank,
+    attributionApproval: corpus.attributionApproval,
+  };
 }
 
 function parseJson(bytes, label) {

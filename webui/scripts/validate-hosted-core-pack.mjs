@@ -7,11 +7,14 @@ import { resolve } from "node:path";
 import { createServer } from "vite";
 import { readRuntimeLock } from "./runtime-lock-document.mjs";
 import { collectPackArtifacts } from "./assemble-hosted-pack.mjs";
+import { readCoreManifoldSource } from "./hosted-core-manifold-source.mjs";
+import { nativeFitModel } from "./hosted-native-models.mjs";
 
 const options = parseArguments(process.argv.slice(2));
 if (!options) {
   throw new Error(
-    "usage: validate-hosted-core-pack.mjs MODEL_ID PACK_DIR [--runtime-lock PATH]",
+    "usage: validate-hosted-core-pack.mjs MODEL_ID PACK_DIR [--runtime-lock PATH] [--neutral-rows FILE]\n" +
+    "  --neutral-rows  build_hosted_packs.py's core/neutral-rows.safetensors: refit the whitener from it",
   );
 }
 const { modelId, input } = options;
@@ -64,6 +67,18 @@ try {
     vite.ssrLoadModule("/src/hosted/runtime/browserCorePack.ts"),
   ]);
   const identitySha256 = runtimeIdentitySha256(runtimeIdentity);
+  /** The whitener the kernel fits from the native rows, as the core builder fitted it. */
+  async function refitWhitener(rowsBytes) {
+    const [{ decodeNeutralRows, fitNeutralWhitener }, kernel] = await Promise.all([
+      vite.ssrLoadModule("/src/hosted/fitting/neutralWhitener.ts"),
+      import("../public-hosted/wasm/drowse_fitting_wasm.js"),
+    ]);
+    await kernel.default({
+      module_or_path: await readFile(resolve(webuiRoot, "public-hosted/wasm/drowse_fitting_wasm_bg.wasm")),
+    });
+    const native = decodeNeutralRows(rowsBytes, lock.layerMap, lock.hiddenSize);
+    return sha256(fitNeutralWhitener(kernel, native.matrices, native.rows, lock.hiddenSize, lock.layerMap).tensorBytes);
+  }
   const tensorSha256ByContext = {};
   const coreArtifacts = [];
   for (const contextTokens of lock.contextProfiles) {
@@ -146,25 +161,61 @@ try {
     manifoldSha256ByPath[path] = sha256(archiveBytes);
     coreArtifacts.push(artifact(`manifolds/${path}`, archiveBytes));
   }
-  // Every context carries the same concepts (6.0's default roster and the hosted starter).
-  const manifoldIdentities = new Set([...identitiesByContext.values()][0] ?? []);
+  // Every context carries exactly the core roster: drowse 6.0's default concepts and the hosted
+  // starter, the sources in browser-runtime/release-inputs/core-manifolds.
+  const rosterDirectory = resolve(repositoryRoot, "browser-runtime/release-inputs/core-manifolds");
+  const roster = [];
+  for (const name of (await readdir(rosterDirectory)).sort()) {
+    const source = await readCoreManifoldSource(resolve(rosterDirectory, name), repositoryRoot);
+    roster.push(`${source.namespace}/${source.name}`);
+  }
+  const manifoldIdentities = new Set(roster);
   assert.deepEqual([...identitiesByContext.keys()].sort(), lock.contextProfiles.map(String).sort());
-  for (const identities of identitiesByContext.values()) {
-    assert.deepEqual([...identities].sort(), [...manifoldIdentities].sort(), "contexts carry different concepts");
+  for (const [context, identities] of identitiesByContext) {
+    assert.deepEqual([...identities].sort(), [...roster].sort(), `context ${context} does not carry the core roster`);
   }
   // The neutral statistics (`build_hosted_packs.py` core/): unit statistics and the out and mid
-  // means of the neutral pass, when the model's blocks have units.
+  // means of the neutral pass. A model drowse fits natively must carry them (units read them),
+  // with its whitener fitted from the same pass's rows in every context; a refused model has none.
   let neutralStatistics = null;
+  let recordBytes = null;
   try {
-    const recordBytes = await readFile(resolve(directory, "neutral-statistics.json"));
+    recordBytes = await readFile(resolve(directory, "neutral-statistics.json"));
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  assert.equal(recordBytes !== null, nativeFitModel(lock),
+    nativeFitModel(lock)
+      ? `${modelId} is fitted natively: its core pack must carry neutral-statistics.json`
+      : `${modelId} has no native neutral pass: its core pack carries no neutral statistics`);
+  if (recordBytes !== null) {
     const record = JSON.parse(recordBytes.toString("utf8"));
     coreArtifacts.push(
       artifact("neutral-statistics.json", recordBytes),
       artifact(record.tensor_file, await readFile(resolve(directory, record.tensor_file))),
     );
-    neutralStatistics = { tensorSha256: record.tensor_sha256, nDocuments: record.n_documents };
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
+    assert.match(record.neutral?.rows_sha256 ?? "", /^[0-9a-f]{64}$/u, "the neutral pass names its rows");
+    assert.equal(record.whitener?.rows_sha256, record.neutral.rows_sha256, "the whitener is fitted from the pass's rows");
+    assert.deepEqual(record.whitener?.tensors_sha256, Object.fromEntries(
+      lock.contextProfiles.map((contextTokens) => [String(contextTokens), tensorSha256ByContext[contextTokens]]),
+    ), "the neutral statistics name each context's whitener");
+    if (options.neutralRows !== null) {
+      const rowsBytes = await readFile(resolve(options.neutralRows));
+      assert.equal(sha256(rowsBytes), record.neutral.rows_sha256, "--neutral-rows are not this pass's rows");
+      const refit = await refitWhitener(new Uint8Array(rowsBytes));
+      for (const contextTokens of lock.contextProfiles) {
+        assert.equal(tensorSha256ByContext[contextTokens], refit,
+          `context ${contextTokens}'s whitener is not the one the neutral rows give`);
+      }
+    }
+    neutralStatistics = {
+      tensorSha256: record.tensor_sha256,
+      nDocuments: record.n_documents,
+      rowsSha256: record.neutral.rows_sha256,
+      whitenerRefit: options.neutralRows !== null,
+    };
+  } else if (options.neutralRows !== null) {
+    throw new Error("--neutral-rows given for a core pack without neutral statistics");
   }
   const actualArtifacts = await collectPackArtifacts(directory);
   assert.deepEqual(actualArtifacts.files.map((file) => file.path).sort(),
@@ -220,20 +271,25 @@ try {
 
 function parseArguments(args) {
   const positional = [];
-  let runtimeLock = null;
+  const flags = { "--runtime-lock": null, "--neutral-rows": null };
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
-    if (argument !== "--runtime-lock") {
+    if (!(argument in flags)) {
       positional.push(argument);
       continue;
     }
     const value = args[index + 1];
     if (!value || value.startsWith("--")) return null;
-    runtimeLock = value;
+    flags[argument] = value;
     index += 1;
   }
   if (positional.length !== 2) return null;
-  return { modelId: positional[0], input: positional[1], runtimeLock };
+  return {
+    modelId: positional[0],
+    input: positional[1],
+    runtimeLock: flags["--runtime-lock"],
+    neutralRows: flags["--neutral-rows"],
+  };
 }
 
 function sha256(bytes) {

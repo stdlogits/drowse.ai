@@ -253,12 +253,14 @@ export interface BrowserUnitsPackDescriptor {
   readonly headKeptCount: number;
   readonly unembeddingRows: number;
   /** What the statistics average over: the R and S lens packs (their `lens_identity`), the S
-   *  embedding statistics and the neutral pass (the core pack's `neutral-statistics.json`). */
+   *  embedding statistics and the neutral pass (the core pack's `neutral-statistics.json`), whose
+   *  rows the write norms' whitener is built from. */
   readonly binding: {
     readonly rLensIdentity: string;
     readonly sLensIdentity: string;
     readonly embeddingStatisticsSha256: string;
     readonly neutralSha256: string;
+    readonly neutralRowsSha256: string;
   };
 }
 
@@ -270,8 +272,9 @@ interface BrowserUnits {
   readonly files: PackFiles;
   readonly root: string;
   readonly nullFile: { readonly path: string; readonly sha256: string };
-  /** The core pack's neutral pass identity (`neutral-statistics.json`), or null without one. */
-  readonly coreNeutralSha256: string | null;
+  /** The core pack's neutral pass (`neutral-statistics.json`), with the rows its whitener was
+   *  fitted from, or null without a valid one. */
+  readonly coreNeutral: CoreNeutralBinding | null;
   readonly layers: ReadonlyMap<number, Readonly<Record<"reads" | "contrast", {
     readonly path: string;
     readonly sha256: string;
@@ -615,10 +618,13 @@ export class BrowserInstrumentRegistry {
         "The units pack was built over other R and S lenses than the ones in use",
       );
     }
-    if (units.coreNeutralSha256 !== binding.neutralSha256) {
+    if (
+      units.coreNeutral?.sha256 !== binding.neutralSha256 ||
+      units.coreNeutral.rowsSha256 !== binding.neutralRowsSha256
+    ) {
       throw instrumentError(
         "UNITS_PACK_BINDING_MISMATCH",
-        "The units pack was built over another neutral pass than the core pack's statistics",
+        "The units pack was built over another neutral pass or whitener than the core pack's",
       );
     }
     const entry = units.layers.get(layer)?.[part];
@@ -1756,8 +1762,10 @@ async function loadUnits(
     typeof nullRecord.file !== "string" || !safeBasename(nullRecord.file) ||
     typeof nullRecord.sha256 !== "string" ||
     !positiveInteger(headKept.count) || !positiveInteger(headKept.unembedding_rows) ||
-    [binding.r_lens_identity, binding.s_lens_identity, binding.embedding_statistics_sha256, neutral.sha256]
-      .some((digest) => typeof digest !== "string" || !/^[0-9a-f]{64}$/u.test(digest))
+    [
+      binding.r_lens_identity, binding.s_lens_identity, binding.embedding_statistics_sha256,
+      neutral.sha256, neutral.rows_sha256,
+    ].some((digest) => typeof digest !== "string" || !/^[0-9a-f]{64}$/u.test(digest))
   ) invalid("its record");
   const root = recordArtifact.manifest.path;
   const files = new PackFiles(pack);
@@ -1790,15 +1798,16 @@ async function loadUnits(
   if (Object.keys(layersRecord).length !== identity.layerMap.length) invalid("layers outside the model");
   const nullPath = siblingPath(root, nullRecord.file as string);
   if (artifactAt(pack.artifacts, nullPath).manifest.sha256 !== nullRecord.sha256) invalid("null basis digest");
-  // What the core pack's neutral statistics were measured on, which every units statistic must
-  // share (read from its record alone; `readNeutralStatistics` checks the rest).
-  const coreRecords = request.artifacts.filter((artifact) =>
-    artifact.manifest.role === "core_pack" && artifact.manifest.path.split("/").at(-1) === NEUTRAL_STATISTICS_RECORD);
-  let coreNeutralSha256: string | null = null;
-  if (coreRecords.length === 1) {
-    const coreRecord = jsonObject(coreRecords[0], await textArtifact(coreRecords[0], request.signal));
-    const coreNeutral = isRecord(coreRecord.neutral) ? coreRecord.neutral : null;
-    coreNeutralSha256 = typeof coreNeutral?.sha256 === "string" ? coreNeutral.sha256 : null;
+  // What the core pack's neutral statistics were measured on and its whitener fitted from, which
+  // every units statistic must share (`readNeutralStatistics` checks the tensors).
+  let coreNeutral: CoreNeutralBinding | null = null;
+  try {
+    coreNeutral = await readCoreNeutralBinding(
+      request.artifacts.filter((artifact) => artifact.manifest.role === "core_pack"),
+      request,
+    );
+  } catch (error) {
+    if ((error as { code?: unknown })?.code !== "CORE_NEUTRAL_STATISTICS_INVALID") throw error;
   }
   return {
     descriptor: {
@@ -1817,12 +1826,13 @@ async function loadUnits(
         sLensIdentity: binding.s_lens_identity as string,
         embeddingStatisticsSha256: binding.embedding_statistics_sha256 as string,
         neutralSha256: neutral.sha256 as string,
+        neutralRowsSha256: neutral.rows_sha256 as string,
       },
     },
     files,
     root,
     nullFile: { path: nullPath, sha256: nullRecord.sha256 as string },
-    coreNeutralSha256,
+    coreNeutral,
     layers,
     nullBasis: null,
   };
@@ -2070,12 +2080,19 @@ export interface BrowserNeutralStatistics {
   readonly tensors: ReadonlyMap<string, { readonly shape: readonly number[]; readonly data: Float32Array }>;
 }
 
-/** Read a core pack's neutral statistics (`null` when the pack has none: a model whose blocks
- *  units do not cover). */
-export async function readNeutralStatistics(
+/** What a core pack's neutral statistics bind: the neutral pass and the rows its whitener was
+ *  fitted from, with every context's whitener file the one the record names. */
+interface CoreNeutralBinding {
+  readonly sha256: string;
+  readonly rowsSha256: string;
+  readonly record: Record<string, unknown>;
+  readonly recordArtifact: BrowserModelArtifact;
+}
+
+async function readCoreNeutralBinding(
   artifacts: readonly BrowserModelArtifact[],
   request: Pick<BrowserModelLoadRequest, "variant" | "signal">,
-): Promise<BrowserNeutralStatistics | null> {
+): Promise<CoreNeutralBinding | null> {
   const records = artifacts.filter((artifact) => artifact.manifest.path.split("/").at(-1) === NEUTRAL_STATISTICS_RECORD);
   if (records.length === 0) return null;
   const invalid = (detail: string): never => {
@@ -2083,6 +2100,44 @@ export async function readNeutralStatistics(
   };
   if (records.length !== 1) invalid("more than one record");
   const record = jsonObject(records[0], await textArtifact(records[0], request.signal));
+  const neutral = isRecord(record.neutral) ? record.neutral : invalid("no neutral pass");
+  const whitener = isRecord(record.whitener) ? record.whitener : invalid("no whitener binding");
+  const tensors = isRecord(whitener.tensors_sha256) ? whitener.tensors_sha256 : invalid("no whitener digests");
+  const contexts = (request.variant.contextProfiles ?? []).map((profile) => String(profile.contextTokens)).sort();
+  if (
+    typeof neutral.sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(neutral.sha256) ||
+    typeof neutral.rows_sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(neutral.rows_sha256) ||
+    whitener.rows_sha256 !== neutral.rows_sha256 || contexts.length === 0 ||
+    !sameStrings(Object.keys(tensors).sort(), contexts)
+  ) invalid("its neutral pass or whitener binding");
+  for (const context of contexts) {
+    const path = siblingPath(records[0].manifest.path, `${context}/neutral-whitener.safetensors`);
+    const matches = artifacts.filter((artifact) => artifact.manifest.path === path);
+    if (matches.length !== 1 || matches[0].manifest.sha256 !== tensors[context]) {
+      invalid(`the ${context}-token whitener is not the one fitted from the neutral rows`);
+    }
+  }
+  return {
+    sha256: neutral.sha256 as string,
+    rowsSha256: neutral.rows_sha256 as string,
+    record,
+    recordArtifact: records[0],
+  };
+}
+
+/** Read a core pack's neutral statistics (`null` when the pack has none: a model whose blocks
+ *  units do not cover). */
+export async function readNeutralStatistics(
+  artifacts: readonly BrowserModelArtifact[],
+  request: Pick<BrowserModelLoadRequest, "variant" | "signal">,
+): Promise<BrowserNeutralStatistics | null> {
+  const binding = await readCoreNeutralBinding(artifacts, request);
+  if (binding === null) return null;
+  const invalid = (detail: string): never => {
+    throw instrumentError("CORE_NEUTRAL_STATISTICS_INVALID", `The core pack's neutral statistics are invalid: ${detail}`);
+  };
+  const recordArtifact = binding.recordArtifact;
+  const record = binding.record;
   const identity = request.variant.runtimeIdentity;
   const layers = identity.layerMap.length;
   const shapes = isRecord(record.shapes) ? record.shapes : invalid("no shapes");
@@ -2097,7 +2152,7 @@ export async function readNeutralStatistics(
     Object.values(shapes).some((shape) => !Array.isArray(shape) || shape[0] !== layers || !shape.every(positiveInteger)) ||
     (shapes.mid_mean as number[])[1] !== identity.hiddenSize || (shapes.out_mean as number[])[1] !== identity.hiddenSize
   ) invalid("its record does not match this runtime");
-  const tensorArtifact = artifactAt(artifacts, siblingPath(records[0].manifest.path, record.tensor_file as string));
+  const tensorArtifact = artifactAt(artifacts, siblingPath(recordArtifact.manifest.path, record.tensor_file as string));
   if (tensorArtifact.manifest.sha256 !== record.tensor_sha256) invalid("the tensor digest");
   const reader = await tensorArtifactReader(tensorArtifact, request.signal);
   if (!sameStrings(reader.keys, NEUTRAL_STATISTICS_KEYS)) invalid("unexpected tensors");
