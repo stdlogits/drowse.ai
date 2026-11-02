@@ -10,7 +10,6 @@ import {
   prepareRequirements,
   validatePackDirectory,
   validatePackSemantics,
-  largestWeightTensorBytes,
 } from "./build-hosted-catalog.mjs";
 import { expectedBuildToolchain } from "./hosted-model-closure.mjs";
 import { FIXTURE_BLOCK_SPEC } from "./catalog-fixture.mjs";
@@ -21,19 +20,6 @@ assert.deepEqual(parseArguments(["release.json", "catalog.json"]), {
 });
 assert.throws(() => parseArguments(["release.json"]), /usage/);
 assert.throws(() => parseArguments(["release.json", "catalog.json", "--force"]), /usage/);
-const q0Cache = { records: [{ records: [{ dtype: "float32", shape: [262144, 640], format: "raw" }] }] };
-assert.equal(largestWeightTensorBytes(q0Cache, "q0 fixture"), 671088640);
-q0Cache.records[0].records[0].format = "f32-to-bf16";
-assert.equal(largestWeightTensorBytes(q0Cache, "encoded f32 fixture"), 671088640);
-for (const cache of [
-  { records: [] },
-  { records: [{}] },
-  { records: [{ records: [{ dtype: "float32", shape: [-1] }] }] },
-  { records: [{ records: [{ dtype: "unknown", shape: [1] }] }] },
-  { records: [{ records: [{ dtype: "float32", shape: [Number.MAX_SAFE_INTEGER, 2] }] }] },
-]) {
-  assert.throws(() => largestWeightTensorBytes(cache, "invalid fixture"), /weight tensor/);
-}
 const semanticCommands = [];
 const semanticRunner = async (...args) => semanticCommands.push(args);
 await validatePackSemantics("fixture", "core", "/tmp/core", semanticRunner);

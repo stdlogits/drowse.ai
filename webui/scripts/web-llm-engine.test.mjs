@@ -60,7 +60,7 @@ try {
     },
   });
   const tensorCache = JSON.stringify({
-    records: [{ dataPath: "params_shard_0.bin", nbytes: 1, records: [] }],
+    records: [{ dataPath: "params_shard_0.bin", nbytes: 1, records: [{ name: "w", dtype: "float32", shape: [1], format: "raw", nbytes: 4, byteOffset: 0 }] }],
   });
   const artifact = (path, role, content) => ({
     manifest: {
@@ -392,6 +392,15 @@ try {
   assert.equal(appConfig.model_list[0].model_lib, `${base}model-lib.wasm`);
   assert.equal(appConfig.model_list[0].overrides.context_window_size, 2048);
   assert.deepEqual(appConfig.model_list[0].required_features, ["shader-f16"]);
+  // The device's binding is the library's, derived from the verified files and the lock (one
+  // 4-byte weight, 16 vocabulary rows, d = 2), not the variant's declared 128 MiB.
+  const { libraryBindingBytes } = await server.ssrLoadModule("/src/hosted/runtime/modelBackend.ts");
+  const derivedBinding = libraryBindingBytes(STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL, {
+    layerCount: 2, hiddenSize: 2, vocabSize: 16, contextTokens: 2048, prefillChunkSize: 1024,
+    blockSpec: null, largestWeightBytes: 4,
+  });
+  assert.equal(appConfig.model_list[0].buffer_size_required_bytes, derivedBinding);
+  assert.notEqual(derivedBinding, variant.requirements.limits.maxStorageBufferBindingSize);
   const hookProgram = compileStructuredHookProgram(2, [{
     affineGroups: [{ active: true, basis: [[1, 0]], neutral: [0, 0], target: [1], along: 0.5, kappa: [0] }],
     probes: [{ kind: "linear", direction: [1, 0], bias: 0 }],

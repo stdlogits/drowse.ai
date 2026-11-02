@@ -40,7 +40,7 @@ try {
     },
   });
   const tensorCache = JSON.stringify({
-    records: [{ dataPath: "params_shard_0.bin", nbytes: 3, records: [] }],
+    records: [{ dataPath: "params_shard_0.bin", nbytes: 3, records: [{ name: "w", dtype: "float32", shape: [1], format: "raw", nbytes: 4, byteOffset: 0 }] }],
   });
   const artifact = (path, role, content, url = `${base}${path}`) => ({
     manifest: {
@@ -355,13 +355,14 @@ try {
     model: { id: "fixture-model" },
     variant: {
       id: "fixture-q4",
-      structuredHookProfile: "standard-v4",
+      structuredHookProfile: "standard-v4-residual",
       thinkingProfile: null,
       runtimeIdentity: {
         hookAbi: "post-block-residual-v4",
         hiddenSize: 2,
         layerMap: [0, 1],
       },
+      contextProfiles: [{ contextTokens: 2048 }],
       requirements: {
         features: ["shader-f16"],
         limits: {
@@ -374,6 +375,8 @@ try {
     },
     requiredCorePack: {},
     contextTokens: 2048,
+    prefillChunkSize: 2048,
+    unitRefusal: "fixture blocks are not described",
     adapter: {
       features: new Set(["shader-f16"]),
       limits: {

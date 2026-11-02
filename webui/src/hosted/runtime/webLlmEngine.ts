@@ -1,4 +1,5 @@
 import {
+  libraryBindingBytes,
   validateBlockSitesCapabilities,
   type BlockSitesCapabilities,
 } from "./modelBackend";
@@ -357,6 +358,10 @@ export class DrowseWebLlmRuntime {
       );
     }
     const prepared = await prepareVerifiedWebLlmArtifacts(request.artifacts, request.signal);
+    // The device gets exactly the library's binding (HOOK_ABI.md §10), derived from the verified
+    // files and the lock (its prefill chunk and block spec) as the catalog builder derives the
+    // variant's limits; the bridge refuses an adapter below it before a weight is read.
+    const bindingBytes = lockedLibraryBindingBytes(request, prepared);
     if (request.model.modelType === "base" && !prepared.isBaseModel) {
       throw runtimeError("BASE_MODEL_TEMPLATE_MISMATCH", "This base-model download contains a chat template and cannot be opened as a completion model");
     }
@@ -405,8 +410,7 @@ export class DrowseWebLlmRuntime {
             model_lib: prepared.modelLibraryUrl,
             overrides: { context_window_size: request.contextTokens },
             required_features: [...request.variant.requirements.features],
-            buffer_size_required_bytes:
-              request.variant.requirements.limits.maxStorageBufferBindingSize,
+            buffer_size_required_bytes: bindingBytes,
           },
         ],
       },
@@ -1477,6 +1481,40 @@ export function hookProfileDescriptorModel(
     prefillChunkSize,
     blockSpec: request.blockSpec ?? null,
   };
+}
+
+/** The binding the device asks for (HOOK_ABI.md §10): the library's, from its verified files and
+ *  the lock's model half. A variant on another profile, a units library whose lock entry records no
+ *  block spec, and a lock entry without a prefill chunk fail here, before the engine starts. */
+function lockedLibraryBindingBytes(
+  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec" | "prefillChunkSize">,
+  prepared: { readonly vocabSize: number; readonly largestWeightBytes: number },
+): number {
+  let profile: ReturnType<typeof resolveStructuredHookProfile>;
+  try {
+    profile = resolveStructuredHookProfile(request.variant.structuredHookProfile);
+  } catch {
+    throw runtimeError(
+      "STRUCTURED_HOOK_PROFILE_MISMATCH",
+      `Hook ABI block-sites-v5 libraries attest standard-v4 or standard-v4-residual, not ${String(request.variant.structuredHookProfile)}`,
+    );
+  }
+  const model = hookProfileDescriptorModel(request);
+  if (profile.unitSites === 1 && model.blockSpec === null) {
+    throw runtimeError(
+      "HOOK_ABI_MISMATCH",
+      "The runtime lock does not record this model's block spec, so its unit sites cannot be attested",
+    );
+  }
+  return libraryBindingBytes(profile, {
+    layerCount: model.layerCount,
+    hiddenSize: model.hiddenSize,
+    vocabSize: prepared.vocabSize,
+    contextTokens: model.contextTokens,
+    prefillChunkSize: model.prefillChunkSize,
+    blockSpec: profile.unitSites === 1 ? model.blockSpec : null,
+    largestWeightBytes: prepared.largestWeightBytes,
+  });
 }
 
 /** Hook ABI v5: the library's schema-4 descriptor, element by element, against the lock (B1

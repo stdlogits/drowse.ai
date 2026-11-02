@@ -230,6 +230,19 @@ try {
     "a tiny library still binds a vocabulary read's rows");
   assert.throws(() => backend.libraryBindingBytes(v4, { ...pythia, largestWeightBytes: 1 }), /block spec/);
   assert.throws(() => library({ largestWeightBytes: 0 }), /largestWeightBytes/);
+  // The largest weight as the GPU holds it, from tensor-cache.json (a bf16-encoded fp32 record
+  // binds fp32 bytes): gemma3-270m's q0f32 embedding is the 640 MiB binding.
+  const q0Cache = { records: [{ records: [{ dtype: "float32", shape: [262144, 640], format: "f32-to-bf16" }] }] };
+  assert.equal(backend.largestWeightTensorBytes(q0Cache), 640 * MiB);
+  for (const cache of [
+    { records: [] },
+    { records: [{}] },
+    { records: [{ records: [{ dtype: "float32", shape: [-1] }] }] },
+    { records: [{ records: [{ dtype: "unknown", shape: [1] }] }] },
+    { records: [{ records: [{ dtype: "float32", shape: [Number.MAX_SAFE_INTEGER, 2] }] }] },
+  ]) {
+    assert.throws(() => backend.largestWeightTensorBytes(cache), /weight tensor/);
+  }
 
   console.log("block-sites backend seam: surfaces, errors, tensors and replay layouts pass");
 } finally {

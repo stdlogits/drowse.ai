@@ -143,7 +143,8 @@ async function prepareModel(entry, runtimeLock, specDirectory, semanticValidator
       contextTokens: Math.max(...lock.contextProfiles),
       prefillChunkSize: lock.prefillChunkSize,
       blockSpec: lock.blockSpec ?? null,
-      largestWeightBytes: largestWeightTensorBytes(
+      largestWeightBytes: largestWeight(
+        runtime,
         JSON.parse(await readFile(resolve(modelDirectory, weightManifest.path), "utf8")),
         lock.id,
       ),
@@ -467,31 +468,12 @@ export function prepareRequirements(value, modelId, structuredHookProfile) {
 }
 
 
-/** The bytes of the converted model's largest weight tensor (as the GPU holds it: `float32` for
- *  a bf16-encoded record), the floor of its binding. */
-export function largestWeightTensorBytes(cache, modelId) {
-  if (!Array.isArray(cache.records) || cache.records.length === 0) {
-    throw new Error(`${modelId} has no weight tensor records`);
+function largestWeight(runtime, cache, modelId) {
+  try {
+    return runtime.largestWeightTensorBytes(cache);
+  } catch (error) {
+    throw new Error(`${modelId}: ${error.message}`, { cause: error });
   }
-  const dtypeBytes = { float16: 2, float32: 4, int32: 4, uint32: 4 };
-  let largest = 0;
-  for (const shard of cache.records) {
-    if (!Array.isArray(shard.records) || shard.records.length === 0) {
-      throw new Error(`${modelId} has no weight tensor records`);
-    }
-    for (const tensor of shard.records) {
-      if (!Object.hasOwn(dtypeBytes, tensor.dtype) || !Array.isArray(tensor.shape) ||
-          tensor.shape.some((dimension) => !Number.isSafeInteger(dimension) || dimension < 1)) {
-        throw new Error(`${modelId} has invalid weight tensor dimensions or dtype`);
-      }
-      const bytes = tensor.shape.reduce((size, dimension) => size * dimension, dtypeBytes[tensor.dtype]);
-      if (!Number.isSafeInteger(bytes)) {
-        throw new Error(`${modelId} weight tensor size exceeds safe buffer arithmetic`);
-      }
-      largest = Math.max(largest, bytes);
-    }
-  }
-  return largest;
 }
 
 async function validateDocument(document) {

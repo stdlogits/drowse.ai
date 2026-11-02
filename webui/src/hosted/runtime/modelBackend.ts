@@ -955,6 +955,38 @@ export function blockSitesBindingBytes(
   return checkedStructuredHookProduct("block-sites binding bytes", largest, 4);
 }
 
+/** The bytes of a converted model's largest weight tensor as the GPU holds it (a `float32` record
+ *  stays fp32 whatever its storage format), from its `tensor-cache.json`: the floor of its binding. */
+export function largestWeightTensorBytes(cache: unknown): number {
+  const shards = (cache as { records?: unknown } | null)?.records;
+  if (!Array.isArray(shards) || shards.length === 0) {
+    throw new TypeError("tensor-cache.json has no weight tensor records");
+  }
+  const dtypeBytes: Readonly<Record<string, number>> = { float16: 2, float32: 4, int32: 4, uint32: 4 };
+  let largest = 0;
+  for (const shard of shards) {
+    const tensors = (shard as { records?: unknown } | null)?.records;
+    if (!Array.isArray(tensors) || tensors.length === 0) {
+      throw new TypeError("tensor-cache.json has no weight tensor records");
+    }
+    for (const tensor of tensors as { dtype?: unknown; shape?: unknown }[]) {
+      const shape = tensor?.shape;
+      if (
+        typeof tensor?.dtype !== "string" || !Object.hasOwn(dtypeBytes, tensor.dtype) ||
+        !Array.isArray(shape) || shape.some((size) => !Number.isSafeInteger(size) || size < 1)
+      ) {
+        throw new TypeError("tensor-cache.json has an invalid weight tensor dimension or dtype");
+      }
+      const bytes = (shape as number[]).reduce((total, size) => total * size, dtypeBytes[tensor.dtype]);
+      if (!Number.isSafeInteger(bytes)) {
+        throw new TypeError("A tensor-cache.json weight tensor size exceeds safe buffer arithmetic");
+      }
+      largest = Math.max(largest, bytes);
+    }
+  }
+  return largest;
+}
+
 /** The `maxStorageBufferBindingSize` (and `maxBufferSize`) a v5 library needs on any adapter
  *  (HOOK_ABI.md §10): its largest weight tensor, its units machinery at the largest context
  *  (`blockSitesBindingBytes`, units libraries), the structured program's buffers, a static read's
