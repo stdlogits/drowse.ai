@@ -671,9 +671,10 @@ The catalog signing key is never stored in this repository. The signing tool
 accepts an Ed25519 PKCS#8 PEM key path and signs the exact `catalog.json` bytes.
 The publisher writes to the directory the lock's URLs name and verifies the catalog published
 there against the lock's keys before it advances the sequence. The first catalog at a new
-directory has nothing there to advance, so the publisher verifies the newest earlier
-directory's catalog instead (the one deployed builds still read) and requires a greater
-sequence: catalog 11 at `v2/` must verify the root's catalog 10 and exceed it. `./deploy.sh`
+directory has nothing there to advance, so the publisher verifies the previous directory's
+catalog instead (the one deployed builds still read) and requires a greater sequence: catalog 11
+at `v2/` must verify the root's catalog 10 and exceed it. A new directory whose predecessor has
+nothing published is refused; only the root may start without one. `./deploy.sh`
 checks the signed catalog at the lock's URL before every upload (`preflight-hosted-distribution.mjs
 --catalog-only`; `--full` runs the whole preflight), so a build never ships pointing at an
 unpublished path. A rotation that cannot sign with the outgoing

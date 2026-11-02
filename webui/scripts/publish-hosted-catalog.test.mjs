@@ -16,7 +16,7 @@ import {
   CURRENT_CATALOG_URLS,
   catalogLocation,
   catalogUrls,
-  previousCatalogDirectories,
+  previousCatalogDirectory,
 } from "./hosted-catalog-location.mjs";
 import { readFile } from "node:fs/promises";
 import {
@@ -85,8 +85,8 @@ assert.equal(lockFile.signatureUrl, CURRENT_CATALOG_URLS.signatureUrl);
 assert.equal(CURRENT_CATALOG_URLS.catalogUrl, `https://huggingface.co/${repository}/resolve/main/v2/catalog.json`);
 assert.deepEqual(catalogLocation(distribution), { repository, directory: "v2/" });
 assert.deepEqual(catalogLocation(catalogUrls("")), { repository, directory: "" });
-assert.deepEqual(previousCatalogDirectories("v2/"), [""]);
-assert.deepEqual(previousCatalogDirectories(""), []);
+assert.equal(previousCatalogDirectory("v2/"), "");
+assert.equal(previousCatalogDirectory(""), null);
 assert.throws(
   () => catalogLocation({
     ...distribution,
@@ -223,10 +223,15 @@ try {
     () => validatePublishedAdvance(11, "v2/", fetchPair, distribution.publicKeys),
     /must advance the published sequence 11/,
   );
-  // Nothing published anywhere: the first catalog ever.
+  // Nothing published before it: only the root directory may start a lineage; a new directory
+  // with no verified predecessor is refused.
   assert.deepEqual(
-    await validatePublishedAdvance(1, "v2/", async () => [null, null], distribution.publicKeys),
+    await validatePublishedAdvance(1, "", async () => [null, null], distribution.publicKeys),
     { directory: null, previousSequence: null },
+  );
+  await assert.rejects(
+    () => validatePublishedAdvance(11, "v2/", async () => [null, null], distribution.publicKeys),
+    /first catalog at v2\/ must advance a published catalog at the root/,
   );
   await assert.rejects(
     () => validatePublishedAdvance(1, "v3/", fetchPair, distribution.publicKeys),

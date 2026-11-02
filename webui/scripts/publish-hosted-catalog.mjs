@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createServer } from "vite";
 import { uploadCommitRevision } from "./hugging-face-upload.mjs";
-import { catalogLocation, previousCatalogDirectories } from "./hosted-catalog-location.mjs";
+import { catalogLocation, previousCatalogDirectory } from "./hosted-catalog-location.mjs";
 
 export { uploadCommitRevision } from "./hugging-face-upload.mjs";
 
@@ -159,17 +159,24 @@ export function lockedCatalogModels(runtime) {
 }
 
 /** The sequence `nextSequence` must advance. The catalog published at the lock's directory, or,
- *  for the first catalog at a new directory, the newest earlier directory's (which deployed builds
- *  still read): each verified with `publicKeys` before its sequence counts. `fetchPair(directory)`
- *  returns `[catalogBytes, signatureBytes]`, null where nothing is published. */
+ *  for the first catalog at a new directory, the previous directory's (which deployed builds still
+ *  read), each verified with `publicKeys` before its sequence counts. Only the root directory may
+ *  start with nothing published before it. `fetchPair(directory)` returns
+ *  `[catalogBytes, signatureBytes]`, null where nothing is published. */
 export async function validatePublishedAdvance(nextSequence, directory, fetchPair, publicKeys) {
-  for (const candidate of [directory, ...previousCatalogDirectories(directory)]) {
+  const previous = previousCatalogDirectory(directory);
+  for (const candidate of previous === null ? [directory] : [directory, previous]) {
     const [catalog, signature] = await fetchPair(candidate);
     if (catalog === null && signature === null) continue;
     return {
       directory: candidate,
       previousSequence: validateCatalogAdvance(nextSequence, catalog, signature, publicKeys),
     };
+  }
+  if (previous !== null) {
+    throw new Error(
+      `the first catalog at ${directory} must advance a published catalog at ${previous || "the root"}, and none is published there`,
+    );
   }
   return { directory: null, previousSequence: null };
 }

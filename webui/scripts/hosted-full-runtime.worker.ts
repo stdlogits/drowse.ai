@@ -1287,6 +1287,7 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
             await instruments!.request({ service: "probes", method: "detach", args: [name] }, () => null);
           }
           await setLive(instruments!, "lens", false);
+          await setLive(instruments!, "units", false);
         }
         const unitTap = tokenMeasurements?.instruments?.units?.readings?.browser_e2e_unit;
         const slensReading = tokenMeasurements?.instruments?.lens?.readings?.browser_e2e_slens;
@@ -2040,7 +2041,8 @@ function harnessReplayPort(promptIds: readonly number[], rawIds: readonly number
   };
 }
 
-/** `run` must refuse with the lock's unit refusal (native's 422 `UnsupportedBlockError`). */
+/** `run` must refuse with exactly the lock's unit refusal (native's 422 `UnsupportedBlockError`,
+ *  no layer and no prefix). */
 async function requireRefusal(
   run: () => Promise<unknown>,
   refusal: string,
@@ -2053,8 +2055,7 @@ async function requireRefusal(
     if (
       failure?.code === "UnsupportedBlockError" &&
       failure.status === 422 &&
-      typeof failure.message === "string" &&
-      failure.message.endsWith(refusal)
+      failure.message === refusal
     ) return;
     throw new Error(
       `${label} did not answer the lock's unit refusal: ${error instanceof Error ? error.message : String(error)}`,

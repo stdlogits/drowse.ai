@@ -32,11 +32,11 @@ export function catalogLocation(distribution) {
   return catalog;
 }
 
-/** The directories published before `directory`, newest first. */
-export function previousCatalogDirectories(directory) {
+/** The directory published just before `directory`; null for the first (the root). */
+export function previousCatalogDirectory(directory) {
   const index = CATALOG_DIRECTORIES.indexOf(directory);
   if (index < 0) throw new Error(`catalog directory ${JSON.stringify(directory)} is not a published catalog path`);
-  return CATALOG_DIRECTORIES.slice(0, index).reverse();
+  return index === 0 ? null : CATALOG_DIRECTORIES[index - 1];
 }
 
 function parseCatalogUrl(value, label, filename) {
