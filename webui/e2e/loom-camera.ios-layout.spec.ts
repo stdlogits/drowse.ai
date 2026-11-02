@@ -81,6 +81,28 @@ test("manual zoom survives resizing and Fit restores responsive framing", async 
   await expectFitted(page);
 });
 
+test("on a wide screen manual zoom survives resizing and Fit restores responsive framing", async ({ page }) => {
+  // The desktop half of the phone test above, which stays fixme until the phone map has room.
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await seed(page, 3);
+  await expectFitted(page);
+  const canvas = page.locator(".loom-canvas");
+  const fitted = await canvas.getAttribute("data-loom-zoom");
+  await page.getByRole("button", { name: "Zoom in", exact: true }).click();
+  await expect(canvas).not.toHaveAttribute("data-loom-zoom", fitted!);
+  const zoom = await canvas.getAttribute("data-loom-zoom");
+  await page.setViewportSize({ width: 1024, height: 700 });
+  await expect(canvas).toHaveAttribute("data-loom-zoom", zoom!);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect(canvas).toHaveAttribute("data-loom-zoom", zoom!);
+  await page.getByRole("button", { name: "Fit whole loom", exact: true }).click();
+  await expectFitted(page);
+  // Once fitted, framing follows the window again.
+  await page.setViewportSize({ width: 900, height: 700 });
+  await expectFitted(page);
+});
+
 test("large Loom releases token cards while hidden and restores every branch", async ({ page, isMobile }) => {
   // On a phone the map viewport sits below the fold (lanes/A5.md, "Loom map has no room on a phone").
   test.fixme(isMobile, "the phone Loom map viewport gets almost no height; see lanes/A5.md");

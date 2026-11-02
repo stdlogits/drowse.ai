@@ -1,6 +1,6 @@
 import {
   chooseFixtureModel, composer, inspectToken, inspector, openMenuItem, returnToChats, selectRoom,
-  sendMessage, setAppearance, settle, toolDialog,
+  sendMessage, setAppearance, settle, sourceUrl, toolDialog,
 } from "./workbench-navigation";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { readdir, readFile } from "node:fs/promises";
@@ -12,7 +12,8 @@ import { waitForReply } from "./workbench-navigation";
 
 const devUrl = "http://127.0.0.1:4176";
 const fixtureResponse = "This is a deterministic local Drowse runtime fixture.";
-const toastModuleUrl = `/@fs/${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
+const toastModuleUrl = sourceUrl("lib/stores.svelte.ts");
+const servicesUrl = sourceUrl("lib/runtime/services.ts");
 const fixtureModelHashes = [
   "f85e180e7e8d61d1e225062424360dcc7b1997ce4c28233188af886d8511156f",
   "89ff00a0903817d42e9fddb23babfbc8d2956d5e9b044729074062d1dc41bb93",
@@ -271,7 +272,7 @@ async function savedConversationAvatarSeed(page: Page, name: string): Promise<st
 
 test("chats autosave, rename on Your chats, and survive Loom cuts and clearing", async ({ page }) => {
   await openFixtureWorkbench(page);
-  const libraryUrl = `/@fs/${resolve("../drowse/webui/src/lib/stores/savedConversations.svelte.ts")}`;
+  const libraryUrl = sourceUrl("lib/stores/savedConversations.svelte.ts");
   const records = () => page.evaluate(async url => (await import(url)).conversationLibrary.list(), libraryUrl);
   await sendMessage(page, "Automatic marmot notes");
   await expect.poll(async () => (await records()).conversations.length).toBe(1);
@@ -323,7 +324,7 @@ test("chats autosave, rename on Your chats, and survive Loom cuts and clearing",
 
 test("autosave failures are visible and retry preserves the same chat", async ({ page }) => {
   await openFixtureWorkbench(page);
-  const libraryUrl = `/@fs/${resolve("../drowse/webui/src/lib/stores/savedConversations.svelte.ts")}`;
+  const libraryUrl = sourceUrl("lib/stores/savedConversations.svelte.ts");
   const records = () => page.evaluate(async url => {
     const { conversationLibrary } = await import(url);
     const { conversations } = await conversationLibrary.list();
@@ -433,7 +434,7 @@ test("saved chat cards keep summaries and open or export the latest stored trans
       IDBObjectStore.prototype.getAll = originalGetAll;
     }
     return record.id as string;
-  }, { storesUrl: toastModuleUrl, workspaceUrl: `/@fs/${resolve("../drowse/webui/src/lib/conversationWorkspace.ts")}` });
+  }, { storesUrl: toastModuleUrl, workspaceUrl: sourceUrl("lib/conversationWorkspace.ts") });
 
   const changeStoredPrompt = async (text: string) => {
     await page.evaluate(async ({ storesUrl, id, text }) => {
@@ -1172,6 +1173,49 @@ test("installed lens and SAE packs are usable without preparation errors", async
   await expectTokenReadings(page, "deterministic");
   await expect(page.getByText(/Fake runtime method .* is not implemented/)).toHaveCount(0);
   expect(pageErrors).toEqual([]);
+});
+
+test("template deletion names the saved template and asks first", async ({ page }) => {
+  await openFixtureWorkbench(page);
+  // The template lab needs fitting, which the worker fixture does not advertise.
+  await page.evaluate(async (url) => {
+    (await import(url)).getRuntimeCapabilities().operations.fitting = { available: true, reasons: [] };
+  }, sourceUrl("lib/runtime/registry.ts"));
+  await page.evaluate(async (url) => {
+    const { apiTemplates } = await import(url);
+    await apiTemplates.create({
+      namespace: "local", name: "weekday", slot: "[DAY]", values: ["Monday", "Tuesday"],
+      contexts: [{ turns: [{ role: "user", content: "What day is it?" }], assistant: "Today is [DAY]." }],
+    });
+  }, servicesUrl);
+  await selectRoom(page, "Artifacts");
+  await page.getByRole("group", { name: "Artifacts sections", exact: true })
+    .getByRole("button", { name: "Templates", exact: true }).click();
+  const lab = page.getByRole("region", { name: "Template lab", exact: true });
+  const row = lab.getByRole("listitem").filter({ hasText: "local/weekday" });
+  const remove = row.getByRole("button", { name: "Delete template local/weekday", exact: true });
+  const confirm = row.getByRole("button", { name: "Delete template", exact: true });
+
+  // The first press only asks; Cancel keeps the template.
+  await remove.click();
+  await expect(row.getByText("Delete for good?", { exact: true })).toBeVisible();
+  await expect(confirm).toBeVisible();
+  await row.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(confirm).toHaveCount(0);
+  await expect(remove).toBeVisible();
+  expect(await page.evaluate(async (url) => {
+    const { apiTemplates } = await import(url);
+    return (await apiTemplates.list()).templates.map((t: { namespace: string; name: string }) => `${t.namespace}/${t.name}`);
+  }, servicesUrl)).toEqual(["local/weekday"]);
+
+  // Confirming deletes it from the list and the store.
+  await remove.click();
+  await confirm.click();
+  await expect(row).toHaveCount(0);
+  await expect.poll(async () => page.evaluate(async (url) => {
+    const { apiTemplates } = await import(url);
+    return (await apiTemplates.list()).templates.length;
+  }, servicesUrl)).toBe(0);
 });
 
 test("models without an SAE say that no SAE is available", async ({ page }) => {
