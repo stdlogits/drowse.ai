@@ -32,21 +32,13 @@ EMCC_REVISION = MANIFEST["emccRevision"]
 RESULT_DIGESTS = dict(_OVERLAYS["mlc-llm-drowse"]["resultFiles"])
 TVM_RESULT_DIGESTS = dict(_OVERLAYS["tvm-webgpu-readonly"]["resultFiles"])
 
-#: VM functions every eligible (dense, unit-site) model library exports.
+#: VM functions every hook ABI v5 model library exports (HOOK_ABI.md §3, §8).
 REQUIRED_FUNCTIONS = {
     "drowse_hook_profile",
-    "drowse_prefill",
-    "drowse_decode",
-    "drowse_batch_prefill",
-    "drowse_batch_decode",
     "drowse_capture_prefill",
     "drowse_capture_decode",
     "drowse_capture_batch_prefill",
     "drowse_capture_batch_decode",
-    "drowse_rank_one_capture_prefill_v1",
-    "drowse_rank_one_capture_decode_v1",
-    "drowse_rank_one_capture_batch_prefill_v1",
-    "drowse_rank_one_capture_batch_decode_v1",
     "drowse_structured_batch_prefill",
     "drowse_structured_batch_decode",
     "drowse_geometry_batch_prefill",
@@ -59,6 +51,19 @@ REQUIRED_FUNCTIONS = {
     "drowse_jlens_directions",
     "drowse_sae_readout_accumulate",
     "drowse_sae_jump_relu_readout_accumulate",
+    # exact-readout-v2
+    "drowse_embedding_rows",
+    "drowse_unembedding_rows",
+    "drowse_vocab_logits",
+    "drowse_footprint_scores",
+    "drowse_logit_moments",
+    "drowse_log_sum_exp",
+    "drowse_topk",
+    "drowse_batched_matmul",
+    "drowse_batched_matmul_nt",
+    "drowse_quadratic_form",
+    "drowse_grouped_row_norms",
+    "drowse_chan_merge",
 }
 
 #: Hook ABI v5's unit functions: every eligible (dense, unit-site) architecture exports them, a
@@ -66,6 +71,18 @@ REQUIRED_FUNCTIONS = {
 UNIT_FUNCTIONS = {
     "drowse_units_batch_prefill",
     "drowse_units_batch_decode",
+    "drowse_replay_batch_prefill",
+    "drowse_attention_rows",
+    "drowse_head_write_grams",
+    "drowse_neuron_rows",
+    "drowse_head_rows",
+    "drowse_layer_write_scores",
+    "drowse_layer_read_scores",
+    "drowse_neuron_contributions",
+    "drowse_head_contributions",
+    "drowse_head_write_norms",
+    "drowse_gather_head_grams",
+    "drowse_unembed_cotangent",
 }
 UNIT_ARCHITECTURES = ("qwen3", "gemma3_text")
 
