@@ -18,11 +18,11 @@ import { DEFAULT_LENS_BAND, type LensBand, type LensFamilyName, type UnitsEmbedd
 import { checkActivityOptions, unitActivity, type NodeReplayForward, type ReplayGateScores } from "./nodeReplay";
 import { noLensText } from "./referenceContext";
 import { readingScales, type UnitScales, type UnitStatistics } from "./scales";
-import { parseSteeringExpression } from "../steeringExpression";
+import { parseLayerSelector, parseSteeringExpression, resolveModelLayers, type LayerSelector } from "../steeringExpression";
 import { slensAtomDirections } from "./slens";
 import { centreDigest } from "./probeDigest";
 import type { BrowserUnitProgramSource } from "./unitProgram";
-import { NO_CATALOG, parseUnit, unitCatalogStatus, UnitReader, UnitRequestError, type UnitLayerArtifacts } from "./unitReader";
+import { layerRequest, NO_CATALOG, parseUnit, unitCatalogStatus, UnitReader, UnitRequestError, type UnitLayerArtifacts } from "./unitReader";
 
 export const UNITS_SERVICE_METHODS = Object.freeze([
   "tokenAnatomy",
@@ -138,31 +138,12 @@ function text(value: unknown, label: string): string {
   return value;
 }
 
-/** A layer selector as the units routes take it: `all`, `3`, `3,7`, `20-31` (inclusive). */
-export function parseLayerSelector(value: unknown, nLayers: number): number[] | null {
-  if (value === undefined || value === null || value === "") return null;
+/** The units routes' `layers` (native `_layers`/`_parse_layers`: `parse_layer_selector` with
+ *  `sample` allowed, a malformed selector a 400). */
+export function routeLayerSelector(value: unknown): LayerSelector {
+  if (value === undefined || value === null) return null;
   if (typeof value !== "string") throw badRequest("layers must be a layer selector string");
-  const spec = value.trim();
-  if (spec === "all") return null;
-  const out = new Set<number>();
-  for (const part of spec.split(",")) {
-    const piece = part.trim();
-    const range = /^(-?\d+)\s*-\s*(-?\d+)$/.exec(piece);
-    if (range) {
-      const [a, b] = [Number(range[1]), Number(range[2])];
-      if (b < a) throw badRequest(`bad layers ${JSON.stringify(value)}: range ${piece} runs backwards`);
-      for (let layer = a; layer <= b; layer += 1) out.add(layer);
-    } else if (/^-?\d+$/.test(piece)) {
-      out.add(Number(piece));
-    } else {
-      throw badRequest(`bad layers ${JSON.stringify(value)}: ${JSON.stringify(piece)} is not a layer`);
-    }
-  }
-  const layers = [...out].sort((a, b) => a - b);
-  for (const layer of layers) {
-    if (!(layer >= 0 && layer < nLayers)) throw badRequest(`layer ${layer} is outside the model's ${nLayers} layers`);
-  }
-  return layers;
+  return layerRequest(() => parseLayerSelector(value, true));
 }
 
 /** Resident lens matrices over a pack lens (each uploaded once, on first read). */
@@ -404,14 +385,10 @@ export class BrowserUnitsService {
       }
       case "unitTop": {
         const options = optionalRecord(args[1], "unit top options");
+        const layers = routeLayerSelector(options.layers);
         const session = await this.open();
         const by = options.by ?? "writes";
-        return session.reader.top(
-          text(args[0], "token"),
-          by as "writes" | "fires",
-          parseLayerSelector(options.layers, session.context.nLayers),
-          integer(options.k, 20, "k"),
-        );
+        return session.reader.top(text(args[0], "token"), by as "writes" | "fires", layers, integer(options.k, 20, "k"));
       }
       case "unitFind":
         return this.find(args[0]);
@@ -450,8 +427,8 @@ export class BrowserUnitsService {
     if (hasVector && (body.layer === undefined || body.layer === null)) throw badRequest("a vector needs the layer it lives at");
     const k = integer(body.k, 16, "k");
     if (!(k >= 1 && k <= 256)) throw badRequest("k must be in [1, 256]");
+    const layers = routeLayerSelector(body.layers);
     const session = await this.open();
-    const layers = parseLayerSelector(body.layers, session.context.nLayers);
     if (hasSelector) return session.reader.find({ selector: text(body.selector, "selector") }, k, layers);
     if (!Array.isArray(body.vector) || body.vector.length === 0 || body.vector.some((x) => typeof x !== "number" || !Number.isFinite(x))) {
       throw badRequest("vector must be a non-empty list of finite numbers");
@@ -495,6 +472,7 @@ export class BrowserUnitsService {
 
   private async activity(nodeId: unknown, value: unknown): Promise<unknown> {
     const options = optionalRecord(value, "unit activity options");
+    const selector = routeLayerSelector(options.layers);
     const session = await this.open();
     if (session.scales === null) {
       const { absent } = await session.packs.statistics();
@@ -506,8 +484,8 @@ export class BrowserUnitsService {
       throw badRequest("units must be a list of unit names");
     }
     const units = ((options.units as string[] | undefined) ?? []).map((name) => parseUnit(name.trim(), session.spec, session.context.nLayers));
-    const layers = parseLayerSelector(options.layers, session.context.nLayers);
-    checkActivityOptions({ top, units, rawIndex, layers });
+    checkActivityOptions({ top, units, rawIndex, layers: selector });
+    const layers = rawIndex === null ? null : layerRequest(() => resolveModelLayers(selector, session.context.nLayers));
     // The forward anchors at the node's last row, whose producing forward covers every row
     // (native `_last_row`); `rawIndex` only names the population's row.
     const node = await this.replay().nodeForward(text(nodeId, "node id"), null, {

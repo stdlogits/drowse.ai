@@ -5,6 +5,7 @@
 import type { SerializedMahalanobisWhitener } from "../../fitting/workerContracts";
 import { f32Tensor, i32Tensor, type BlockSitesLensLayer } from "../modelBackend";
 import type { BlockSpec } from "../structuredHookProfile";
+import { LayerSelectorError, resolveLayerSelector, type LayerSelector } from "../steeringExpression";
 import { copyScore, solve } from "./linalg";
 import {
   holds,
@@ -138,6 +139,16 @@ export function checkUnit(ref: UnitRef, spec: Pick<BlockSpec, "dFF" | "nHeads">,
 }
 
 /** Python's `repr` of a str (single quotes unless it holds one and no double quote). */
+/** A layer-selector refusal as the units reads raise it (`RequestError`, 400). */
+export function layerRequest<T>(resolve: () => T): T {
+  try {
+    return resolve();
+  } catch (error) {
+    if (error instanceof LayerSelectorError) throw new UnitRequestError("RequestError", error.message);
+    throw error;
+  }
+}
+
 export function pyRepr(text: string): string {
   const quote = text.includes("'") && !text.includes('"') ? '"' : "'";
   const body = [...text].map((ch) => {
@@ -800,12 +811,13 @@ export class UnitReader {
   }
 
   // --------------------------------------------------------------------- top
-  async top(token: string, by: "writes" | "fires" = "writes", layers: readonly number[] | null = null, k = 20): Promise<Record<string, unknown>> {
+  async top(token: string, by: "writes" | "fires" = "writes", layers: LayerSelector = null, k = 20): Promise<Record<string, unknown>> {
     if (by !== "writes" && by !== "fires") {
       throw new UnitRequestError("RequestError", `by must be 'writes' or 'fires', got ${pyRepr(String(by))}`);
     }
     k = this.checkK(k);
-    const selected = layers ?? Array.from({ length: this.nLayers }, (_, layer) => layer);
+    const all = Array.from({ length: this.nLayers }, (_, layer) => layer);
+    const selected = layerRequest(() => resolveLayerSelector(layers, all, this.nLayers, false));
     for (const layer of selected) {
       if (!(layer >= 0 && layer < this.nLayers)) {
         throw new UnitRequestError("RequestError", `layer ${layer} is outside the model's ${this.nLayers} layers`);
@@ -981,7 +993,7 @@ export class UnitReader {
   async find(
     target: { selector: string } | { vector: Float32Array; layer: number },
     k = 16,
-    layers: readonly number[] | null = null,
+    layers: LayerSelector = null,
   ): Promise<Record<string, unknown>> {
     k = this.checkK(k);
     let label: string;
@@ -998,7 +1010,8 @@ export class UnitReader {
       directions = new Map([[target.layer, target.vector]]);
     }
     const available = [...directions.keys()].sort((a, b) => a - b);
-    const requested = (layers ?? available).filter((layer) => directions.has(layer));
+    const requested = layerRequest(() => resolveLayerSelector(layers, available, this.nLayers))
+      .filter((layer) => directions.has(layer));
     if (requested.length === 0) {
       throw new UnitRequestError("RequestError", `no overlap between ${pyRepr(label)}'s layers and the requested layers`);
     }

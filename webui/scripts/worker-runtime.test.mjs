@@ -1358,35 +1358,40 @@ try {
     assert.equal(typeof client.instruments.startPreparation, "function");
     assert.equal(client.instruments.startPreparaton, undefined);
 
-    // The unit and anatomy reads run on hook ABI v5 (B5): routed to the model and offered, so
-    // the UI's capability checks see them; with no model loaded the worker refuses as for any
-    // model operation.
+    // The unit and anatomy reads are in the contract, routed and refused until the model load
+    // wires BrowserUnitsService (B4): the client the UI holds withholds them, so its capability
+    // checks see them absent.
     const unitMembers = ["tokenAnatomy", "unitActivity", "unitRead", "unitTop", "unitFind", "unitCatalog", "unitLabels"];
     for (const method of unitMembers) {
       assert.equal(
         operationPolicyModule.runtimeServiceRoute({ service: "instruments", method, args: [] }),
-        "model",
+        "unavailable",
       );
-      assert.equal(operationPolicyModule.isOfferedRuntimeMethod("instruments", method), true);
-      assert.equal(typeof client.instruments[method], "function", `the browser client offers ${method}`);
+      assert.equal(operationPolicyModule.isOfferedRuntimeMethod("instruments", method), false);
+      assert.equal(client.instruments[method], undefined, `the browser client withholds ${method}`);
     }
     assert.deepEqual(contracts.replayCapabilities(client.instruments), {
-      tokenAnatomy: true,
-      unitActivity: true,
+      tokenAnatomy: false,
+      unitActivity: false,
     });
-    assert.equal(contracts.unitReadsAvailable(client), true);
-    scope.send(request("unloaded-unit-read", "request", {
+    assert.equal(contracts.unitReadsAvailable(client), false);
+    scope.send(request("withheld-method", "request", {
       service: "instruments",
       method: "unitRead",
       args: ["neuron/L8n344"],
     }));
-    const refused = await response(scope, "unloaded-unit-read");
+    const refused = await response(scope, "withheld-method");
     assert.equal(refused.ok, false);
-    assert.equal(refused.error.code, "MODEL_RUNTIME_NOT_READY");
+    assert.equal(refused.error.code, "RUNTIME_METHOD_UNAVAILABLE");
+    assert.equal(refused.error.status, 501);
 
     // The fixture answers them through the real host ports on the tiny fixture model.
     const fixture = new fakeRuntimeModule.DeterministicFakeRuntime();
-    const offered = operationPolicyModule.offeredRuntimeClient(fixture);
+    assert.equal(operationPolicyModule.offeredRuntimeClient(fixture).instruments.unitRead, undefined);
+    const offered = operationPolicyModule.offeredRuntimeClient(
+      fixture,
+      new Set(unitMembers.map((method) => `instruments.${method}`)),
+    );
     for (const method of unitMembers) {
       assert.equal(typeof offered.instruments[method], "function", `the fixture view offers ${method}`);
     }

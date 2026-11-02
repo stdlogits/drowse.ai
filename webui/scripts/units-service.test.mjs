@@ -18,8 +18,9 @@ try {
     server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts"),
     server.ssrLoadModule("/src/hosted/runtime/units/cpuBackend.ts"),
   ]);
+  // Withheld from the hosted client until the model load wires this service (B4).
   for (const method of service.UNITS_SERVICE_METHODS) {
-    assert.equal(policy.isOfferedRuntimeMethod("instruments", method), true, `${method} is offered`);
+    assert.equal(policy.isOfferedRuntimeMethod("instruments", method), false, `${method} is withheld`);
   }
   const stubCompiler = {
     instrumentDescriptor: () => ({ jlens: null, sae: null }),
@@ -93,6 +94,22 @@ try {
   await refuses(call("unitActivity", "node-1", { top: 0 }), "top must be in [1, 1024]");
   await refuses(call("unitActivity", "node-1", { layers: "0,2" }), "layers selects a population, which needs raw_index");
   await refuses(call("unitActivity", "node-1", { units: ["neuron/L1n5", "neuron/L1n5"] }), "units names a unit twice");
+  // Layer selectors parse as native `parse_layer_selector` (modes any case, blank is the
+  // default, written order, a layer named twice refused) and resolve as `resolve_layer_selector`.
+  const topAll = await call("unitTop", top.token, { by: top.by, k: top.k, layers: "ALL" });
+  assert.deepEqual(await call("unitTop", top.token, { by: top.by, k: top.k, layers: "  " }), topAll);
+  assert.deepEqual(await call("unitTop", top.token, { by: top.by, k: top.k, layers: "3,0-2" }), topAll);
+  assert.ok(await call("unitTop", top.token, { by: top.by, k: top.k, layers: "Workspace" }));
+  await refuses(call("unitTop", "e", { layers: "1,1" }), "layer 1 is named twice in '1,1'");
+  await refuses(call("unitTop", "e", { layers: "2-1" }), "reversed layer range '2-1' (write 1-2)");
+  await refuses(call("unitTop", "e", { layers: "1,,2" }), "empty entry in layers '1,,2'");
+  await refuses(call("unitTop", "e", { layers: "-1" }), "layer indices are non-negative; got '-1'");
+  await refuses(call("unitTop", "e", { layers: "x" }), "malformed layers 'x' (want comma-separated indices or a-b ranges, or one of all, workspace, sample)");
+  await refuses(call("unitTop", "e", { layers: "sample" }), "unknown layer mode 'sample' (want all, workspace, or an index list)");
+  await refuses(call("unitTop", "e", { layers: "9" }), "layer 9 is outside the model's 4 layers");
+  await refuses(call("unitFind", { vector: find.vector, layer: find.layer, layers: "0" }), "no overlap between 'vector''s layers and the requested layers");
+  await refuses(call("unitActivity", "node-1", { rawIndex: 0, layers: "sample" }), "unknown layer mode 'sample' (want all, workspace, or an index list)");
+  await refuses(call("unitActivity", "node-1", { rawIndex: 0, layers: "7" }), "layers must lie in [0, 4); got [7]");
 
   // ------------------------------------------------------------------ node replays ---
   const anatomyCase = anatomyGolden.cases[0];

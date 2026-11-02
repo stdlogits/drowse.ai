@@ -3297,8 +3297,10 @@ function capabilitiesWithoutStorageAdmission(
 }
 
 /** Requests that queue behind the model task in flight, as drowse's session lock queues them:
- *  a token readout, and the units members (node replays and static reads on the device). */
+ *  a token readout, and the units members that use the device (node replays and static reads).
+ *  The catalog and its labels are disk only and take no lock (native `unit_routes`). */
 function waitsForModelUse(request: RuntimeServiceRequest): boolean {
   return request.service === "instruments" &&
-    (request.method === "tokenReadout" || isUnitsServiceMethod(request.method));
+    (request.method === "tokenReadout" ||
+      (isUnitsServiceMethod(request.method) && request.method !== "unitCatalog" && request.method !== "unitLabels"));
 }

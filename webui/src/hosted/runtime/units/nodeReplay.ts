@@ -2,6 +2,7 @@
 // `drowse/loom/node_replay.py::NodeReplayer._activity`): the forwards that replay a node as
 // generation's triggers ran it, and the unit activity assembled from the replay's on-device
 // reduction (B1 §2.3).
+import type { LayerSelector } from "../steeringExpression";
 import {
   activityStateLayout,
   f32Tensor,
@@ -145,7 +146,8 @@ export interface UnitActivityOptions {
   readonly units: readonly UnitRef[];
   /** The token row whose population to return, or null. */
   readonly rawIndex: number | null;
-  /** The population's layers (every layer when null). */
+  /** The population's layers, resolved (`resolveModelLayers`: sorted, distinct); every layer
+   *  when null. */
   readonly layers: readonly number[] | null;
 }
 
@@ -197,8 +199,9 @@ export function encodePopulation(values: ArrayLike<number>): string {
   return btoa(text);
 }
 
-/** Native `unit_activity`'s argument checks (400s, verbatim). */
-export function checkActivityOptions(options: UnitActivityOptions): void {
+/** Native `unit_activity`'s argument checks (400s, verbatim); `layers` is the selector as the
+ *  route parsed it (resolved against the model afterwards, `resolveModelLayers`). */
+export function checkActivityOptions(options: Omit<UnitActivityOptions, "layers"> & { readonly layers: LayerSelector }): void {
   if (!(Number.isSafeInteger(options.top) && options.top >= 1 && options.top <= MAX_ACTIVITY_TOP)) {
     throw new UnitRequestError("RequestError", "top must be in [1, 1024]");
   }
@@ -284,7 +287,7 @@ export async function unitActivity(
   });
   let population: Record<string, unknown> | null = null;
   if (options.rawIndex !== null) {
-    const layers = [...new Set(options.layers ?? Array.from({ length: nLayers }, (_, layer) => layer))].sort((a, b) => a - b);
+    const layers = options.layers ?? Array.from({ length: nLayers }, (_, layer) => layer);
     const values = activity.population!.data;
     population = {
       raw_index: options.rawIndex,
