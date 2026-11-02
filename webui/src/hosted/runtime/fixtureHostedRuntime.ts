@@ -171,6 +171,12 @@ const capabilities: RuntimeCapabilities = {
   limits: { manifoldFitMaxIntrinsicDim: 4 },
 };
 
+const FIXTURE_OPTIONAL_PACKS = [
+  { id: "fixture-jlens", kind: "jlens", displayName: "Fixture R-lens", bytes: 1000 },
+  { id: "fixture-slens", kind: "slens", displayName: "Fixture S-lens", bytes: 2000 },
+  { id: "fixture-units", kind: "units", displayName: "Fixture units", bytes: 3000 },
+] as const;
+
 class FixtureHostedController implements HostedController {
   constructor(private readonly withInstruments = false) {}
   private listeners = new Set<(snapshot: RuntimeSnapshot) => void>();
@@ -198,10 +204,15 @@ class FixtureHostedController implements HostedController {
   async catalog(): Promise<VerifiedCatalog> {
     if (!this.withInstruments) return catalog;
     const result = structuredClone(catalog);
-    result.document.models[0].variants[0].packs.push({
-      ...fixtureModel.variants[0].packs[0], id: "fixture-jlens", kind: "jlens",
-      displayName: "Fixture R-lens", bytes: 1000, required: false,
-    });
+    // The optional packs a first run chooses among: the R lens, and 6.0's S lens and units (e2e).
+    result.document.models[0].variants[0].packs.push(...FIXTURE_OPTIONAL_PACKS.map((pack) => ({
+      ...fixtureModel.variants[0].packs[0], ...pack, required: false,
+      // One install file each (a units pack with no bytes would not fit the resident budget).
+      files: [{
+        path: `${pack.id}/${pack.kind}/statistics.bin`, role: "instrument" as const,
+        url: `https://fixture.invalid/${pack.id}.bin`, revision: REVISION, bytes: pack.bytes, sha256: SHA,
+      }],
+    })));
     result.exactBytes = new TextEncoder().encode(JSON.stringify(result.document));
     return result;
   }
@@ -267,7 +278,7 @@ class FixtureHostedController implements HostedController {
     modelVariantId: string,
     packId: string,
   ): Promise<PackDownloadWorkerResult> {
-    if (this.withInstruments && modelVariantId === VARIANT_ID && packId === "fixture-jlens") {
+    if (this.withInstruments && modelVariantId === VARIANT_ID && FIXTURE_OPTIONAL_PACKS.some((pack) => pack.id === packId)) {
       this.installedPacks.add(packId);
       this.patch({ installedPackIds: [...this.installedPacks] });
       return { modelVariantId, packId, installed: true, cancelled: false };
