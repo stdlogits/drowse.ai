@@ -2370,12 +2370,32 @@ try {
     });
     assert.deepEqual(Object.keys(listed.sources[1].split_half.out), ["0", "1"]);
 
+    // A units service the model load configured: an R source change drops its resident reads and
+    // re-sources the compiler's unit programs over the new packs.
+    let unitResets = 0;
+    let unitSources = 0;
+    await runtime.configureUnits({
+      reset() { unitResets += 1; },
+      async programSource() {
+        unitSources += 1;
+        return {
+          spec: null, refusal: "fixture refusal", layerCount: 2, statistics: null, scales: null,
+          neuronWrite: () => null, slensAtom: () => null, slensIdentity: () => null,
+          prepare: async () => undefined, prepareProbe: async () => undefined,
+        };
+      },
+      async request() { throw new Error("not called"); },
+    });
+    assert.deepEqual([unitResets, unitSources], [0, 1]);
     const switched = await runtime.request({
       service: "instruments",
       method: "setLensSource",
       args: ["fixture-rlens"],
     }, () => null);
     assert.deepEqual(switched, { source: "fixture-rlens", live_layers: [0, 1] });
+    assert.deepEqual([unitResets, unitSources], [1, 2], "the R switch resets the units service");
+    await runtime.request({ service: "instruments", method: "setLensSource", args: ["fixture-rlens"] }, () => null);
+    assert.deepEqual([unitResets, unitSources], [1, 2], "the same source keeps it");
     assert.equal(installedDictionaries.length, 1);
     assert.equal(installedDictionaries[0].bindingId, compiler.jlensGpuDictionary().bindingId);
     assert.equal(compiler.listProbes()[0].token_id, 0);

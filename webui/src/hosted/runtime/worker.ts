@@ -78,7 +78,6 @@ import {
   isFittingLifecycleRequest,
   runtimeServiceOperationPolicy,
   runtimeServiceRoute,
-  unavailableRuntimeMethod,
 } from "./operationPolicy";
 import { BrowserDrowseArchiveService } from "../artifacts/service";
 import {
@@ -1385,7 +1384,6 @@ export class HostedRuntimeWorker {
         400,
       );
     }
-    if (route === "unavailable") throw unavailableRuntimeMethod(request);
     const policy = runtimeServiceOperationPolicy(request);
     if (route === "hybrid_manifold_read") {
       if (!this.artifactService.handles(request)) {

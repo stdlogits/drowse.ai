@@ -17,7 +17,8 @@ import type { BrowserJlensRuntimeResolver } from "./browserInstrumentPacks";
 import { BROWSER_EXACT_READOUT_TOP_K_CAPACITY } from "./webLlmGeneration";
 import { loadSaeDescription } from "../../../../drowse/webui/src/lib/saeDescriptions";
 import { UnsupportedBlockError } from "./modelBackend";
-import { isUnitsServiceMethod, type BrowserUnitsService } from "./units/unitsService";
+import { isUnitsServiceMethod, type BrowserUnitsService, type UnitsPackSource } from "./units/unitsService";
+import { compilerUnitsPackSource } from "./units/packSource";
 
 type TokenLookup = (
   nodeId: string,
@@ -89,10 +90,34 @@ export class BrowserInstrumentRuntime {
   }
 
   /** The units members (`tokenAnatomy`, `unitActivity`, `unitRead`, `unitTop`, `unitFind`,
-   *  `unitCatalog`, `unitLabels`) over the loaded library's block sites; without a service every
-   *  one answers native's 422 for a library that has none. */
-  configureUnits(service: BrowserUnitsService | null): void {
+   *  `unitCatalog`, `unitLabels`) over the loaded library's block sites, and the compiler's unit
+   *  source (`neuron/`, `head/` and `slens/` atoms, unit probes and gates) from the same service;
+   *  without a service every member answers native's 422 for a library that has none. */
+  async configureUnits(service: BrowserUnitsService | null): Promise<void> {
     this.units = service;
+    this.compiler.setUnitSource(service === null ? null : await service.programSource());
+  }
+
+  /** The units members' packs over the session's compiler (the current one, as a manifold
+   *  refresh replaces it): core statistics and whitener, the lens packs, the units pack. */
+  unitsPackSource(modelId: string, signal: AbortSignal): UnitsPackSource {
+    return compilerUnitsPackSource(() => this.compiler, modelId, signal);
+  }
+
+  /** `find`'s selector: its instrument atoms prepared on the device, then its per-layer
+   *  directions (`compiler.selectorDirections`). */
+  async selectorDirections(selector: string): Promise<ReadonlyMap<number, Float32Array>> {
+    if (this.jlensResolver !== null) await this.compiler.prepareJlensSelectors(selector, this.jlensResolver);
+    await this.compiler.prepareUnitSelectors(selector);
+    return this.compiler.selectorDirections(selector);
+  }
+
+  /** A pack change under a configured service (the R source): its resident reads go and the
+   *  compiler takes a unit source over the new packs. */
+  private async resetUnits(): Promise<void> {
+    if (this.units === null) return;
+    this.units.reset();
+    this.compiler.setUnitSource(await this.units.programSource());
   }
 
   hasLiveReadout(): boolean {
@@ -392,6 +417,7 @@ export class BrowserInstrumentRuntime {
         throw error;
       }
     }
+    if (previousSource !== source) await this.resetUnits();
     const descriptor = this.compiler.instrumentDescriptor().jlens!;
     this.compiler.setInstrumentLive("lens", true);
     return { source, live_layers: [...descriptor.layers] };

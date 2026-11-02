@@ -1,21 +1,16 @@
 import {
   isRuntimeServiceMethod,
-  RUNTIME_SERVICE_METHODS,
-  type RuntimeClient,
   type RuntimeCapabilityOperation,
   type RuntimeServiceMap,
   type RuntimeServiceName,
   type RuntimeServiceRequest,
 } from "../../../../drowse/webui/src/lib/runtime/contracts";
-import type { RuntimeFailure } from "../../../../drowse/webui/src/lib/runtime/contracts";
-import { runtimeFailure } from "../../lib/runtime/state";
 
 export type RuntimeServiceRoute =
   | "artifact"
   | "hybrid_manifold_read"
   | "fitting"
-  | "model"
-  | "unavailable";
+  | "model";
 
 export interface RuntimeServiceOperationPolicy {
   lifecycle: "ordinary" | "fitting";
@@ -101,13 +96,13 @@ export const RUNTIME_SERVICE_ROUTES = Object.freeze({
     validateLensToken: "model",
     validateSaeFeature: "model",
     saeFeaturesMetadata: "model",
-    tokenAnatomy: "unavailable",
-    unitActivity: "unavailable",
-    unitRead: "unavailable",
-    unitTop: "unavailable",
-    unitFind: "unavailable",
-    unitCatalog: "unavailable",
-    unitLabels: "unavailable",
+    tokenAnatomy: "model",
+    unitActivity: "model",
+    unitRead: "model",
+    unitTop: "model",
+    unitFind: "model",
+    unitCatalog: "model",
+    unitLabels: "model",
   }),
 }) satisfies {
   [Service in RuntimeServiceName]: Readonly<
@@ -154,21 +149,6 @@ export function runtimeServiceOperationPolicy(
   return ORDINARY;
 }
 
-/**
- * Whether this runtime offers a contract method. An `"unavailable"` route is
- * one the worker answers with a refusal: the units members and token anatomy
- * until the model load builds `BrowserUnitsService` and calls
- * `configureUnits` (B4's wiring; the ports, the members and the 422 refusals
- * on a library without unit sites are in place, so the flip to `"model"` lands
- * with that wiring). The client the shared UI holds omits such members,
- * because the UI decides availability by `typeof member === "function"`
- * (`replayCapabilities`, `unitReadsAvailable`).
- */
-export function isOfferedRuntimeMethod(service: RuntimeServiceName, method: string): boolean {
-  const route = runtimeServiceRoute({ service, method, args: [] });
-  return route !== null && route !== "unavailable";
-}
-
 export function isFittingLifecycleRequest(request: RuntimeServiceRequest): boolean {
   return runtimeServiceRoute(request) === "fitting";
 }
@@ -180,65 +160,6 @@ function policy(
   return Object.freeze({
     lifecycle,
     requiredCapabilities: Object.freeze(requiredCapabilities),
-  });
-}
-
-/** The refusal for a routed method this runtime does not offer (501, not recoverable). */
-export function unavailableRuntimeMethod(
-  request: Pick<RuntimeServiceRequest, "service" | "method">,
-): RuntimeFailure {
-  return runtimeFailure(
-    "RUNTIME_METHOD_UNAVAILABLE",
-    `The browser runtime does not offer ${request.service}.${request.method}`,
-    false,
-    501,
-  );
-}
-
-/**
- * The client the shared UI holds: every member of `client` except the
- * `"unavailable"` routes', unless `served` names it (`"service.method"`): a
- * member that `client` answers itself. The fixture runtime reaches the UI
- * through this view and serves the units members through the real host ports
- * on the tiny fixture model, so the e2e fixture mode shows them.
- */
-export function offeredRuntimeClient<T extends RuntimeClient>(
-  client: T,
-  served: ReadonlySet<string> = new Set(),
-): T {
-  const views = new Map<RuntimeServiceName, object>();
-  return new Proxy(client, {
-    get(target, property) {
-      const value: unknown = Reflect.get(target, property, target);
-      if (typeof property !== "string" || !Object.hasOwn(RUNTIME_SERVICE_METHODS, property)) {
-        return typeof value === "function" ? value.bind(target) : value;
-      }
-      const name = property as RuntimeServiceName;
-      let view = views.get(name);
-      if (!view) {
-        view = offeredServiceView(name, value as object, served);
-        views.set(name, view);
-      }
-      return view;
-    },
-  });
-}
-
-function offeredServiceView(name: RuntimeServiceName, service: object, served: ReadonlySet<string>): object {
-  const withheld = (method: string | symbol): boolean =>
-    typeof method === "string" &&
-    isRuntimeServiceMethod(name, method) &&
-    !isOfferedRuntimeMethod(name, method) &&
-    !served.has(`${name}.${method}`);
-  return new Proxy(service, {
-    get(target, method) {
-      if (withheld(method)) return undefined;
-      const member: unknown = Reflect.get(target, method, target);
-      return typeof member === "function" ? member.bind(target) : member;
-    },
-    has(target, method) {
-      return !withheld(method) && Reflect.has(target, method);
-    },
   });
 }
 

@@ -18,16 +18,18 @@ try {
     server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts"),
     server.ssrLoadModule("/src/hosted/runtime/units/cpuBackend.ts"),
   ]);
-  // Withheld from the hosted client until the model load wires this service (B4).
+  // Routed to the loaded model, which wires this service at load.
   for (const method of service.UNITS_SERVICE_METHODS) {
-    assert.equal(policy.isOfferedRuntimeMethod("instruments", method), false, `${method} is withheld`);
+    assert.equal(policy.runtimeServiceRoute({ service: "instruments", method, args: [] }), "model", `${method} is offered`);
   }
   let attached = [];
   const stubCompiler = {
+    unitSource: undefined,
     instrumentDescriptor: () => ({ jlens: null, sae: null }),
     instrumentLiveState: () => ({ geometry: false, lens: false, lensLayers: null, sae: false }),
     listProbes: () => attached,
     setInstrumentLive() {},
+    setUnitSource(source) { this.unitSource = source; },
   };
   const arch = "gemma3";
   const fx = await unitsFixture(server, arch);
@@ -69,7 +71,10 @@ try {
   // Before a service is configured: native's 422 for a library without unit sites.
   await assert.rejects(call("unitRead", "neuron/L1n5"), (error) => error.status === 422 && error.code === "UnsupportedBlockError");
   assert.equal(instruments.blocks().some((block) => block.family === "units"), false);
-  instruments.configureUnits(units);
+  await instruments.configureUnits(units);
+  // The compiler's unit source comes from the same service: the library's spec and statistics.
+  assert.equal(stubCompiler.unitSource.spec, fx.backend.capabilities().blockSpec);
+  assert.equal(stubCompiler.unitSource.refusal, null);
   // Native `family_block("units")`: no source, live on by default, its probes; all-or-nothing live.
   attached = [{ family: "units", name: "n", unit: "neuron/L1n5", kind: "neuron", layer: 1, index: 5, layers: [1], intrinsic_dim: 1, feature_space: "unit-readout" }];
   assert.deepEqual(instruments.blocks().find((block) => block.family === "units"), {

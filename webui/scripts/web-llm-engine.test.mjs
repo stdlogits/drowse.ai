@@ -38,6 +38,7 @@ try {
     "/src/hosted/runtime/webLlmActivationCapture.ts",
   );
   const {
+    STANDARD_STRUCTURED_HOOK_PROFILE_V4,
     STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL,
     expectedHookProfileDescriptor,
   } = await server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts");
@@ -195,8 +196,12 @@ try {
       return this.constructor.structuredHooks;
     }
     async supportsDrowseResidualCapture() { return this.capture; }
-    async prepareDrowseCaptureRows(rows) {
-      return rows.map((_row, index) => ({ inputIds: [index, 9], position: 1 }));
+    async prepareDrowseCaptureRows(rows, specialTokenIds) {
+      (this.captureRowCalls ??= []).push({ rows: structuredClone(rows), specialTokenIds: [...specialTokenIds] });
+      // A row ending in an empty assistant turn renders its separator (4) after the header.
+      return rows.map((row, index) => (row.messages.at(-1).content === ""
+        ? { inputIds: [index, 9, 4], position: 1 }
+        : { inputIds: [index, 9], position: 1 }));
     }
     async captureDrowseResiduals(inputIds, positions) {
       if (positions.length > 1) {
@@ -312,6 +317,33 @@ try {
   assert.deepEqual(await runtime.tokenizeText(" lead"), [32, 108, 101, 97, 100]);
   assert.equal(runtime.vocabularySize(), 16);
   assert.equal(await runtime.decodeTokens([115, 117, 98]), "sub");
+  assert.deepEqual(await runtime.tokenTexts([115, 117, 115]), ["s", "u", "s"]);
+  // The ids a plan prefills: a raw prompt's own ids (this chat model has no completion prefix);
+  // a chat prompt through WebLLM's capture renderer, the reply header an empty assistant turn
+  // whose separator the renderer cuts (`position`).
+  assert.deepEqual(await runtime.renderPromptTokenIds({ input: { kind: "raw", prompt: "hi" } }), [104, 105]);
+  assert.deepEqual(await runtime.renderPromptTokenIds({
+    input: { kind: "chat", messages: [{ role: "system", content: "S" }, { role: "user", content: "u", name: "Ann" }] },
+    thinking: null,
+    generationRoleName: "Bot",
+  }), [0, 9]);
+  assert.deepEqual(runtime.requireEngine().captureRowCalls.at(-1), {
+    rows: [{
+      system: "S",
+      messages: [{ role: "user", content: "u", roleName: "Ann" }, { role: "assistant", content: "", roleName: "Bot" }],
+    }],
+    specialTokenIds: [],
+  });
+  await runtime.renderPromptTokenIds({ input: { kind: "chat", messages: [{ role: "user", content: "u" }] } });
+  assert.equal(runtime.requireEngine().captureRowCalls.at(-1).rows[0].system, "", "the template's own system message");
+  await assert.rejects(
+    runtime.renderPromptTokenIds({ input: { kind: "chat", messages: [{ role: "assistant", content: "a" }] }, generationSeat: "user" }),
+    { code: "TOKEN_REPLAY_UNAVAILABLE", status: 409 },
+  );
+  await assert.rejects(
+    runtime.renderPromptTokenIds({ input: { kind: "chat", messages: [{ role: "user", content: "u" }, { role: "system", content: "late" }] } }),
+    { code: "TOKEN_REPLAY_UNAVAILABLE" },
+  );
   assert.deepEqual(runtime.hookCapabilities(), {
     multi_term: true,
     projection: true,
@@ -758,6 +790,37 @@ try {
       .load(loadRequest({ variant: { ...variant, structuredHookProfile: "standard-v3" } })),
     (error) => error.code === "STRUCTURED_HOOK_PROFILE_MISMATCH",
   );
+
+  // A standard-v4 library attested against the lock's block spec: unit sites, so the hook
+  // capabilities offer `units` and `slens` (a residual library offers neither).
+  const blockSpec = {
+    dFF: 4, nHeads: 2, nKvHeads: 1, headDim: 2, sandwich: false, normOffset: 0, activation: "silu",
+    embedScale: 1, rmsEps: 1e-6, qkNorm: true, attnScaling: 0.5, attnLogitSoftcap: null,
+    finalLogitSoftcap: null, ropeTheta: 10000, ropeLocalTheta: null, ropeGlobalScale: 1,
+    ropeInGraph: true, slidingWindow: null, slidingPattern: null,
+  };
+  const unitsVariant = variantWith({ structuredHookProfile: "standard-v4" });
+  class UnitSitesEngine extends FixtureEngine {
+    async getDrowseStructuredHookProfile() {
+      return {
+        schemaVersion: 4,
+        id: "standard-v4",
+        hookAbi: "block-sites-v5",
+        format: "drowse-structured-v4",
+        unitSites: 1,
+        descriptor: Array.from(expectedHookProfileDescriptor(
+          STANDARD_STRUCTURED_HOOK_PROFILE_V4,
+          hookProfileDescriptorModel({ variant: unitsVariant, blockSpec }),
+        )),
+      };
+    }
+  }
+  const unitSites = new DrowseWebLlmRuntime({ DROWSE_HOOK_ABI: "block-sites-v5", MLCEngine: UnitSitesEngine });
+  await unitSites.load(loadRequest({ variant: unitsVariant, blockSpec }));
+  assert.equal(unitSites.blockSitesCapabilities().blockSpec.dFF, 4);
+  assert.equal(unitSites.hookCapabilities().units, true);
+  assert.equal(unitSites.hookCapabilities().slens, true);
+  await unitSites.unload();
 
   class MissingProfileEngine extends FixtureEngine {}
   MissingProfileEngine.prototype.getDrowseStructuredHookProfile = undefined;

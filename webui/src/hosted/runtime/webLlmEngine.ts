@@ -36,11 +36,12 @@ import {
   structuredGeometryPayloadLayout,
   WEB_LLM_RUNTIME_MIN_STORAGE_BUFFERS_PER_SHADER_STAGE,
 } from "./structuredHookProfile";
-import { prepareVerifiedWebLlmArtifacts } from "./verifiedArtifactCache";
+import { prepareVerifiedWebLlmArtifacts, type WebLlmPromptRendering } from "./verifiedArtifactCache";
 import type { WebLlmBlockSitesDevice, WebLlmBlockSitesRequest } from "./webLlmBlockSites";
 import {
   assertHookFeaturesSupported,
   AFFINE_FEASIBILITY_CAPABILITIES,
+  blockSitesHookCapabilities,
   type DrowseHookCapabilities,
 } from "./hookCapabilities";
 import {
@@ -289,10 +290,14 @@ typeof STRUCTURED_HOOK_FORMAT;
   descriptor?: Int32Array;
 }
 
+/** WebLLM's reply header for a generation with thinking off (`appendEmptyThinkingReplyHeader`). */
+const EMPTY_THINKING_BLOCK = "<think>\n\n</think>\n\n";
+
 export class DrowseWebLlmRuntime {
   private engine: DrowseWebLlmEngineInstance | null = null;
   private blockSites: BlockSitesCapabilities | null = null;
   private captureSpecialTokenIds: number[] | null = null;
+  private promptRendering: WebLlmPromptRendering | null = null;
   private vocabSize: number | null = null;
   private generating = false;
   private reusablePlainChatPrefix = false;
@@ -529,6 +534,7 @@ export class DrowseWebLlmRuntime {
         );
       }
       this.captureSpecialTokenIds = [...prepared.captureSpecialTokenIds];
+      this.promptRendering = prepared.promptRendering;
       this.vocabSize = prepared.vocabSize;
       this.blockSites = blockSitesCapabilitiesFor(
         this.structuredHookProfile,
@@ -539,6 +545,7 @@ export class DrowseWebLlmRuntime {
       return { prefillTokensPerSecond: null, decodeTokensPerSecond: null };
     } catch (error) {
       this.captureSpecialTokenIds = null;
+      this.promptRendering = null;
       this.vocabSize = null;
       this.structuredHooks = false;
       this.curvedHooks = false;
@@ -575,6 +582,7 @@ export class DrowseWebLlmRuntime {
     this.engine = null;
     this.reusablePlainChatPrefix = false;
     this.captureSpecialTokenIds = null;
+    this.promptRendering = null;
     this.vocabSize = null;
     this.structuredHooks = false;
     this.curvedHooks = false;
@@ -717,16 +725,79 @@ export class DrowseWebLlmRuntime {
     return engine.decodeDrowseTokens(tokenIds);
   }
 
+  /** Each id's own text (`decode([id])`), through the per-token cache. */
+  async tokenTexts(tokenIds: readonly number[]): Promise<string[]> {
+    this.requireEngine();
+    if (!this.runtimeCapabilities().tokenizer) {
+      throw runtimeError(
+        "DROWSE_TOKENIZER_UNAVAILABLE",
+        "The loaded browser model does not expose its tokenizer",
+      );
+    }
+    return Promise.all(tokenIds.map((tokenId) => this.decodeSingleToken(tokenId)));
+  }
+
+  /**
+   * The token ids WebLLM prefills for a generation plan's input, so a loom node replays on the
+   * block sites exactly as it ran. A raw prompt is the completion prefix and the prompt's ids. A
+   * chat prompt goes through WebLLM's own conversation renderer (the capture rows) with the reply
+   * header as an empty assistant turn, its separator cut: exact when the template renders the
+   * header that way (`replyHeaderIsEmptyTurn`), as every units template does. A user-seat
+   * generation's header is a user turn, which that renderer does not end on; it is refused.
+   */
+  async renderPromptTokenIds(
+    plan: Pick<WebLlmGenerationPlan, "input" | "thinking" | "generationSeat" | "generationRoleName">,
+  ): Promise<number[]> {
+    const engine = this.requireEngine();
+    const rendering = this.promptRendering;
+    if (rendering === null) throw runtimeError("MODEL_NOT_LOADED", "No browser model runtime is loaded");
+    if (plan.input.kind === "raw") {
+      return [...rendering.completionPrefixTokenIds, ...await this.tokenizeText(plan.input.prompt)];
+    }
+    const refuse = (message: string) =>
+      Object.assign(runtimeError("TOKEN_REPLAY_UNAVAILABLE", message), { status: 409, recoverable: true });
+    if ((plan.generationSeat ?? "assistant") !== "assistant") {
+      throw refuse("The browser cannot render a user-seat generation's prompt for a replay");
+    }
+    if (!rendering.replyHeaderIsEmptyTurn) {
+      throw refuse("This model's chat template renders its reply header unlike an empty turn, so the browser cannot name its prompt tokens");
+    }
+    const [first, ...rest] = plan.input.messages;
+    const leading = first?.role === "system";
+    const messages = leading ? rest : plan.input.messages;
+    if (messages.some((message) => message.role === "system")) {
+      throw refuse("A system message after the first turn has no prompt tokens to replay");
+    }
+    const header = this.thinkingProfile !== null && plan.thinking === false ? EMPTY_THINKING_BLOCK : "";
+    const [row] = await engine.prepareDrowseCaptureRows([{
+      system: leading ? first.content : rendering.systemMessage,
+      messages: [
+        ...messages.map((message) => ({
+          role: message.role as "user" | "assistant",
+          content: message.content,
+          ...(message.name === undefined ? {} : { roleName: message.name }),
+        })),
+        {
+          role: "assistant",
+          content: header,
+          ...(plan.generationRoleName ? { roleName: plan.generationRoleName } : {}),
+        },
+      ],
+    }], []);
+    return row.inputIds.slice(0, row.position + 1);
+  }
+
   hookCapabilities(): DrowseHookCapabilities {
     this.requireEngine();
-    return {
+    // `units` and `slens` follow the library's v5 profile (a standard-v4 library has unit sites).
+    return blockSitesHookCapabilities({
       ...AFFINE_FEASIBILITY_CAPABILITIES,
       curved_manifold: this.curvedHooks,
       phase_trigger: this.structuredHooks,
       probe_gate: this.structuredHooks,
       sae: this.saeHooks,
       jlens: this.jlensHooks,
-    };
+    }, this.blockSites);
   }
 
   assertSteeringSupported(expression: string): void {

@@ -176,6 +176,8 @@ try {
       if (featureId > 3) throw new Error("unknown feature");
       return { id: featureId, label: null, layer: 1, max_act: null };
     },
+    unitSource: undefined,
+    setUnitSource(source) { this.unitSource = source; },
   };
   const refreshedAttachedProbes = [];
   const refreshedCompiler = {
@@ -299,6 +301,14 @@ try {
     prefillTokensPerSecond: 12,
     decodeTokensPerSecond: 6,
   });
+  // The load wires the units members and hands the compiler their unit source: this library
+  // predates hook ABI v5, so the source carries native's refusal and every member answers 422.
+  assert.equal(instrumentCompiler.unitSource.spec, null);
+  assert.equal(instrumentCompiler.unitSource.refusal, "the loaded model library predates hook ABI block-sites-v5");
+  await assert.rejects(
+    backend.request(service("instruments", "unitRead", ["neuron/L0n0"]), () => {}, new AbortController().signal),
+    (error) => error.status === 422 && error.message === "the loaded model library predates hook ABI block-sites-v5",
+  );
   assert.deepEqual(loadProgress, [
     {
       event: "progress",
