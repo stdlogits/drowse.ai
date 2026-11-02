@@ -1068,8 +1068,16 @@ try {
     const large = execute("0.9 alert@response");
     assert.ok(Math.abs(deltaNorm(large) / deltaNorm(small) - 9) < 1e-5);
 
-    const explicitStructuredCompiler = await BrowserFeasibilityCorePackCompiler.load(request);
-    const explicitStructured = explicitStructuredCompiler.compile("0.1 alert@both");
+    // `@both` is the bare form, so it lowers to the same program as the bare term.
+    const bareCompiler = await BrowserFeasibilityCorePackCompiler.load(request);
+    const bare = bareCompiler.compile("0.1 alert");
+    const both = bareCompiler.compile("0.1 alert@both");
+    assert.equal(both.format, bare.format);
+    assertFloatArray(both.target, bare.target);
+    assertFloatArray(both.along, bare.along);
+    // A probe forces the structured path without changing the steering: the same push as an
+    // explicitly phased term (the layer runner applies the compiled active flags).
+    const explicitStructured = bareCompiler.compile("0.1 alert@response");
     compiler.attachProbe({ selector: "demo", name: "demo" });
     const probeForcedStructured = compiler.compile("0.1 alert");
     assertFloatArray(
@@ -1141,6 +1149,43 @@ try {
       () => flat.compile("0.2 !alert@response + 0.3 !alert@prompt"),
       (error) => error.code === "SteeringExprError" && /conflicting triggers/.test(error.message),
     );
+  });
+
+  test("folds by IR key: a label term and an explicit-position term stay two terms", async () => {
+    const { request } = await fixture({ withWhitener: true });
+    const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+    const input = new Float32Array([0.4, -0.2]);
+    const run = (program) => runStructuredHookLayer(
+      program, initialStructuredHookState(program), 0, input,
+    ).residual;
+    const split = compiler.compile("0.5 alert@response + 0.2 demo%alert@response");
+    assert.deepEqual(split.steeringTerms.map((term) => term.key), ["local/demo%alert", "demo%alert"]);
+    assert.deepEqual(split.steeringParts.map((part) => part.text), ["0.5 local/demo%alert@response", "0.2 demo%alert@response"]);
+    // The affine pushes sum linearly (synthesize_subspace), so two terms act as one.
+    assertFloatArray(run(split), run(compiler.compile("0.7 alert@response")), 1e-5);
+    // Different keys take different triggers, as drowse accepts them.
+    const phased = compiler.compile("0.5 alert@prompt + 0.2 demo%alert@response");
+    assert.equal(phased.steeringTerms.length, 2);
+    assert.equal(phased.steeringParts.length, 2);
+
+    const curved = await fixture({ curved: true, withWhitener: true });
+    const curvedCompiler = await BrowserFeasibilityCorePackCompiler.load(curved.request);
+    // Two curved terms on one manifold overlap, as drowse's OverlappingManifoldError.
+    assert.throws(
+      () => curvedCompiler.compile("0.2,0.1 alert + 0.3,0.2 demo%alert"),
+      (error) => error.code === "CORE_PACK_CURVED_OVERLAP",
+    );
+  });
+
+  test("folds a plain term with its @both form", async () => {
+    const { request } = await fixture({ withWhitener: true, withSae: true });
+    const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+    const both = compiler.compile("0.5 sae/0 + 0.5 sae/0@both");
+    const single = compiler.compile("1 sae/0");
+    assert.equal(both.steeringExpression, "1 sae/0");
+    assert.deepEqual(both.steeringTerms.map((term) => term.key), ["sae/0"]);
+    assertFloatArray(both.affineTarget, single.affineTarget);
+    assertFloatArray(both.affineAlong, single.affineAlong);
   });
 
   test("matches Python bare-selector tier gating and canonicalization", async () => {

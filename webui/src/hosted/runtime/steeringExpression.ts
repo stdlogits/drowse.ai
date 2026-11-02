@@ -896,7 +896,7 @@ function scopeOf(term: SteeringExpressionTerm): LayerScope {
 }
 
 /** `Trigger.BOTH` is `null`. */
-function normalizeTrigger(trigger: SteeringTrigger | null): SteeringTrigger | null {
+export function normalizeTrigger(trigger: SteeringTrigger | null): SteeringTrigger | null {
   return trigger === null || (trigger.phase.kind === "both" && trigger.gate === null) ? null : trigger;
 }
 

@@ -71,6 +71,7 @@ import {
   foldSteering,
   formatLayerClause,
   formatSteering,
+  normalizeTrigger,
   parseSteering,
   parseSteeringExpression,
   RESERVED_NAMESPACES,
@@ -2439,7 +2440,7 @@ export class BrowserFeasibilityCorePackCompiler {
       coefficient: term.coefficients[0],
       coefficients: term.coefficients,
       ablation: term.ablation,
-      trigger: term.trigger,
+      trigger: normalizeTrigger(term.trigger),
       manifoldPosition,
       layers,
       irKey: foldSteering({ terms: [term] }, { manifolds: this.steeringManifolds() }).terms[0].key,
@@ -2516,53 +2517,29 @@ export class BrowserFeasibilityCorePackCompiler {
     return fragment === null ? 0 : Math.max(0, mahalanobisNorm(whitener, fragment.direction));
   }
 
+  /** Merge the terms the grammar's fold merges: one IR key, whose triggers and positions
+   *  parseSteering has already checked. A label term and an explicit-position term on one node
+   *  keep different keys (`local/demo%alert`, `demo%alert`), so they stay two terms, as in drowse. */
   private foldResolvedTerms(
     terms: readonly ResolvedCoreTerm[],
   ): ResolvedCoreTerm[] {
     const folded = new Map<string, ResolvedCoreTerm>();
     for (const term of terms) {
-      const foldKey = resolvedFoldKey(term);
-      const previous = folded.get(foldKey);
+      const previous = folded.get(term.irKey);
       if (previous === undefined) {
-        folded.set(foldKey, term);
+        folded.set(term.irKey, term);
         continue;
       }
-      const kind = resolvedTermKind(term);
-      if (resolvedTermKind(previous) !== kind) {
-        throw coreError(
-          "CORE_PACK_EXPRESSION_CONFLICT",
-          `Steering selector ${term.key} appears as incompatible term types`,
-        );
-      }
-      const previousTrigger = kind === "plain"
-        ? previous.trigger
-        : effectiveStructuredTrigger(previous.trigger);
-      const nextTrigger = kind === "plain"
-        ? term.trigger
-        : effectiveStructuredTrigger(term.trigger);
-      if (!steeringTriggersEqual(previousTrigger, nextTrigger)) {
-        throw coreError(
-          "CORE_PACK_TRIGGER_CONFLICT",
-          `Steering selector ${term.key} appears with conflicting triggers`,
-        );
-      }
       const coefficient = previous.coefficient + term.coefficient;
-      if (kind === "manifold") {
-        folded.set(foldKey, {
-          ...previous,
-          coefficient,
-          coefficients: [
-            coefficient,
-            (previous.coefficients[1] ?? 0) + (term.coefficients[1] ?? 0),
-          ],
-        });
-      } else {
-        folded.set(foldKey, {
-          ...previous,
-          coefficient,
-          coefficients: [coefficient],
-        });
-      }
+      const manifold = !term.ablation && term.projection === null &&
+        (term.manifoldPosition !== null || term.base.kind === "manifold");
+      folded.set(term.irKey, {
+        ...previous,
+        coefficient,
+        coefficients: manifold
+          ? [coefficient, (previous.coefficients[1] ?? 0) + (term.coefficients[1] ?? 0)]
+          : [coefficient],
+      });
     }
     return [...folded.values()];
   }
@@ -3472,49 +3449,8 @@ function groupAffineTermsByTrigger(
   return [...groups.values()];
 }
 
-function resolvedTermKind(
-  term: ResolvedCoreTerm,
-): "plain" | "projection" | "ablation" | "manifold" {
-  if (term.ablation) return "ablation";
-  if (term.projection !== null) return "projection";
-  if (term.manifoldPosition !== null || term.base.kind === "manifold") {
-    return "manifold";
-  }
-  return "plain";
-}
-
-function resolvedFoldKey(term: ResolvedCoreTerm): string {
-  return term.projection === null
-    ? term.key
-    : `${term.base.key}${term.projection.operator}${term.projection.onto.key}${formatLayerClause(term.layers)}`;
-}
-
 function termActsAt(term: ResolvedCoreTerm, layer: number): boolean {
   return term.actsAt === null || term.actsAt.has(layer);
-}
-
-function effectiveStructuredTrigger(
-  trigger: SteeringTrigger | null,
-): SteeringTrigger {
-  return trigger ?? { phase: { kind: "both" }, gate: null };
-}
-
-function steeringTriggersEqual(
-  left: SteeringTrigger | null,
-  right: SteeringTrigger | null,
-): boolean {
-  if (left === null || right === null) return left === right;
-  if (left.phase.kind !== right.phase.kind) return false;
-  if (
-    (left.phase.kind === "first" || left.phase.kind === "after") &&
-    (right.phase.kind !== left.phase.kind || right.phase.tokens !== left.phase.tokens)
-  ) {
-    return false;
-  }
-  if (left.gate === null || right.gate === null) return left.gate === right.gate;
-  return left.gate.probe === right.gate.probe &&
-    left.gate.operator === right.gate.operator &&
-    left.gate.threshold === right.gate.threshold;
 }
 
 function structuredTriggerKey(trigger: SteeringTrigger | null): string {
