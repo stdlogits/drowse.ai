@@ -1177,6 +1177,23 @@ try {
     );
   });
 
+  test("lists a ~ projection as fitted only where it is not zero", async () => {
+    const { request } = await fixture({ withWhitener: true, withSae: true });
+    const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+    // Layer 1 only (the SAE's layer): alert's [0, 1] against decoder rows [1, 0] and [0, 1].
+    assert.deepEqual(compiler.compile("0.5 alert~sae/1").steeringTerms[0].fitted, [1]);
+    // M-orthogonal operands project to zero there, so project_profile drops the layer and, with
+    // none left, refuses the term before any clause is checked.
+    for (const expression of ["0.5 alert~sae/0", "0.5 alert~sae/0{1}"]) {
+      assert.throws(
+        () => compiler.compile(expression),
+        (error) => error.status === 422 && error.message ===
+          "project_profile: no layers produced for operator '~' (base layers: [0, 1], onto layers: [1])",
+        expression,
+      );
+    }
+  });
+
   test("folds a plain term with its @both form", async () => {
     const { request } = await fixture({ withWhitener: true, withSae: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);

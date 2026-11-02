@@ -2466,15 +2466,34 @@ export class BrowserFeasibilityCorePackCompiler {
   }
 
   /** The layers a resolved term can act on: its atom's fitted layers (a `~` projection's where
-   *  both operands are fitted). */
+   *  both operands are fitted and the projection is not zero, as `project_profile` drops a
+   *  degenerate `onto`). */
   private termFittedLayers(term: ResolvedCoreTerm): number[] {
     const atomLayers = (atom: ResolvedCoreAtom): number[] => atom.kind === "instrument"
       ? [...atom.directions.keys()]
       : fittedLayerNumbers(atom.manifold.tensors);
     const base = atomLayers(term.base);
     if (term.projection?.operator !== "~") return [...base].sort((a, b) => a - b);
-    const onto = new Set(atomLayers(term.projection.onto));
-    return base.filter((layer) => onto.has(layer)).sort((a, b) => a - b);
+    const ontoLayers = atomLayers(term.projection.onto);
+    const onto = new Set(ontoLayers);
+    const fitted = base.filter((layer) => {
+      if (!onto.has(layer)) return false;
+      // Without a whitener the term is refused at lowering, so the layer stays listed.
+      const whitener = this.whiteners.get(layer);
+      return whitener === undefined || this.termDirection(term, layer, whitener) !== null;
+    }).sort((a, b) => a - b);
+    if (fitted.length === 0) {
+      const list = (layers: number[]) => `[${[...layers].sort((a, b) => a - b).join(", ")}]`;
+      throw Object.assign(
+        coreError(
+          "STEERING_COMPOSITION",
+          `project_profile: no layers produced for operator '~' (base layers: ${list(base)}, ` +
+            `onto layers: ${list(ontoLayers)})`,
+        ),
+        { status: 422, recoverable: false },
+      );
+    }
+    return fitted;
   }
 
   /** Select each folded term's layers (`select_term_layers`: 422 on a clause naming an unfitted
