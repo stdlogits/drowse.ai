@@ -65,6 +65,7 @@
   let viewNonce = $state(0);
   let installedModelIds: Set<string> | null = null;
   const initialUrl = new URL(window.location.href);
+  let shownEntry = `${initialUrl.pathname}${initialUrl.search}`;
   const requestedModelPicker = initialUrl.searchParams.get("choose") === "1";
   const requestedWorkbenchReopen = initialUrl.searchParams.get("reopen") === "1";
   const takeoverPhase = $derived(shellSnapshot?.takeover?.phase ?? "idle");
@@ -87,7 +88,10 @@
   const routeKey = $derived(`${route}:${viewNonce}`);
   let routeMounted = $state(false);
   $effect(() => {
+    // The shell's views name themselves; the workbench is the app, as the dashboard's own
+    // index.html titles it (in the site's casing).
     if (route === "resolving") document.title = "Opening workspace · Drowse";
+    else if (route === "workbench") document.title = "Drowse";
   });
 
   const FOCUSABLE = [
@@ -158,17 +162,30 @@
     url.searchParams.delete("reopen-after-unload");
     url.searchParams.set("reopen", "1");
     window.history.replaceState(window.history.state, "", url);
+    shownEntry = entryKey();
+  }
+
+  // The path and query of the history entry on screen. The workbench's rooms are hash routes
+  // (drowse's rooms store pushes #/lens, #/artifacts/build, ...), so a history step that keeps
+  // the path and query is a room move the dashboard's router follows, not a shell move.
+  function entryKey(href: string = window.location.href): string {
+    const url = new URL(href);
+    return `${url.pathname}${url.search}`;
   }
 
   // User-initiated Chats/Models moves add a history entry so Back returns to
   // the previous view instead of leaving the app. Reaching the URL already
   // shown replaces the entry, so repeated clicks never stack duplicates.
+  // The shell's views have no rooms: a room's hash left from the workbench
+  // would otherwise reopen the next workbench in that room.
   function commitEntryUrl(url: URL, mode: HistoryMode, state: EntryHistoryState | null): void {
+    url.hash = "";
     if (mode === "push" && url.href !== window.location.href) {
       window.history.pushState(state, "", url);
     } else {
       window.history.replaceState(state ?? window.history.state, "", url);
     }
+    shownEntry = entryKey();
   }
 
   function showModels(
@@ -212,7 +229,10 @@
     if (disposed || reloading || entryView === "resolving") return;
     const url = new URL(window.location.href);
     const target: EntryView = url.searchParams.get("choose") === "1" ? "models" : "home";
+    const sameEntry = entryKey(url.href) === shownEntry;
+    shownEntry = entryKey(url.href);
     if (Workbench) {
+      if (sameEntry) return;
       if (!returningHome) void returnToChats(target === "models" ? "models" : "chats");
       return;
     }
@@ -387,6 +407,9 @@
           if (appController.current().runtime.phase === "ready") {
             Workbench = component;
             completeChunkRecovery("workbench");
+            // The models view clears its choice from the query as it opens the workbench, and a
+            // recovery reload's marker leaves it just above: read the entry once both are gone.
+            shownEntry = entryKey();
           } else {
             reloadToOnboarding();
           }

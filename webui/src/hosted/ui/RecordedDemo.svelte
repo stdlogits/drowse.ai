@@ -6,8 +6,7 @@
   import recording from "../data/neighbor-example.json";
 
   let mode = $state<"steering" | "prediction">("steering");
-  const initialSetting = 3;
-  let setting = $state(initialSetting);
+  let setting = $state(3);
   let coloring = $state<"surprisal" | "probability">("surprisal");
   const promptPreview = recording.prompt.split(" Write your reply")[0];
   const options: { value: "steering" | "prediction"; label: string }[] = [{ value: "steering", label: "Steer" }, { value: "prediction", label: "Inspect" }];
@@ -22,14 +21,9 @@
   const recordedOn = new Intl.DateTimeFormat("en", { dateStyle: "long", timeZone: "UTC" }).format(new Date(recording.recordedAt));
   const provenance = `Recorded with ${modelNames[recording.modelId] ?? recording.modelId} in the Drowse browser runtime on ${recordedOn} · seed ${recording.sampling.seed} · temperature ${recording.sampling.temperature}. Real output, not edited.`;
   let announcement = $state("");
-  // Announce once when a new setting is committed, not on every drag tick. The keyboard commits
-  // with a change event; drowse's Slider runs pointer drags itself and fires none, so the end of a
-  // drag commits too: the pointer's release reaches the window from the captured input. A repeat
-  // of the last setting stays quiet, so other releases on the page say nothing.
-  let announcedSetting = initialSetting;
+  // Announce once when a new setting is committed, not on every drag tick: drowse's Slider fires
+  // change for a keyboard step and at the end of a drag that moved it.
   function announce() {
-    if (setting === announcedSetting) return;
-    announcedSetting = setting;
     announcement = `${valueText}. Reply: ${run.text.trim()}`;
   }
 
@@ -43,8 +37,6 @@
   }
 
 </script>
-
-<svelte:window onpointerup={announce} onpointercancel={announce} />
 
 <section class="capability-demo" aria-label="Recorded Drowse example">
   <div class="demo-content" use:fitContent>
