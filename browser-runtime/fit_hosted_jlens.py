@@ -252,7 +252,7 @@ def residual_parity(
         for index, row in enumerate(input_id_rows):
             outputs.clear()
             ids = torch.tensor([list(row)], dtype=torch.long, device=device)
-            model(ids, use_cache=False)
+            model(ids, use_cache=False, logits_to_keep=1)
             captured = torch.from_numpy(np.asarray(reference(index), dtype=np.float32))
             if captured.shape != (spec.n_layers, len(row), spec.d_model):
                 raise ValueError(f"lens capture row {index} has the wrong residual shape")
