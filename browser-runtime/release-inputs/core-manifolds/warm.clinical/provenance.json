@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "artifact": "default/warm.clinical",
+  "authorship": "drowse's bundled default concept (drowse/data/manifolds/warm.clinical), copied unchanged from the pinned drowse submodule by webui/scripts/sync-core-concepts.mjs.",
+  "license": "AGPL-3.0-or-later",
+  "source": "bundled",
+  "baseline_prompts_path": "drowse/data/baseline_prompts.json",
+  "baseline_prompts_sha256": "f56692872f78f643a90011456a2f317b571552e977c91559ff4ab6948a936738",
+  "responses_per_node": 48
+}

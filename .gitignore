@@ -84,8 +84,8 @@ docs/superpowers/
 !/browser-runtime/evidence/README.md
 PROVENANCE.md
 provenance.json
-# Required authored-source manifest, not a run or audit record.
-!/browser-runtime/release-inputs/core-manifolds/welcoming.detached/provenance.json
+# Required authored-source manifests (the core concepts' provenance), not run or audit records.
+!/browser-runtime/release-inputs/core-manifolds/*/provenance.json
 
 # Local research, benchmark reports, and generated verification output.
 /DOMAIN_NAME_*.md
