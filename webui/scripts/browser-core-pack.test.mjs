@@ -884,7 +884,21 @@ try {
     assert.deepEqual(taps[0].scale.top.length, 2, "a neuron's scale is a pole pair");
     assert.equal(gated.controls.units[0].gate.scoreKey, "head/L1h0");
     assert.equal(gated.controls.units[0].gate.threshold, 0.5);
-    compiler.detachProbe?.("neuron/L0n1");
+    // slens/ atoms push their prepared footprints; an slens/ probe has no GPU slot and its gate
+    // reads the post-forward score by name.
+    const slensSource = {
+      ...source,
+      slensAtom: (word) => (word === "e" ? { tokenId: 72, directions: new Map([[0, Float32Array.from([0.5, 0.25])], [1, Float32Array.from([0, 1])]]) } : null),
+    };
+    compiler.setUnitSource(slensSource);
+    const slensPush = compiler.compile("0.2 slens/e");
+    assert.ok([...slensPush.affineActive].filter((value) => value === 1).length >= 2);
+    assert.throws(() => compiler.compile("0.2 slens/a"), (error) => error.code === "SLENS_ATOM_UNPREPARED");
+    const slensProbe = compiler.attachProbe({ selector: "slens/e" });
+    assert.deepEqual([slensProbe.family, slensProbe.namespace, slensProbe.layers, slensProbe.token_id], ["lens", "slens", [0, 1], 72]);
+    const slensGated = compiler.compile("!neuron/L1n2@when:slens/e>1");
+    assert.equal(slensGated.controls.units[0].gate.scoreKey, "slens/e");
+    assert.equal(slensGated.measurementSchema.probes.filter((probe) => probe !== null).length, 0, "no GPU slot");
     // A unit outside the model is native's 400; a library without unit sites is native's 422.
     assert.throws(() => compiler.compile("!neuron/L1n9"), (error) => error.status === 400 && /neuron 9 is outside block 1/.test(error.message));
     compiler.setUnitSource({ ...source, spec: null, refusal: "layer 0: the attention projections are fused (qkv)" });

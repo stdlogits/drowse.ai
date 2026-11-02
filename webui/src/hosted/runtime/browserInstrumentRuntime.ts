@@ -66,7 +66,7 @@ export class BrowserInstrumentRuntime {
     const probes = this.compiler.listProbes();
     const lensWords = probes
       .filter((probe): probe is Extract<ProbeInfo, { family: "lens" }> =>
-        probe.family === "lens"
+        probe.family === "lens" && probe.namespace === "jlens"
       )
       .map((probe) => probe.word);
     if (lensWords.length > 0 && this.jlensResolver !== null) {
@@ -628,7 +628,7 @@ function probeRefreshRequest(probe: ProbeInfo): ProbeRequest {
     return { selector: probe.manifold, name: probe.name, top_n: probe.top_n };
   }
   if (probe.family === "lens") {
-    return { selector: `jlens/${probe.word}`, name: probe.name };
+    return { selector: `${probe.namespace}/${probe.word}`, name: probe.name };
   }
   if (probe.family === "units") return { selector: probe.unit, name: probe.name };
   return { selector: `sae/${probe.feature_id}`, name: probe.name };

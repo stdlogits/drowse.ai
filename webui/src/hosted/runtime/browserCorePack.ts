@@ -357,7 +357,8 @@ export class BrowserFeasibilityCorePackCompiler {
 
   async refreshJlensProbes(resolver: BrowserJlensRuntimeResolver): Promise<void> {
     const probes = [...this.attachedProbes.values()].filter(
-      (probe): probe is Extract<ProbeInfo, { family: "lens" }> => probe.family === "lens",
+      (probe): probe is Extract<ProbeInfo, { family: "lens" }> =>
+        probe.family === "lens" && probe.namespace === "jlens",
     );
     await this.instruments.prepareJlensWords(probes.map((probe) => probe.word), resolver);
     for (const probe of probes) {
@@ -550,6 +551,25 @@ export class BrowserFeasibilityCorePackCompiler {
         feature_space: "readout",
         word: token.word,
         token_id: token.tokenId,
+      };
+    } else if (selector.startsWith("slens/")) {
+      // An S-lens probe reads the residuals each block wrote, post-forward on the host side of
+      // the device (B1 §2.1): no GPU measurement slot, gates read its score by name.
+      if (this.unitSource === null) throw instrumentAtomUnavailable("slens");
+      const word = selector.slice("slens/".length);
+      const prepared = this.unitSource.slensAtom(word);
+      if (prepared === null) {
+        throw coreError("SLENS_ATOM_UNPREPARED", `${selector} was not resolved before attaching`);
+      }
+      probe = {
+        family: "lens",
+        namespace: "slens",
+        name,
+        layers: [...prepared.directions.keys()].sort((left, right) => left - right),
+        intrinsic_dim: 1,
+        feature_space: "readout",
+        word,
+        token_id: prepared.tokenId,
       };
     } else if (selector.startsWith("neuron/") || selector.startsWith("head/")) {
       const namespace = selector.startsWith("neuron/") ? "neuron" : "head";
@@ -1059,7 +1079,11 @@ export class BrowserFeasibilityCorePackCompiler {
       term.trigger?.gate ? [term.trigger.gate.probe] : []
     ))];
     const unitGateNames = allGateNames.filter((name) => this.isUnitGate(name));
-    const requiredGateNames = allGateNames.filter((name) => !unitGateNames.includes(name));
+    // An S-lens gate reads the post-forward slens/ score by name (`scoreKey`), as a unit gate does.
+    const slensGateNames = allGateNames.filter((name) => this.isSlensGate(name));
+    const requiredGateNames = allGateNames.filter((name) =>
+      !unitGateNames.includes(name) && !slensGateNames.includes(name)
+    );
     if (requiredGateNames.length > this.structuredHookProfile.maxProbes) {
       throw coreError(
         "CORE_PACK_PROBE_LIMIT",
@@ -1180,6 +1204,14 @@ export class BrowserFeasibilityCorePackCompiler {
     return this.withUnitSection(program, unitTerms, unitGateNames, gateSlots);
   }
 
+  private isSlensGate(name: string): boolean {
+    const attached = this.attachedProbes.get(name);
+    if (attached !== undefined) return attached.family === "lens" && attached.namespace === "slens";
+    if (!name.startsWith("slens/")) return false;
+    if (this.unitSource === null) throw instrumentAtomUnavailable("slens");
+    return true;
+  }
+
   private isUnitGate(name: string): boolean {
     const attached = this.attachedProbes.get(name);
     if (attached !== undefined) return attached.family === "units";
@@ -1235,7 +1267,7 @@ export class BrowserFeasibilityCorePackCompiler {
   private syncPinnedJlensWords(): void {
     this.instruments.setPinnedJlensWords(
       [...this.attachedProbes.values()].flatMap((probe) =>
-        probe.family === "lens" ? [probe.word] : []
+        probe.family === "lens" && probe.namespace === "jlens" ? [probe.word] : []
       ),
     );
   }
@@ -1244,7 +1276,7 @@ export class BrowserFeasibilityCorePackCompiler {
     const names = [...required];
     for (const [name, probe] of this.attachedProbes) {
       if (probe.family === "geometry" && !this.geometryLive) continue;
-      if (probe.family === "units") continue;
+      if (probe.family === "units" || (probe.family === "lens" && probe.namespace === "slens")) continue;
       if (!names.includes(name)) names.push(name);
     }
     if (names.length > this.structuredHookProfile.maxProbes) {
