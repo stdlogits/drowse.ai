@@ -45,22 +45,21 @@ const variantId = `${modelId}-${options.quantization}`;
 const revision = "a".repeat(40);
 const goldenFile = async (name) => JSON.parse(await readFile(resolve(goldensDirectory, `${name}-${options.arch}-v1.json`), "utf8"));
 
+const PREVIEW_DEFINES = {
+  __DROWSE_HOSTED_RELEASE__: false,
+  __DROWSE_SOURCE_REVISION__: "0".repeat(40),
+  __DROWSE_SOURCE_URL__: "https://github.com/stdlogits/drowse.ai",
+  __DROWSE_VERSION__: "6.0.0",
+  __DROWSE_ARTIFACT_SOURCE_REVISION__: "0".repeat(40),
+  __DROWSE_RUNTIME_ABI__: "drowse-web-runtime-v2",
+  __DROWSE_HOOK_ABI__: "block-sites-v5",
+  __DROWSE_HOSTED_CHANNEL__: "preview",
+  __DROWSE_FITTING_WASM__: { module: "/fitting.js", wasm: "/fitting.wasm" },
+};
 const vite = await createViteServer({
   root: webui, configFile: false, appType: "custom", logLevel: "silent",
   publicDir: resolve(webui, "public-hosted"),
   server: { middlewareMode: true, hmr: false, watch: null },
-  // What vite.hosted.config.ts injects into a preview build (the worker reads its provenance).
-  define: {
-    __DROWSE_HOSTED_RELEASE__: "false",
-    __DROWSE_SOURCE_REVISION__: JSON.stringify("0".repeat(40)),
-    __DROWSE_SOURCE_URL__: JSON.stringify("https://github.com/stdlogits/drowse.ai"),
-    __DROWSE_VERSION__: JSON.stringify("6.0.0"),
-    __DROWSE_ARTIFACT_SOURCE_REVISION__: JSON.stringify("0".repeat(40)),
-    __DROWSE_RUNTIME_ABI__: JSON.stringify("drowse-web-runtime-v2"),
-    __DROWSE_HOOK_ABI__: JSON.stringify("block-sites-v5"),
-    __DROWSE_HOSTED_CHANNEL__: JSON.stringify("preview"),
-    __DROWSE_FITTING_WASM__: JSON.stringify({ module: "/fitting.js", wasm: "/fitting.wasm" }),
-  },
 });
 const catalogModule = await vite.ssrLoadModule("/src/lib/runtime/catalog.ts");
 const fingerprint = catalogModule.runtimeIdentitySha256(runtimeIdentity);
@@ -103,7 +102,12 @@ const http = createHttpServer(async (request, response) => {
   try {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (url.pathname === "/") return send("<!doctype html><title>units worker</title>", "text/html");
-    for (const [path, source] of [["/whitener-worker.js", "/scripts/hosted-whitener.worker.ts"], ["/units-worker.js", "/scripts/units-worker.worker.ts"]]) {
+    if (url.pathname === "/units-worker.js") {
+      // What vite.hosted.config.ts injects into a preview build, set before the worker's modules
+      // evaluate (the dev server has no build step to replace them).
+      return send(`Object.assign(globalThis, ${JSON.stringify(PREVIEW_DEFINES)});\nawait import("/units-worker-main.js");\n`, "text/javascript");
+    }
+    for (const [path, source] of [["/whitener-worker.js", "/scripts/hosted-whitener.worker.ts"], ["/units-worker-main.js", "/scripts/units-worker.worker.ts"]]) {
       if (url.pathname === path) return send((await vite.transformRequest(source)).code, "text/javascript");
     }
     if (url.pathname === "/webllm.js") {
@@ -249,7 +253,7 @@ try {
     }],
     downloadBytes: files.reduce((sum, file) => sum + file.bytes, 0),
     requiredCorePackBytes: packs[0].bytes,
-    requirements: { features: [], limits: { maxStorageBuffersPerShaderStage: 8 } },
+    requirements: { features: [], limits: { maxStorageBuffersPerShaderStage: 8, maxComputeWorkgroupSizeX: 256, maxComputeInvocationsPerWorkgroup: 256 } },
     runtimeIdentity, runtimeIdentitySha256: fingerprint, files, packs,
   };
   harnessConfig = {

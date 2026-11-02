@@ -46,6 +46,11 @@ new HostedRuntimeWorker(globalThis as unknown as WorkerScopeLike, {
       return { ...config.capabilities, checkedAt: Date.now() };
     },
     clearAdapter() {},
+    async adapterForLoad() {
+      const adapter = await (navigator as unknown as { gpu: { requestAdapter(): Promise<unknown> } }).gpu.requestAdapter();
+      if (adapter === null) throw new Error("the harness browser offers no WebGPU adapter");
+      return adapter as never;
+    },
   },
   catalogRepository: {
     async get() {
