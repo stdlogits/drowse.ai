@@ -259,6 +259,8 @@ def test_build_transformers_model_binds_exact_special_token_ids(
         LlamaForCausalLM=FakeModel,
         Qwen3Config=FakeConfig,
         Qwen3ForCausalLM=FakeModel,
+        Qwen3_5ForCausalLM=FakeModel,
+        Qwen3_5TextConfig=FakeConfig,
     )
     monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
     monkeypatch.setattr(
