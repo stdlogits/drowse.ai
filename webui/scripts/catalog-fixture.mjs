@@ -65,7 +65,7 @@ export function catalogFixture(overrides = {}) {
       variants: [{
         id: "smollm2-360m-q4f16",
         tier: "fastest",
-        structuredHookProfile: "standard-v1",
+        structuredHookProfile: "standard-v4",
         thinkingProfile: null,
         contextProfiles: [{
           contextTokens: 2048,
@@ -81,10 +81,12 @@ export function catalogFixture(overrides = {}) {
         requirements: {
           features: ["shader-f16"],
           limits: {
-            maxBufferSize: 245_760,
-            maxStorageBufferBindingSize: 245_760,
+            maxBufferSize: 737_280,
+            maxStorageBufferBindingSize: 737_280,
             maxStorageBuffersPerShaderStage: 10,
             maxComputeWorkgroupStorageSize: 32_768,
+            maxComputeWorkgroupSizeX: 256,
+            maxComputeInvocationsPerWorkgroup: 256,
           },
         },
         runtimeIdentity,

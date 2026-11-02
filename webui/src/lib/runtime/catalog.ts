@@ -14,6 +14,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import {
   EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
+  isBlockSitesProfile,
   resolveStructuredHookProfile,
   structuredHookMemoryRequirements,
   WEB_LLM_RUNTIME_MIN_STORAGE_BUFFERS_PER_SHADER_STAGE,
@@ -435,10 +436,15 @@ function validateVariant(value: unknown, index: number): ModelVariant {
   if (item.tier !== "fastest" && item.tier !== "balanced" && item.tier !== "quality") {
     throw invalid(`${path}.tier is invalid`);
   }
+  // This runtime loads hook ABI block-sites-v5 libraries only: standard-v4 (unit sites) or
+  // standard-v4-residual.
   let structuredHookProfile;
   try {
     structuredHookProfile = resolveStructuredHookProfile(item.structuredHookProfile);
   } catch {
+    throw invalid(`${path}.structuredHookProfile is not allow-listed`);
+  }
+  if (!isBlockSitesProfile(structuredHookProfile)) {
     throw invalid(`${path}.structuredHookProfile is not allow-listed`);
   }
   const thinkingProfile = validateThinkingProfile(item.thinkingProfile, `${path}.thinkingProfile`);
@@ -561,16 +567,15 @@ function validateVariant(value: unknown, index: number): ModelVariant {
         `${WEB_LLM_RUNTIME_MIN_STORAGE_BUFFERS_PER_SHADER_STAGE} for the WebLLM runtime`,
     );
   }
-  if (structuredHookProfile.id === "standard-v3") {
-    for (const [name, minimum] of Object.entries(
-      EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
-    )) {
-      if (!Object.hasOwn(limits, name) || limits[name] < minimum) {
-        throw invalid(
-          `${path}.requirements.limits.${name} must explicitly declare at least ${minimum} ` +
-            "for standard-v3 exact GPU readout",
-        );
-      }
+  // Every v5 library runs the exact GPU readout (exact-readout-v2).
+  for (const [name, minimum] of Object.entries(
+    EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
+  )) {
+    if (!Object.hasOwn(limits, name) || limits[name] < minimum) {
+      throw invalid(
+        `${path}.requirements.limits.${name} must explicitly declare at least ${minimum} ` +
+          "for the exact GPU readout",
+      );
     }
   }
   const files = array(item.files, `${path}.files`).map(validateFile);

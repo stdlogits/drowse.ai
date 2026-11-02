@@ -5,7 +5,9 @@ import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createServer as createViteServer } from "vite";
+import { lockedModelExecutionProfiles } from "./hosted-model-profiles.mjs";
 import { grantReleaseToolStorageQuota, launchReleaseToolContext, releaseToolGpuArgs } from "./release-tool-storage-quota.mjs";
+import { readRuntimeLock } from "./runtime-lock-document.mjs";
 
 const [directory, output] = process.argv.slice(2);
 if (!directory || !output) throw new Error("Usage: node scripts/record-not-found.mjs <artifact closure directory> <output.json>");
@@ -32,6 +34,12 @@ const artifactHash = role => {
   if (files.length !== 1) throw new Error(`Expected one ${role} artifact`);
   return files[0].sha256;
 };
+// The library the repository lock pins: its hook profile and the block spec the load attests.
+const { value: runtimeLock } = await readRuntimeLock(resolve(root, "../browser-runtime/runtime-lock.json"));
+const { structuredHookProfile, blockSpec, unitRefusal } = lockedModelExecutionProfiles(
+  runtimeLock.models.find(entry => entry.id === "gemma3-4b-instruct"),
+  manifest,
+);
 const identity = {
   sourceModel: manifest.source.repository, sourceRevision: manifest.source.revision,
   convertedManifestSha256: artifactHash("converted_manifest"), quantization: manifest.quantization,
@@ -88,7 +96,7 @@ try {
       if (data.type === "result") resolve(data.value);
     };
     worker.postMessage(payload);
-  }), { modelId: "gemma3-4b-instruct", identity, modelFiles: sets.model, seeds });
+  }), { modelId: "gemma3-4b-instruct", identity, structuredHookProfile, blockSpec, unitRefusal, modelFiles: sets.model, seeds });
   const artifacts = Object.fromEntries(Object.entries(sets).map(([name, files]) => [name,
     files.map(({ path, role, bytes, sha256 }) => ({ path, role, bytes, sha256 })),
   ]));

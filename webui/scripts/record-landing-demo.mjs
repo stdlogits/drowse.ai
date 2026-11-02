@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createServer as createViteServer } from "vite";
+import { lockedModelExecutionProfiles } from "./hosted-model-profiles.mjs";
 import { grantReleaseToolStorageQuota, launchReleaseToolContext, releaseToolGpuArgs } from "./release-tool-storage-quota.mjs";
 
 const [directory, output] = process.argv.slice(2);
@@ -14,8 +15,10 @@ const lock = JSON.parse(await readFile(resolve(directory, "runtime-lock.json"), 
 const model = lock.models.find(entry => entry.id === "gemma3-4b-instruct");
 if (!model) throw new Error("The recording requires the Gemma 3 4B closure");
 const sets = {};
+const manifests = {};
 for (const set of ["model", "core"]) {
   const manifest = JSON.parse(await readFile(resolve(directory, set, set === "model" ? "hosted-artifacts.json" : "hosted-pack-artifacts.json"), "utf8"));
+  manifests[set] = manifest;
   sets[set] = manifest.files.map(file => ({ ...file, ...(set === "core" ? { role: "core_pack" } : {}),
     revision: model.convertedRevision,
     url: `https://huggingface.co/${model.convertedRepository}/resolve/${model.convertedRevision}/${file.path}`,
@@ -28,6 +31,8 @@ for (const set of ["model", "core"]) {
     if (bytes !== file.bytes || hash.digest("hex") !== file.sha256) throw new Error(`Invalid artifact ${set}/${file.path}`);
   }
 }
+// The library the lock pins: its hook profile and the block spec (or refusal) the load attests.
+const { structuredHookProfile, blockSpec, unitRefusal } = lockedModelExecutionProfiles(model, manifests.model);
 const identity = {
   sourceModel: model.sourceRepository, sourceRevision: model.sourceRevision,
   convertedManifestSha256: model.manifestSha256, quantization: model.quantization,
@@ -83,7 +88,7 @@ try {
       if (data.type === "result") resolve(data.value);
     };
     worker.postMessage(payload);
-  }), { modelId: model.id, identity, modelFiles: sets.model, coreFiles: sets.core });
+  }), { modelId: model.id, identity, structuredHookProfile, blockSpec, unitRefusal, modelFiles: sets.model, coreFiles: sets.core });
   const artifacts = Object.fromEntries(Object.entries(sets).map(([name, files]) => [name,
     files.map(({ path, role, bytes, sha256 }) => ({ path, role, bytes, sha256 })),
   ]));

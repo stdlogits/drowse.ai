@@ -74,7 +74,7 @@ function catalogDocument(overrides = {}) {
           {
             id: "smollm2-360m-q4f16",
             tier: "fastest",
-            structuredHookProfile: "standard-v1",
+            structuredHookProfile: "standard-v4",
             thinkingProfile: null,
             contextProfiles: [
               {
@@ -92,10 +92,12 @@ function catalogDocument(overrides = {}) {
             requirements: {
               features: ["shader-f16"],
               limits: {
-              maxBufferSize: 245_760,
-              maxStorageBufferBindingSize: 245_760,
+              maxBufferSize: 737_280,
+              maxStorageBufferBindingSize: 737_280,
               maxStorageBuffersPerShaderStage: 10,
               maxComputeWorkgroupStorageSize: 32_768,
+              maxComputeWorkgroupSizeX: 256,
+              maxComputeInvocationsPerWorkgroup: 256,
               },
             },
             runtimeIdentity,
@@ -252,6 +254,8 @@ function capabilities(overrides = {}) {
         maxStorageBufferBindingSize: 1_048_576,
         maxStorageBuffersPerShaderStage: 10,
         maxComputeWorkgroupStorageSize: 65_536,
+        maxComputeWorkgroupSizeX: 256,
+        maxComputeInvocationsPerWorkgroup: 256,
       },
       adapterInfo: { vendor: "fixture" },
     },
@@ -3027,6 +3031,20 @@ try {
       "CATALOG_SCHEMA_INVALID",
     );
 
+    // A pre-v5 profile names a library this runtime cannot load.
+    const preBlockSitesProfile = catalogDocument();
+    preBlockSitesProfile.models[0].variants[0].structuredHookProfile = "standard-v3";
+    const signedPreBlockSitesProfile = await signedCatalog(preBlockSitesProfile, signed.pair);
+    await rejectsCode(
+      () => catalog.verifyCatalog(
+        signedPreBlockSitesProfile.exactBytes,
+        signedPreBlockSitesProfile.signature,
+        verifier,
+        policy,
+      ),
+      "CATALOG_SCHEMA_INVALID",
+    );
+
     const unknownStructuredProfile = catalogDocument();
     unknownStructuredProfile.models[0].variants[0].structuredHookProfile = "adapter-derived";
     const signedUnknownStructuredProfile = await signedCatalog(
@@ -3045,7 +3063,7 @@ try {
 
     const exactReadout = catalogDocument();
     const exactReadoutVariant = exactReadout.models[0].variants[0];
-    exactReadoutVariant.structuredHookProfile = "standard-v3";
+    exactReadoutVariant.structuredHookProfile = "standard-v4-residual";
     Object.assign(exactReadoutVariant.requirements.limits, {
       maxBufferSize: 134_217_728,
       maxStorageBufferBindingSize: 134_217_728,

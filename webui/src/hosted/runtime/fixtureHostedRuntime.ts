@@ -48,7 +48,7 @@ const fixtureModel: CatalogModel = {
   variants: [{
     id: VARIANT_ID,
     tier: "fastest",
-    structuredHookProfile: "standard-v1",
+    structuredHookProfile: "standard-v4",
     thinkingProfile: null,
     contextProfiles: [{
       contextTokens: 2048,
@@ -64,10 +64,12 @@ const fixtureModel: CatalogModel = {
     requirements: {
       features: [],
       limits: {
-        maxBufferSize: 21_472,
-        maxStorageBufferBindingSize: 21_472,
+        maxBufferSize: 135_872,
+        maxStorageBufferBindingSize: 135_872,
         maxStorageBuffersPerShaderStage: 10,
         maxComputeWorkgroupStorageSize: 32_768,
+        maxComputeWorkgroupSizeX: 256,
+        maxComputeInvocationsPerWorkgroup: 256,
       },
     },
     runtimeIdentity,
@@ -127,10 +129,12 @@ const capabilities: RuntimeCapabilities = {
     fallback: "hardware",
     features: [],
     limits: {
-      maxBufferSize: 21_472,
-      maxStorageBufferBindingSize: 21_472,
+      maxBufferSize: 135_872,
+      maxStorageBufferBindingSize: 135_872,
       maxStorageBuffersPerShaderStage: 10,
       maxComputeWorkgroupStorageSize: 32_768,
+      maxComputeWorkgroupSizeX: 256,
+      maxComputeInvocationsPerWorkgroup: 256,
     },
     adapterInfo: { vendor: "deterministic fixture" },
   },

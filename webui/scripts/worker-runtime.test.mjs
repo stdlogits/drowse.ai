@@ -195,6 +195,8 @@ try {
           maxStorageBufferBindingSize: 16 * 1024 * 1024,
           maxStorageBuffersPerShaderStage: 10,
           maxComputeWorkgroupStorageSize: 65_536,
+          maxComputeWorkgroupSizeX: 256,
+          maxComputeInvocationsPerWorkgroup: 256,
         },
         adapterInfo: { vendor: "fixture" },
       },
