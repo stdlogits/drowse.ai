@@ -534,11 +534,16 @@ library allocates at its largest context and prefill chunk, the larger of:
   slots at the full context (one buffer as built, sized to the positions a replay feeds, so only a
   full-context pattern replay reaches it), the head grams, the chunk's MLP gate/up activation
   `[prefill_chunk_size, 2·d_ff]` (MLC's static memory plan allocates it at the chunk bound; a
-  replay chunk's `act` is half of it), and every other `blockSitesBufferElements` buffer;
-- the structured program's buffers, one full-vocabulary static read of `VOCAB_READ_ROWS` (64) rows
-  (`[64, V]`; the adapter splits longer `drowse_vocab_logits`/`drowse_footprint_scores` reads into
-  calls of 64 rows) and one resident lens layer `[d, d]`. J-lens and SAE dictionaries upload in
-  chunks of at most 32 MiB.
+  replay chunk's `act` is half of it), a layer's head rows (`drowse_head_rows` over every head,
+  `[H, 4, hd, d]`) and every other `blockSitesBufferElements` buffer;
+- a unit read's vocabulary chunk (`UNIT_VOCAB_ROWS` = 8192 rows times a factor of at most
+  `max(d, H·hd)` columns), the structured program's buffers, one full-vocabulary static read of
+  `VOCAB_READ_ROWS` (64) rows (`[64, V]`; the adapter splits longer
+  `drowse_vocab_logits`/`drowse_footprint_scores` reads into calls of 64 rows) and one resident
+  lens layer `[d, d]`. J-lens and SAE dictionaries upload in chunks of at most 32 MiB, and a
+  residual capture of many positions ends each chunk before the first position whose
+  `[L, positions, d]` output would outgrow the device's binding (bridge .47,
+  `drowseCapturePositionsPerForward`; qwen3-4b takes 728 positions per forward at 256 MiB).
 
 | library (MiB) | largest weight | `pattern_keys` | head grams | gate/up | binding |
 |---|---|---|---|---|---|
