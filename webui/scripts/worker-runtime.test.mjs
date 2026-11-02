@@ -1357,6 +1357,50 @@ try {
     });
     assert.equal(typeof client.instruments.startPreparation, "function");
     assert.equal(client.instruments.startPreparaton, undefined);
+
+    // The unit and anatomy reads are in the contract, routed and refused: the
+    // client the UI holds withholds them, so its capability checks see them absent.
+    const withheld = ["tokenAnatomy", "unitActivity", "unitRead", "unitTop", "unitFind", "unitCatalog", "unitLabels"];
+    for (const method of withheld) {
+      assert.equal(
+        operationPolicyModule.runtimeServiceRoute({ service: "instruments", method, args: [] }),
+        "unavailable",
+      );
+      assert.equal(operationPolicyModule.isOfferedRuntimeMethod("instruments", method), false);
+      assert.equal(client.instruments[method], undefined, `the browser client withholds ${method}`);
+    }
+    assert.deepEqual(contracts.replayCapabilities(client.instruments), {
+      tokenAnatomy: false,
+      unitActivity: false,
+    });
+    assert.equal(contracts.unitReadsAvailable(client), false);
+    scope.send(request("withheld-method", "request", {
+      service: "instruments",
+      method: "unitRead",
+      args: ["neuron/L8n344"],
+    }));
+    const refused = await response(scope, "withheld-method");
+    assert.equal(refused.ok, false);
+    assert.equal(refused.error.code, "RUNTIME_METHOD_UNAVAILABLE");
+    assert.equal(refused.error.status, 501);
+
+    const fixture = new fakeRuntimeModule.DeterministicFakeRuntime();
+    const offered = operationPolicyModule.offeredRuntimeClient(fixture);
+    for (const method of withheld) {
+      assert.equal(typeof fixture.instruments[method], "function");
+      await assert.rejects(fixture.instruments[method](), { code: "RUNTIME_METHOD_UNAVAILABLE" });
+      assert.equal(offered.instruments[method], undefined, `the fixture view withholds ${method}`);
+      assert.equal(method in offered.instruments, false);
+    }
+    assert.equal(contracts.unitReadsAvailable(offered), false);
+    assert.equal(offered.mode, "fake");
+    assert.equal(typeof offered.instruments.tokenReadout, "function");
+    assert.deepEqual(
+      await offered.instruments.sources("lens"),
+      await fixture.instruments.sources("lens"),
+    );
+    await assert.rejects(fixture.instruments.sources("units"), { code: "INSTRUMENT_FAMILY_UNAVAILABLE" });
+    await offered.dispose();
     await client.dispose();
     transport.dispose();
   });
