@@ -46,6 +46,7 @@ import {
 } from "./hookCapabilities";
 import {
   BROWSER_EXACT_READOUT_TOP_K_CAPACITY,
+  bridgeRendersTurnOrder,
   streamWebLlmGeneration,
   readWebLlmRuntimeCapabilities,
   tokenizeWebLlmText,
@@ -546,7 +547,7 @@ export class DrowseWebLlmRuntime {
       return { prefillTokensPerSecond: null, decodeTokensPerSecond: null };
     } catch (error) {
       this.captureSpecialTokenIds = null;
-        this.vocabSize = null;
+      this.vocabSize = null;
       this.structuredHooks = false;
       this.curvedHooks = false;
       this.saeHooks = false;
@@ -748,6 +749,15 @@ export class DrowseWebLlmRuntime {
     const engine = this.requireEngine();
     if (this.runtimeCapabilities().baseModel && plan.input.kind !== "raw") {
       throw runtimeError("BASE_MODEL_RAW_INPUT_REQUIRED", "This base model requires a plain text completion prompt");
+    }
+    if (!bridgeRendersTurnOrder(plan)) {
+      throw Object.assign(
+        runtimeError(
+          "TOKEN_REPLAY_UNAVAILABLE",
+          "The browser renders a turn only after the other seat's turn, and a system message only first, so it cannot name this node's prompt tokens",
+        ),
+        { status: 409, recoverable: true },
+      );
     }
     return engine.prepareDrowseGenerationInputIds(
       webLlmPromptRequest({ ...plan, thinkingProfile: this.thinkingProfile }),

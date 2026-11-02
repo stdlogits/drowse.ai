@@ -883,6 +883,19 @@ export type WebLlmPromptPlan = Pick<
   "input" | "generationSeat" | "generationRoleName" | "thinking" | "thinkingProfile"
 >;
 
+/** Whether the bridge renders a chat plan's turn order: its request check opens the generated seat
+ *  only after the other seat's turn (a user seat after an assistant turn, an assistant seat after
+ *  a user turn) and takes a system message only first. drowse stitches any order; a browser
+ *  generation never records another, so only a node from elsewhere can need one. */
+export function bridgeRendersTurnOrder(plan: Pick<WebLlmPromptPlan, "input" | "generationSeat">): boolean {
+  if (plan.input.kind !== "chat") return true;
+  const messages = plan.input.messages;
+  const last = messages.at(-1);
+  const opposite = (plan.generationSeat ?? "assistant") === "user" ? "assistant" : "user";
+  return last?.role === opposite &&
+    messages.every((message, index) => message.role !== "system" || index === 0);
+}
+
 export function webLlmPromptRequest(plan: WebLlmPromptPlan): Record<string, unknown> {
   validateInput(plan.input);
   validateGenerationRole(plan);

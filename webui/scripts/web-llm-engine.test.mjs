@@ -337,6 +337,18 @@ try {
     generationSeat: "user",
   }), [2, 9]);
   assert.deepEqual(runtime.requireEngine().promptRequests.at(-1).extra_body, { drowse_generation_seat: "user" });
+  // The bridge opens a seat only after the other seat's turn and takes a system message only
+  // first: a node needing another order is refused as a recoverable replay gap, before the bridge.
+  const asked = runtime.requireEngine().promptRequests.length;
+  for (const plan of [
+    { input: { kind: "chat", messages: [{ role: "user", content: "u" }, { role: "user", content: "v" }] }, generationSeat: "user" },
+    { input: { kind: "chat", messages: [{ role: "user", content: "u" }, { role: "assistant", content: "a" }] } },
+    { input: { kind: "chat", messages: [{ role: "user", content: "u" }, { role: "system", content: "S" }, { role: "user", content: "v" }] } },
+  ]) {
+    await assert.rejects(runtime.renderPromptTokenIds(plan),
+      (error) => error.code === "TOKEN_REPLAY_UNAVAILABLE" && error.status === 409 && error.recoverable === true);
+  }
+  assert.equal(runtime.requireEngine().promptRequests.length, asked);
   assert.deepEqual(runtime.hookCapabilities(), {
     multi_term: true,
     projection: true,
