@@ -59,34 +59,39 @@ try {
   assert.ok(transformed.code.includes("maxComputeWorkgroupSizeX"));
   assert.ok(transformed.code.includes("maxComputeInvocationsPerWorkgroup"));
 
-  // The lens v7 reader rule, against a manifest drowse itself writes: an R
-  // lens at out and mid, with the fit's split-half differences.
-  const { lensManifestSites } = await vite.ssrLoadModule(
+  // The lens v7 reader rule and drowse's lens identity, against a manifest
+  // drowse itself writes: an R lens at out and mid, with the fit's split-half
+  // differences (floats Python and JavaScript spell differently).
+  const { lensIdentity, lensManifestSites } = await vite.ssrLoadModule(
     "/src/hosted/runtime/browserInstrumentPacks.ts",
   );
   const stage = await mkdtemp(join(tmpdir(), "drowse-lens-v7-"));
   try {
-    await exec(python, ["-c", `
-import sys, torch
+    const written = await exec(python, ["-c", `
+import json, sys, torch
 from pathlib import Path
 from drowse.lens.jlens import JacobianLens
 from drowse.lens.key import LensKey
-from drowse.lens.store import LensProvenance, save_lens_at
+from drowse.lens.store import LensProvenance, lens_identity, save_lens_at
 lens = JacobianLens(
     {0: torch.eye(2), 1: torch.eye(2)}, mid={1: torch.eye(2)},
     n_prompts=4, d_model=2, key=LensKey("R"),
 )
-save_lens_at(lens, Path(sys.argv[1]), LensProvenance(
-    corpus_spec="fixture", corpus_sha256="1" * 64, seq_len=32, dim_batch=8,
-), split_half={"out": {0: 0.25, 1: 0.5}, "mid": {1: 0.125}})
+root = Path(sys.argv[1])
+save_lens_at(lens, root, LensProvenance(
+    corpus_spec="fixture-\\u00e9\\u2028\\U0001f600\\x7f", corpus_sha256="1" * 64, seq_len=32,
+    dim_batch=8,
+), split_half={"out": {0: 1e-05, 1: 0.0}, "mid": {1: 1e16}})
+print(lens_identity(json.loads((root / "manifest.json").read_text())))
 `, stage], { cwd: repositoryRoot, env: pythonEnv });
     const manifest = JSON.parse(await readFile(join(stage, "manifest.json"), "utf8"));
     const sites = lensManifestSites(manifest);
     assert.deepEqual([...sites.keys()], ["out", "mid"]);
     assert.deepEqual(sites.get("out").layers, [0, 1]);
-    assert.deepEqual(sites.get("out").splitHalf, { 0: 0.25, 1: 0.5 });
+    assert.deepEqual(sites.get("out").splitHalf, { 0: 1e-5, 1: 0 });
     assert.deepEqual(sites.get("mid").layers, [1]);
-    assert.deepEqual(sites.get("mid").splitHalf, { 1: 0.125 });
+    assert.deepEqual(sites.get("mid").splitHalf, { 1: 1e16 });
+    assert.equal(lensIdentity(manifest), written.stdout.trim());
 
     const withSite = (site, entry) => ({
       ...manifest,

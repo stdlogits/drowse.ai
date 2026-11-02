@@ -156,6 +156,8 @@ interface BrowserJlens {
   readonly layerMap: readonly number[];
   readonly runtimeLayerMap: readonly number[];
   readonly bindingId: string;
+  /** drowse's `lens_identity` of the pack's manifest. */
+  readonly identity: string;
   readonly jacobians: ReadonlyMap<number, Float32Array>;
   readonly words: Map<string, { row: number; tokenId: number }>;
   readonly unembedding: Float32Array;
@@ -358,12 +360,21 @@ export class BrowserInstrumentRegistry {
           `Lens probe ${probe.name} has no resolved token identity`,
         );
       }
+      if (probe.namespace === "slens" || this.jlens === null) {
+        throw instrumentError(
+          "JLENS_PACK_UNAVAILABLE",
+          `Lens probe ${probe.name} needs ${probe.namespace === "slens" ? "an S" : "an R"} lens, which is not loaded`,
+        );
+      }
+      // drowse's `LensInstrument.probe_hash`: the readout channel binds the
+      // resident lens, so the same word through another lens is another probe.
       return pythonTupleDigest([
-        "jlens-readout-v2",
+        "jlens-readout-v5",
         modelId,
         probe.word,
         probe.token_id,
         [...probe.layers],
+        this.jlens.identity,
       ]);
     }
     const sae = this.sae;
@@ -854,6 +865,47 @@ export function lensManifestSites(
   return parsed;
 }
 
+/**
+ * drowse's `lens_identity` (`lens/store.py`): the sha256 of the manifest as
+ * `json.dumps(manifest, sort_keys=True, separators=(",", ":"))` writes it.
+ * JSON numbers lose Python's int/float split, so the v7 schema supplies it:
+ * `split_half` values are floats, every other number an int.
+ */
+export function lensIdentity(manifest: Record<string, unknown>): string {
+  return bytesToHex(sha256(new TextEncoder().encode(pythonJson(manifest, false))));
+}
+
+function pythonJson(value: unknown, floats: boolean): string {
+  if (value === null) return "null";
+  if (value === true) return "true";
+  if (value === false) return "false";
+  if (typeof value === "number") return pythonNumberRepr(value, floats);
+  if (typeof value === "string") return pythonJsonString(value);
+  if (Array.isArray(value)) return `[${value.map((item) => pythonJson(item, floats)).join(",")}]`;
+  if (isRecord(value)) {
+    return `{${Object.keys(value).sort().map((key) =>
+      `${pythonJsonString(key)}:${pythonJson(value[key], floats || key === "split_half")}`
+    ).join(",")}}`;
+  }
+  throw instrumentError("INSTRUMENT_PROBE_IDENTITY_INVALID", "Lens manifests hold only JSON values");
+}
+
+// json.dumps's ensure_ascii string form: the short escapes, then \uXXXX
+// (lowercase, UTF-16) for every character outside printable ASCII.
+function pythonJsonString(value: string): string {
+  const short: Record<string, string> = {
+    '"': '\\"', "\\": "\\\\", "\n": "\\n", "\r": "\\r", "\t": "\\t", "\b": "\\b", "\f": "\\f",
+  };
+  let output = '"';
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    const code = value.charCodeAt(index);
+    output += short[character] ??
+      (code >= 0x20 && code <= 0x7e ? character : `\\u${code.toString(16).padStart(4, "0")}`);
+  }
+  return `${output}"`;
+}
+
 async function loadJlens(
   pack: BrowserInstrumentPackArtifacts,
   request: BrowserModelLoadRequest,
@@ -951,6 +1003,7 @@ async function loadJlens(
     layerMap,
     runtimeLayerMap: [...request.variant.runtimeIdentity.layerMap],
     bindingId: manifestArtifact.manifest.sha256,
+    identity: lensIdentity(manifest),
     jacobians,
     words,
     unembedding: vocabularyTensors.tensor("unembedding", [words.size, hiddenSize]).data,
