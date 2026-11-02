@@ -478,19 +478,8 @@ export class DrowseWebLlmRuntime {
           "The installed browser runtime cannot read all token instruments in one GPU synchronization",
         );
       }
-      if (
-        !this.structuredHooks &&
-        optionalPacks.some(({ pack }) => pack.kind === "sae" || pack.kind === "jlens")
-      ) {
-        throw runtimeError(
-          "STRUCTURED_HOOKS_UNAVAILABLE",
-          "The installed browser model cannot run the selected precomputed SAE or R-lens pack",
-        );
-      }
-      this.saeHooks = this.structuredHooks &&
-        optionalPacks.some(({ pack }) => pack.kind === "sae");
-      this.jlensHooks = this.structuredHooks &&
-        optionalPacks.some(({ pack }) => pack.kind === "jlens");
+      this.saeHooks = optionalPacks.some(({ pack }) => pack.kind === "sae");
+      this.jlensHooks = optionalPacks.some(({ pack }) => pack.kind === "jlens");
       if (this.jlensHooks || this.saeHooks) {
         assertExactReadoutProfile(this.structuredHookProfile);
       }
