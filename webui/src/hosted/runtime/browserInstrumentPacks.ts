@@ -368,7 +368,12 @@ class DecodedCache<T> {
       };
       const abort = () => {
         leave();
-        if (running.waiters === 0) running.controller.abort(signal.reason);
+        if (running.waiters === 0) {
+          // The last reader left: stop the load and forget it, so a reader that comes next
+          // starts its own instead of joining one that is already aborted.
+          running.controller.abort(signal.reason);
+          if (this.pending.get(key) === running) this.pending.delete(key);
+        }
         reject(signal.reason);
       };
       signal.addEventListener("abort", abort, { once: true });
@@ -385,6 +390,10 @@ class DecodedCache<T> {
   ): { promise: Promise<T>; controller: AbortController; waiters: number } {
     const controller = new AbortController();
     const promise = load(controller.signal).then(({ value, bytes }) => {
+      if (controller.signal.aborted) return value;
+      const previous = this.entries.get(key);
+      if (previous !== undefined) this.bytes -= previous.bytes;
+      this.entries.delete(key);
       this.entries.set(key, { value, bytes });
       this.bytes += bytes;
       while (this.bytes > this.maxBytes && this.entries.size > 1) {
@@ -393,7 +402,9 @@ class DecodedCache<T> {
         this.bytes -= entry.bytes;
       }
       return value;
-    }).finally(() => this.pending.delete(key));
+    }).finally(() => {
+      if (this.pending.get(key) === running) this.pending.delete(key);
+    });
     promise.catch(() => undefined);
     const running = { promise, controller, waiters: 0 };
     this.pending.set(key, running);
@@ -1661,6 +1672,13 @@ async function loadSlens(
     typeof record.tensor_sha256 !== "string" || typeof record.mask_file_sha256 !== "string"
   ) {
     throw instrumentError("SLENS_PACK_INVALID", "The S embedding statistics record is invalid for this runtime");
+  }
+  // The token mask and counts are indexed by the tokenizer they were taken with (B1 §5.1).
+  if (record.tokenizer_sha256 !== request.variant.runtimeIdentity.tokenizerSha256) {
+    throw instrumentError(
+      "SLENS_TOKENIZER_MISMATCH",
+      "The S embedding statistics were taken with another tokenizer than the loaded runtime's",
+    );
   }
   for (const [file, digest] of [[record.tensor_file, record.tensor_sha256], [record.mask_file, record.mask_file_sha256]]) {
     const artifact = artifactAt(pack.artifacts, siblingPath(statisticsArtifact.manifest.path, file as string));

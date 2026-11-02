@@ -195,7 +195,14 @@ try {
   lone.abort(new Error("gone"));
   await assert.rejects(abandoned, /gone/u);
   assert.equal(fetchSignal.aborted, true, "the last reader leaving aborts the fetch");
+  // A reader arriving while the aborted fetch is still settling starts its own.
+  const abortedRelease = release;
+  const comeback = gated.lensMatrix("R", "mid", 3, signal);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(fetchSignal.aborted, false, "the next reader does not join the aborted fetch");
+  abortedRelease();
   release();
+  assert.equal((await comeback)[0], 350);
 
   const offline = await load(undefined);
   await assert.rejects(offline.lensMatrix("R", "mid", 0, signal), { code: "INSTRUMENT_PACK_LAYER_UNAVAILABLE" });

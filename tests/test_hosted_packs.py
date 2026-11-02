@@ -127,6 +127,7 @@ def test_slens_pack_carries_the_sessions_embedding_statistics(built) -> None:
     assert torch.equal(tensors["sigma_E"], emb.cov.cpu())
     assert record["mask"] == emb.describe()
     assert record["tokenizer_fingerprint"] == tokenizer_fingerprint(model.session.tokenizer)
+    assert record["tokenizer_sha256"] == runtime["runtimeIdentity"]["tokenizerSha256"]
     assert record["embedding_scale"] == pytest.approx(emb.scale)
 
 

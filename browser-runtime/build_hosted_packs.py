@@ -377,6 +377,9 @@ def build_embedding_statistics(model: NativeModel, pack: Path, runtime: Mapping[
         "mask_words": int(words.numel()),
         "mask_file_sha256": sha256_file(mask_file),
         "tokenizer_fingerprint": tokenizer_fingerprint(model.session.tokenizer),
+        # The tokenizer file the fingerprint was taken on (check_weights: the runtime's), which
+        # the browser compares with the loaded runtime's before reading the mask.
+        "tokenizer_sha256": runtime["runtimeIdentity"]["tokenizerSha256"],
         "tensor_file": tensor.name,
         "tensor_sha256": digest,
     }
