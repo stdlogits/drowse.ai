@@ -144,11 +144,12 @@ export class DrowseWebLlmBackend implements BrowserModelBackend {
         ...(instruments ? { probeHashes: () => instruments.probeHashes() } : {}),
         ...(this.options.compileSteering
           ? {
-              compileSteering: (expression: string, probeRequests?: readonly ProbeRequest[]) => this.options.compileSteering!({
-                expression,
-                loadRequest: request,
-                ...(probeRequests === undefined ? {} : { probeRequests }),
-              }),
+              compileSteering: async (expression: string, probeRequests?: readonly ProbeRequest[]) =>
+                this.boundProgram(await this.options.compileSteering!({
+                  expression,
+                  loadRequest: request,
+                  ...(probeRequests === undefined ? {} : { probeRequests }),
+                })),
             }
           : {}),
         ...(this.options.steeringDelta
@@ -187,6 +188,17 @@ export class DrowseWebLlmBackend implements BrowserModelBackend {
     capabilities: BlockSitesCapabilities;
     backend: BrowserBlockSitesBackend;
   } | null = null;
+
+  /** Every program a generation installs or a replay runs leaves the compiler here: one with a
+   *  unit section is bound to the loaded library first, which fills each tapped head's gram
+   *  (`G_h`, B1 §2.2; install and replay refuse an unbound one with TAP_GRAMS_UNBOUND). */
+  private async boundProgram(
+    program: StructuredHookProgramBuffers,
+  ): Promise<StructuredHookProgramBuffers> {
+    return program.unitMeta === undefined
+      ? program
+      : this.blockSites().bindStructuredProgram(program);
+  }
 
   blockSites(): BrowserBlockSitesBackend {
     const capabilities = this.runtime.blockSitesCapabilities?.() ?? null;
@@ -229,8 +241,8 @@ export class DrowseWebLlmBackend implements BrowserModelBackend {
         signal,
         ...(this.options.compileSteering
           ? {
-              compileSteering: (expression: string) =>
-                Promise.resolve(this.options.compileSteering!({
+              compileSteering: async (expression: string) =>
+                this.boundProgram(await this.options.compileSteering!({
                   expression,
                   loadRequest: this.requireLoadRequest(),
                 })),

@@ -248,7 +248,9 @@ try {
           ...context,
           profiles: steeringCompiler.listProfiles().profiles.map((profile) => profile.name),
         });
-        return { hookAbi: "post-block-residual-v4" };
+        return context.expression.includes("head/")
+          ? { format: "drowse-structured-v4", hookAbi: "block-sites-v5", unitMeta: new Int32Array(1) }
+          : { format: "drowse-structured-v4", hookAbi: "block-sites-v5" };
       },
       steeringDelta(context) {
         deltas.push(context);
@@ -660,6 +662,21 @@ try {
   assert.equal(authoring.length, 1);
   assert.equal(authoring[0].loadRequest, request);
   assert.equal(authoring[0].runtime, runtime);
+  // A program with a unit section leaves the compiler bound to the loaded library (its head
+  // taps' grams filled); one without passes through untouched.
+  const bound = [];
+  const realBlockSites = backend.blockSites;
+  backend.blockSites = () => ({
+    async bindStructuredProgram(program) { bound.push(program); return { ...program, bound: true }; },
+  });
+  try {
+    assert.equal((await authoring[0].compileSteering("0.5 calm")).bound, undefined);
+    assert.equal((await authoring[0].compileSteering("0.5 calm@when:head/L0h1>0.2")).bound, true);
+    assert.equal(bound.length, 1);
+  } finally {
+    backend.blockSites = realBlockSites;
+    compiled.length = 0;
+  }
   assert.deepEqual(fitProgress, [{ event: "progress", data: { stage: "capturing" } }]);
   assert.equal(instrumentRefreshes, 2);
   assert.deepEqual(preparedJlensWords, [["yes"], ["yes"], ["yes"]]);
@@ -745,7 +762,7 @@ try {
   assert.equal(compiled[0].expression, "0.5 local/fitted");
   assert.equal(compiled[0].loadRequest, request);
   assert.deepEqual(compiled[0].profiles, ["local/demo", "local/fitted"]);
-  assert.equal(calls.find((call) => call[0] === "generate")[1].hookProgram.hookAbi, "post-block-residual-v4");
+  assert.equal(calls.find((call) => call[0] === "generate")[1].hookProgram.hookAbi, "block-sites-v5");
 
   const tree = await backend.request(
     service("tree", "get"),
