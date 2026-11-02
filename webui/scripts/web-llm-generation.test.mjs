@@ -1109,15 +1109,16 @@ try {
       ],
     },
   };
-  const liveRun = async (instruments) => {
+  const liveRun = async (instruments, program = liveProgram) => {
     const tokens = [];
     const slensCalls = [];
+    const unitControls = [];
     let forward = 0;
     const result = await streamWebLlmGeneration(engine, {
       async clear() {},
       async interrupt() {},
       async install() {},
-      async updateControls() {},
+      async updateControls(_affine, _curve, unitActive) { unitControls.push(unitActive?.[0] ?? null); },
       async read() { return new Float32Array(8); },
       async readBundle() {
         forward += 1;
@@ -1128,7 +1129,7 @@ try {
       assertSteeringSupported() {},
     }, {
       input: { kind: "chat", messages: [{ role: "user", content: "Hi" }] },
-      hookProgram: liveProgram,
+      hookProgram: program,
       liveInstruments: {
         ...instruments,
         async slensReads(hidden, probes) {
@@ -1143,8 +1144,28 @@ try {
       },
       measurementSpecialTokenIds: [99],
     }, (token) => tokens.push(token));
-    return { tokens, result, slensCalls };
+    return { tokens, result, slensCalls, unitControls };
   };
+  // Each forward's gate scalars set the next forward's controls (an update only when they
+  // change): the gate-only slens/dog score is 1/3 after the prefill and 2/3 after the decode
+  // forward, and the tapped unit's scalar holds, so the ablation's group opens where they cross
+  // the threshold.
+  const regated = (gate) => ({ ...liveProgram, controls: {
+    ...liveProgram.controls,
+    units: liveProgram.controls.units.map((control, group) => (group === 0 ? { enabled: true, phase: { kind: "both" }, gate } : control)),
+  } });
+  const gateRuns = [
+    [{ slots: [], scoreKey: "slens/dog", operator: ">", threshold: 0 }, [1]],
+    [{ slots: [], scoreKey: "slens/dog", operator: ">", threshold: 0.5 }, [1]],
+    [{ slots: [], scoreKey: "slens/dog", operator: ">", threshold: 0.8 }, []],
+    [{ slots: [], scoreKey: "slens/dog", operator: "<", threshold: 0.5 }, [1, 0]],
+    [{ slots: [], scoreKey: "neuron/L0n2", operator: ">", threshold: 0 }, [1]],
+    [{ slots: [], scoreKey: "neuron/L0n2", operator: "<", threshold: 0 }, []],
+  ];
+  for (const [gate, updates] of gateRuns) {
+    const run = await liveRun({ unitProbes: new Set(["probe-a"]), unitsLive: true, lensLive: true }, regated(gate));
+    assert.deepEqual(run.unitControls, updates, `${gate.scoreKey} ${gate.operator} ${gate.threshold}`);
+  }
   const liveOn = await liveRun({ unitProbes: new Set(["probe-a"]), unitsLive: true, lensLive: true });
   assert.equal(liveOn.tokens.length, 2);
   const firstLive = liveOn.tokens[0].measurements;
@@ -1183,8 +1204,10 @@ try {
   assert.deepEqual(mixed.instruments.lens.binding.sources, { S: "s-pack" });
 
   const liveOff = await liveRun({ unitProbes: new Set(["probe-a"]), unitsLive: false, lensLive: false });
-  assert.equal(liveOff.tokens[0].measurements?.instruments.units, undefined, "units off: no per-token units channel");
-  assert.equal(liveOff.tokens[0].measurements?.instruments.lens, undefined, "lens off: no per-token slens/ readings");
+  // Native `build_measurements`: with the units and lens families off nothing reads per token,
+  // so a token carries no envelope (its forwards still read taps and the capture for the gates
+  // and the aggregate).
+  for (const token of liveOff.tokens) assert.equal(token.measurements, undefined, "families off: no token envelope");
   assert.equal(liveOff.result.measurements.instruments.units.readings["probe-a"].value, -0.5,
     "the aggregate keeps the last content token's unit readings");
   assert.deepEqual(liveOff.result.measurements.instruments.lens.readings["slens/cat"].value, roundReading(2 / 3),

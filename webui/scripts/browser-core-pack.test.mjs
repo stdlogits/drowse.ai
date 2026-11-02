@@ -971,6 +971,14 @@ try {
     compiler.setUnitSource({ ...slensSource, slensIdentity: () => null });
     assert.equal(compiler.probeHashes()["slens/e"], undefined, "a swapped source omits the digest, it never throws");
     compiler.setUnitSource(slensSource);
+    // Unit and slens/ probes take no device probe slot: past maxProbes of them, the GPU probe
+    // families still attach (unit probes count against maxUnitTaps instead).
+    const units = [0, 1].flatMap((layer) => [0, 1, 2, 3].map((index) => `neuron/L${layer}n${index}`))
+      .concat(["head/L0h0", "head/L0h1"])
+      .filter((selector) => selector !== "neuron/L0n1");
+    for (const selector of units) compiler.attachProbe({ selector });
+    assert.ok(compiler.listProbes().length > 8, "more probes than standard-v4's 8 device slots");
+    for (const selector of units) compiler.detachProbe(selector);
     // A unit outside the model is native's 400; a library without unit sites is native's 422.
     assert.throws(() => compiler.compile("!neuron/L1n9"), (error) => error.status === 400 && /neuron 9 is outside block 1/.test(error.message));
     compiler.setUnitSource({ ...source, spec: null, refusal: "layer 0: the attention projections are fused (qkv)" });

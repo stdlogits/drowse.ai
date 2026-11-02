@@ -1554,6 +1554,9 @@ export function measurementEnvelope(
       ...(exactSae === null ? {} : { readout: { features: exactSae } }),
     };
   }
+  // Native `build_measurements`: no instrument read anything, no envelope (a forward read only
+  // for its unit taps or its [L, d] capture, with those families off).
+  if (Object.keys(instruments).length === 0 && Object.keys(scores).length === 0) return undefined;
   const envelope: MeasurementsEnvelopeJSON = {
     version: MEASUREMENTS_VERSION,
     scope: "token",

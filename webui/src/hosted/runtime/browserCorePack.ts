@@ -64,6 +64,7 @@ import {
   type StructuredSlensProbe,
 } from "./structuredHookProgram";
 import {
+  isBlockSitesProfile,
   resolveStructuredHookProfile,
   type StructuredHookCapacityProfile,
 } from "./structuredHookProfile";
@@ -621,12 +622,6 @@ export class BrowserFeasibilityCorePackCompiler {
     }
     const existing = this.attachedProbes.get(name);
     if (existing) return structuredClone(existing);
-    if (this.attachedProbes.size >= this.structuredHookProfile.maxProbes) {
-      throw coreError(
-        "CORE_PACK_PROBE_LIMIT",
-        `The browser GPU program supports at most ${this.structuredHookProfile.maxProbes} attached probes at once`,
-      );
-    }
 
     let probe: ProbeInfo;
     if (selector.startsWith("jlens/")) {
@@ -696,9 +691,32 @@ export class BrowserFeasibilityCorePackCompiler {
       this.assertGeometryProbeLowerable(manifold);
       probe = this.geometryProbeInfo(manifold, name, request.top_n);
     }
+    this.requireProbeCapacity(probe);
     this.attachedProbes.set(name, probe);
     this.syncPinnedJlensWords();
     return structuredClone(probe);
+  }
+
+  /** Each family's own capacity: a probe slot on the device for the geometry, R-lens and SAE
+   *  probes (`maxProbes`), a unit tap for a unit probe (`maxUnitTaps`); `slens/` probes read on
+   *  the host from the forward's capture and take neither. */
+  private requireProbeCapacity(probe: ProbeInfo): void {
+    const attached = [...this.attachedProbes.values()];
+    if (probe.family === "units") {
+      const capacity = isBlockSitesProfile(this.structuredHookProfile) ? this.structuredHookProfile.maxUnitTaps : 0;
+      if (attached.filter((entry) => entry.family === "units").length >= capacity) {
+        throw coreError("CORE_PACK_PROBE_LIMIT", `The browser GPU program supports at most ${capacity} attached unit probes at once`);
+      }
+      return;
+    }
+    if (probe.family === "lens" && probe.namespace === "slens") return;
+    const slotted = attached.filter((entry) => entry.family !== "units" && !(entry.family === "lens" && entry.namespace === "slens"));
+    if (slotted.length >= this.structuredHookProfile.maxProbes) {
+      throw coreError(
+        "CORE_PACK_PROBE_LIMIT",
+        `The browser GPU program supports at most ${this.structuredHookProfile.maxProbes} attached probes at once`,
+      );
+    }
   }
 
   detachProbe(name: string): void {

@@ -119,7 +119,9 @@ def main() -> None:
                     session.remove_probe(probe)
 
         nodes: dict[str, Any] = {}
-        for name, steering in (("unsteered", None), ("steered", ANATOMY_STEERING)):
+        # The S-lens-gated node replays one decode position per forward, its gate scored from
+        # the previous forward (native's gate run; the browser's replay readback).
+        for name, steering in (("unsteered", None), ("steered", ANATOMY_STEERING), ("slens-gated", SLENS_GATED)):
             runs = generate(steering, steps=DECODE_STEPS, stateless=False)
             node = str(runs.node_ids[0])
             # The hosted fixture is a base model: its replays render the node raw.
@@ -129,7 +131,7 @@ def main() -> None:
             entry: dict[str, Any] = {
                 "steering": steering, "tokens": [int(t) for t in runs.first.tokens], "anatomy": anatomy,
             }
-            if name == "unsteered":
+            if name != "steered":
                 entry["activity"] = ranked(
                     lambda top: session.unit_activity(node, top=top, units=ACTIVITY["units"],
                                                       raw_index=ACTIVITY["raw_index"], layers=ACTIVITY["layers"],
