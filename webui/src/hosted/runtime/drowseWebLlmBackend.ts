@@ -21,6 +21,7 @@ import type {
 import { runtimeServiceRoute } from "./operationPolicy";
 import type { RankOneHookProgramBuffers } from "./rankOneHookProgram";
 import type { StructuredHookProgramBuffers } from "./structuredHookProgram";
+import type { SteeringManifoldEntry } from "./steeringExpression";
 import { DrowseWebLlmRuntime, type DrowseWebLlmModule } from "./webLlmEngine";
 import type { WebLlmCaptureRuntimePort } from "./webLlmActivationCapture";
 import type { BrowserInstrumentRuntime } from "./browserInstrumentRuntime";
@@ -74,6 +75,8 @@ export interface DrowseWebLlmBackendOptions {
   ) => Promise<RankOneHookProgramBuffers | StructuredHookProgramBuffers> |
     RankOneHookProgramBuffers | StructuredHookProgramBuffers;
   steeringDelta?: (context: BrowserSteeringDeltaContext) => string;
+  /** The installed manifolds the session's compiler resolves bare atoms against. */
+  steeringManifolds?: (loadRequest: BrowserModelLoadRequest) => readonly SteeringManifoldEntry[];
   prepareLoad?: (
     request: BrowserModelLoadRequest,
   ) => Promise<BrowserInstrumentRuntime> | BrowserInstrumentRuntime;
@@ -148,6 +151,9 @@ export class DrowseWebLlmBackend implements BrowserModelBackend {
               steeringDelta: (parent: string | null, child: string | null) =>
                 this.options.steeringDelta!({ parent, child, loadRequest: request }),
             }
+          : {}),
+        ...(this.options.steeringManifolds
+          ? { steeringManifolds: () => this.options.steeringManifolds!(request) }
           : {}),
       });
       this.loom = loom;

@@ -72,6 +72,7 @@ try {
   };
   const compiled = [];
   const deltas = [];
+  const manifoldReads = [];
   const authoring = [];
   let id = 0;
   const instrumentLive = { geometry: true, lens: false, lensLayers: null, sae: false };
@@ -250,6 +251,10 @@ try {
       steeringDelta(context) {
         deltas.push(context);
         return `${context.parent ?? "none"}->${context.child ?? "none"}`;
+      },
+      steeringManifolds(loadRequest) {
+        manifoldReads.push(loadRequest);
+        return [];
       },
       async authoringRequest(context) {
         authoring.push(context);
@@ -853,6 +858,18 @@ try {
     calls.filter((call) => call[0] === "generate").length,
     generationCalls,
   );
+  // The `inverted` regen resolves against the session compiler's manifolds.
+  await backend.generate(
+    {
+      type: "generate",
+      parent_node_id: tree.nodes[2].id,
+      stateless: false,
+      recipe_override: "inverted",
+    },
+    () => {},
+  );
+  assert.deepEqual(manifoldReads, [request]);
+  assert.equal(compiled.at(-1).expression, "-0.5 local/fitted");
   await backend.stop();
   assert.equal(calls.at(-1)[0], "stop");
   await backend.unload();

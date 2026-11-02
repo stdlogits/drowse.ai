@@ -2443,8 +2443,9 @@ export class BrowserFeasibilityCorePackCompiler {
     };
   }
 
-  /** The installed manifolds as the grammar's bare-atom ladder sees them, one per folder. */
-  private steeringManifolds(): SteeringManifoldEntry[] {
+  /** The installed manifolds as the grammar's bare-atom ladder sees them, one per folder (also
+   *  what the loom's `inverted` regen resolves against). */
+  steeringManifolds(): SteeringManifoldEntry[] {
     const entries = new Map<string, SteeringManifoldEntry>();
     for (const manifold of this.manifolds) {
       const key = `${manifold.namespace}/${manifold.name}`;

@@ -39,6 +39,7 @@ import {
   pythonStrip,
   steeringParts,
   type SteeringExpression,
+  type SteeringManifoldEntry,
 } from "./steeringExpression";
 import { validateHostedLoomTree } from "../../../../drowse/webui/src/lib/sessionPersistence";
 import { filterBrowserTree } from "./browserTreeFilter";
@@ -113,6 +114,9 @@ export interface BrowserLoomOptions {
     probeRequests?: readonly ProbeRequest[],
   ) => Promise<BrowserHookProgram> | BrowserHookProgram;
   steeringDelta?: (parent: string | null, child: string | null) => string;
+  /** The installed manifolds bare atoms resolve against (the compiler's), for the `inverted`
+   *  regen; without them nothing resolves, as with an empty registry. */
+  steeringManifolds?: () => readonly SteeringManifoldEntry[];
   probeHashes?: () =>
     | Readonly<Record<string, string>>
     | Promise<Readonly<Record<string, string>>>;
@@ -128,6 +132,7 @@ export class BrowserLoomRuntime {
   private readonly createId: (kind: "generation" | "node") => string;
   private readonly compileSteering: BrowserLoomOptions["compileSteering"];
   private readonly steeringDelta: BrowserLoomOptions["steeringDelta"];
+  private readonly steeringManifolds: BrowserLoomOptions["steeringManifolds"];
   private readonly probeHashes: BrowserLoomOptions["probeHashes"];
   private readonly instruments: BrowserInstrumentRuntime | undefined;
   private readonly runtimeCapabilities: WebLlmRuntimeCapabilities | null;
@@ -155,6 +160,7 @@ export class BrowserLoomRuntime {
     this.createId = options.createId ?? ((kind) => `${kind}-${randomUuid()}`);
     this.compileSteering = options.compileSteering;
     this.steeringDelta = options.steeringDelta;
+    this.steeringManifolds = options.steeringManifolds;
     this.probeHashes = options.probeHashes;
     this.instruments = options.instruments;
     this.runtimeCapabilities = this.generation.runtimeCapabilities?.() ?? null;
@@ -348,6 +354,7 @@ export class BrowserLoomRuntime {
 
     const settings = fork?.settings ?? resolveGenerationSettings(
       request, this.session, this.tree, selectedParentId, this.maxOutputTokens,
+      () => this.steeringManifolds?.() ?? [],
     );
     const effectiveSteering = settings.steering;
     const effectiveSystemPrompt = rawCompletion ? null : settings.systemPrompt;
@@ -2584,12 +2591,13 @@ function resolveGenerationSettings(
   tree: LoomTreeJSON,
   parentId: string,
   maxOutputTokens: number,
+  manifolds: () => readonly SteeringManifoldEntry[],
 ): ResolvedGenerationSettings {
   const cast = request.raw ? null : generationCastRecipe(request, tree);
   const call = request.sampling ?? null;
   const override = request.recipe_override;
   const anchor = override === null || override === undefined ? null : anchorRecipe(tree, parentId);
-  const modifier = anchor === null ? null : recipeModifier(override!, anchor);
+  const modifier = anchor === null ? null : recipeModifier(override!, anchor, manifolds);
   const composed = composeCall({
     steering: request.steering ?? null,
     thinking: request.thinking ?? null,
@@ -2697,12 +2705,13 @@ export function recipeModifier(
     WSGenerateRequest["recipe_override"] | WSSubmitRequest["recipe_override"]
   >,
   anchor: PartialRecipe,
+  manifolds: () => readonly SteeringManifoldEntry[] = () => [],
 ): PartialRecipe {
   if (typeof value === "string") {
     const trimmed = value.trim();
     if (trimmed === "unsteered") return partialRecipe({ steering: "" });
     if (trimmed === "inverted") {
-      return partialRecipe({ steering: invertSteering(anchor.steering) });
+      return partialRecipe({ steering: invertSteering(anchor.steering, manifolds) });
     }
     if (trimmed === "reseed") return partialRecipe({ seed: randomSeed() });
     if (trimmed === "cool") {
@@ -2954,8 +2963,11 @@ function randomSeed(): number {
   return crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fffffff;
 }
 
-function invertSteering(value: string | null): string {
-  return value?.trim() ? invertSteeringExpression(value) : "";
+function invertSteering(
+  value: string | null,
+  manifolds: () => readonly SteeringManifoldEntry[],
+): string {
+  return value && pythonStrip(value) ? invertSteeringExpression(value, { manifolds: manifolds() }) : "";
 }
 
 function nodeSteering(node: LoomNodeJSON): string | null {

@@ -1714,6 +1714,35 @@ try {
     "0.6,0.3 emotions%0.2,0.8",
     "-0.6,-0.3 emotions%0.2,0.8",
   ]);
+  // With the compiler's manifolds the `inverted` regen resolves and folds as drowse's
+  // Recipe.invert_steering does (steering-expression pins the Python outcomes).
+  const resolvingEngine = generation();
+  const resolvingRuntime = new BrowserLoomRuntime({
+    session: session(),
+    generation: resolvingEngine,
+    createId: ids("resolving"),
+    compileSteering: () => hookProgram,
+    steeringManifolds: () => [
+      { namespace: "default", name: "emotions", fitMode: "pca", labels: ["calm", "angry"] },
+    ],
+  });
+  await resolvingRuntime.generate({
+    type: "submit",
+    text: "Prompt",
+    authored_role: "user",
+    generated_role: "assistant",
+    steering: "0.5 calm{0}@response + 0.2 calm{0}@response",
+  }, () => {});
+  await resolvingRuntime.generate({
+    type: "generate",
+    parent_node_id: resolvingRuntime.snapshot().tree.active_node_id,
+    stateless: false,
+    recipe_override: "inverted",
+  }, () => {});
+  assert.equal(
+    resolvingEngine.plans.at(-1).steeringExpression,
+    "-0.7 default/emotions%calm{0}@response",
+  );
   const invalidRecipeEvents = [];
   await assert.rejects(
     recipeRuntime.generate({

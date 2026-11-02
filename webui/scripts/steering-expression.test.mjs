@@ -204,25 +204,52 @@ try {
     assert.throws(() => parseSteering(written), (error) => error.message === message, written);
   }
 
-  // The `inverted` regen, against drowse 6.0's Recipe.invert_steering where no bare label
-  // resolves; a bare label keeps its written name (drowse resolves it, which changes only text).
-  for (const [written, inverted] of [
-    ["0.5,0.3 demo%alert", "-0.5,-0.3 demo%alert"],
-    ["-0.6,0.3 demo%alert{1-2}", "0.6,-0.3 demo%alert{1-2}"],
-    ["0 demo%alert", "0 demo%alert"],
-    ["!x", "-!x"],
-    ["-!x{0}", "!x{0}"],
-    ["0.25 !neuron/L8n344@prompt", "-0.25 !neuron/L8n344@before"],
-    ["0.3 a~b{1-2}@response", "-0.3 a~b{1-2}@response"],
-    ["0.1 x|y - 0.2 !z{workspace}", "-0.1 x|y + 0.2 !z{workspace}"],
-    ["0.5 sae/3@response&when:sae/2>0.5", "-0.5 sae/3@when:sae/2>0.5"],
-    ["0.5 calm:sae", "-0.5 calm:sae"],
-    ["0.5 calm{0}@response", "-0.5 calm{0}@response"],
-    ["1e-7 calm@both", "-1e-07 calm"],
-    ["0.5,0.3 alert{1}", "-0.5,-0.3 alert{1}"],
+  // The `inverted` regen, against drowse 6.0's Recipe.invert_steering with the golden's registry
+  // installed (folders only, as test_steering_ir installs it; run from the venv on the pinned
+  // submodule): bare labels resolve to their `%` terms and repeats fold before the signs flip, and
+  // a refusal is drowse's own class and words.
+  for (const [written, expected] of [
+    ["0.5,0.3 demo%alert", {"inverted": "-0.5,-0.3 demo%alert"}],
+    ["-0.6,0.3 demo%alert{1-2}", {"inverted": "0.6,-0.3 demo%alert{1-2}"}],
+    ["0 demo%alert", {"inverted": "0 demo%alert"}],
+    ["!x", {"inverted": "-!x"}],
+    ["-!x{0}", {"inverted": "!x{0}"}],
+    ["0.25 !neuron/L8n344@prompt", {"inverted": "-0.25 !neuron/L8n344@before"}],
+    ["0.3 a~b{1-2}@response", {"inverted": "-0.3 a~b{1-2}@response"}],
+    ["0.1 x|y - 0.2 !z{workspace}", {"inverted": "-0.1 x|y + 0.2 !z{workspace}"}],
+    ["0.5 sae/3@response&when:sae/2>0.5", {"inverted": "-0.5 sae/3@when:sae/2>0.5"}],
+    ["0.5 calm:sae", {"inverted": "-0.5 calm:sae"}],
+    ["1e-7 calm@both", {"inverted": "-1e-07 calm"}],
+    ["0.5 pirate", {"inverted": "-0.5 default/personas%pirate"}],
+    ["0.5 pirate{0}@response", {"inverted": "-0.5 default/personas%pirate{0}@response"}],
+    ["0.5,0.3 pirate{1}", {"inverted": "-0.5,-0.3 default/personas%pirate{1}"}],
+    ["0 pirate", {"inverted": "0 default/personas%pirate"}],
+    ["0.5 pirate + 0.2 pirate", {"inverted": "-0.7 default/personas%pirate"}],
+    ["0.5 calm + 0.2 calm", {"inverted": "-0.7 calm"}],
+    ["0.5 calm{0}@response", {"inverted": "-0.5 calm{0}@response"}],
+    ["0.5 verbose", {"inverted": "-0.5 default/verbose.concise%verbose"}],
+    ["0.5 verbose.concise", {"inverted": "-0.5 default/verbose.concise%verbose"}],
+    ["0.4 owl - 0.1 formal", {"inverted": "-0.4 local/animals%owl + 0.1 local/formal.casual%formal"}],
+    ["-0.3 !pirate", {"inverted": "0.3 !pirate"}],
+    ["0.5 concise~verbose", {"inverted": "-0.5 concise~verbose"}],
+    ["0.5 x + 0.25 x@response", {"error": "SteeringExprError", "message": "concept 'x' appears with conflicting triggers; merge triggers explicitly or split into separate Steering entries"}],
+    ["0.2 hacker + 0.3 calm{1}@after:3", {"inverted": "-0.2 default/personas%hacker - 0.3 calm{1}@after:3"}],
+    ["0.5 deer", {"error": "AmbiguousSelectorError", "message": "ambiguous manifold label 'deer': matches local/animals (label 'deer'), local/forest (label 'deer'). Specify the manifold explicitly as <ns>/<name>%deer. (disambiguate with namespace/name)"}],
+    ["0.2 personas%pirate + 0.1 hacker", {"inverted": "-0.2 personas%pirate - 0.1 default/personas%hacker"}],
+    ["0.5,0.3 alert{1}", {"error": "SteeringExprError", "message": "comma-separated coefficients are only valid for `manifold % position` terms"}],
   ]) {
-    assert.equal(grammar.invertSteeringExpression(written), inverted, written);
+    if ("inverted" in expected) {
+      assert.equal(grammar.invertSteeringExpression(written, { manifolds }), expected.inverted, written);
+    } else {
+      assert.throws(() => grammar.invertSteeringExpression(written, { manifolds }), (error) => {
+        assert.equal(error.code, expected.error, written);
+        assert.equal(error.message, expected.message, written);
+        return true;
+      });
+    }
   }
+  // Without the manifolds nothing resolves, as with an empty registry.
+  assert.equal(grammar.invertSteeringExpression("0.5 pirate + 0.2 pirate"), "-0.7 pirate");
   assert.equal(grammar.invertSteeringExpression("  "), "");
 
   // sessions.validateSteering answers as `POST .../steering/validate` does.

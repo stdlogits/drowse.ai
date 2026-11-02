@@ -107,12 +107,15 @@ export class SteeringSelectorError extends Error {
   }
 }
 
-/** A bare atom that names more than one installed manifold (`AmbiguousSelectorError`). */
+/** A bare atom that names more than one installed manifold (`AmbiguousSelectorError`). Its
+ *  message is the one drowse shows a person (`user_message`), which adds the tip. */
 export class AmbiguousSteeringSelectorError extends SteeringSelectorError {
   override readonly code: string = "AmbiguousSelectorError";
 
   constructor(message: string) {
-    super(message);
+    super(message.includes("namespace/name")
+      ? message
+      : `${message} (disambiguate with namespace/name)`);
     this.name = "AmbiguousSteeringSelectorError";
   }
 }
@@ -1345,31 +1348,22 @@ function formatAlongOnto(along: number, onto: number): string {
     : `${formatSteeringNumber(along)},${formatSteeringNumber(negative ? -onto : onto)}`;
 }
 
-/** The loom's `inverted` regen (`Recipe.invert_steering`): every term's coefficient negated (a
- *  `%` term's `along`, a zero staying `+0`; its `onto` carried), each term written back with its
- *  clause and trigger. It inverts the written terms without the installed manifolds, so it keeps
- *  bare labels and repeats where drowse resolves and folds them: the text can differ, the
- *  steering does not. */
-export function invertSteeringExpression(text: string): string {
+/** The loom's `inverted` regen (`Recipe.invert_steering`): `parse_expr` against the installed
+ *  manifolds (`resolution.manifolds`; drowse passes no profile names), so bare labels resolve to
+ *  their `%` terms and repeats fold, then every term's coefficient negated (a `%` term's `along`,
+ *  a zero staying `+0`; its `onto` carried) and the whole written back by `format_expr`. A
+ *  refusal is drowse's too (an ambiguous label, a two-value run on a term that is not `%`). */
+export function invertSteeringExpression(
+  text: string,
+  resolution: Pick<SteeringResolution, "manifolds"> = {},
+): string {
   if (!pythonStrip(text)) return "";
-  return joinSteeringTerms(parseSteeringExpression(text).terms.map((term) => {
-    const selector = term.selector;
-    if (
-      term.coefficients.length > 1 && selector.manifoldPosition === null &&
-      selector.projection === null && !term.ablation
-    ) {
-      // A bare label with `along,onto`: a `%` term once its manifold resolves.
-      return withTrigger(
-        `${formatAlongOnto(-term.coefficients[0] || 0, term.coefficients[1])} ` +
-          `${resolveAtomKey(selector.base)}${formatLayerClause(scopeOf(term))}`,
-        normalizeTrigger(term.trigger),
-      );
-    }
-    const ir = foldSteering({ terms: [term] }).terms[0];
-    return formatSteeringTerm(
-      ir.kind === "manifold" ? { ...ir, along: -ir.along || 0 } : { ...ir, coeff: -ir.coeff },
-    );
-  }));
+  const ir = parseSteering(text, { manifolds: resolution.manifolds ?? [] });
+  return formatSteering({
+    terms: ir.terms.map((term) =>
+      term.kind === "manifold" ? { ...term, along: -term.along || 0 } : { ...term, coeff: -term.coeff }
+    ),
+  });
 }
 
 /** `format_expr`: the canonical text, its terms joined by ` + ` or ` - `. */

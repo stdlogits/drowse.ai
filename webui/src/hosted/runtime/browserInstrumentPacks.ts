@@ -1172,7 +1172,8 @@ async function loadJlens(
     source: pack.pack.id,
     displayName: pack.pack.displayName,
     kind: manifest.kind as "J" | "R",
-    nPrompts: manifest.n_prompts,
+    // browserLensSite checked both.
+    nPrompts: manifest.n_prompts as number,
     splitHalf: site.splitHalf,
     hiddenSize,
     layerMap,
