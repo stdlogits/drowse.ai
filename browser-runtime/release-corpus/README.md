@@ -2,8 +2,12 @@
 
 Hosted R and S lenses are drowse's native fits over the pinned FineWeb-Edu corpus that
 `native-lens-corpus.json` records (`browser-runtime/README.md`, "Lens, units and core
-packs"); its `attributionApproval` stays null until a named reviewer approves the ODC-By
-attribution. `jlens-word-seeds.txt` is also the R pack's curated browser vocabulary.
+packs"). Its `attributionApproval` stays null until a named reviewer approves the ODC-By
+attribution, and until then the release policy refuses every native R, S and units pack
+(`hosted-instrument-release-policy.mjs`). The approval is
+`{"reviewStatus": "approved", "reviewedBy", "reviewedAt", "attribution"}`, the last being the
+attribution text the release carries. `jlens-word-seeds.txt` is also the R pack's curated
+browser vocabulary.
 
 `prepare_hosted_release_corpus.py` produces the bounded JSON inputs consumed by
 the hosted SAE builder. It is deliberately offline and fail closed:
@@ -12,16 +16,17 @@ release tokenizers must match the manifest before it writes anything. Each
 declared tokenizer must match its entry in the runtime lock, and the target
 model must be explicitly covered. The checked-in corpus sources name
 Qwen3-1.7B and Qwen3-4B; adding another catalog model does not implicitly extend
-that corpus evidence. Gemma uses published provider J-lens and Gemma Scope SAE
-packs rather than these local fitting corpora. Release validation also binds
-each local J-lens vocabulary row to the recorded token ID for the target model.
+that corpus evidence. Gemma uses Gemma Scope SAE packs rather than these local
+fitting corpora; its R and S lenses are the native fits above. GPT-2 and Pythia
+keep their provider R lenses. Release validation binds each R pack vocabulary row
+to the recorded token ID for the target model.
 
 An approved run emits:
 
 - `sae-corpus.json`
-- `jlens-corpus.json`
-- `jlens-words.json`, restricted to words that round-trip as one token in every
-  pinned release tokenizer
+- `jlens-corpus.json` and `jlens-words.json` (words that round-trip as one token
+  in every pinned release tokenizer): inputs of the retired capture-based R lens
+  builder, still in the release-corpus contract and unused
 - `release-corpus.json`, which records every input and output digest, source and
   license provenance, selection limits, tokenizer-specific token IDs, and the
   generator digest; `release-corpus.schema.json` is its public contract

@@ -191,7 +191,8 @@ npm run prepare:hosted:candidate-lock -- MODEL_ID PUBLISH_DIR /tmp/candidate-run
 npm run capture:hosted:residuals -- MODEL_ID PUBLISH_DIR MODEL.wasm WEBLLM.js INPUT.json CAPTURE_DIR \
   --runtime-lock /tmp/candidate-runtime-lock.json
 npm run build:hosted:whitener -- MODEL_ID PUBLISH_DIR MODEL.wasm WEBLLM.js CORE_DIR \
-  --manifold-source ../browser-runtime/release-inputs/core-manifolds/deceptive \
+  $(for c in ../browser-runtime/release-inputs/core-manifolds/*; do printf -- '--manifold-source %s ' "$c"; done) \
+  --neutral-statistics PACKS/MODEL_ID/SHA16/core \
   --runtime-lock /tmp/candidate-runtime-lock.json
 npm run validate:hosted:core-pack -- MODEL_ID CORE_DIR \
   --runtime-lock /tmp/candidate-runtime-lock.json
@@ -245,21 +246,31 @@ signed catalog, and distribution lock must also be published before production
 loading is enabled. Precomputed R-lens, S-lens, units and SAE packs are optional
 model-specific capabilities and are listed only when a compatible release already exists.
 
-The whitener builder is a physical WebGPU release tool. It renders the bundled
-96-row neutral corpus through the exact q4 browser runtime, captures the
-post-block residual from every compiled layer, fits the reduced Mahalanobis
-representation with the shipped Rust/WASM kernel, and writes separately bound
-2K and 4K `neutral-whitener` pairs. It refuses an existing output directory and
-checks the model manifest, runtime identity, layer map, transfer digest, and
-context bindings. Each `--manifold-source` (repeat it, one per concept) names a v10
-PCA discover folder; the builder captures and fits its nodes through the same q4
-runtime and produces one browser-fitted `.drowse` per concept and context, the core
-concepts first-run steering and the probe rack start from. `--neutral-statistics`
-adds `build_hosted_packs.py`'s `core/neutral-statistics.*` (unit statistics and the
-`out` and `mid` means of drowse's neutral pass), checked against the build's runtime
-identity. The independent validator checks every context closure, that each context
-carries the same concepts, the statistics, and every browser archive before the pack
-manifest is assembled.
+The whitener builder is a physical WebGPU release tool. It fits the reduced
+Mahalanobis representation with the shipped Rust/WASM kernel
+(`src/hosted/fitting/neutralWhitener.ts`) and writes separately bound 2K and 4K
+`neutral-whitener` pairs. For Gemma 3 and Qwen 3, which drowse fits natively,
+`--neutral-statistics` is required: it names `build_hosted_packs.py`'s `core/`
+(unit statistics and the `out` and `mid` means of drowse's neutral pass, and the pass's
+activation rows, `neutral-rows.safetensors`), and the whitener is fitted from those
+native rows, the ones drowse's own whitener and so the units pack's write norms are built
+from. The shipped `neutral-statistics.json` then names the rows and each context's
+whitener digest (`whitener`), and the units pack binds the rows' digest, so the browser
+refuses units over any other whitener. For GPT-2, Pythia and Qwen3.5 base, which have no
+native neutral pass, the builder renders the bundled 96-row neutral corpus through the
+exact q4 browser runtime and fits from those captures. It refuses an existing output
+directory and checks the model manifest, runtime identity, layer map, transfer digest,
+and context bindings. Each `--manifold-source` (repeat it, one per concept) names a v10
+PCA discover folder; the builder captures its nodes through the same q4 runtime and fits
+them as the in-app fit does (a one-node concept folds against the neutral mean,
+`fitting/monopolar.ts`, as drowse's `_fit_monopolar` does), producing one browser-fitted
+`.drowse` per concept and context, the core concepts first-run steering and the probe
+rack start from. The independent validator (`validate:hosted:core-pack`) checks every
+context closure, that each context carries exactly the core roster
+(`release-inputs/core-manifolds/`), that a natively fitted model carries the neutral
+statistics bound to every context's whitener, and every browser archive before the pack
+manifest is assembled; `--neutral-rows PACKS/MODEL_ID/SHA16/core/neutral-rows.safetensors`
+also refits the whitener from the rows and requires the pack's.
 
 The core concepts are drowse 6.0's default roster: every bundled concept tagged in a
 default probe category (epistemic, alignment, register, cultural; `session.py`
@@ -272,7 +283,7 @@ fail while the copies drift). Beside them sits the hosted starter `welcoming.det
 responses are aligned to the canonical baseline prompts, carry machine-readable
 authorship and license provenance, and contain no fitted model tensors. Each build
 fits them in the browser runtime itself, so every archive is bound to that runtime's
-identity and context and to the whitener the same build fits.
+identity and context and to the whitener the same build writes.
 
 The SAE builder is offline developer release tooling and is never shipped as a
 hosted user feature. It renders a release
@@ -318,18 +329,24 @@ so a rebind takes seconds.
   mask as little-endian u32 words, bit `v & 31` of word `v >> 5` set when token `v` is
   kept (`embedding-statistics.mask.u32`), and `embedding-statistics.json` with the mask's
   description (`{source: "corpus", detail, kept}`), the counting tokenizer's
-  fingerprint and the embedding scale. They are exactly the session's `TokenEmbeddings`.
+  fingerprint and file digest (`tokenizer_sha256`, the runtime's: the browser refuses the
+  statistics under another tokenizer) and the embedding scale. They are exactly the
+  session's `TokenEmbeddings`.
 - **`units`**: per layer `reads.layer-<L>` (population scalars per lens and population,
   head-norm derivatives, whitened write norms) and `contrast.layer-<L>` (the `[V]`
   statistics only `hide_hubs` reads), both straight from
   `UnitReader.population_artifacts(layer)`; the null basis model-wide; `units.json` binds
   the runtime, the R and S packs (`lens_identity` of their manifests), the S statistics
-  and the neutral pass every statistic averages over. Rank-3 tensors are stored
+  and the neutral pass every statistic averages over, with the digest of its rows (the
+  write norms' whitener, and the core pack's, are built from them). `build_hosted_packs.py`
+  refuses a layer without `neurons.write_norms`. Rank-3 tensors are stored
   `[prod(shape[:-1]), shape[-1]]` with their logical shapes recorded. On the ABI v5 tiny
   fixture every shipped units tensor equals the `unit-artifacts` golden on both
   architectures (`tests/test_hosted_packs.py`).
 - **core statistics**: `core/neutral-statistics.*` (unit statistics, `out` and `mid`
-  means, stacked over layers), added to the core pack by the whitener builder above.
+  means, stacked over layers) and `core/neutral-rows.safetensors` (the neutral pass's
+  rows, a build input that does not ship), added to the core pack by the whitener
+  builder above, which fits the core whitener from the rows.
 
 **Full depth.** Every layer of R and S at both sites ships, so unit reads, the anatomy
 and every head read reach every layer as natively; the eight-layer cap is gone. A lens or

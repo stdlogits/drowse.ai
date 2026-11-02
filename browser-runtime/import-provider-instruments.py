@@ -47,13 +47,13 @@ def create_jlens_pack(args, model: dict) -> None:
     checkpoint = torch.load(args.jlens_checkpoint, map_location="cpu", weights_only=True)
     raw_layers = checkpoint.get("J") if isinstance(checkpoint, dict) else None
     if not isinstance(raw_layers, dict) or not raw_layers:
-        raise SystemExit("provider J-lens checkpoint does not contain a J layer dictionary")
+        raise SystemExit("provider R lens checkpoint does not contain a J layer dictionary")
     prompt_counts = [checkpoint[key] for key in ("n_prompts", "prompts_fitted") if key in checkpoint]
     if not prompt_counts or any(
         type(count) is not int or count <= 0 or count != prompt_counts[0]
         for count in prompt_counts
     ):
-        raise SystemExit("provider J-lens checkpoint has no consistent positive prompt count")
+        raise SystemExit("provider R lens checkpoint has no consistent positive prompt count")
     prompt_count = prompt_counts[0]
     layers: dict[str, torch.Tensor] = {}
     provider_layers = sorted(int(layer) for layer in raw_layers)
@@ -66,7 +66,7 @@ def create_jlens_pack(args, model: dict) -> None:
         tensor = raw_layers[layer] if layer in raw_layers else raw_layers[str(layer)]
         tensor = tensor.detach().to(dtype=torch.float32, device="cpu").contiguous()
         if tuple(tensor.shape) != (hidden_size, hidden_size) or not torch.isfinite(tensor).all():
-            raise SystemExit(f"provider J-lens layer {layer} has an invalid matrix")
+            raise SystemExit(f"provider R lens layer {layer} has an invalid matrix")
         layers[f"layer_{layer}"] = tensor
 
     pack = args.output / "jlens-pack" / "packs" / "jlens"
@@ -109,7 +109,7 @@ def create_jlens_pack(args, model: dict) -> None:
 
 def select_jlens_layers(layer_map: list[int], hidden_size: int) -> list[int]:
     if not layer_map:
-        raise SystemExit("provider J-lens has no compatible source layers")
+        raise SystemExit("provider R lens has no compatible source layers")
     matrix_bytes = hidden_size * hidden_size * 4
     count = max(
         1,

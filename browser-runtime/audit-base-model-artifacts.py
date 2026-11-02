@@ -35,15 +35,15 @@ def main():
         with urllib.request.urlopen(f"{prefix}/config.yaml", timeout=30) as response:
             config = response.read(32768).decode()
         if f'hf_model_name: "{model}"' not in config:
-            raise ValueError(f"J-lens configuration does not name {model}")
+            raise ValueError(f"provider R lens configuration does not name {model}")
         payload = download(f"{prefix}/{stem}_jacobian_lens.pt", size, digest)
         checkpoint = torch.load(io.BytesIO(payload), map_location="cpu", weights_only=True)
         matrices = checkpoint["J"]
         if not isinstance(matrices, dict) or not matrices:
-            raise ValueError("Missing J-lens matrices")
+            raise ValueError("Missing provider R lens matrices")
         for layer, matrix in matrices.items():
             if matrix.shape != (hidden, hidden) or not torch.isfinite(matrix).all():
-                raise ValueError(f"Invalid J-lens matrix: {model}, layer {layer}")
+                raise ValueError(f"Invalid provider R lens matrix: {model}, layer {layer}")
         print(json.dumps({
             "model": model, "check": "pinned_jlens_tensor_integrity",
             "layers": sorted(map(int, matrices)), "hidden_size": hidden,

@@ -663,7 +663,7 @@ def _parse_tokenizers(values: list[str]) -> dict[str, Path]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Prepare deterministic, provenance-bound hosted SAE and J-lens corpora."
+        description="Prepare deterministic, provenance-bound hosted SAE corpora."
     )
     parser.add_argument("manifest", type=Path)
     parser.add_argument("source", type=Path)
