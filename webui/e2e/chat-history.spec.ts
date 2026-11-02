@@ -7,14 +7,15 @@ test("historical chat text remains selectable and its tokens keyboard accessible
   await expect(page.locator(".shell")).toBeVisible();
   await page.evaluate(async url => {
     const { applyTreeSnapshot, loomTree } = await import(url);
-    const nodes: any[] = [{id: "history-root", parent_id: null, role: "system", text: "", tokens: []}];
+    const nodes: any[] = [{id: "history-root", parent_id: null, role: "system", text: "", recipe: null, tokens: []}];
     const children: Record<string, string[]> = {"history-root": []};
     for (let i = 0; i < 24; i++) {
       const id = `history-${i}`;
       const parent = nodes.at(-1).id;
       const role = i % 2 === 0 ? "user" : "assistant";
       const text = i === 1 ? "Amberneedle keeps every original token." : `Message ${i}. ` + "This older message keeps its full text and token metadata. ".repeat(8);
-      nodes.push({id, parent_id: parent, role, text, role_label: null, recipe: null,
+      // 6.0: a generated node carries its recipe with its token rows; an authored one has no rows.
+      nodes.push({id, parent_id: parent, role, text, role_label: null, recipe: role === "assistant" ? { steering: null, sampling: null, thinking: null, seed: null, probes: [], probe_hashes: {} } : null,
         finish_reason: "stop", aggregate_readings: {}, thinking_tokens: [],
         tokens: role === "assistant" ? text.match(/\S+\s*/g)!.map((text, raw_index) => ({text, raw_index, token_id: raw_index + 1, logprob: -0.2})) : []});
       children[parent] = [id]; children[id] = [];

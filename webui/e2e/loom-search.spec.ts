@@ -8,7 +8,8 @@ async function seed(page: Page) {
   await page.evaluate(async url => {
     const { applyTreeSnapshot, loomTree, loomUiState } = await import(url);
     const make = (id: string, parent_id: string | null, text: string, role = "assistant", starred = false) => ({
-      id, parent_id, text, role, starred, role_label: null, recipe: null,
+      // 6.0: a generated node carries its recipe with its token rows; an authored one has no rows.
+      id, parent_id, text, role, starred, role_label: null, recipe: role === "assistant" ? { steering: null, sampling: null, thinking: null, seed: null, probes: [], probe_hashes: {} } : null,
       finish_reason: "stop", aggregate_readings: {}, thinking_tokens: [],
       tokens: role === "assistant" ? (text.match(/\S+\s*/g) ?? []).map((text, raw_index) => ({ text, raw_index, token_id: raw_index + 1, logprob: -0.2 })) : [],
     });
