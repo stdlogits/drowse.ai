@@ -4,20 +4,26 @@
   "title": "Drowse browser release evidence producer config",
   "type": "object",
   "additionalProperties": false,
-  "required": ["$schema", "schemaVersion", "evidenceType", "observer", "arguments"],
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "evidenceType",
+    "observer",
+    "arguments"
+  ],
   "properties": {
-    "$schema": { "const": "../evidence-config.schema.json" },
-    "schemaVersion": { "const": 1 },
+    "$schema": {
+      "const": "../evidence-config.schema.json"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
     "evidenceType": {
       "enum": [
-        "gemmaTinyFp32Parity",
-        "llamaTinyFp32Parity",
-        "qwenTinyFp32Parity",
-        "gemmaProductionQ4Parity",
-        "smolProductionQ4Parity",
-        "qwenProductionQ4Parity",
-        "gemmaLongPrefill",
-        "runtimeLifecycle",
+        "cVmGoldens",
+        "webGpuGoldens",
+        "productionLibrary",
+        "productionQ4Parity",
         "activationCapture",
         "fittingKernelParity",
         "topologyOrchestration",
@@ -34,12 +40,16 @@
     },
     "arguments": {
       "oneOf": [
-        { "$ref": "#/$defs/argumentSet" },
+        {
+          "$ref": "#/$defs/argumentSet"
+        },
         {
           "type": "array",
           "minItems": 1,
           "maxItems": 8,
-          "items": { "$ref": "#/$defs/argumentSet" }
+          "items": {
+            "$ref": "#/$defs/argumentSet"
+          }
         }
       ]
     }

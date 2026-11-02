@@ -12,36 +12,17 @@ import torch
 from mlc_q4_torch import build_transformers_model
 
 
-EVIDENCE_MODEL_IDS = {
-    "gemmaProductionQ4Parity": "gemma3-270m-instruct",
-    "smolProductionQ4Parity": "smollm2-360m-instruct",
-    "qwenProductionQ4Parity": "qwen3-1.7b",
+# The q4 libraries of the runtime lock: each one's parity record is `productionQ4Parity`, bound to
+# its model id (README.md, "Release evidence").
+PARITY_MODEL_IDS = {
+    "gemma3-1b-instruct",
+    "gemma3-1b-pt",
+    "gemma3-4b-instruct",
+    "qwen3-1.7b",
+    "qwen3-4b",
+    "qwen35-2b-base",
 }
-PARITY_MODEL_IDS = {*EVIDENCE_MODEL_IDS.values(), "gemma3-1b-instruct", "gemma3-4b-instruct", "qwen3-4b"}
-SMOL_NAMED_ROLE_INPUT_IDS = [
-    1,
-    9690,
-    198,
-    1425,
-    5453,
-    30,
-    2,
-    198,
-    1,
-    36014,
-    402,
-    198,
-    28120,
-    2,
-    198,
-    1,
-    8184,
-    403,
-    5274,
-    198,
-    2,
-    198,
-]
+EVIDENCE_TYPE = "productionQ4Parity"
 
 
 def validate(
@@ -49,16 +30,12 @@ def validate(
     capture_directory: Path,
     *,
     device: str = "auto",
-    require_smol_named_role: bool = False,
     maximum_capture_relative_error: float = 0.01,
     maximum_probe_relative_error: float = 0.01,
     maximum_probe_capture_relative_error: float = 1e-5,
     minimum_steering_direction_cosine: float = 0.99,
 ) -> dict[str, Any]:
-    metadata = load_capture_metadata(
-        capture_directory,
-        require_smol_named_role=require_smol_named_role,
-    )
+    metadata = load_capture_metadata(capture_directory)
     validate_capture_model_identity(model_directory, metadata)
     for threshold in (maximum_capture_relative_error, maximum_probe_relative_error,
                       maximum_probe_capture_relative_error):
@@ -279,11 +256,7 @@ def validate_capture_model_identity(model_directory: Path, metadata: dict) -> No
         raise ValueError("capture belongs to a different model artifact identity")
 
 
-def load_capture_metadata(
-    capture_directory: Path,
-    *,
-    require_smol_named_role: bool = False,
-) -> dict[str, Any]:
+def load_capture_metadata(capture_directory: Path) -> dict[str, Any]:
     metadata = json.loads((capture_directory / "capture.json").read_text())
     required = {
         "schema_version",
@@ -384,14 +357,6 @@ def load_capture_metadata(
         or named_role["position"] >= len(named_role["input_ids"])
     ):
         raise ValueError("browser residual fixture named-role observation is invalid")
-    if (
-        metadata["model_id"] == "smollm2-360m-instruct"
-        and named_role is not None
-        and (named_role["input_ids"] != SMOL_NAMED_ROLE_INPUT_IDS or named_role["position"] != 19)
-    ):
-        raise ValueError("SmolLM2 named-role tokenization does not match the pinned Python row")
-    if require_smol_named_role and metadata["model_id"] == "smollm2-360m-instruct" and named_role is None:
-        raise ValueError("SmolLM2 release evidence requires the pinned named-role row")
     runtime_lock = metadata.get("runtime_lock")
     if runtime_lock is not None and (
         not isinstance(runtime_lock, dict)
@@ -632,9 +597,10 @@ def release_evidence_receipt(
 ) -> dict[str, Any]:
     if metadata.get("runtime_lock", {}).get("source") != "repository":
         raise ValueError("release evidence requires the checked-in repository runtime lock")
-    expected_model = EVIDENCE_MODEL_IDS[evidence_type]
-    if result["modelId"] != expected_model:
-        raise ValueError(f"{evidence_type} requires {expected_model}, found {result['modelId']}")
+    if evidence_type != EVIDENCE_TYPE:
+        raise ValueError(f"q4 parity release evidence is {EVIDENCE_TYPE}, not {evidence_type}")
+    if result["modelId"] not in PARITY_MODEL_IDS or result["modelId"] != metadata["model_id"]:
+        raise ValueError(f"{EVIDENCE_TYPE} requires a q4 library of the lock, found {result['modelId']}")
     return {
         "schemaVersion": 1,
         "evidenceType": evidence_type,
@@ -661,14 +627,13 @@ def main() -> None:
     parser.add_argument("--maximum-probe-relative-error", type=float, default=0.01)
     parser.add_argument("--maximum-probe-capture-relative-error", type=float, default=1e-5)
     parser.add_argument("--minimum-steering-direction-cosine", type=float, default=0.99)
-    parser.add_argument("--evidence-type", choices=sorted(EVIDENCE_MODEL_IDS))
+    parser.add_argument("--evidence-type", choices=[EVIDENCE_TYPE])
     parser.add_argument("--fixture-path")
     arguments = parser.parse_args()
     result = validate(
         arguments.model_directory,
         arguments.capture_directory,
         device=arguments.device,
-        require_smol_named_role=arguments.evidence_type == "smolProductionQ4Parity",
         maximum_capture_relative_error=arguments.maximum_capture_relative_error,
         maximum_probe_relative_error=arguments.maximum_probe_relative_error,
         maximum_probe_capture_relative_error=(arguments.maximum_probe_capture_relative_error),
@@ -677,10 +642,7 @@ def main() -> None:
     if (arguments.evidence_type is None) != (arguments.fixture_path is None):
         raise ValueError("--evidence-type and --fixture-path must be supplied together")
     if arguments.evidence_type is not None:
-        metadata = load_capture_metadata(
-            arguments.capture_directory,
-            require_smol_named_role=arguments.evidence_type == "smolProductionQ4Parity",
-        )
+        metadata = load_capture_metadata(arguments.capture_directory)
         result = release_evidence_receipt(
             result,
             metadata,

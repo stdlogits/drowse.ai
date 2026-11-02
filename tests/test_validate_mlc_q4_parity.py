@@ -28,7 +28,7 @@ _VALIDATOR_SPEC.loader.exec_module(_VALIDATOR)
 
 
 def capture_metadata(
-    model_id: str = "gemma3-270m-instruct",
+    model_id: str = "qwen3-1.7b",
 ) -> dict[str, Any]:
     metadata = {
         "schema_version": 3,
@@ -63,62 +63,47 @@ def capture_metadata(
             "max_tokens": 4,
         },
     }
-    if model_id == "smollm2-360m-instruct":
-        metadata["named_role_capture"] = {
-            "input_ids": list(_VALIDATOR.SMOL_NAMED_ROLE_INPUT_IDS),
-            "position": 19,
-        }
     return metadata
 
 
-def test_capture_metadata_accepts_early_eos_and_exact_smol_named_role(
-    tmp_path: Path,
-) -> None:
-    metadata = capture_metadata("smollm2-360m-instruct")
+def test_capture_metadata_accepts_a_named_role_row_and_refuses_a_malformed_one(tmp_path: Path) -> None:
+    metadata = capture_metadata()
+    metadata["named_role_capture"] = {"input_ids": [1, 2, 3], "position": 2}
     (tmp_path / "capture.json").write_text(json.dumps(metadata))
     assert _VALIDATOR.load_capture_metadata(tmp_path) == metadata
-
-    metadata["named_role_capture"]["input_ids"][-1] += 1
+    metadata["named_role_capture"]["position"] = 3
     (tmp_path / "capture.json").write_text(json.dumps(metadata))
-    try:
+    with pytest.raises(ValueError, match="named-role observation is invalid"):
         _VALIDATOR.load_capture_metadata(tmp_path)
-    except ValueError as error:
-        assert "pinned Python row" in str(error)
-    else:
-        raise AssertionError("mismatched named-role tokenization was accepted")
 
 
-def test_smol_named_role_is_required_only_for_release_evidence(tmp_path: Path) -> None:
-    metadata = capture_metadata("smollm2-360m-instruct")
-    del metadata["named_role_capture"]
-    (tmp_path / "capture.json").write_text(json.dumps(metadata))
-    assert _VALIDATOR.load_capture_metadata(tmp_path) == metadata
-    try:
-        _VALIDATOR.load_capture_metadata(tmp_path, require_smol_named_role=True)
-    except ValueError as error:
-        assert "release evidence requires" in str(error)
-    else:
-        raise AssertionError("release evidence accepted a missing named-role row")
-
-
-@pytest.mark.parametrize(("model_id", "evidence", "required_model"), [
-    ("gemma3-1b-instruct", "gemmaProductionQ4Parity", "gemma3-270m-instruct"),
-    ("gemma3-4b-instruct", "gemmaProductionQ4Parity", "gemma3-270m-instruct"),
-    ("qwen3-4b", "qwenProductionQ4Parity", "qwen3-1.7b"),
-])
-def test_parity_evidence_is_bound_to_the_exact_model(tmp_path: Path, model_id: str, evidence: str, required_model: str) -> None:
+@pytest.mark.parametrize("model_id", sorted(_VALIDATOR.PARITY_MODEL_IDS))
+def test_every_q4_library_records_production_q4_parity(tmp_path: Path, model_id: str) -> None:
     metadata = capture_metadata(model_id)
     (tmp_path / "capture.json").write_text(json.dumps(metadata))
     assert _VALIDATOR.load_capture_metadata(tmp_path) == metadata
-    try:
-        _VALIDATOR.release_evidence_receipt(
-            {"modelId": model_id}, metadata,
-            evidence, "candidate/capture.json",
-        )
-    except ValueError as error:
-        assert f"requires {required_model}" in str(error)
-    else:
-        raise AssertionError(f"{model_id} parity was accepted as {required_model} release evidence")
+    result = {"modelId": model_id, "runtimeIdentitySha256": "1" * 64, "maxProbeRelativeError": 0.001,
+              "maxCaptureRelativeError": 0.002, "steeringDirectionCosine": 0.999}
+    receipt = _VALIDATOR.release_evidence_receipt(result, metadata, "productionQ4Parity", "fixture.json")
+    assert receipt["evidenceType"] == "productionQ4Parity"
+    assert receipt["results"]["modelId"] == model_id
+
+
+def test_parity_evidence_is_bound_to_a_q4_model_and_its_capture(tmp_path: Path) -> None:
+    metadata = capture_metadata("qwen3-4b")
+    result = {"modelId": "qwen3-4b"}
+    with pytest.raises(ValueError, match="productionQ4Parity, not qwenProductionQ4Parity"):
+        _VALIDATOR.release_evidence_receipt(result, metadata, "qwenProductionQ4Parity", "fixture.json")
+    with pytest.raises(ValueError, match="requires a q4 library"):
+        _VALIDATOR.release_evidence_receipt({"modelId": "qwen3-1.7b"}, metadata, "productionQ4Parity", "fixture.json")
+    q0 = capture_metadata("qwen3-4b")
+    q0["model_id"] = "gemma3-270m-instruct"
+    with pytest.raises(ValueError, match="requires a q4 library"):
+        _VALIDATOR.release_evidence_receipt({"modelId": "gemma3-270m-instruct"}, q0, "productionQ4Parity", "fixture.json")
+    override = capture_metadata("qwen3-4b")
+    override["runtime_lock"]["source"] = "override"
+    with pytest.raises(ValueError, match="checked-in repository runtime lock"):
+        _VALIDATOR.release_evidence_receipt(result, override, "productionQ4Parity", "fixture.json")
 
 
 def test_cosine_stays_in_range_despite_float32_reduction_rounding() -> None:
@@ -264,7 +249,7 @@ def test_capture_is_bound_to_verified_model_files(tmp_path: Path):
 
 def test_release_receipt_retains_observed_runtime_identity() -> None:
     result = {
-        "modelId": "gemma3-270m-instruct",
+        "modelId": "qwen3-1.7b",
         "runtimeIdentitySha256": "a" * 64,
         "maxProbeRelativeError": 0.005,
         "maxCaptureRelativeError": 0.006,
@@ -273,7 +258,7 @@ def test_release_receipt_retains_observed_runtime_identity() -> None:
     receipt = _VALIDATOR.release_evidence_receipt(
         result,
         capture_metadata(),
-        "gemmaProductionQ4Parity",
+        "productionQ4Parity",
         "browser-runtime/runtime-lock.json",
     )
     assert receipt["results"]["runtimeIdentitySha256"] == "a" * 64
@@ -283,7 +268,7 @@ def test_release_receipt_rejects_runtime_lock_override() -> None:
     metadata = capture_metadata()
     metadata["runtime_lock"]["source"] = "override"
     result = {
-        "modelId": "gemma3-270m-instruct",
+        "modelId": "qwen3-1.7b",
         "runtimeIdentitySha256": "a" * 64,
         "maxProbeRelativeError": 0.005,
         "maxCaptureRelativeError": 0.006,
@@ -293,7 +278,7 @@ def test_release_receipt_rejects_runtime_lock_override() -> None:
         _VALIDATOR.release_evidence_receipt(
             result,
             metadata,
-            "gemmaProductionQ4Parity",
+            "productionQ4Parity",
             "browser-runtime/runtime-lock.json",
         )
     except ValueError as error:
