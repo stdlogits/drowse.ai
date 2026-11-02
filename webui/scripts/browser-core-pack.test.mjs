@@ -650,7 +650,15 @@ try {
           ...lensManifestBody,
           kind: "R",
           estimator_policy: { direction: "output", rules: { half_rule: true }, skip_first_positions: 0 },
-          sites: lensSite(rLensFile.sha256),
+          n_prompts: 64,
+          sites: {
+            out: {
+              ...lensSite(rLensFile.sha256).out,
+              split_half: Object.fromEntries(
+                [...jlensLayers].reverse().map((layer) => [String(layer), 0.01 * (layer + 1)]),
+              ),
+            },
+          },
         });
         const rLensManifestFile = instrumentFile("packs/rlens/manifest.json", rLensManifest);
         const rVocabularyTensorFile = instrumentFile(
@@ -2115,6 +2123,55 @@ try {
     assert.deepEqual(compiler.instrumentLiveState().lensLayers, [1]);
   });
 
+  test("lists an inactive lens pack whose manifest fails the loader without coverage", async () => {
+    const { request } = await fixture({ withWhitener: true, withJlens: true });
+    request.optionalPacks.push(instrumentPack(
+      "fixture-k-lens",
+      "jlens",
+      [instrumentFile("packs/klens/manifest.json", jsonBytes({ format_version: 7, kind: "K" }))],
+      request.variant.runtimeIdentitySha256,
+    ));
+    request.optionalPacks.push(instrumentPack(
+      "fixture-r-sideless",
+      "jlens",
+      [instrumentFile("packs/rsideless/manifest.json", jsonBytes({ format_version: 7, kind: "R" }))],
+      request.variant.runtimeIdentitySha256,
+    ));
+    const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+    const runtime = new BrowserInstrumentRuntime(compiler, {});
+    const { sources } = runtime.request({
+      service: "instruments",
+      method: "sources",
+      args: ["lens"],
+    }, () => null);
+    assert.deepEqual(sources.map((row) => [row.source, row.active, row.sites]), [
+      ["fixture-jlens", true, ["out"]],
+      ["fixture-k-lens", false, []],
+      ["fixture-r-sideless", false, []],
+    ]);
+    // Native's row for a manifest that no longer validates: its kind, family and no coverage.
+    // A hosted lens pack selects into the R slot, so a K manifest names no kind it could serve.
+    const brokenRow = {
+      kind: "catalog",
+      family: "R",
+      sites: [],
+      active: false,
+      provider: "catalog",
+    };
+    assert.deepEqual(sources[1], {
+      ...brokenRow, source: "fixture-k-lens", name: "fixture-k-lens",
+    });
+    // An R manifest that fails only the site checks keeps its kind.
+    assert.deepEqual(sources[2], {
+      ...brokenRow, source: "fixture-r-sideless", name: "fixture-r-sideless", lens: "R",
+    });
+    await assert.rejects(
+      () => compiler.activateJlensSource("fixture-k-lens"),
+      (error) => error.code === "JLENS_PACK_INVALID" || error.code === "JLENS_VOCABULARY_INVALID" ||
+        /Lens browser vocabulary/.test(error.message),
+    );
+  });
+
   test("swaps installed standard and R-lens packs without fitting or losing probes", async () => {
     const { request } = await fixture({
       withWhitener: true,
@@ -2144,16 +2201,44 @@ try {
     compiler.setInstrumentLive("lens", true, [1]);
 
     assert.equal(runtime.blocks()[1].capabilities.source_switch, true);
-    assert.deepEqual(runtime.request({
+    // 6.0's rows (lens/sources.py::list_lens_sources) for every installed source, the inactive one
+    // read from its manifest: kind, family R, the out site the browser reads, its layers,
+    // documents and (when the fit recorded it) the split-half difference by ascending layer.
+    const rRow = {
+      source: "fixture-rlens",
+      kind: "catalog",
+      name: "fixture-rlens",
+      lens: "R",
+      family: "R",
+      sites: ["out"],
+      layers: { out: [0, 1] },
+      n_prompts: 64,
+      split_half: { out: { 0: 0.01, 1: 0.02 } },
+      provider: "catalog",
+    };
+    const listed = runtime.request({
       service: "instruments",
       method: "sources",
       args: ["lens"],
-    }, () => null), {
+    }, () => null);
+    assert.deepEqual(listed, {
       sources: [
-        { source: "fixture-jlens", name: "fixture-jlens", kind: "catalog", provider: "catalog", active: true },
-        { source: "fixture-rlens", name: "fixture-rlens", kind: "catalog", provider: "catalog", active: false },
+        {
+          source: "fixture-jlens",
+          kind: "catalog",
+          name: "fixture-jlens",
+          lens: "J",
+          family: "R",
+          sites: ["out"],
+          layers: { out: [0, 1] },
+          n_prompts: 1,
+          active: true,
+          provider: "catalog",
+        },
+        { ...rRow, active: false },
       ],
     });
+    assert.deepEqual(Object.keys(listed.sources[1].split_half.out), ["0", "1"]);
 
     const switched = await runtime.request({
       service: "instruments",
@@ -2171,7 +2256,11 @@ try {
       method: "sources",
       args: ["lens"],
     }, () => null).sources;
-    assert.equal(sources.find((source) => source.source === "fixture-rlens").active, true);
+    assert.deepEqual(sources.find((source) => source.source === "fixture-rlens"), {
+      ...rRow,
+      active: true,
+    });
+    assert.equal(sources.find((source) => source.source === "fixture-jlens").lens, "J");
     const refreshed = await compiler.withInstalledManifolds([], request.signal);
     await runtime.replaceCompiler(refreshed);
     assert.equal(installedDictionaries.length, 1);
@@ -2266,7 +2355,7 @@ try {
     assert.deepEqual([...program.jLensLayerIndices], [0, 1]);
   });
 
-  test("lowers thinking-only controls and exact J-lens probability gates", async () => {
+  test("lowers thinking-only controls and exact R-lens probability gates", async () => {
     const { request } = await fixture({ withWhitener: true, withJlens: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const thinking = compiler.compile("0.5 alert@thinking");
@@ -2277,6 +2366,12 @@ try {
     assert.equal(jlensGate.jLensBindingId, compiler.jlensGpuDictionary().bindingId);
     assert.deepEqual([...jlensGate.jLensLayerIndices], [0, 1]);
     assert.deepEqual([...jlensGate.jLensTokenIds], [0, 0, 0, 0, 0, 0, 0, 0]);
+    // A gate reads the attached probe it names, whatever the alias: an R-lens probe attached as
+    // `slens/watch` installs as a lens gate (drowse attaches under any as_name).
+    compiler.attachProbe({ selector: "jlens/hello", name: "slens/watch" });
+    const aliased = compiler.compile("0.5 alert@when:slens/watch>0.1");
+    assert.equal(aliased.probeKind[0], 3);
+    assert.deepEqual([...aliased.jLensLayerIndices], [0, 1]);
   });
 
   test("resolves a two-node PCA manifold name to its first pole", async () => {
@@ -2861,24 +2956,24 @@ try {
     const whitened = await BrowserFeasibilityCorePackCompiler.load(
       (await fixture({ withWhitener: true })).request,
     );
-    for (const expression of [
-      "0.5 alert@when:neuron/L8n344>2", "0.5 alert@after&when:head/L3h2<=0.5",
-      "0.5 alert@when:slens/Owl>3",
+    // The same words hook-capabilities pins for the library check (instrumentAtomUnavailable).
+    const unavailable = (namespace) => (error) =>
+      error.code === "CORE_PACK_EXPRESSION_UNAVAILABLE" &&
+      error.message === `${namespace}/ instrument atoms are not available in the browser runtime`;
+    for (const [expression, namespace] of [
+      ["0.5 alert@when:neuron/L8n344>2", "neuron"],
+      ["0.5 alert@after&when:head/L3h2<=0.5", "head"],
+      ["0.5 alert@when:slens/Owl>3", "slens"],
     ]) {
-      assert.throws(
-        () => whitened.compile(expression),
-        (error) => error.code === "CORE_PACK_EXPRESSION_UNAVAILABLE" &&
-          /instrument atoms are not available in the browser runtime/.test(error.message),
-        expression,
-      );
+      assert.throws(() => whitened.compile(expression), unavailable(namespace), expression);
     }
-    for (const expression of ["0.3 slens/#12", "0.3 slens/Owl", "0.2 neuron/L8n344", "!head/L3h2"]) {
-      assert.throws(
-        () => compiler.compile(expression),
-        (error) => error.code === "CORE_PACK_EXPRESSION_UNAVAILABLE" &&
-          /instrument atoms are not available in the browser runtime/.test(error.message),
-        expression,
-      );
+    for (const [expression, namespace] of [
+      ["0.3 slens/#12", "slens"],
+      ["0.3 slens/Owl", "slens"],
+      ["0.2 neuron/L8n344", "neuron"],
+      ["!head/L3h2", "head"],
+    ]) {
+      assert.throws(() => compiler.compile(expression), unavailable(namespace), expression);
     }
   });
 

@@ -204,25 +204,52 @@ try {
     assert.throws(() => parseSteering(written), (error) => error.message === message, written);
   }
 
-  // The `inverted` regen, against drowse 6.0's Recipe.invert_steering where no bare label
-  // resolves; a bare label keeps its written name (drowse resolves it, which changes only text).
-  for (const [written, inverted] of [
-    ["0.5,0.3 demo%alert", "-0.5,-0.3 demo%alert"],
-    ["-0.6,0.3 demo%alert{1-2}", "0.6,-0.3 demo%alert{1-2}"],
-    ["0 demo%alert", "0 demo%alert"],
-    ["!x", "-!x"],
-    ["-!x{0}", "!x{0}"],
-    ["0.25 !neuron/L8n344@prompt", "-0.25 !neuron/L8n344@before"],
-    ["0.3 a~b{1-2}@response", "-0.3 a~b{1-2}@response"],
-    ["0.1 x|y - 0.2 !z{workspace}", "-0.1 x|y + 0.2 !z{workspace}"],
-    ["0.5 sae/3@response&when:sae/2>0.5", "-0.5 sae/3@when:sae/2>0.5"],
-    ["0.5 calm:sae", "-0.5 calm:sae"],
-    ["0.5 calm{0}@response", "-0.5 calm{0}@response"],
-    ["1e-7 calm@both", "-1e-07 calm"],
-    ["0.5,0.3 alert{1}", "-0.5,-0.3 alert{1}"],
+  // The `inverted` regen, against drowse 6.0's Recipe.invert_steering with the golden's registry
+  // installed (folders only, as test_steering_ir installs it; run from the venv on the pinned
+  // submodule): bare labels resolve to their `%` terms and repeats fold before the signs flip, and
+  // a refusal is drowse's own class and words.
+  for (const [written, expected] of [
+    ["0.5,0.3 demo%alert", {"inverted": "-0.5,-0.3 demo%alert"}],
+    ["-0.6,0.3 demo%alert{1-2}", {"inverted": "0.6,-0.3 demo%alert{1-2}"}],
+    ["0 demo%alert", {"inverted": "0 demo%alert"}],
+    ["!x", {"inverted": "-!x"}],
+    ["-!x{0}", {"inverted": "!x{0}"}],
+    ["0.25 !neuron/L8n344@prompt", {"inverted": "-0.25 !neuron/L8n344@before"}],
+    ["0.3 a~b{1-2}@response", {"inverted": "-0.3 a~b{1-2}@response"}],
+    ["0.1 x|y - 0.2 !z{workspace}", {"inverted": "-0.1 x|y + 0.2 !z{workspace}"}],
+    ["0.5 sae/3@response&when:sae/2>0.5", {"inverted": "-0.5 sae/3@when:sae/2>0.5"}],
+    ["0.5 calm:sae", {"inverted": "-0.5 calm:sae"}],
+    ["1e-7 calm@both", {"inverted": "-1e-07 calm"}],
+    ["0.5 pirate", {"inverted": "-0.5 default/personas%pirate"}],
+    ["0.5 pirate{0}@response", {"inverted": "-0.5 default/personas%pirate{0}@response"}],
+    ["0.5,0.3 pirate{1}", {"inverted": "-0.5,-0.3 default/personas%pirate{1}"}],
+    ["0 pirate", {"inverted": "0 default/personas%pirate"}],
+    ["0.5 pirate + 0.2 pirate", {"inverted": "-0.7 default/personas%pirate"}],
+    ["0.5 calm + 0.2 calm", {"inverted": "-0.7 calm"}],
+    ["0.5 calm{0}@response", {"inverted": "-0.5 calm{0}@response"}],
+    ["0.5 verbose", {"inverted": "-0.5 default/verbose.concise%verbose"}],
+    ["0.5 verbose.concise", {"inverted": "-0.5 default/verbose.concise%verbose"}],
+    ["0.4 owl - 0.1 formal", {"inverted": "-0.4 local/animals%owl + 0.1 local/formal.casual%formal"}],
+    ["-0.3 !pirate", {"inverted": "0.3 !pirate"}],
+    ["0.5 concise~verbose", {"inverted": "-0.5 concise~verbose"}],
+    ["0.5 x + 0.25 x@response", {"error": "SteeringExprError", "message": "concept 'x' appears with conflicting triggers; merge triggers explicitly or split into separate Steering entries"}],
+    ["0.2 hacker + 0.3 calm{1}@after:3", {"inverted": "-0.2 default/personas%hacker - 0.3 calm{1}@after:3"}],
+    ["0.5 deer", {"error": "AmbiguousSelectorError", "message": "ambiguous manifold label 'deer': matches local/animals (label 'deer'), local/forest (label 'deer'). Specify the manifold explicitly as <ns>/<name>%deer. (disambiguate with namespace/name)"}],
+    ["0.2 personas%pirate + 0.1 hacker", {"inverted": "-0.2 personas%pirate - 0.1 default/personas%hacker"}],
+    ["0.5,0.3 alert{1}", {"error": "SteeringExprError", "message": "comma-separated coefficients are only valid for `manifold % position` terms"}],
   ]) {
-    assert.equal(grammar.invertSteeringExpression(written), inverted, written);
+    if ("inverted" in expected) {
+      assert.equal(grammar.invertSteeringExpression(written, { manifolds }), expected.inverted, written);
+    } else {
+      assert.throws(() => grammar.invertSteeringExpression(written, { manifolds }), (error) => {
+        assert.equal(error.code, expected.error, written);
+        assert.equal(error.message, expected.message, written);
+        return true;
+      });
+    }
   }
+  // Without the manifolds nothing resolves, as with an empty registry.
+  assert.equal(grammar.invertSteeringExpression("0.5 pirate + 0.2 pirate"), "-0.7 pirate");
   assert.equal(grammar.invertSteeringExpression("  "), "");
 
   // sessions.validateSteering answers as `POST .../steering/validate` does.
@@ -283,9 +310,9 @@ try {
   assert.equal(plain.n_layers, undefined, "a program without placements leaves the strip out");
   assert.deepEqual(plain.parts.map((part) => part.target), ["plain", "x"]);
   assert.deepStrictEqual(await validate("   "), { valid: true, expression: "", error: null });
-  const syntax = await validate("honest +");
+  const syntax = await validate("deceptive +");
   assert.equal(syntax.valid, false);
-  assert.equal(syntax.expression, "honest +");
+  assert.equal(syntax.expression, "deceptive +");
   const unfitted = await validate("x{9}");
   assert.deepStrictEqual(unfitted, {
     valid: false,
@@ -298,9 +325,58 @@ try {
   const compilesBefore = compiles.length;
   await assert.rejects(validate("0.5 x"), (error) => error.code === "ENGINE_BUSY" && error.status === 409);
   assert.deepStrictEqual(await validate(""), { valid: true, expression: "", error: null });
-  assert.equal((await validate("honest +")).valid, false);
+  assert.equal((await validate("deceptive +")).valid, false);
   assert.equal(compiles.length, compilesBefore, "nothing compiles while busy");
   runtime.generating = false;
+
+  // Columns count code points and whitespace is `str.isspace`, as Python's lexer sees a `str`: an
+  // astral character inside a clause no longer shifts later columns, a lone surrogate never shows
+  // in a message, NEL and the information separators are spaces and U+FEFF is not. Each input is
+  // stripped as the validate route strips it. The outcomes are drowse 6.0's own
+  // (`_Parser(_lex(text.strip())).parse()` on the pinned submodule, run from the venv).
+  const { pythonStrip } = grammar;
+  for (const [input, expected] of [
+    ["0.5 calm{\ud83d\ude00} $", {"error": "unexpected character '$' (col 12)"}],
+    ["0.5 calm{\ud83d\ude00\ud83d\ude00} + 0.2 warm{4} ?", {"error": "unexpected character '?' (col 27)"}],
+    ["0.5 \ud83d\ude00", {"error": "unexpected character '\ud83d\ude00' (col 4)"}],
+    ["0.5 cal\ud83d\ude00m", {"error": "unexpected character '\ud83d\ude00' (col 7)"}],
+    ["0.5 calm{\ud83d\ude00}{", {"error": "unterminated layer clause; close it with '}' (col 11)"}],
+    ["0.5 calm{ \ud83d\ude00 ,}", {"error": "layer clause: malformed layers ' \ud83d\ude00 ,' (want comma-separated indices or a-b ranges, or one of all, workspace) (col 10)"}],
+    ["0.5 calm{4,\ud83d\ude00}", {"error": "layer clause: malformed layers '4,\ud83d\ude00' (want comma-separated indices or a-b ranges, or one of all, workspace) (col 11)"}],
+    ["0.5 calm{\ud83d\ude00} + 0.2 warm{3-1}", {"error": "layer clause: malformed layers '\ud83d\ude00' (want comma-separated indices or a-b ranges, or one of all, workspace) (col 9)"}],
+    ["0.5 calm{\ud83d\ude00}@when:x>\ud83d\ude00", {"error": "unexpected character '\ud83d\ude00' (col 19)"}],
+    ["0.5\u0085calm", {"terms": [[0.5]]}],
+    ["0.5\u001ccalm + 0.25\u001fwarm", {"terms": [[0.5], [0.25]]}],
+    ["0.5\ufeffcalm", {"error": "unexpected character '\\ufeff' (col 3)"}],
+    ["\u0085 0.5 calm \u001e", {"terms": [[0.5]]}],
+    ["\ufeff0.5 calm", {"error": "unexpected character '\\ufeff' (col 0)"}],
+    ["0.5 calm{\u00854\u0085}", {"terms": [[0.5]]}],
+    ["0.5 calm{4\ufeff}", {"error": "layer clause: malformed layers '4\\ufeff' (want comma-separated indices or a-b ranges, or one of all, workspace) (col 9)"}],
+    ["0.5 calm{'}", {"error": "layer clause: malformed layers \"'\" (want comma-separated indices or a-b ranges, or one of all, workspace) (col 9)"}],
+    ["0.5 calm{\"'}", {"error": "layer clause: malformed layers '\"\\'' (want comma-separated indices or a-b ranges, or one of all, workspace) (col 9)"}],
+    ["0.5 calm{4-6, \ud83d\ude00}", {"error": "layer clause: malformed layers '4-6, \ud83d\ude00' (want comma-separated indices or a-b ranges, or one of all, workspace) (col 14)"}],
+    ["0.5 calm{ sample }", {"error": "layer clause: unknown layer mode 'sample' (want all, workspace, or an index list) (col 10)"}],
+    ["0.5 calm{\u3000sample}", {"error": "layer clause: unknown layer mode 'sample' (want all, workspace, or an index list) (col 10)"}],
+    ["0.5 calm{4,,5}", {"error": "layer clause: empty entry in layers '4,,5' (col 11)"}],
+    ["0.5 calm{\ud83d\ude00,\ud83d\ude00}", {"error": "layer clause: malformed layers '\ud83d\ude00,\ud83d\ude00' (want comma-separated indices or a-b ranges, or one of all, workspace) (col 9)"}],
+  ]) {
+    const text = pythonStrip(input);
+    if ("error" in expected) {
+      assert.throws(() => parseSteeringExpression(text), (error) => {
+        assert.equal(error.message, expected.error, JSON.stringify(input));
+        return true;
+      });
+    } else {
+      assert.deepEqual(
+        parseSteeringExpression(text).terms.map((term) => [...term.coefficients]),
+        expected.terms,
+        JSON.stringify(input),
+      );
+    }
+  }
+  assert.equal(pythonStrip("\u0085\u001c 0.5 x\u3000\u001f"), "0.5 x");
+  assert.equal(pythonStrip("\ufeff0.5 x"), "\ufeff0.5 x");
+  assert.equal((await validate("\u0085 plain + 0.2 x\u001e")).expression, "0.5 plain + 0.2 x");
 
   console.log(
     `Steering grammar checks passed (${ir.accepted.length + ir.rejected.length} IR, ` +

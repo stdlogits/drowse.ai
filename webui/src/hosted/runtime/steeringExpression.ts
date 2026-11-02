@@ -107,12 +107,15 @@ export class SteeringSelectorError extends Error {
   }
 }
 
-/** A bare atom that names more than one installed manifold (`AmbiguousSelectorError`). */
+/** A bare atom that names more than one installed manifold (`AmbiguousSelectorError`). Its
+ *  message is the one drowse shows a person (`user_message`), which adds the tip. */
 export class AmbiguousSteeringSelectorError extends SteeringSelectorError {
   override readonly code: string = "AmbiguousSelectorError";
 
   constructor(message: string) {
-    super(message);
+    super(message.includes("namespace/name")
+      ? message
+      : `${message} (disambiguate with namespace/name)`);
     this.name = "AmbiguousSteeringSelectorError";
   }
 }
@@ -142,17 +145,53 @@ const DIGIT = /^[0-9]$/u;
 const IDENT_START = /^[A-Za-z]$/u;
 const IDENT_CHAR = /^[A-Za-z0-9_]$/u;
 
-function lex(text: string): Token[] {
+/** `str.isspace`: Unicode White_Space without U+FEFF, plus the four information separators
+ *  and NEL, which JavaScript's `\s` misses. */
+const PYTHON_SPACE = /^[\t-\r\x1c-\x20\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]$/u;
+
+function isPythonSpace(character: string): boolean {
+  return PYTHON_SPACE.test(character);
+}
+
+/** Python's `str.strip()` (no argument). */
+export function pythonStrip(text: string): string {
+  return pythonRstrip(pythonLstrip(text));
+}
+
+function pythonLstrip(text: string): string {
+  const characters = Array.from(text);
+  let start = 0;
+  while (start < characters.length && isPythonSpace(characters[start])) start += 1;
+  return characters.slice(start).join("");
+}
+
+function pythonRstrip(text: string): string {
+  const characters = Array.from(text);
+  let end = characters.length;
+  while (end > 0 && isPythonSpace(characters[end - 1])) end -= 1;
+  return characters.slice(0, end).join("");
+}
+
+function codePointLength(text: string): number {
+  let length = 0;
+  for (const _ of text) length += 1;
+  return length;
+}
+
+/** `_lex`: tokens over the text's code points (Python indexes a `str` by code point), so every
+ *  column agrees with drowse's even past an astral character. */
+function lex(source: string): Token[] {
+  const text = Array.from(source);
   const tokens: Token[] = [];
   let index = 0;
   while (index < text.length) {
     const character = text[index];
-    if (/\s/u.test(character)) {
+    if (isPythonSpace(character)) {
       index += 1;
       continue;
     }
     if (DIGIT.test(character) || (character === "." && DIGIT.test(text[index + 1] ?? ""))) {
-      const match = NUMBER.exec(text.slice(index))!;
+      const match = NUMBER.exec(text.slice(index).join(""))!;
       const value = Number(match[0]);
       if (!Number.isFinite(value)) throw new SteeringExpressionError("number must be finite", index);
       tokens.push({ kind: "NUM", value, column: index });
@@ -181,7 +220,7 @@ function lex(text: string): Token[] {
       if (close < 0) {
         throw new SteeringExpressionError("unterminated layer clause; close it with '}'", index);
       }
-      tokens.push({ kind: "LAYERS", value: text.slice(index + 1, close), column: index });
+      tokens.push({ kind: "LAYERS", value: text.slice(index + 1, close).join(""), column: index });
       index = close + 1;
       continue;
     }
@@ -200,7 +239,7 @@ function lex(text: string): Token[] {
         }
         break;
       }
-      tokens.push({ kind: "IDENT", value: text.slice(start, index), column: start });
+      tokens.push({ kind: "IDENT", value: text.slice(start, index).join(""), column: start });
       continue;
     }
     if (character === '"' || character === "'") {
@@ -230,42 +269,51 @@ class LayerSelectorError extends Error {
 /** `model/layers.py::parse_layer_selector(text, allow_sample=False)`: `"4-6,11"` → `[4, 5, 6, 11]`
  *  in written order; `all` / `workspace` pass through lower-cased; blank is `null`. */
 function parseLayerSelector(text: string): number[] | "all" | "workspace" | null {
-  const stripped = text.trim();
+  // Offsets count code points and whitespace is Python's `str.isspace`, as `parse_layer_selector`
+  // sees the clause body.
+  const stripped = pythonStrip(text);
   if (!stripped) return null;
   const lowered = stripped.toLowerCase();
   if (lowered === "all" || lowered === "workspace") return lowered;
   if (lowered === "sample") {
     throw new LayerSelectorError(
-      `unknown layer mode '${stripped}' (want all, workspace, or an index list)`,
-      text.indexOf(stripped[0]),
+      `unknown layer mode ${pythonStringRepr(stripped)} (want all, workspace, or an index list)`,
+      codePointLength(text.slice(0, text.indexOf(stripped))),
     );
   }
   const layers: number[] = [];
   const seen = new Set<number>();
   let start = 0;
   for (const part of text.split(",")) {
-    const body = part.trim();
-    const offset = start + (body ? part.indexOf(body[0]) : part.length);
-    start += part.length + 1;
-    if (!body) throw new LayerSelectorError(`empty entry in layers '${text}'`, offset);
+    const body = pythonStrip(part);
+    const offset = start + codePointLength(body ? part.slice(0, part.indexOf(body)) : part);
+    start += codePointLength(part) + 1;
+    if (!body) throw new LayerSelectorError(`empty entry in layers ${pythonStringRepr(text)}`, offset);
     const match = LAYER_ENTRY.exec(body);
     if (match === null) {
-      if (body.startsWith("-") && LAYER_ENTRY.test(body.slice(1).trimStart())) {
-        throw new LayerSelectorError(`layer indices are non-negative; got '${body}'`, offset);
+      if (body.startsWith("-") && LAYER_ENTRY.test(pythonLstrip(body.slice(1)))) {
+        throw new LayerSelectorError(
+          `layer indices are non-negative; got ${pythonStringRepr(body)}`,
+          offset,
+        );
       }
       throw new LayerSelectorError(
-        `malformed layers '${text}' (want comma-separated indices or a-b ranges, or one of all, workspace)`,
+        `malformed layers ${pythonStringRepr(text)} (want comma-separated indices or a-b ranges, ` +
+          "or one of all, workspace)",
         offset,
       );
     }
     const low = Number.parseInt(match[1], 10);
     const high = match[2] === undefined ? low : Number.parseInt(match[2], 10);
     if (high < low) {
-      throw new LayerSelectorError(`reversed layer range '${body}' (write ${high}-${low})`, offset);
+      throw new LayerSelectorError(
+        `reversed layer range ${pythonStringRepr(body)} (write ${high}-${low})`,
+        offset,
+      );
     }
     for (let layer = low; layer <= high; layer += 1) {
       if (seen.has(layer)) {
-        throw new LayerSelectorError(`layer ${layer} is named twice in '${text}'`, offset);
+        throw new LayerSelectorError(`layer ${layer} is named twice in ${pythonStringRepr(text)}`, offset);
       }
       seen.add(layer);
       layers.push(layer);
@@ -361,7 +409,7 @@ const MANIFOLD_COMPOSE_MESSAGE =
 
 /** Python's `_Parser.parse`: the syntax tree, unresolved. */
 export function parseSteeringExpression(text: string): SteeringExpression {
-  if (!text.trim()) throw new SteeringExpressionError("empty steering expression");
+  if (!pythonStrip(text)) throw new SteeringExpressionError("empty steering expression");
   return { terms: new Parser(lex(text)).parse() };
 }
 
@@ -370,7 +418,7 @@ export function parseSteeringExpression(text: string): SteeringExpression {
 export function referencedSteeringSelectors(
   text: string,
 ): Array<Pick<SteeringAtom, "namespace" | "concept" | "variant">> {
-  if (!text.trim()) return [];
+  if (!pythonStrip(text)) return [];
   const result: Array<Pick<SteeringAtom, "namespace" | "concept" | "variant">> = [];
   for (const term of parseSteeringExpression(text).terms) {
     if (term.selector.manifoldPosition !== null) continue;
@@ -833,7 +881,7 @@ export interface SteeringResolution {
 
 /** `parse_expr`: parse, then fold into the IR. Bare atoms resolve against `resolution`. */
 export function parseSteering(text: string, resolution: SteeringResolution = {}): SteeringIr {
-  if (!text || !text.trim()) throw new SteeringExpressionError("empty steering expression");
+  if (!text || !pythonStrip(text)) throw new SteeringExpressionError("empty steering expression");
   return foldSteering(parseSteeringExpression(text), resolution);
 }
 
@@ -1300,31 +1348,22 @@ function formatAlongOnto(along: number, onto: number): string {
     : `${formatSteeringNumber(along)},${formatSteeringNumber(negative ? -onto : onto)}`;
 }
 
-/** The loom's `inverted` regen (`Recipe.invert_steering`): every term's coefficient negated (a
- *  `%` term's `along`, a zero staying `+0`; its `onto` carried), each term written back with its
- *  clause and trigger. It inverts the written terms without the installed manifolds, so it keeps
- *  bare labels and repeats where drowse resolves and folds them: the text can differ, the
- *  steering does not. */
-export function invertSteeringExpression(text: string): string {
-  if (!text.trim()) return "";
-  return joinSteeringTerms(parseSteeringExpression(text).terms.map((term) => {
-    const selector = term.selector;
-    if (
-      term.coefficients.length > 1 && selector.manifoldPosition === null &&
-      selector.projection === null && !term.ablation
-    ) {
-      // A bare label with `along,onto`: a `%` term once its manifold resolves.
-      return withTrigger(
-        `${formatAlongOnto(-term.coefficients[0] || 0, term.coefficients[1])} ` +
-          `${resolveAtomKey(selector.base)}${formatLayerClause(scopeOf(term))}`,
-        normalizeTrigger(term.trigger),
-      );
-    }
-    const ir = foldSteering({ terms: [term] }).terms[0];
-    return formatSteeringTerm(
-      ir.kind === "manifold" ? { ...ir, along: -ir.along || 0 } : { ...ir, coeff: -ir.coeff },
-    );
-  }));
+/** The loom's `inverted` regen (`Recipe.invert_steering`): `parse_expr` against the installed
+ *  manifolds (`resolution.manifolds`; drowse passes no profile names), so bare labels resolve to
+ *  their `%` terms and repeats fold, then every term's coefficient negated (a `%` term's `along`,
+ *  a zero staying `+0`; its `onto` carried) and the whole written back by `format_expr`. A
+ *  refusal is drowse's too (an ambiguous label, a two-value run on a term that is not `%`). */
+export function invertSteeringExpression(
+  text: string,
+  resolution: Pick<SteeringResolution, "manifolds"> = {},
+): string {
+  if (!pythonStrip(text)) return "";
+  const ir = parseSteering(text, { manifolds: resolution.manifolds ?? [] });
+  return formatSteering({
+    terms: ir.terms.map((term) =>
+      term.kind === "manifold" ? { ...term, along: -term.along || 0 } : { ...term, coeff: -term.coeff }
+    ),
+  });
 }
 
 /** `format_expr`: the canonical text, its terms joined by ` + ` or ` - `. */

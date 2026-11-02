@@ -87,6 +87,7 @@ import {
   ActivationSpool,
   BrowserActivationSpool,
 } from "../fitting/activationSpool";
+import { engineBusy, preflightSteeringValidation } from "./browserLoom";
 import type {
   WSServerMessage,
   WSGenerateRequest,
@@ -336,6 +337,20 @@ export class HostedRuntimeWorker {
           return;
         }
         this.admittedFittingRequestId = request.requestId;
+      }
+      if (
+        isSteeringValidationRequest(request) && this.loadedSelection !== null &&
+        (this.admittedGenerationRequestId !== null || this.admittedFittingRequestId !== null)
+      ) {
+        // drowse's session_lock_or_busy: a validation is worthless once stale, so while a
+        // generation or fit holds the model it answers now (in-band, or 409) instead of
+        // queueing behind the whole operation.
+        this.answerBusySteeringValidation(
+          request.requestId,
+          request.payload.args,
+          this.loadedSelection.model.id,
+        );
+        return;
       }
       if (
         this.admittedGenerationRequestId !== null &&
@@ -1311,6 +1326,29 @@ export class HostedRuntimeWorker {
         }
       }
       throw loadDeviceFailure ?? error;
+    }
+  }
+
+  /** `sessions.validateSteering` during an admitted generation or fit: the checks that need no
+   *  model answer in-band (the empty expression, a parse or fold error, malformed options), as
+   *  drowse answers them before its lock; anything that needs the compiler answers 409
+   *  ENGINE_BUSY. */
+  private answerBusySteeringValidation(
+    requestId: string,
+    args: readonly unknown[],
+    modelId: string,
+  ): void {
+    try {
+      const preflight = preflightSteeringValidation(
+        args, modelId, this.modelBackend.steeringManifolds?.() ?? null,
+      );
+      if ("response" in preflight) {
+        this.success(requestId, preflight.response);
+        return;
+      }
+      throw engineBusy();
+    } catch (error) {
+      this.error(requestId, asFailure(error));
     }
   }
 
@@ -2731,6 +2769,13 @@ const CONCURRENT_TREE_MUTATION_METHODS = new Set([
   "transcriptLoad",
 ]);
 
+function isSteeringValidationRequest(
+  request: WorkerRequest,
+): request is Extract<WorkerRequest, { command: "request" }> {
+  return request.command === "request" && request.payload.service === "sessions" &&
+    request.payload.method === "validateSteering";
+}
+
 function isConcurrentTreeMutationRequest(request: WorkerRequest): boolean {
   return request.command === "request" && request.payload.service === "tree" &&
     CONCURRENT_TREE_MUTATION_METHODS.has(request.payload.method);
@@ -2994,7 +3039,7 @@ function operationUnavailableFallback(
     case "jlens_fitting":
       return {
         code: "HOSTED_JLENS_FITTING_EXCLUDED",
-        message: "J-lens fitting is available only in the Python runtime",
+        message: "Lens fitting is available only in the Python runtime",
       };
     case "sae_training":
       return {

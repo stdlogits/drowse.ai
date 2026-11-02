@@ -32,7 +32,7 @@ export function storageShortfallBytes(
   return Math.max(0, requiredStorageBytes(downloadBytes, 0) - availableBytes);
 }
 
-// The tool packs the first download includes by default: the compatible J-lens for
+// The tool packs the first download includes by default: the compatible R-lens for
 // chat models and the first compatible SAE. Packs already on the device are free.
 export function setupPackBytes(
   model: CatalogModel,

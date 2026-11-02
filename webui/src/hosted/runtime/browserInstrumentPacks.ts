@@ -172,10 +172,23 @@ interface BrowserJlens {
   resolvedBytes: number;
 }
 
+/** An installed lens pack as its source row describes it: its kind, and its coverage (`out`
+ *  layers, documents and the fit's split-half difference per layer, when recorded) once the
+ *  manifest also passes the loader's site checks. */
+export interface LensSourceSummary {
+  readonly kind: "J" | "R";
+  readonly coverage: {
+    readonly layers: readonly number[];
+    readonly nPrompts: number;
+    readonly splitHalf: Readonly<Record<string, number>> | null;
+  } | null;
+}
+
 export class BrowserInstrumentRegistry {
   private constructor(
     private readonly sae: BrowserSae | null,
     private readonly jlensPacks: ReadonlyMap<string, BrowserInstrumentPackArtifacts>,
+    private readonly jlensSummaries: ReadonlyMap<string, LensSourceSummary | null>,
     private readonly loadRequest: BrowserModelLoadRequest,
     private jlens: BrowserJlens | null,
   ) {}
@@ -200,9 +213,21 @@ export class BrowserInstrumentRegistry {
     }
     const jlensBySource = new Map(jlensPacks.map((candidate) => [candidate.pack.id, candidate]));
     const initialJlens = jlensPacks.length === 0 ? null : await loadJlens(jlensPacks[0], request);
+    // Every installed source's row carries its coverage, active or not (the Lens room lists them
+    // all); the loaded one's comes from what was loaded, the rest from their manifests.
+    const summaries = new Map<string, LensSourceSummary | null>();
+    for (const candidate of jlensPacks) {
+      summaries.set(
+        candidate.pack.id,
+        initialJlens?.source === candidate.pack.id
+          ? lensSummaryOf(initialJlens)
+          : await lensSourceSummary(candidate, request),
+      );
+    }
     return new BrowserInstrumentRegistry(
       saePacks.length === 1 ? await loadSae(saePacks[0], request) : null,
       jlensBySource,
+      summaries,
       request,
       initialJlens,
     );
@@ -212,11 +237,15 @@ export class BrowserInstrumentRegistry {
     source: string;
     displayName: string;
     active: boolean;
+    summary: LensSourceSummary | null;
   }> {
     return [...this.jlensPacks].map(([source, candidate]) => ({
       source,
       displayName: candidate.pack.displayName,
       active: source === this.jlens?.source,
+      summary: source === this.jlens?.source
+        ? lensSummaryOf(this.jlens)
+        : this.jlensSummaries.get(source) ?? null,
     }));
   }
 
@@ -1002,6 +1031,85 @@ function pythonJsonString(value: string): string {
   return `${output}"`;
 }
 
+/** The `out` site of a hosted lens pack's manifest, under every check the loader makes: drowse's
+ *  v7 fp32 format, an R-family kind (J or R), this model's fingerprint and depth, and layers
+ *  inside its layer map. */
+function browserLensSite(
+  manifest: Record<string, unknown>,
+  request: BrowserModelLoadRequest,
+): LensManifestSite {
+  const site = lensManifestSites(manifest)?.get(BROWSER_LENS_SITE);
+  if (
+    site === undefined ||
+    !sameStrings(Object.keys(manifest).sort(), LOCAL_LENS_V7_KEYS) ||
+    manifest.format_version !== 7 || !BROWSER_LENS_KINDS.has(manifest.kind as string) ||
+    manifest.checkpoint !== false || manifest.consumed_prefix_sha256 !== null ||
+    manifest.dtype !== "float32" || manifest.d_model !== request.variant.runtimeIdentity.hiddenSize ||
+    !nonnegativeInteger(manifest.n_prompts) ||
+    !matchesRuntimeFingerprint(manifest.model_fingerprint, request) ||
+    manifest.model_source_fingerprint !== request.variant.runtimeIdentity.sourceRevision ||
+    manifest.model_layer_count !== request.variant.runtimeIdentity.layerMap.length
+  ) {
+    throw instrumentError(
+      "JLENS_PACK_INVALID",
+      "The lens pack is not an R-family lens in drowse's v7 fp32 format with an out site",
+    );
+  }
+  if (site.layers.some((layer) => !request.variant.runtimeIdentity.layerMap.includes(layer))) {
+    throw instrumentError("JLENS_PACK_LAYER_MISMATCH", "The R lens has layers outside this model's layer map");
+  }
+  return site;
+}
+
+function lensSummaryOf(jlens: BrowserJlens): LensSourceSummary {
+  return {
+    kind: jlens.kind,
+    coverage: {
+      layers: [...jlens.layerMap],
+      nPrompts: jlens.nPrompts,
+      splitHalf: jlens.splitHalf === null ? null : { ...jlens.splitHalf },
+    },
+  };
+}
+
+/** What a lens source row says about an installed pack (6.0's `InstrumentSourceJSON` fields),
+ *  read from its manifest alone under the loader's checks. Native's row for a manifest that no
+ *  longer validates keeps its kind (from the local name) and drops its coverage; here the kind
+ *  is known once the pack's files verify and its manifest names an R-family kind (J or R), so a
+ *  manifest that fails only the site checks keeps it (`coverage: null`). `null` when even the
+ *  kind cannot be read: a hosted lens pack selects into the R slot, so a K or S manifest names
+ *  no kind it could serve. */
+async function lensSourceSummary(
+  pack: BrowserInstrumentPackArtifacts,
+  request: BrowserModelLoadRequest,
+): Promise<LensSourceSummary | null> {
+  let kind: "J" | "R" | null = null;
+  try {
+    assertArtifactClosure(pack);
+    const manifestArtifact = uniqueArtifact(pack.artifacts, (artifact) =>
+      artifact.manifest.path.endsWith("/manifest.json"), "Lens manifest");
+    const manifest = jsonObject(
+      manifestArtifact,
+      await textArtifact(manifestArtifact, request.signal),
+    );
+    if (manifest.kind !== "J" && manifest.kind !== "R") return null;
+    kind = manifest.kind;
+    const site = browserLensSite(manifest, request);
+    return {
+      kind,
+      coverage: {
+        layers: [...site.layers],
+        nPrompts: manifest.n_prompts as number,
+        splitHalf: site.splitHalf === null ? null : { ...site.splitHalf },
+      },
+    };
+  } catch {
+    // An unreadable inactive pack must not fail the model load; selecting it refuses loudly.
+    request.signal.throwIfAborted();
+    return kind === null ? null : { kind, coverage: null };
+  }
+}
+
 async function loadJlens(
   pack: BrowserInstrumentPackArtifacts,
   request: BrowserModelLoadRequest,
@@ -1017,28 +1125,8 @@ async function loadJlens(
   ]);
   const manifest = jsonObject(manifestArtifact, manifestText);
   const hiddenSize = request.variant.runtimeIdentity.hiddenSize;
-  const sites = lensManifestSites(manifest);
-  const site = sites?.get(BROWSER_LENS_SITE);
-  if (
-    site === undefined ||
-    !sameStrings(Object.keys(manifest).sort(), LOCAL_LENS_V7_KEYS) ||
-    manifest.format_version !== 7 || !BROWSER_LENS_KINDS.has(manifest.kind as string) ||
-    manifest.checkpoint !== false || manifest.consumed_prefix_sha256 !== null ||
-    manifest.dtype !== "float32" || manifest.d_model !== hiddenSize ||
-    !nonnegativeInteger(manifest.n_prompts) ||
-    !matchesRuntimeFingerprint(manifest.model_fingerprint, request) ||
-    manifest.model_source_fingerprint !== request.variant.runtimeIdentity.sourceRevision ||
-    manifest.model_layer_count !== request.variant.runtimeIdentity.layerMap.length
-  ) {
-    throw instrumentError(
-      "JLENS_PACK_INVALID",
-      "The lens pack is not an R-family lens in drowse's v7 fp32 format with an out site",
-    );
-  }
+  const site = browserLensSite(manifest, request);
   const layerMap = site.layers;
-  if (layerMap.some((layer) => !request.variant.runtimeIdentity.layerMap.includes(layer))) {
-    throw instrumentError("JLENS_PACK_LAYER_MISMATCH", "The R lens has layers outside this model's layer map");
-  }
   const jacobians = new Map<number, Float32Array>();
   const grouped = new Map<BrowserModelArtifact, number[]>();
   for (const layer of layerMap) {
@@ -1098,7 +1186,8 @@ async function loadJlens(
     source: pack.pack.id,
     displayName: pack.pack.displayName,
     kind: manifest.kind as "J" | "R",
-    nPrompts: manifest.n_prompts,
+    // browserLensSite checked both.
+    nPrompts: manifest.n_prompts as number,
     splitHalf: site.splitHalf,
     hiddenSize,
     layerMap,

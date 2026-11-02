@@ -83,6 +83,7 @@ import {
   type SteeringExpressionTerm,
   type SteeringTrigger,
 } from "./steeringExpression";
+import { instrumentAtomUnavailable } from "./hookCapabilities";
 
 interface CoreManifold {
   key: string;
@@ -423,7 +424,7 @@ export class BrowserFeasibilityCorePackCompiler {
   ): void {
     const available = this.instruments.capabilities();
     if (family === "lens" && enabled && !available.jlens) {
-      throw coreError("JLENS_PACK_UNAVAILABLE", "Install the compatible J-lens pack first");
+      throw coreError("JLENS_PACK_UNAVAILABLE", "Install the compatible R-lens pack first");
     }
     if (family === "sae" && enabled && !available.sae) {
       throw coreError("SAE_PACK_UNAVAILABLE", "Install the compatible SAE pack first");
@@ -450,7 +451,7 @@ export class BrowserFeasibilityCorePackCompiler {
     if (selected.length === 0) {
       throw coreError(
         "JLENS_PACK_LAYER_MISMATCH",
-        "J-lens live readout needs at least one fitted layer",
+        "R-lens live readout needs at least one fitted layer",
       );
     }
     const missing = selected.filter((layer) =>
@@ -459,7 +460,7 @@ export class BrowserFeasibilityCorePackCompiler {
     if (missing.length > 0) {
       throw coreError(
         "JLENS_PACK_LAYER_MISMATCH",
-        `J-lens layers ${missing.join(", ")} are not fitted in the installed pack`,
+        `R-lens layers ${missing.join(", ")} are not fitted in the installed pack`,
       );
     }
     return selected;
@@ -1640,7 +1641,7 @@ export class BrowserFeasibilityCorePackCompiler {
       if (slots.length === 0) {
         throw coreError(
           "JLENS_PACK_LAYER_MISMATCH",
-          `J-lens token ${name} has no layer in the loaded runtime`,
+          `R-lens token ${name} has no layer in the loaded runtime`,
         );
       }
       return { slots, geometry: null };
@@ -1649,10 +1650,7 @@ export class BrowserFeasibilityCorePackCompiler {
     if (attached === undefined && (namespace === "neuron" || namespace === "head" || namespace === "slens")) {
       // Units and the S lens parse, but this runtime cannot read them yet: refuse rather than
       // install a gate that would never fire.
-      throw coreError(
-        "CORE_PACK_EXPRESSION_UNAVAILABLE",
-        `${namespace}/ instrument atoms are not available in the browser runtime`,
-      );
+      throw instrumentAtomUnavailable(namespace);
     }
     let geometryTarget: {
       manifold: CoreManifold;
@@ -2377,13 +2375,13 @@ export class BrowserFeasibilityCorePackCompiler {
       if (atom.variant !== "raw") {
         throw coreError(
           "CORE_PACK_VARIANT_UNAVAILABLE",
-          "J-lens atoms do not take manifold variants",
+          "R-lens atoms do not take manifold variants",
         );
       }
       if (!this.instruments.capabilities().jlens) {
         throw coreError(
           "JLENS_PACK_UNAVAILABLE",
-          "Install the compatible J-lens pack to use jlens/<word>",
+          "Install the compatible R-lens pack to use jlens/<word>",
         );
       }
     }
@@ -2445,8 +2443,9 @@ export class BrowserFeasibilityCorePackCompiler {
     };
   }
 
-  /** The installed manifolds as the grammar's bare-atom ladder sees them, one per folder. */
-  private steeringManifolds(): SteeringManifoldEntry[] {
+  /** The installed manifolds as the grammar's bare-atom ladder sees them, one per folder (also
+   *  what the loom's `inverted` regen resolves against). */
+  steeringManifolds(): SteeringManifoldEntry[] {
     const entries = new Map<string, SteeringManifoldEntry>();
     for (const manifold of this.manifolds) {
       const key = `${manifold.namespace}/${manifold.name}`;
@@ -2599,7 +2598,7 @@ export class BrowserFeasibilityCorePackCompiler {
     }
     if (atom.namespace === "jlens") {
       if (atom.variant !== "raw") {
-        throw coreError("CORE_PACK_VARIANT_UNAVAILABLE", "J-lens atoms do not take manifold variants");
+        throw coreError("CORE_PACK_VARIANT_UNAVAILABLE", "R-lens atoms do not take manifold variants");
       }
       const token = this.instruments.jlensToken(atom.concept);
       return {
@@ -2611,10 +2610,7 @@ export class BrowserFeasibilityCorePackCompiler {
       };
     }
     if (atom.namespace !== null && RESERVED_NAMESPACES.has(atom.namespace)) {
-      throw coreError(
-        "CORE_PACK_EXPRESSION_UNAVAILABLE",
-        `${atom.namespace}/ instrument atoms are not available in the browser runtime`,
-      );
+      throw instrumentAtomUnavailable(atom.namespace);
     }
     if (
       atom.namespace === null && atom.variant === "raw" &&

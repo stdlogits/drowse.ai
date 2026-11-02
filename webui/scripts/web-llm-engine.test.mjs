@@ -371,11 +371,13 @@ try {
     probe_gate: false,
     sae: false,
     jlens: false,
+    slens: false,
+    units: false,
   });
-  assert.doesNotThrow(() => runtime.assertSteeringSupported("0.5 honest"));
-  assert.doesNotThrow(() => runtime.assertSteeringSupported("0.5 !honest"));
+  assert.doesNotThrow(() => runtime.assertSteeringSupported("0.5 deceptive"));
+  assert.doesNotThrow(() => runtime.assertSteeringSupported("0.5 !deceptive"));
   assert.throws(
-    () => runtime.assertSteeringSupported("honest + !sae/42@response"),
+    () => runtime.assertSteeringSupported("deceptive + !sae/42@response"),
     (error) => error.code === "DROWSE_HOOK_FEATURE_UNAVAILABLE",
   );
   const engine = FixtureEngine.instances.at(-1);
@@ -1158,6 +1160,8 @@ try {
     probe_gate: true,
     sae: true,
     jlens: true,
+    slens: false,
+    units: false,
   });
   assert.doesNotThrow(() => instrumentRuntime.assertSteeringSupported(
     "0.5 sae/1@response + 0.25 jlens/hello",

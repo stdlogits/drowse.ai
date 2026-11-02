@@ -34,10 +34,10 @@ try {
 
   assert.deepEqual(browserReadingsDiff(
     { calm: 0.3, formal: -0.2 },
-    { calm: -0.1, honest: 0.25 },
+    { calm: -0.1, deceptive: 0.25 },
   ), [
     { name: "calm", delta: -0.4, a_value: 0.3, b_value: -0.1 },
-    { name: "honest", delta: 0.25, a_value: 0, b_value: 0.25 },
+    { name: "deceptive", delta: 0.25, a_value: 0, b_value: 0.25 },
     { name: "formal", delta: 0.2, a_value: -0.2, b_value: 0 },
   ]);
 

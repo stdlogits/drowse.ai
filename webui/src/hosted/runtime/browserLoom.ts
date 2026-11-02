@@ -17,6 +17,7 @@ import type {
   RecipeJSON,
   RecipeSamplingJSON,
   SessionInfo,
+  SteeringValidationResponse,
   WSGenerateRequest,
   WSInputMessage,
   WSSampling,
@@ -35,7 +36,10 @@ import {
   formatSteering,
   invertSteeringExpression,
   parseSteeringExpression,
+  pythonStrip,
   steeringParts,
+  type SteeringExpression,
+  type SteeringManifoldEntry,
 } from "./steeringExpression";
 import { validateHostedLoomTree } from "../../../../drowse/webui/src/lib/sessionPersistence";
 import { filterBrowserTree } from "./browserTreeFilter";
@@ -110,6 +114,9 @@ export interface BrowserLoomOptions {
     probeRequests?: readonly ProbeRequest[],
   ) => Promise<BrowserHookProgram> | BrowserHookProgram;
   steeringDelta?: (parent: string | null, child: string | null) => string;
+  /** The installed manifolds bare atoms resolve against (the compiler's), for the `inverted`
+   *  regen; without them nothing resolves, as with an empty registry. */
+  steeringManifolds?: () => readonly SteeringManifoldEntry[];
   probeHashes?: () =>
     | Readonly<Record<string, string>>
     | Promise<Readonly<Record<string, string>>>;
@@ -125,6 +132,7 @@ export class BrowserLoomRuntime {
   private readonly createId: (kind: "generation" | "node") => string;
   private readonly compileSteering: BrowserLoomOptions["compileSteering"];
   private readonly steeringDelta: BrowserLoomOptions["steeringDelta"];
+  private readonly steeringManifolds: BrowserLoomOptions["steeringManifolds"];
   private readonly probeHashes: BrowserLoomOptions["probeHashes"];
   private readonly instruments: BrowserInstrumentRuntime | undefined;
   private readonly runtimeCapabilities: WebLlmRuntimeCapabilities | null;
@@ -152,6 +160,7 @@ export class BrowserLoomRuntime {
     this.createId = options.createId ?? ((kind) => `${kind}-${randomUuid()}`);
     this.compileSteering = options.compileSteering;
     this.steeringDelta = options.steeringDelta;
+    this.steeringManifolds = options.steeringManifolds;
     this.probeHashes = options.probeHashes;
     this.instruments = options.instruments;
     this.runtimeCapabilities = this.generation.runtimeCapabilities?.() ?? null;
@@ -345,6 +354,7 @@ export class BrowserLoomRuntime {
 
     const settings = fork?.settings ?? resolveGenerationSettings(
       request, this.session, this.tree, selectedParentId, this.maxOutputTokens,
+      () => this.steeringManifolds?.() ?? [],
     );
     const effectiveSteering = settings.steering;
     const effectiveSystemPrompt = rawCompletion ? null : settings.systemPrompt;
@@ -829,49 +839,23 @@ export class BrowserLoomRuntime {
     }
     if (method === "validateSteering") {
       // `POST .../steering/validate`: parse, resolve and dry-compile, then answer in-band. The
-      // empty expression and a syntax error answer before the busy check, as drowse answers them
-      // before taking its lock; past it, a model operation in flight answers busy (drowse's
-      // EngineBusyError, 409) instead of a verdict, and the dashboard asks again.
-      const raw = args[0];
-      if (typeof raw !== "string") {
-        throw loomError("INVALID_STEERING", "Steering expression must be a string");
-      }
-      const expression = raw.trim();
+      // checks that need no model answer first (preflightSteeringValidation), as drowse answers
+      // the empty expression and a parse or fold error before taking its lock; past them, a model
+      // operation in flight answers busy (drowse's EngineBusyError, 409) instead of a verdict,
+      // and the dashboard asks again. The worker refuses the same way, without queueing, while
+      // it has a generation or a fit admitted.
+      const preflight = preflightSteeringValidation(
+        args, this.session.model_id, this.installedSteeringManifolds(),
+      );
+      if ("response" in preflight) return preflight.response;
+      const { expression, syntax, probeRequests } = preflight;
       type Compiled = {
         steeringExpression?: string;
         steeringParts?: import("../../../../drowse/webui/src/lib/types").SteeringPartJSON[];
         steeringTerms?: import("../../../../drowse/webui/src/lib/types").SteeringTermLayersJSON[];
         steeringDepth?: number;
       };
-      const invalid = (error: unknown) => ({
-        valid: false,
-        expression,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      let options: ReturnType<typeof validateSteeringOptions>;
-      let syntax: ReturnType<typeof parseSteeringExpression> | null = null;
-      try {
-        options = validateSteeringOptions(args[2]);
-        if (options.tree !== undefined) {
-          validateHostedLoomTree(options.tree);
-          if (options.tree.model_id !== this.session.model_id) {
-            throw loomError(
-              "LOOM_SESSION_MISMATCH",
-              "Restored conversation belongs to another model",
-            );
-          }
-        }
-        if (expression) syntax = parseSteeringExpression(expression);
-      } catch (error) {
-        return invalid(error);
-      }
-      const probeRequests = options.probeRequests;
-      if (!expression && probeRequests === undefined) {
-        return { valid: true, expression: "", error: null };
-      }
-      if (this.generating) {
-        throw loomError("ENGINE_BUSY", "a model operation is in flight; retry shortly");
-      }
+      if (this.generating) throw engineBusy();
       try {
         if (syntax === null) {
           await this.preflightGenerationSteering("", probeRequests);
@@ -902,10 +886,20 @@ export class BrowserLoomRuntime {
       } catch (error) {
         const code = (error as { code?: unknown } | null)?.code;
         if (code === "ENGINE_BUSY" || code === "GENERATION_BUSY") throw error;
-        return invalid(error);
+        return invalidSteeringValidation(expression, error);
       }
     }
     throw loomError("BROWSER_SERVICE_UNAVAILABLE", `sessions.${method} is not implemented`);
+  }
+
+  /** The compiler's installed manifolds, or `null` when there is no compiler to ask. */
+  installedSteeringManifolds(): readonly SteeringManifoldEntry[] | null {
+    if (this.steeringManifolds === undefined) return null;
+    try {
+      return this.steeringManifolds();
+    } catch {
+      return null;
+    }
   }
 
   private async treeRequest(method: string, args: unknown[]): Promise<unknown> {
@@ -1270,7 +1264,7 @@ export class BrowserLoomRuntime {
       );
       const total = forcedPrefix.length;
       const readoutLabel = request.family === "lens"
-        ? "J-lens"
+        ? "R-lens"
         : request.family === "sae"
           ? "model features"
           : "geometry";
@@ -2609,12 +2603,13 @@ function resolveGenerationSettings(
   tree: LoomTreeJSON,
   parentId: string,
   maxOutputTokens: number,
+  manifolds: () => readonly SteeringManifoldEntry[],
 ): ResolvedGenerationSettings {
   const cast = request.raw ? null : generationCastRecipe(request, tree);
   const call = request.sampling ?? null;
   const override = request.recipe_override;
   const anchor = override === null || override === undefined ? null : anchorRecipe(tree, parentId);
-  const modifier = anchor === null ? null : recipeModifier(override!, anchor);
+  const modifier = anchor === null ? null : recipeModifier(override!, anchor, manifolds);
   const composed = composeCall({
     steering: request.steering ?? null,
     thinking: request.thinking ?? null,
@@ -2722,12 +2717,13 @@ export function recipeModifier(
     WSGenerateRequest["recipe_override"] | WSSubmitRequest["recipe_override"]
   >,
   anchor: PartialRecipe,
+  manifolds: () => readonly SteeringManifoldEntry[] = () => [],
 ): PartialRecipe {
   if (typeof value === "string") {
     const trimmed = value.trim();
     if (trimmed === "unsteered") return partialRecipe({ steering: "" });
     if (trimmed === "inverted") {
-      return partialRecipe({ steering: invertSteering(anchor.steering) });
+      return partialRecipe({ steering: invertSteering(anchor.steering, manifolds) });
     }
     if (trimmed === "reseed") return partialRecipe({ seed: randomSeed() });
     if (trimmed === "cool") {
@@ -2979,8 +2975,11 @@ function randomSeed(): number {
   return crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fffffff;
 }
 
-function invertSteering(value: string | null): string {
-  return value?.trim() ? invertSteeringExpression(value) : "";
+function invertSteering(
+  value: string | null,
+  manifolds: () => readonly SteeringManifoldEntry[],
+): string {
+  return value && pythonStrip(value) ? invertSteeringExpression(value, { manifolds: manifolds() }) : "";
 }
 
 function nodeSteering(node: LoomNodeJSON): string | null {
@@ -3283,6 +3282,69 @@ function clampSessionOutputTokens(
     max_tokens: typeof config.max_tokens === "number"
       ? clampOutputTokenCount(config.max_tokens, limit)
       : config.max_tokens,
+  };
+}
+
+/** What `sessions.validateSteering` decides before it needs the model: a non-string expression
+ *  throws; malformed options, a tree for another model, a syntax error and a fold error answer
+ *  in-band (`valid: false`); the empty expression without a probe roster answers valid. Anything
+ *  else needs the compiler (`expression`, its syntax tree, the staged probe roster). Pure, so the
+ *  worker can answer a validation that arrives during a generation or fit without queueing it.
+ *
+ *  drowse's `parse_expr` runs before the session lock and folds as it parses, resolving bare
+ *  atoms against the installed manifolds, so conflicting triggers on one concept or an ambiguous
+ *  bare label answer `valid: false` even while a model operation holds the lock. `manifolds` is
+ *  the compiler's installed list; `null` (no compiler to ask) leaves the fold to the compiler,
+ *  since folding against an empty registry would refuse what the real one resolves. */
+export function preflightSteeringValidation(
+  args: readonly unknown[],
+  modelId: string,
+  manifolds: readonly SteeringManifoldEntry[] | null = null,
+):
+  | { response: SteeringValidationResponse }
+  | {
+      expression: string;
+      syntax: SteeringExpression | null;
+      probeRequests: ProbeRequest[] | undefined;
+    } {
+  const raw = args[0];
+  if (typeof raw !== "string") {
+    throw loomError("INVALID_STEERING", "Steering expression must be a string");
+  }
+  const expression = pythonStrip(raw);
+  let options: ReturnType<typeof validateSteeringOptions>;
+  let syntax: SteeringExpression | null = null;
+  try {
+    options = validateSteeringOptions(args[2]);
+    if (options.tree !== undefined) {
+      validateHostedLoomTree(options.tree);
+      if (options.tree.model_id !== modelId) {
+        throw loomError("LOOM_SESSION_MISMATCH", "Restored conversation belongs to another model");
+      }
+    }
+    if (expression) {
+      syntax = parseSteeringExpression(expression);
+      if (manifolds !== null) foldSteering(syntax, { manifolds });
+    }
+  } catch (error) {
+    return { response: invalidSteeringValidation(expression, error) };
+  }
+  if (!expression && options.probeRequests === undefined) {
+    return { response: { valid: true, expression: "", error: null } };
+  }
+  return { expression, syntax, probeRequests: options.probeRequests };
+}
+
+/** drowse's EngineBusyError (409): a validation that will not wait behind a model operation. */
+export function engineBusy(): Error & { code: string; status: number; recoverable: boolean } {
+  return loomError("ENGINE_BUSY", "a model operation is in flight; retry shortly");
+}
+
+function invalidSteeringValidation(expression: string, error: unknown): SteeringValidationResponse {
+  return {
+    valid: false,
+    expression,
+    error: error instanceof Error ? error.message : String(error),
   };
 }
 

@@ -919,7 +919,7 @@ try {
     streamWebLlmGeneration(
       engine,
       hooks,
-      { input: { kind: "raw", prompt: "x" }, steeringExpression: "honest" },
+      { input: { kind: "raw", prompt: "x" }, steeringExpression: "deceptive" },
       () => {},
     ),
     (error) => error.code === "STEERING_PROGRAM_REQUIRED",
@@ -941,13 +941,13 @@ try {
     },
     {
       input: { kind: "chat", messages: [{ role: "user", content: "Hi" }] },
-      steeringExpression: "0.5 honest",
+      steeringExpression: "0.5 deceptive",
       hookProgram,
     },
     (token) => steeredTokens.push(token),
   );
   assert.deepEqual(steeredCalls, [
-    ["assert", "0.5 honest"],
+    ["assert", "0.5 deceptive"],
     "clear",
     ["install", hookProgram],
     "clear",
@@ -960,7 +960,7 @@ try {
   ]) {
     const installed = [];
     await streamWebLlmGeneration(engine, { ...hooks, async install(program) { installed.push(program); } }, {
-      input: { kind: "raw", prompt: "x" }, steeringExpression: "0.5 honest", hookProgram, ...selection,
+      input: { kind: "raw", prompt: "x" }, steeringExpression: "0.5 deceptive", hookProgram, ...selection,
     }, () => {});
     assert.deepEqual(installed[0].position_spans, [[1, 3], [4, 8]]);
     assert.equal(installed[0].basis, hookProgram.basis, "span targeting keeps the shared layer tensor");
@@ -1022,7 +1022,7 @@ try {
     },
     {
       input: { kind: "chat", messages: [{ role: "user", content: "Hi" }] },
-      steeringExpression: "0.5 honest@when:honest>0.5",
+      steeringExpression: "0.5 deceptive@when:deceptive>0.5",
       hookProgram: gatedProgram,
       measurementSpecialTokenIds: [99],
       sampling: { persist_per_layer_scores: true },
@@ -1461,7 +1461,7 @@ try {
     },
     {
       input: { kind: "chat", messages: [{ role: "user", content: "Hi" }] },
-      steeringExpression: "0.5 honest",
+      steeringExpression: "0.5 deceptive",
       hookProgram: staticProgram,
     },
     () => undefined,
@@ -2491,7 +2491,7 @@ try {
         endTokenIds: [103, 104],
         startsInThinking: false,
       },
-      steeringExpression: "0.5 honest@thinking",
+      steeringExpression: "0.5 deceptive@thinking",
       hookProgram: thinkingProgram,
     },
     (token) => thinkingTokens.push(token),
@@ -2660,7 +2660,7 @@ try {
     },
     {
       input: { kind: "chat", messages: [{ role: "user", content: "emoji" }] },
-      steeringExpression: "0.5 honest@response",
+      steeringExpression: "0.5 deceptive@response",
       hookProgram: gatedProgram,
       measurementSpecialTokenIds: [99],
       async onRawToken(token) { unicodeRawTokens.push(token); },
@@ -2723,7 +2723,7 @@ try {
       },
       {
         input: { kind: "chat", messages: [{ role: "user", content: "Hi" }] },
-        steeringExpression: "0.5 honest@response",
+        steeringExpression: "0.5 deceptive@response",
         hookProgram: gatedProgram,
         measurementSpecialTokenIds: [99],
       },
@@ -2813,7 +2813,7 @@ try {
     },
     {
       input: { kind: "chat", messages: [{ role: "user", content: "Hi" }] },
-      steeringExpression: "0.5 honest",
+      steeringExpression: "0.5 deceptive",
       hookProgram,
     },
     (token) => pureSteeringBatch.push(token),

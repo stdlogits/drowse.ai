@@ -270,7 +270,7 @@ export class BrowserInstrumentRuntime {
       if (!body.enabled && hasLayers) {
         throw instrumentError(
           "INVALID_INSTRUMENT_REQUEST",
-          "J-lens live disable does not accept layers",
+          "R-lens live disable does not accept layers",
         );
       }
       const layers = liveLensLayers(body.layers);
@@ -285,17 +285,7 @@ export class BrowserInstrumentRuntime {
     const family = instrumentFamily(args[0]);
     const descriptor = this.compiler.instrumentDescriptor();
     if (family === "geometry") return { sources: [] };
-    if (family === "lens") {
-      return {
-        sources: this.lensSources().map((source) => ({
-          source: source.source,
-          name: source.displayName,
-          kind: "catalog",
-          provider: "catalog",
-          active: source.active,
-        })),
-      };
-    }
+    if (family === "lens") return { sources: this.lensSources().map(lensSourceRow) };
     if (family === "sae" && descriptor.sae !== null) {
       return {
         sources: [{
@@ -317,11 +307,11 @@ export class BrowserInstrumentRuntime {
   }
 
   private async setLensSource(args: unknown[]): Promise<{ source: string; live_layers: number[] }> {
-    const source = nonemptyString(args[0], "J-lens source");
+    const source = nonemptyString(args[0], "R-lens source");
     if (this.jlensResolver === null || this.jlensResolver.setJlensDictionary === undefined) {
       throw instrumentError(
         "JLENS_SOURCE_SWITCH_UNAVAILABLE",
-        "The browser model runtime cannot replace the active J-lens dictionary",
+        "The browser model runtime cannot replace the active R-lens dictionary",
       );
     }
     const previousSource = this.compiler.instrumentDescriptor().jlens?.source ?? null;
@@ -339,7 +329,7 @@ export class BrowserInstrumentRuntime {
           } catch (rollbackError) {
             throw instrumentError(
               "JLENS_SOURCE_SWITCH_ROLLBACK_FAILED",
-              `The J-lens source change failed and the previous GPU dictionary could not be restored: ${
+              `The R-lens source change failed and the previous GPU dictionary could not be restored: ${
                 rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
               }`,
             );
@@ -365,6 +355,14 @@ export class BrowserInstrumentRuntime {
           source: descriptor.source,
           displayName: descriptor.displayName,
           active: true,
+          summary: {
+            kind: descriptor.kind,
+            coverage: {
+              layers: descriptor.layers,
+              nPrompts: descriptor.nPrompts,
+              splitHalf: descriptor.splitHalf,
+            },
+          },
         }];
   }
 
@@ -398,13 +396,13 @@ export class BrowserInstrumentRuntime {
     if (installed === null) {
       throw instrumentError(
         "INSTRUMENT_PACK_NOT_LOADED",
-        `No compatible ${family === "lens" ? "J-lens" : "SAE"} pack is loaded. Download it in Model settings, then close and reopen the model`,
+        `No compatible ${family === "lens" ? "R-lens" : "SAE"} pack is loaded. Download it in Model settings, then close and reopen the model`,
       );
     }
     if (source !== installed.source) {
       throw instrumentError(
         "INSTRUMENT_PACK_SOURCE_MISMATCH",
-        `The loaded ${family === "lens" ? "J-lens" : "SAE"} pack is ${installed.source}; close the model before changing model tools`,
+        `The loaded ${family === "lens" ? "R-lens" : "SAE"} pack is ${installed.source}; close the model before changing model tools`,
       );
     }
     if (family === "sae") {
@@ -446,7 +444,7 @@ export class BrowserInstrumentRuntime {
     if (family === "lens" && operation === "fit") {
       throw instrumentError(
         "HOSTED_JLENS_FITTING_EXCLUDED",
-        "J-lens fitting is available in the Python runtime; install a compatible browser pack instead",
+        "Lens fitting is available in the Python runtime; install a compatible browser pack instead",
       );
     }
     if (family === "sae" && operation === "train") {
@@ -566,7 +564,7 @@ export class BrowserInstrumentRuntime {
   }
 
   private async validateLensToken(args: unknown[]): Promise<{ word: string; token_id: number }> {
-    const word = nonemptyString(args[0], "J-lens token");
+    const word = nonemptyString(args[0], "R-lens token");
     if (this.jlensResolver !== null) {
       await this.compiler.prepareJlensWords([word], this.jlensResolver);
     }
@@ -646,7 +644,7 @@ function replayEnvelope(
     if (!lens.readout?.layers) {
       throw instrumentError(
         "TOKEN_REPLAY_UNAVAILABLE",
-        "The browser replay produced no J-lens readout for this token",
+        "The browser replay produced no R-lens readout for this token",
       );
     }
     const readout = lens.readout as Required<typeof lens.readout>;
@@ -658,7 +656,7 @@ function replayEnvelope(
     ) {
       throw instrumentError(
         "TOKEN_REPLAY_UNAVAILABLE",
-        "The browser replay did not honor the requested J-lens layer set",
+        "The browser replay did not honor the requested R-lens layer set",
       );
     }
     const width = options.topK ?? Number.POSITIVE_INFINITY;
@@ -669,7 +667,7 @@ function replayEnvelope(
     ) {
       throw instrumentError(
         "TOKEN_REPLAY_UNAVAILABLE",
-        `The browser replay did not honor the requested exact top-${options.topK} J-lens width`,
+        `The browser replay did not honor the requested exact top-${options.topK} R-lens width`,
       );
     }
     readout.layers = readout.layers.map((row) => ({
@@ -764,8 +762,8 @@ function replayLayersForFamily(
     throw instrumentError(
       "INVALID_INSTRUMENT_REQUEST",
       missing.length > 0
-        ? `J-lens replay layers ${missing.join(", ")} are not fitted in the installed pack`
-        : "J-lens replay needs at least one fitted layer",
+        ? `R-lens replay layers ${missing.join(", ")} are not fitted in the installed pack`
+        : "R-lens replay needs at least one fitted layer",
     );
   }
   return layers;
@@ -774,13 +772,13 @@ function replayLayersForFamily(
 function liveLensLayers(value: unknown): number[] | undefined {
   if (value === undefined || value === null) return undefined;
   if (!Array.isArray(value)) {
-    throw instrumentError("INVALID_INSTRUMENT_REQUEST", "J-lens live layers must be a list");
+    throw instrumentError("INVALID_INSTRUMENT_REQUEST", "R-lens live layers must be a list");
   }
-  const layers = value.map((layer) => nonnegativeInteger(layer, "J-lens live layer"));
+  const layers = value.map((layer) => nonnegativeInteger(layer, "R-lens live layer"));
   if (layers.length === 0) {
     throw instrumentError(
       "INVALID_INSTRUMENT_REQUEST",
-      "J-lens live readout needs at least one fitted layer",
+      "R-lens live readout needs at least one fitted layer",
     );
   }
   return [...new Set(layers)].sort((left, right) => left - right);
@@ -825,6 +823,44 @@ function tokenReadoutOptions(value: unknown): TokenReadoutOptions {
     throw instrumentError("INVALID_INSTRUMENT_REQUEST", "Token replay layers must be a non-empty string");
   }
   return input as TokenReadoutOptions;
+}
+
+/** A hosted lens pack's row in 6.0's shape (`lens/sources.py::list_lens_sources`): a hosted lens
+ *  pack selects into the R slot and the browser reads its `out` site only, so `family` is R,
+ *  `sites` is `["out"]` and `layers`/`split_half` key that site. A pack whose manifest does not
+ *  pass the loader's checks keeps native's coverage-free row (`sites: []`), with its kind when
+ *  the manifest still names one (`LensSourceSummary`). */
+function lensSourceRow(
+  source: ReturnType<BrowserFeasibilityCorePackCompiler["jlensSources"]>[number],
+): InstrumentSourceJSON {
+  const summary = source.summary;
+  const coverage = summary?.coverage ?? null;
+  return {
+    source: source.source,
+    kind: "catalog",
+    name: source.displayName,
+    ...(summary === null ? {} : { lens: summary.kind }),
+    family: "R",
+    sites: coverage === null ? [] : ["out"],
+    ...(coverage === null
+      ? {}
+      : {
+          layers: { out: [...coverage.layers] },
+          n_prompts: coverage.nPrompts,
+          ...(coverage.splitHalf === null || Object.keys(coverage.splitHalf).length === 0
+            ? {}
+            : { split_half: { out: splitHalfByLayer(coverage.splitHalf) } }),
+        }),
+    active: source.active,
+    provider: "catalog",
+  };
+}
+
+/** `{layer: difference}` in ascending layer order, as native sorts it. */
+function splitHalfByLayer(values: Readonly<Record<string, number>>): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(values).sort(([left], [right]) => Number(left) - Number(right)),
+  );
 }
 
 function instrumentFamily(value: unknown): "geometry" | "lens" | "sae" {

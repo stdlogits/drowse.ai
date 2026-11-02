@@ -14,6 +14,7 @@ import type {
 } from "../../../../drowse/webui/src/lib/types";
 import type { ActivationSpool } from "../fitting/activationSpool";
 import type { GpuAdapterLike } from "./capabilities";
+import type { SteeringManifoldEntry } from "./steeringExpression";
 
 export interface BrowserModelArtifact {
   manifest: CatalogFile;
@@ -68,6 +69,9 @@ export interface BrowserModelBackend {
     onAdmitted?: () => void,
   ): Promise<BrowserGenerationPerformance | void>;
   stop(reason?: BrowserGenerationStopReason): Promise<void>;
+  /** The loaded compiler's installed manifolds, read without waiting on anything, for the
+   *  steering checks drowse makes before its session lock; `null` when there is none to ask. */
+  steeringManifolds?(): readonly SteeringManifoldEntry[] | null;
 }
 
 export class UnavailableBrowserModelBackend implements BrowserModelBackend {

@@ -275,23 +275,37 @@ registry. `--feature-metadata FEATURES.json` adds the validated optional
 sidecar to that closure. Raw activation rows remain local and are removed after
 the validated pack is produced.
 
-The J-lens builder is likewise offline developer release tooling and is never
-shipped as a hosted user feature. It renders and tokenizes its release corpus in the exact q4
-browser runtime, captures every post-block residual at every retained token
-position, and streams those rows to a bounded local file. The offline fitter
-dequantizes the same MLC tensor cache, reproduces its fp16 accumulation on MPS,
-and forward-corrects each block onto the captured browser trajectory while
-retaining the dequantized graph's derivative. It writes deterministic local-v6
-fp32 layer shards plus exact dequantized language-head rows for a curated
+The lens builder (`build:hosted:jlens`, then `fit_hosted_jlens.py`) is likewise
+offline developer release tooling and is never shipped as a hosted user feature.
+Its packs are native drowse 6.0 lenses of the R family, fitted by drowse's own
+`fit_lens`. The capture renders and tokenizes the release corpus in the exact q4
+browser runtime and keeps, per document, the token ids it rendered and every
+block's output residual. `fit_lens` is transport: it recomputes each document's
+primal from the model's `ModelSpec` and writes every block's map out by hand,
+with no autograd and no forward hooks, so a captured residual can no longer be
+the point it linearizes at. The fitter therefore loads the dequantized MLC
+tensor cache (the weights the browser runs) with its projections as plain
+`nn.Linear` layers on the same parameters, checks `verify_model_spec` (GPT-2,
+Pythia and other LayerNorm, fused-qkv or hybrid models are refused), and fits
+`fit_lens(kind=R|J, sites=("out",))` over the captured token rows (`--kind`,
+R by default as in drowse's CLI; `dim_batch` 256). The captured residuals are
+the parity gate: transport's own primal must reproduce the browser's block
+outputs at every primal position, per layer, within `--max-residual-error`
+(relative Frobenius error, 0.01 by default, the bound
+`validate_mlc_q4_parity.py` holds captures to), or the fit refuses, as it does
+on any non-finite value. Both sides run fp32 on the same dequantized weights, so
+the gap is accumulation order. The fitter writes the lens with `save_lens_at`
+(format v7, `out` site, `corpus_sha256` drowse's `token_ids_v1` digest of the
+token rows), reports each layer's parity error and the split-half difference in
+its JSON result, and adds exact dequantized language-head rows for a curated
 single-token seed vocabulary used by the UI and pack preflight. The production
 registry also resolves arbitrary compatible single-token selectors against the
 loaded model's language head; the curated rows are not a selector allowlist.
-The builder assembles the pack and reopens it through that registry. The capture
-and fit are offline developer release tooling; J-lens fitting remains
-unavailable inside the hosted application itself. Neither builder is imported
-by the PWA or callable through its worker protocol: browser users can only
-download, validate, activate, read, probe, gate, and steer with compatible
-precomputed packs.
+The builder assembles the pack and reopens it through that registry. Lens
+fitting stays unavailable inside the hosted application itself. Neither builder
+is imported by the PWA or callable through its worker protocol: browser users
+can only download, validate, activate, read, probe, gate, and steer with
+compatible precomputed packs.
 
 Browser J-lens packs retain up to eight evenly spaced source layers from an
 existing provider lens, including the first and last available block. This

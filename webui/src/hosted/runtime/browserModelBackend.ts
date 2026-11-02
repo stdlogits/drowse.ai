@@ -84,11 +84,11 @@ export async function prepareBrowserInstrumentDictionaries(
     reportLoadProgress(
       request,
       "jlens_dictionary_uploading",
-      "Loading J-lens insights onto the GPU",
+      "Loading the R lens onto the GPU",
     );
     await runtime.warmJlensDictionary();
     request.signal.throwIfAborted();
-    reportLoadProgress(request, "jlens_dictionary_ready", "J-lens insights ready");
+    reportLoadProgress(request, "jlens_dictionary_ready", "R lens ready");
   }
 }
 
@@ -181,6 +181,19 @@ export function createDrowseBrowserModelBackend(
   ): Promise<BrowserFeasibilityCorePackCompiler> => {
     return (await compilerEntryFor(loadRequest)).compiler;
   };
+  /** The compiler a loaded session already holds, for the loom's synchronous reads. */
+  const loadedCompiler = (
+    loadRequest: BrowserModelLoadRequest,
+  ): BrowserFeasibilityCorePackCompiler => {
+    const cached = loadRequest === activeLoadRequest ? activeCompiler : compilers.get(loadRequest);
+    if (!cached) {
+      throw backendError(
+        "STEERING_COMPILER_UNAVAILABLE",
+        "The verified core pack has not been loaded for this browser session",
+      );
+    }
+    return cached.compiler;
+  };
   const refreshCompiler = async (
     loadRequest: BrowserModelLoadRequest,
     signal: AbortSignal,
@@ -254,14 +267,10 @@ export function createDrowseBrowserModelBackend(
       return compiler.compileForGeneration(expression, probeRequests);
     },
     steeringDelta({ parent, child, loadRequest }) {
-      const cached = loadRequest === activeLoadRequest ? activeCompiler : compilers.get(loadRequest);
-      if (!cached) {
-        throw backendError(
-          "STEERING_COMPILER_UNAVAILABLE",
-          "The verified core pack has not been loaded for this browser session",
-        );
-      }
-      return cached.compiler.steeringDelta(parent, child);
+      return loadedCompiler(loadRequest).steeringDelta(parent, child);
+    },
+    steeringManifolds(loadRequest) {
+      return loadedCompiler(loadRequest).steeringManifolds();
     },
     authoringRequest(context) {
       fitting ??= new BrowserManifoldFitting(artifacts, producer, {

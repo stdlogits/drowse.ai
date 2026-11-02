@@ -96,8 +96,8 @@ try {
     steeringEntries: instrumentEntries,
     probes: instrumentProbes,
   }), [
-    "J-lens steering: jlens/answer",
-    "J-lens readings: answer watch",
+    "R-lens steering: jlens/answer",
+    "R-lens readings: answer watch",
   ]);
   assert.deepEqual(instrumentPackDependencies({
     kind: "sae",
@@ -111,7 +111,7 @@ try {
     steeringEntries: new Map(),
     probes: [],
   }), [
-    "J-lens steering expression or condition",
+    "R-lens steering expression or condition",
     "SAE steering expression or condition",
   ]);
   assert.deepEqual(instrumentPackDependencies({

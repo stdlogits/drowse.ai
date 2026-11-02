@@ -1460,17 +1460,17 @@ try {
       text: "Prompt",
       authored_role: "user",
       generated_role: "assistant",
-      steering: "0.5 honest",
+      steering: "0.5 deceptive",
       position_spans: [[5, 7], [1, 3], [3, 4]],
     },
     (event) => steeringEvents.push(event),
   );
-  assert.deepEqual(compiled, ["0.5 honest"]);
+  assert.deepEqual(compiled, ["0.5 deceptive"]);
   assert.equal(steeringEngine.plans[0].hookProgram, hookProgram);
   assert.deepEqual(steeringEngine.plans[0].position_spans, [[1, 4], [5, 7]]);
   assert.deepEqual(steeringRuntime.snapshot().tree.nodes[2].recipe.position_spans, [[1, 4], [5, 7]]);
-  assert.equal(steeringRuntime.snapshot().tree.nodes[2].applied_steering, "0.5 honest");
-  assert.equal(steeringEvents.at(-1).result.applied_steering, "0.5 honest");
+  assert.equal(steeringRuntime.snapshot().tree.nodes[2].applied_steering, "0.5 deceptive");
+  assert.equal(steeringEvents.at(-1).result.applied_steering, "0.5 deceptive");
   const comparisonEvents = [];
   await steeringRuntime.generate({
     type: "generate",
@@ -1506,7 +1506,7 @@ try {
     const planCount = steeringEngine.plans.length;
     const events = [];
     await assert.rejects(steeringRuntime.generate({ type: "submit", text: "Must not append", authored_role: "user",
-      generated_role: "assistant", steering: "0.5 honest", ...selection }, event => events.push(event)),
+      generated_role: "assistant", steering: "0.5 deceptive", ...selection }, event => events.push(event)),
     error => error.code === "INVALID_STEERING_POSITIONS");
     assert.deepEqual(steeringRuntime.snapshot().tree, before);
     assert.equal(steeringEngine.plans.length, planCount);
@@ -1585,6 +1585,33 @@ try {
   assert.equal(invalidTreeValidation.valid, false);
   assert.deepEqual(validationRuntime.snapshot().tree, validationTreeBefore);
   assert.equal(validationEngine.plans.length, 0);
+  // drowse's parse_expr folds against the installed manifolds before its lock, so conflicting
+  // triggers and an ambiguous bare label answer in-band without the compiler.
+  const foldCompiles = [];
+  const foldRuntime = new BrowserLoomRuntime({
+    session: session(),
+    generation: generation(),
+    createId: ids("fold"),
+    compileSteering(expression) {
+      foldCompiles.push(expression);
+      return hookProgram;
+    },
+    steeringManifolds: () => [
+      { namespace: "local", name: "animals", fitMode: "discover", labels: ["deer", "owl"] },
+      { namespace: "local", name: "forest", fitMode: "discover", labels: ["deer", "oak"] },
+    ],
+  });
+  for (const [expression, message] of [
+    ["0.5 x + 0.25 x@response", /^concept 'x' appears with conflicting triggers/],
+    ["0.5 deer", /^ambiguous manifold label 'deer'/],
+  ]) {
+    const result = await foldRuntime.request({
+      service: "sessions", method: "validateSteering", args: [expression],
+    });
+    assert.equal(result.valid, false, expression);
+    assert.match(result.error, message, expression);
+  }
+  assert.deepEqual(foldCompiles, []);
 
   const activeRoleEngine = generation();
   const activeRoleRuntime = new BrowserLoomRuntime({
@@ -1714,6 +1741,35 @@ try {
     "0.6,0.3 emotions%0.2,0.8",
     "-0.6,-0.3 emotions%0.2,0.8",
   ]);
+  // With the compiler's manifolds the `inverted` regen resolves and folds as drowse's
+  // Recipe.invert_steering does (steering-expression pins the Python outcomes).
+  const resolvingEngine = generation();
+  const resolvingRuntime = new BrowserLoomRuntime({
+    session: session(),
+    generation: resolvingEngine,
+    createId: ids("resolving"),
+    compileSteering: () => hookProgram,
+    steeringManifolds: () => [
+      { namespace: "default", name: "emotions", fitMode: "pca", labels: ["calm", "angry"] },
+    ],
+  });
+  await resolvingRuntime.generate({
+    type: "submit",
+    text: "Prompt",
+    authored_role: "user",
+    generated_role: "assistant",
+    steering: "0.5 calm{0}@response + 0.2 calm{0}@response",
+  }, () => {});
+  await resolvingRuntime.generate({
+    type: "generate",
+    parent_node_id: resolvingRuntime.snapshot().tree.active_node_id,
+    stateless: false,
+    recipe_override: "inverted",
+  }, () => {});
+  assert.equal(
+    resolvingEngine.plans.at(-1).steeringExpression,
+    "-0.7 default/emotions%calm{0}@response",
+  );
   const invalidRecipeEvents = [];
   await assert.rejects(
     recipeRuntime.generate({
@@ -1922,7 +1978,7 @@ try {
         text: "Prompt",
         authored_role: "user",
         generated_role: "assistant",
-        steering: "honest",
+        steering: "deceptive",
       },
       () => {},
     ),
@@ -2347,7 +2403,7 @@ try {
     service: "instruments", method: "sources", args: ["lens"],
   }), { sources: [] });
   assert.equal((await serviceRuntime.request({
-    service: "sessions", method: "validateSteering", args: ["honest +"],
+    service: "sessions", method: "validateSteering", args: ["deceptive +"],
   })).valid, false);
   const initial = await serviceRuntime.request({ service: "tree", method: "get", args: [] });
   const restored = structuredClone(chatRuntime.snapshot().tree);

@@ -1263,7 +1263,7 @@ async function readHookMeasurements(
   if (hasJlensReadout && jlensTopTokens === undefined) {
     throw generationError(
       "JLENS_FULL_READOUT_UNAVAILABLE",
-      "The loaded browser model did not return its exact full-vocabulary J-lens readout",
+      "The loaded browser model did not return its exact full-vocabulary R-lens readout",
     );
   }
   if (hasSaeReadout && saeTopFeatures === undefined) {
@@ -1512,7 +1512,7 @@ function exactLensReadout(
   ) {
     throw generationError(
       "INVALID_JLENS_TOP_READOUT",
-      "The browser model returned a malformed exact J-lens readout",
+      "The browser model returned a malformed exact R-lens readout",
     );
   }
   const layers = [...value.layerIndices].map((runtimeLayerIndex, row) => {
@@ -1522,7 +1522,7 @@ function exactLensReadout(
     if (new Set(ids).size !== ids.length || !descending(probabilities)) {
       throw generationError(
         "INVALID_JLENS_TOP_READOUT",
-        "The browser model returned an invalid per-layer J-lens ranking",
+        "The browser model returned an invalid per-layer R-lens ranking",
       );
     }
     return {

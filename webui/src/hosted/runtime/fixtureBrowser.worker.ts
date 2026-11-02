@@ -130,7 +130,7 @@ const document: CatalogDocument = {
       }, {
         id: "fixture-jlens",
         kind: "jlens",
-        displayName: "J-lens readouts",
+        displayName: "R-lens readouts",
         license: "AGPL-3.0-or-later",
         sourceRepository: "a9lim/drowse-web-fixture",
         sourceRevision: revision,

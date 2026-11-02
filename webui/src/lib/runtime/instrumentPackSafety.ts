@@ -21,7 +21,7 @@ export function instrumentPackDependencies(
 
   for (const kind of kinds) {
     const family: InstrumentFamily = kind === "jlens" ? "lens" : "sae";
-    const label = kind === "jlens" ? "J-lens" : "SAE";
+    const label = kind === "jlens" ? "R-lens" : "SAE";
     const direct = entries
       .filter(([, entry]) => entry.mode === kind)
       .map(([name]) => name)

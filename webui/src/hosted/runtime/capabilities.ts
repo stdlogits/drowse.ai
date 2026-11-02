@@ -692,7 +692,7 @@ function operationAvailability(
     probe_subspace_trails: probeSubspaceTrails,
     jlens_fitting: {
       available: false,
-      reasons: [hard("HOSTED_JLENS_FITTING_EXCLUDED", "J-lens fitting is available only in the Python runtime")],
+      reasons: [hard("HOSTED_JLENS_FITTING_EXCLUDED", "Lens fitting is available only in the Python runtime")],
     },
     sae_training: {
       available: false,
