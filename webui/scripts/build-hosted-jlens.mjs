@@ -35,7 +35,8 @@ const options = parseArguments(process.argv.slice(2));
 if (options.help) {
   process.stdout.write(
     "Usage: npm run build:hosted:jlens -- MODEL_ID MODEL_DIR MODEL.wasm WEBLLM.js CORPUS.json WORDS.json OUTPUT_DIR\n" +
-    "       [--prompts N] [--seq-len N] [--dim-batch N] [--device mps]\n" +
+    "       [--kind R|J] [--prompts N] [--seq-len N] [--dim-batch N] [--device mps]\n" +
+    "       [--max-residual-error 0.01]\n" +
     "       [--source-layers 0,1] [--python python3] [--browser-channel chrome]\n" +
     "       [--release-corpus RELEASE-CORPUS.json --release-corpus-source APPROVED-SOURCE.json]\n" +
     "       [--release-license-evidence LICENSE-EVIDENCE]\n" +
@@ -63,8 +64,8 @@ const outputDirectory = resolve(options.outputDirectory);
 await Promise.all([
   requireFile(modelLibraryPath, "model library"),
   requireFile(webLlmPath, "WebLLM bundle"),
-  requireFile(corpusPath, "J-lens corpus"),
-  requireFile(wordsPath, "J-lens words"),
+  requireFile(corpusPath, "lens corpus"),
+  requireFile(wordsPath, "lens words"),
   requireMissing(outputDirectory, "output directory"),
 ]);
 const corpusBytes = await readFile(corpusPath);
@@ -72,14 +73,14 @@ const documents = JSON.parse(corpusBytes);
 if (
   !Array.isArray(documents) || documents.length < options.prompts ||
   documents.some((document) => typeof document !== "string" || !document.trim())
-) throw new Error("J-lens corpus must contain enough non-empty strings");
+) throw new Error("the lens corpus must contain enough non-empty strings");
 const words = JSON.parse(await readFile(wordsPath, "utf8"));
 const wordsBytes = await readFile(wordsPath);
 if (
   !Array.isArray(words) || words.length === 0 ||
   words.some((word) => typeof word !== "string" || !word || word.trim() !== word) ||
   new Set(words).size !== words.length
-) throw new Error("J-lens words must be a non-empty array of unique trimmed strings");
+) throw new Error("lens words must be a non-empty array of unique trimmed strings");
 let releaseCorpusClosure = null;
 if (options.releaseCorpus !== null) {
   if (
@@ -87,7 +88,7 @@ if (options.releaseCorpus !== null) {
     options.seqLen < releaseInstrumentMinimums.jlensSequence
   ) {
     throw new Error(
-      `release J-lens requires at least ` +
+      `a release R lens requires at least ` +
       `${releaseInstrumentMinimums.jlensPrompts} prompts, and ` +
       `${releaseInstrumentMinimums.jlensSequence}-token sequences`,
     );
@@ -221,7 +222,7 @@ try {
     server.listen(0, "127.0.0.1", resolvePromise);
   });
   const address = server.address();
-  if (!address || typeof address === "string") throw new Error("failed to bind J-lens capture server");
+  if (!address || typeof address === "string") throw new Error("failed to bind the lens capture server");
   const origin = `http://127.0.0.1:${address.port}`;
   browser = await launchReleaseToolContext({
     headless: true,
@@ -238,16 +239,16 @@ try {
     return await new Promise((resolvePromise, reject) => {
       const timeout = setTimeout(() => {
         worker.terminate();
-        reject(new Error(`J-lens capture timed out after ${timeoutMs} ms`));
+        reject(new Error(`lens capture timed out after ${timeoutMs} ms`));
       }, timeoutMs);
       worker.onerror = (event) => {
         clearTimeout(timeout);
         worker.terminate();
-        reject(new Error(event.message || "J-lens capture worker failed"));
+        reject(new Error(event.message || "lens capture worker failed"));
       };
       worker.onmessage = (event) => {
         if (event.data.type === "progress") {
-          console.info(`J-lens capture ${event.data.completed}/${event.data.total}`);
+          console.info(`lens capture ${event.data.completed}/${event.data.total}`);
           return;
         }
         clearTimeout(timeout);
@@ -291,7 +292,7 @@ try {
     result.bytes !== capturedBytes ||
     result.residualSha256 !== residualSha256 ||
     result.rows.length !== options.prompts
-  ) throw new Error("J-lens capture size, digest, or row count changed during transfer");
+  ) throw new Error("lens capture size, digest, or row count changed during transfer");
   await writeFile(resolve(captureDirectory, "capture.json"), `${JSON.stringify({
     schema_version: 1,
     model_id: options.modelId,
@@ -302,7 +303,7 @@ try {
     hidden_size: lock.hiddenSize,
     seq_len: options.seqLen,
     skip_first_positions: 16,
-    corpus_spec: `browser-q4-corrected-json-v1:${corpusPath.split("/").at(-1)}`,
+    corpus_spec: `browser-tokenized-json-v1:${corpusPath.split("/").at(-1)}`,
     raw_corpus_sha256: sha256(corpusBytes),
     capture_plan_sha256: result.capturePlanSha256,
     residual_sha256: result.residualSha256,
@@ -315,16 +316,20 @@ try {
     captureDirectory,
     wordsPath,
     packDirectory,
+    "--kind", options.kind,
     "--device", options.device,
     "--dim-batch", String(options.dimBatch),
+    "--max-residual-error", String(options.maxResidualError),
   ];
   fitArguments.push("--source-layers", selectedSourceLayers.join(","));
-  const fitted = await exec(pythonExecutable, fitArguments, {
+  const fitting = exec(pythonExecutable, fitArguments, {
     cwd: repositoryRoot,
     env: { ...process.env, PYTHONPATH: resolve(repositoryRoot, "drowse") },
     maxBuffer: 4 * 1024 * 1024,
     timeout: options.timeoutMs,
   });
+  fitting.child.stderr.pipe(process.stderr);
+  const fitted = await fitting;
   if (releaseCorpusClosure !== null) {
     await Promise.all([
       writeFile(
@@ -372,9 +377,11 @@ function parseArguments(args) {
   if (args.includes("--help")) return { help: true };
   const positional = [];
   const result = {
+    kind: "R",
     prompts: 100,
     seqLen: 128,
-    dimBatch: 64,
+    dimBatch: 256,
+    maxResidualError: 0.01,
     device: "mps",
     sourceLayers: null,
     python: "python3",
@@ -385,6 +392,8 @@ function parseArguments(args) {
     releaseLicenseEvidence: null,
   };
   const fields = {
+    "--kind": "kind",
+    "--max-residual-error": "maxResidualError",
     "--prompts": "prompts",
     "--seq-len": "seqLen",
     "--dim-batch": "dimBatch",
@@ -408,7 +417,7 @@ function parseArguments(args) {
     const value = args[++index];
     if (!value || value.startsWith("--")) throw new Error(`missing value for ${argument}`);
     result[field] = [
-      "device", "sourceLayers", "python", "browserChannel",
+      "kind", "device", "sourceLayers", "python", "browserChannel",
       "releaseCorpus", "releaseCorpusSource",
       "releaseLicenseEvidence",
     ].includes(field)
@@ -422,6 +431,12 @@ function parseArguments(args) {
     if (!Number.isSafeInteger(result[field]) || result[field] <= 0) {
       throw new Error(`${field} must be a positive integer`);
     }
+  }
+  if (!["R", "J"].includes(result.kind)) {
+    throw new Error("kind must be R (the RelP R lens) or J (the standard J lens)");
+  }
+  if (!Number.isFinite(result.maxResidualError) || result.maxResidualError <= 0) {
+    throw new Error("max residual error must be a finite positive number");
   }
   if (result.seqLen <= 17 || result.timeoutMs < 10_000) {
     throw new Error("seqLen must exceed 17 and timeout must be at least 10000 ms");
@@ -471,7 +486,7 @@ async function readBoundedBody(request, limit) {
   let bytes = 0;
   for await (const chunk of request) {
     bytes += chunk.byteLength;
-    if (bytes > limit) throw new Error("J-lens capture chunk exceeded the release-tool limit");
+    if (bytes > limit) throw new Error("a lens capture chunk exceeded the release-tool limit");
     chunks.push(chunk);
   }
   return Buffer.concat(chunks, bytes);
@@ -481,7 +496,7 @@ async function writeAll(handle, bytes, position) {
   let offset = 0;
   while (offset < bytes.length) {
     const result = await handle.write(bytes, offset, bytes.length - offset, position + offset);
-    if (result.bytesWritten <= 0) throw new Error("J-lens capture file write made no progress");
+    if (result.bytesWritten <= 0) throw new Error("the lens capture file write made no progress");
     offset += result.bytesWritten;
   }
 }

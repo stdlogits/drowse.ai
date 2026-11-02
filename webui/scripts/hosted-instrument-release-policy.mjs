@@ -105,7 +105,7 @@ function validateProviderInstrument(kind, manifest, vocabulary, modelLock) {
     !positiveInteger(manifest.n_prompts) ||
     !positiveInteger(manifest.seq_len) ||
     !vocabulary || !Array.isArray(vocabulary.words) || vocabulary.words.length === 0
-  ) throw new Error("provider J-lens does not match the runtime shape");
+  ) throw new Error("the provider R lens does not match the runtime shape");
   return {
     source: "provider",
     prompts: manifest.n_prompts,
@@ -159,7 +159,7 @@ export async function validateReleaseCorpusInputs({
       wordsBytes === null ||
       wordsBytes.byteLength !== release.outputs.words.bytes ||
       sha256(wordsBytes) !== release.outputs.words.sha256
-    ) throw new Error("release J-lens word bytes differ from the approved manifest");
+    ) throw new Error("release lens word bytes differ from the approved manifest");
   }
   return { releaseBytes, sourceBytes, licenseEvidenceBytes };
 }
@@ -338,7 +338,7 @@ function validateJlens(manifest, vocabulary, release, modelLock) {
     manifest?.d_model !== modelLock.hiddenSize ||
     manifest?.model_layer_count !== modelLock.layerMap.length ||
     canonical(lensLayers(manifest)) !== canonical(expectedLayers)
-  ) throw new Error("release J-lens does not bind the approved corpus and complete layer map");
+  ) throw new Error("the release R lens does not bind the approved corpus and complete layer map");
   if (
     !positiveInteger(manifest.n_prompts) || manifest.n_prompts < MINIMUM_JLENS_PROMPTS ||
     !positiveInteger(manifest.raw_prompt_count) || manifest.raw_prompt_count < MINIMUM_JLENS_PROMPTS ||
@@ -346,12 +346,12 @@ function validateJlens(manifest, vocabulary, release, modelLock) {
     !positiveInteger(manifest.seq_len) || manifest.seq_len < MINIMUM_JLENS_SEQUENCE
   ) {
     throw new Error(
-      `release J-lens requires at least ${MINIMUM_JLENS_PROMPTS} usable prompts ` +
+      `a release R lens requires at least ${MINIMUM_JLENS_PROMPTS} usable prompts ` +
       `and ${MINIMUM_JLENS_SEQUENCE}-token sequences`,
     );
   }
   if (!vocabulary || !Array.isArray(vocabulary.words)) {
-    throw new Error("release J-lens vocabulary manifest is unavailable");
+    throw new Error("the release lens vocabulary manifest is unavailable");
   }
   const words = vocabulary.words.map((entry) => entry?.word);
   const wordBytes = Buffer.from(JSON.stringify(words));
@@ -360,10 +360,10 @@ function validateJlens(manifest, vocabulary, release, modelLock) {
     words.length !== release.outputs.words.count ||
     wordBytes.byteLength !== release.outputs.words.bytes ||
     sha256(wordBytes) !== release.outputs.words.sha256
-  ) throw new Error("release J-lens vocabulary does not match the approved shared-word closure");
+  ) throw new Error("the release lens vocabulary does not match the approved shared-word closure");
   const tokenIds = release.outputs.words.tokenIds[modelLock.id];
   if (vocabulary.words.some((entry, index) => entry.row !== index || entry.token_id !== tokenIds[index])) {
-    throw new Error("release J-lens vocabulary does not match the approved token closure");
+    throw new Error("the release lens vocabulary does not match the approved token closure");
   }
   return {
     corpusSha256: release.outputs.jlens.sha256,

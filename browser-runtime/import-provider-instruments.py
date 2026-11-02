@@ -147,7 +147,7 @@ def create_browser_vocabulary(args, model: dict, pack: Path) -> None:
         rows.append(embedding[token_id].to(dtype=torch.float32, device="cpu"))
         words.append({"word": word, "row": len(words), "token_id": token_id})
     if not words:
-        raise SystemExit("no default J-lens words are single tokens for this tokenizer")
+        raise SystemExit("no default lens words are single tokens for this tokenizer")
     tensor_path = pack / "browser-vocabulary.safetensors"
     save_file({"unembedding": torch.stack(rows).contiguous()}, tensor_path)
     write_json(pack / "browser-vocabulary.json", {

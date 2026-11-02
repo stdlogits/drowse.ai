@@ -786,7 +786,7 @@ async function attachInstrumentProbes(page, options) {
   await lens.getByRole("button", { name: "Turn off live predicted-word readings", exact: true }).waitFor();
   await lens.getByRole("textbox", { name: "Watch a prediction word" }).fill(options.jlensWord);
   await lens.getByRole("button", { name: "Watch word", exact: true }).click();
-  await lens.getByRole("list", { name: "J-lens probe tokens" }).waitFor();
+  await lens.getByRole("list", { name: "Lens probe tokens" }).waitFor();
 
   await tabs.getByRole("button", { name: "SAE", exact: true }).click();
   const sae = page.getByLabel("Model feature controls");
@@ -826,7 +826,7 @@ async function assertProbeMeasurements(page, options) {
   const tabs = page.getByRole("group", { name: "Response guidance type" });
   await tabs.getByRole("button", { name: "J-lens", exact: true }).click();
   const lens = page.getByLabel("Layer prediction controls");
-  const lensList = lens.getByRole("list", { name: "J-lens probe tokens" });
+  const lensList = lens.getByRole("list", { name: "Lens probe tokens" });
   await lensList.waitFor();
   const layerStrip = lens.getByRole("slider", {
     name: `Per-layer strength for ${options.jlensWord}`,
