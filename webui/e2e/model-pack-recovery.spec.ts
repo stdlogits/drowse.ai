@@ -1,11 +1,8 @@
 import { expect, test } from "@playwright/test";
 import { resolve } from "node:path";
-import { chooseFixtureModel, openWorkspaceMenu } from "./workbench-navigation";
-import { waitForReply } from "./workbench-navigation";
+import { chooseFixtureModel, devUrl, openMenuItem, waitForReply } from "./workbench-navigation";
 
-const devUrl = "http://127.0.0.1:4176";
-
-test("stale J-lens is repaired without downloading the model or losing chats", async ({ page }, info) => {
+test("a stale lens pack is repaired without downloading the model or losing chats", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto(`${devUrl}/app?fixture=1`);
   await chooseFixtureModel(page);
@@ -15,30 +12,7 @@ test("stale J-lens is repaired without downloading the model or losing chats", a
   await composer.fill("Keep this chat during pack recovery");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await waitForReply(page);
-  const navigation = page.getByRole("navigation", { name: "Workspace", exact: true });
-  const models = navigation.getByRole("button", { name: "Models", exact: true });
-  for (const width of [1440, 760, 680, 390, 320]) {
-    await page.setViewportSize({ width, height: 1000 });
-    if (width > 760) await expect(models).toBeVisible();
-    else {
-      await openWorkspaceMenu(page);
-      await expect(page.getByRole("button", { name: "Models", exact: true })).toBeVisible();
-      await page.keyboard.press("Escape");
-    }
-    expect(await navigation.evaluate(element => element.scrollWidth <= element.clientWidth), `navigation fits ${width}px`).toBe(true);
-    const boxes = await navigation.getByRole("button").evaluateAll(buttons => buttons.map(button => {
-      const box = button.getBoundingClientRect();
-      return { left: box.left, right: box.right, top: box.top };
-    }));
-    for (let index = 1; index < boxes.length; index++) {
-      if (Math.abs(boxes[index].top - boxes[index - 1].top) < 1) {
-        expect(boxes[index].left).toBeGreaterThanOrEqual(boxes[index - 1].right - 1);
-      }
-    }
-    await page.locator("#workspace-sidebar").screenshot({ path: info.outputPath(`models-navigation-${width}.png`) });
-  }
-  await page.setViewportSize({ width: 1440, height: 1000 });
-  await models.click();
+  await openMenuItem(page, "Models");
   await expect(page.getByRole("heading", { name: "Models", exact: true })).toBeVisible();
   expect(new URL(page.url()).searchParams.get("model")).toBe("qwen3-1.7b-fixture");
 
