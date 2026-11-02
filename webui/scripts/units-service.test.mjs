@@ -197,6 +197,37 @@ try {
   const { population: _expected, ...expected } = generated.result;
   assert.deepEqual(compareRecord(rest, expected, { root: "cases[0].result", ties: activityGolden.declared_ties, numberTol }), []);
 
+  // ------------------------------------------------------ a replay's gate scorer ---
+  // A replayed forward's name-scored gates, as generation scores them: unit taps, the geometry
+  // readout (the backend's scorer) and the slens/ reads over the [L, d] capture.
+  {
+    const tokenId = fx.tokenizer.encode("e")[0];
+    const probes = [{ name: "slens/e", tokenId, attached: false }];
+    const hidden = Float32Array.from({ length: 4 * fx.model.hiddenSize }, (_, i) => Math.sin(i));
+    const scoring = new service.BrowserUnitsService({
+      modelId: "units-tiny",
+      blockSites: () => fx.backend,
+      packs: () => packs,
+      tokenTexts: async (ids) => ids.map((id) => fx.tokenizer.decode([id])),
+      resolveToken: async (word) => fx.tokenizer.encode(word)[0],
+      replay: () => replay,
+      geometryGateScores: (_program, geometry) => ({ "local/m:membership": geometry[0] }),
+    });
+    const program = { measurementSchema: { slensProbes: probes } };
+    const readback = {
+      measurements: { dtype: "f32", shape: [4, 8], data: new Float32Array(32) },
+      unitTaps: null,
+      geometry: { dtype: "f32", shape: [1], data: Float32Array.of(0.375) },
+      hidden: { dtype: "f32", shape: [4, fx.model.hiddenSize], data: hidden },
+    };
+    const scores = await scoring.replayGateScores(program, readback);
+    const expected = (await scoring.slensReads(hidden, probes)).values;
+    assert.deepEqual(scores, { "local/m:membership": 0.375, ...expected });
+    assert.ok(Number.isFinite(scores["slens/e"]));
+    // Without a capture or a geometry readout, nothing beyond the unit taps is scored.
+    assert.deepEqual(await scoring.replayGateScores(program, { ...readback, geometry: null, hidden: null }), {});
+  }
+
   // ------------------------------------------- a pack change (the R-source switch) ---
   // The reset releases every lens matrix and the embedding statistics the session uploaded
   // (the replays release their own scale tables), takes a unit source over the new session and

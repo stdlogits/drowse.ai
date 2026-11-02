@@ -42,6 +42,13 @@ interface BridgeResident {
   bytes: number;
 }
 
+interface BridgeReplayForwardReadback {
+  measurements: Float32Array;
+  unitTaps: Float32Array;
+  geometry: Float32Array | null;
+  hidden: Float32Array | null;
+}
+
 interface BridgeReplayCaptures {
   anatomyTaps: Float32Array | null;
   activityState: Float32Array | null;
@@ -223,10 +230,15 @@ export function webLlmBlockSitesBackend(
             ? new Uint32Array(installed.curveActive.length)
             : segment.controls.curveActive,
           unitActive: segment.controls.unitActive ?? new Float32Array(capabilities.profile.maxUnitGroups),
-        }) as { measurements: Float32Array; unitTaps: Float32Array };
+        }) as BridgeReplayForwardReadback;
+        const profile = capabilities.profile;
         return {
-          measurements: f32Tensor(readback.measurements, [L, capabilities.profile.maxProbes]),
-          unitTaps: f32Tensor(readback.unitTaps, [capabilities.profile.maxUnitTaps]),
+          measurements: f32Tensor(readback.measurements, [L, profile.maxProbes]),
+          unitTaps: f32Tensor(readback.unitTaps, [profile.maxUnitTaps]),
+          geometry: readback.geometry === null
+            ? null
+            : f32Tensor(readback.geometry, [L, profile.maxGeometryProbes, profile.geometryOutputStride]),
+          hidden: readback.hidden === null ? null : f32Tensor(readback.hidden, [L, capabilities.hiddenSize]),
         };
       },
       async finish(): Promise<BlockSitesReplayResult> {

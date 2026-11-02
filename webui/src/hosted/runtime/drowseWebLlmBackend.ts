@@ -31,9 +31,7 @@ import type { WebLlmCaptureRuntimePort } from "./webLlmActivationCapture";
 import type { BrowserInstrumentRuntime } from "./browserInstrumentRuntime";
 import { BrowserUnitsService } from "./units/unitsService";
 import { sTokenResolver } from "./units/packSource";
-import { unitGateScores } from "./units/unitProgram";
-import type { WebLlmRuntimeCapabilities } from "./webLlmGeneration";
-import type { WebLlmThinkingProfile } from "./webLlmGeneration";
+import { geometryGateScores, type WebLlmRuntimeCapabilities, type WebLlmThinkingProfile } from "./webLlmGeneration";
 import { defaultOutputTokenCount, outputTokenLimitForRuntime } from "../../../../drowse/webui/src/lib/runtime/outputTokenPolicy";
 
 interface DrowseWebLlmRuntimePort extends BrowserGenerationPort, WebLlmCaptureRuntimePort {
@@ -243,7 +241,7 @@ export class DrowseWebLlmBackend implements BrowserModelBackend {
       resolveToken: sTokenResolver(runtime, () => this.blockSites().capabilities()?.vocabSize ?? 0),
       resolveSelector: (selector) => instruments.selectorDirections(selector),
       replay: () => loom.unitsNodeReplay(),
-      gateScores: unitGateScores,
+      geometryGateScores,
     }));
   }
 

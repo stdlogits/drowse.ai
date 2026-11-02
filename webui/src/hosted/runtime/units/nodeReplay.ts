@@ -55,11 +55,47 @@ export interface ReplaySegmentPlan {
   readonly inSpan: boolean;
 }
 
-/** Gate scores (`priorScores`) from a forward's readback, for the next segment's controls. */
+/** Gate scores (`priorScores`) from a forward's readback, for the next segment's controls:
+ *  every name-scored gate (unit taps, the geometry readout, `slens/` reads), as generation
+ *  scores them after its forward (native's gate run). */
 export type ReplayGateScores = (
   program: StructuredHookProgramBuffers,
   readback: BlockSitesForwardReadback,
-) => Readonly<Record<string, number>>;
+) => Promise<Readonly<Record<string, number>>>;
+
+function steeringCompositionError(message: string): Error {
+  return Object.assign(new Error(message), { code: "SteeringCompositionError", status: 422, recoverable: true });
+}
+
+/** A stepped replay's gates read what the previous forward scored, as native's gate run scores
+ *  every gate of the open steering. A gate this replay could not score (no scorer, or a readout
+ *  the backend lacks) refuses with native's 422 rather than staying shut. */
+function requireGateScores(
+  program: StructuredHookProgramBuffers,
+  readback: BlockSitesForwardReadback,
+  scores: Readonly<Record<string, number>> | null,
+): void {
+  const missing = new Set<string>();
+  const slots = readback.measurements.data;
+  const probes = program.measurementSchema?.probes ?? [];
+  for (const control of controlsOf(program)) {
+    const gate = control?.gate;
+    if (!gate || control!.phase.kind === "prompt_only") continue;
+    if (gate.scoreKey !== null && gate.scoreKey !== undefined) {
+      if (!Number.isFinite(scores?.[gate.scoreKey] ?? Number.NaN)) missing.add(gate.scoreKey);
+      continue;
+    }
+    for (const slot of gate.slots) {
+      if (!Number.isFinite(slots[slot.layer * program.profile.maxProbes + slot.probe])) {
+        missing.add(probes[slot.probe]?.name ?? `probe slot ${slot.probe}`);
+      }
+    }
+  }
+  if (missing.size === 0) return;
+  throw steeringCompositionError(
+    `the replayed steering has probe-gated terms (@when:…) on ${[...missing].join(", ")}, which this replay cannot score; a replay cannot reproduce where they fired. Replay without them (apply_steering=false drops the node's own steering).`,
+  );
+}
 
 function controlsOf(program: StructuredHookProgramBuffers): (import("../structuredHookProgram").StructuredHookControl | null)[] {
   return [...(program.controls?.affine ?? []), ...(program.controls?.curve ?? []), ...(program.controls?.units ?? [])];
@@ -121,9 +157,9 @@ function triggerSegments(
   const gated = decoded && windowed.some((c) => c!.gate !== null && c!.phase.kind !== "prompt_only");
   const phased = decoded && canThink && windowed.some((c) => c!.phase.kind === "thinking_only" || c!.phase.kind === "after_thinking");
   if (phased) {
-    throw Object.assign(new Error(
+    throw steeringCompositionError(
       "the replayed steering has thinking-phase terms (@after, @thinking), which fire on the decode loop's thinking state; the node does not record where they fired, so a replay cannot reproduce them. Replay without them (apply_steering=false drops the node's own steering).",
-    ), { code: "SteeringCompositionError", status: 422, recoverable: true });
+    );
   }
   const prefillStop = Math.min(promptLength, length);
   const out: ReplaySegmentPlan[] = [];
@@ -180,13 +216,17 @@ export async function driveReplay(
   try {
     let readback: BlockSitesForwardReadback | null = null;
     for (const segment of segments) {
+      let gates: Pick<StructuredHookControlContext, "priorMeasurements" | "priorScores"> = {};
+      if (segment.gated && readback !== null && program !== null) {
+        const priorScores = (await options.gateScores?.(program, readback)) ?? null;
+        requireGateScores(program, readback, priorScores);
+        gates = { priorMeasurements: readback.measurements.data, priorScores };
+      }
       const context: StructuredHookControlContext = {
         prefill: segment.prefill,
         thinking: false,
         generatedTokens: segment.genStep,
-        ...(segment.gated && readback !== null && program !== null
-          ? { priorMeasurements: readback.measurements.data, priorScores: options.gateScores?.(program, readback) ?? null }
-          : {}),
+        ...gates,
       };
       const evaluated = evaluate === null ? NO_CONTROLS : evaluate(context);
       const controls = segment.inSpan ? evaluated : outsideSpan(evaluated);

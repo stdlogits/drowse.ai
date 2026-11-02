@@ -1565,6 +1565,16 @@ export function measurementEnvelope(
   return envelope;
 }
 
+/** A replayed forward's geometry gate scores from its `[L, maxGeometryProbes, stride]` readout:
+ *  the scores generation's measurement envelope hands its gates. */
+export function geometryGateScores(
+  program: StructuredHookProgramBuffers,
+  geometry: Float32Array,
+): Readonly<Record<string, number>> {
+  const envelope = measurementEnvelope(program, undefined, null, geometry);
+  return envelope === undefined ? {} : measurementGateScores(envelope);
+}
+
 const measurementGateScoreCache = new WeakMap<
   MeasurementsEnvelopeJSON,
   Readonly<Record<string, number>>

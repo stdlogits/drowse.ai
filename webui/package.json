@@ -79,7 +79,7 @@
     "nanoid": "3.3.18"
   },
   "dependencies": {
-    "@drowse/web-llm": "file:../browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.45.tgz",
+    "@drowse/web-llm": "file:../browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.46.tgz",
     "@noble/hashes": "2.3.0",
     "@stdlogits/ledger": "https://codeload.github.com/stdlogits/ledger/tar.gz/refs/tags/v0.1.1",
     "fflate": "0.8.3",

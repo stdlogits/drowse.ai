@@ -170,6 +170,8 @@ try {
   // ------------------------------------------------- replay over a recording bridge ---
   const sent = [];
   let installed = null;
+  // Whether the mock's replay forwards carry a geometry readout and an [L, d] capture.
+  let replayGates = false;
   const L = 4;
   const H = spec.nHeads;
   const anatomyStride = 6 * qwen.hidden_size + spec.dFF + H * spec.headDim;
@@ -181,7 +183,12 @@ try {
         case "headGrams": return { id: "head_grams:1", kind: "head_grams", shape: [L, H, spec.headDim, spec.headDim], bytes: 4 };
         case "uploadUnitScales": return { id: "unit_scales:2", kind: "unit_scales", shape: [L, 2 * spec.dFF + H], bytes: 4 };
         case "openReplay": return null;
-        case "replayForward": return { measurements: new Float32Array(L * 8).fill(0.5), unitTaps: new Float32Array(64) };
+        case "replayForward": return {
+          measurements: new Float32Array(L * 8).fill(0.5),
+          unitTaps: new Float32Array(64),
+          geometry: replayGates ? new Float32Array(L * v4.maxGeometryProbes * v4.geometryOutputStride).fill(0.25) : null,
+          hidden: replayGates ? new Float32Array(L * qwen.hidden_size).fill(0.75) : null,
+        };
         case "finishReplay": return {
           anatomyTaps: new Float32Array(L * anatomyStride),
           activityState: new Float32Array(L * (3 * spec.dFF + 3 * H)),
@@ -226,10 +233,18 @@ try {
   const readback = await replay.forward({ tokenIds: Int32Array.of(1, 2, 3), controls });
   assert.deepEqual(readback.measurements.shape, [L, 8]);
   assert.deepEqual(readback.unitTaps.shape, [64]);
+  assert.equal(readback.geometry, null);
+  assert.equal(readback.hidden, null);
   assert.deepEqual(sent.at(-1).tokenIds, [1, 2, 3]);
   assert.deepEqual([...sent.at(-1).unitActive], [1, 0, 0, 0]);
   // driveReplay's unsteered segments carry no controls: the bridge gets the program's zeros.
-  await replay.forward({ tokenIds: Int32Array.of(4), controls: { affineActive: new Uint32Array(0), curveActive: new Uint32Array(0) } });
+  // A forward's geometry readout and [L, d] capture (what its next segment's gates read) keep
+  // their shapes.
+  replayGates = true;
+  const gated = await replay.forward({ tokenIds: Int32Array.of(4), controls: { affineActive: new Uint32Array(0), curveActive: new Uint32Array(0) } });
+  replayGates = false;
+  assert.deepEqual(gated.geometry.shape, [L, v4.maxGeometryProbes, v4.geometryOutputStride]);
+  assert.deepEqual(gated.hidden.shape, [L, qwen.hidden_size]);
   assert.equal(sent.at(-1).affineActive.length, installed.affineActive.length);
   assert.equal(sent.at(-1).curveActive.length, installed.curveActive.length);
   assert.ok(sent.at(-1).affineActive.every((value) => value === 0));

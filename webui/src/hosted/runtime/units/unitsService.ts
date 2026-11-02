@@ -24,7 +24,7 @@ import { parseLayerSelector, parseSteeringExpression, resolveModelLayers, type L
 import { slensAtomDirections } from "./slens";
 import { centreDigest } from "./probeDigest";
 import { lensProbeReadings, slensReadings, UNIT_MEAN_FOOTPRINT_Z, type LensProbe } from "./replayProbes";
-import type { BrowserUnitProgramSource } from "./unitProgram";
+import { unitGateScores, type BrowserUnitProgramSource } from "./unitProgram";
 import { layerRequest, NO_CATALOG, parseUnit, unitCatalogStatus, UnitReader, UnitRequestError, type UnitLayerArtifacts } from "./unitReader";
 
 export const UNITS_SERVICE_METHODS = Object.freeze([
@@ -114,7 +114,9 @@ export interface BrowserUnitsServiceOptions {
   /** A steerable selector to its per-layer directions (`find`'s selector). */
   readonly resolveSelector?: (selector: string) => Promise<ReadonlyMap<number, Float32Array>>;
   readonly replay: () => UnitsNodeReplayPort | null;
-  readonly gateScores?: ReplayGateScores;
+  /** A replayed forward's geometry gate scores from its `[L, maxGeometryProbes, stride]`
+   *  readout, as generation's measurement envelope scores them. */
+  readonly geometryGateScores?: (program: StructuredHookProgramBuffers, geometry: Float32Array) => Readonly<Record<string, number>>;
 }
 
 function badRequest(message: string): UnitRequestError {
@@ -313,6 +315,20 @@ export class BrowserUnitsService {
     return this.session;
   }
 
+  /** A replayed forward's name-scored gates, as generation scores them after a forward: unit
+   *  taps, the geometry readout and the `slens/` reads over the `[L, d]` capture. */
+  private readonly replayGateScores: ReplayGateScores = async (program, readback) => {
+    const scores: Record<string, number> = { ...unitGateScores(program, readback) };
+    if (readback.geometry !== null && this.options.geometryGateScores) {
+      Object.assign(scores, this.options.geometryGateScores(program, readback.geometry.data));
+    }
+    const slens = program.measurementSchema?.slensProbes ?? [];
+    if (slens.length > 0 && readback.hidden !== null) {
+      Object.assign(scores, (await this.slensReads(readback.hidden.data, slens)).values);
+    }
+    return scores;
+  };
+
   /** A generation forward's `slens/` reads over its `[L, d]` capture (native
    *  `_InputBlock.readings`) and the S source label the lens binding names. */
   async slensReads(
@@ -505,7 +521,7 @@ export class BrowserUnitsService {
     const { anatomy, out } = await tokenAnatomy(session.context, { spec: session.spec, scales: session.scales, backend: session.backend }, node.forward, node.program, knobs, {
       sources: session.sources,
       steering: node.steering,
-    }, { canThink: node.canThink, ...(this.options.gateScores ? { gateScores: this.options.gateScores } : {}) });
+    }, { canThink: node.canThink, gateScores: this.replayGateScores });
     // The attached lens probes read the residual each block wrote, after the steering, as the
     // live capture does (native `build_measurements(lens_readings=...)`).
     const readings = await lensProbeReadings(session.context, out, lensProbes);
@@ -557,7 +573,7 @@ export class BrowserUnitsService {
     }
     const result = await unitActivity(session.backend, { nLayers: session.context.nLayers, spec: session.spec }, session.scales, node.forward, node.program, {
       top, units, rawIndex, layers,
-    }, this.options.tokenTexts, { canThink: node.canThink, ...(this.options.gateScores ? { gateScores: this.options.gateScores } : {}) });
+    }, this.options.tokenTexts, { canThink: node.canThink, gateScores: this.replayGateScores });
     return { ...result, node_id: nodeId, steering: node.steering };
   }
 }

@@ -170,7 +170,7 @@ index 0070bde..2b279d6 100644
        "version": "9.3.0",
        "resolved": "https://registry.npmjs.org/v8-to-istanbul/-/v8-to-istanbul-9.3.0.tgz",
 diff --git a/package.json b/package.json
-index cabfc3d..48bd96d 100644
+index cabfc3d..ac3861e 100644
 --- a/package.json
 +++ b/package.json
 @@ -1,12 +1,12 @@
@@ -178,7 +178,7 @@ index cabfc3d..48bd96d 100644
 -  "name": "@mlc-ai/web-llm",
 -  "version": "0.2.84",
 +  "name": "@drowse/web-llm",
-+  "version": "0.2.84-drowse.45",
++  "version": "0.2.84-drowse.46",
    "description": "Hardware accelerated language model chats on browsers",
    "main": "lib/index.js",
    "types": "lib/index.d.ts",
@@ -914,10 +914,10 @@ index 0000000..74d754a
 +}
 diff --git a/src/drowse.ts b/src/drowse.ts
 new file mode 100644
-index 0000000..8e543b7
+index 0000000..bc02db8
 --- /dev/null
 +++ b/src/drowse.ts
-@@ -0,0 +1,1767 @@
+@@ -0,0 +1,1774 @@
 +export const DROWSE_HOOK_ABI = "block-sites-v5" as const;
 +export const DROWSE_EXACT_READOUT_ABI = "exact-readout-v2" as const;
 +
@@ -1312,10 +1312,17 @@ index 0000000..8e543b7
 +export const DROWSE_MAX_READ_STEPS = 256;
 +
 +export interface DrowseReplayForwardReadback {
-+  /** `[L, maxProbes]` probe slots of the segment's last forward. */
++  /** `[L, maxProbes]` probe slots of the segment's last forward (kind-3 slots hold the
++   *  J-lens probability, as the measurement bundle's). */
 +  measurements: Float32Array;
 +  /** `[maxUnitTaps]` raw unit taps of the segment's last forward. */
 +  unitTaps: Float32Array;
++  /** `[L, maxGeometryProbes, geometryOutputStride]` geometry readout of the segment's last
++   *  forward, or null when the program has no geometry probes. */
++  geometry: Float32Array | null;
++  /** `[L, d]` capture of the segment's last forward when the program sets `hiddenCapture`,
++   *  else null. */
++  hidden: Float32Array | null;
 +}
 +
 +export interface DrowseReplayCaptures {
@@ -3852,7 +3859,7 @@ index d583419..9a057a6 100644
    hasModelInCache,
    deleteChatConfigInCache,
 diff --git a/src/llm_chat.ts b/src/llm_chat.ts
-index 616cff4..d1659b9 100644
+index 616cff4..712a6e8 100644
 --- a/src/llm_chat.ts
 +++ b/src/llm_chat.ts
 @@ -1,4 +1,6 @@
@@ -4706,7 +4713,7 @@ index 616cff4..d1659b9 100644
      if (this.resolvedModelABI.prefillABI === "batch") {
        log.info("Using batch_prefill kernel.");
      }
-@@ -480,31 +1224,2600 @@ export class LLMChatPipeline {
+@@ -480,31 +1224,2669 @@ export class LLMChatPipeline {
        this.tvm.empty([numProbs], "float32", this.device),
      );
  
@@ -5396,7 +5403,9 @@ index 616cff4..d1659b9 100644
 +  }
 +
 +  /** Feed one logical segment under one control state, in forwards of at most
-+   *  `prefill_chunk_size` rows; returns its last forward's probe slots and unit taps (one sync). */
++   *  `prefill_chunk_size` rows; returns what its last forward gives the next segment's gates
++   *  (one sync): probe slots (J-lens kind 3 included), unit taps, the geometry readout and,
++   *  when the program asks, the `[L, d]` capture. */
 +  private async forwardDrowseReplay(
 +    request: Extract<DrowseBlockSitesRequest, { op: "replayForward" }>,
 +  ): Promise<DrowseReplayForwardReadback> {
@@ -5432,7 +5441,19 @@ index 616cff4..d1659b9 100644
 +      );
 +    }
 +    const anatomy = (replay.flags & DROWSE_REPLAY_FLAG_ANATOMY) !== 0;
++    const structured = this.drowseStructuredProgram!;
++    const jlens = this.drowseProbeKindHost?.some((kind) => kind === 3) === true;
 +    let hosts: tvmjs.Tensor[] = [];
++    let geometryHost: tvmjs.Tensor | undefined;
++    let hiddenHost: tvmjs.Tensor | undefined;
++    const keepOnHost = (device: tvmjs.Tensor): tvmjs.Tensor => {
++      const host = this.tvm.detachFromCurrentScope(
++        this.tvm.empty(device.shape, "float32", this.tvm.cpu()),
++      );
++      hosts.push(host);
++      host.copyFrom(device);
++      return host;
++    };
 +    try {
 +      for (
 +        let start = 0;
@@ -5478,8 +5499,30 @@ index 616cff4..d1659b9 100644
 +          const offset = this.drowseOutputOffset();
 +          // Curve feet thread through the replay's forwards as through generation's.
 +          const nextFeet = this.tvm.detachFromCurrentScope(ret.get(offset + 1));
-+          this.drowseStructuredProgram!.curveFeet!.dispose();
-+          this.drowseStructuredProgram!.curveFeet = nextFeet;
++          structured.curveFeet!.dispose();
++          structured.curveFeet = nextFeet;
++          // The geometry readout runs on every forward, as generation's does (prefill solve on
++          // a chunk, warm solve on one row): its feet thread through the replay, and the last
++          // forward's readout scores the geometry gates of the next segment.
++          const hiddenStates = ret.get(offset + 2) as tvmjs.Tensor;
++          let geometryDevice: tvmjs.Tensor | undefined;
++          if (structured.geometryHeader !== undefined) {
++            const geometryForward =
++              chunk.length > 1
++                ? this.drowseGeometryPrefill!
++                : this.drowseGeometryDecoding!;
++            const geometry = geometryForward(
++              hiddenStates,
++              ...this.getDrowseGeometryArguments(),
++              this.params,
++            );
++            const nextGeometryFeet = this.tvm.detachFromCurrentScope(
++              geometry.get(1),
++            );
++            structured.geometryFeet!.dispose();
++            structured.geometryFeet = nextGeometryFeet;
++            geometryDevice = geometry.get(0) as tvmjs.Tensor;
++          }
 +          if (
 +            anatomy &&
 +            replay.anatomyPosition >= replay.position &&
@@ -5496,12 +5539,22 @@ index 616cff4..d1659b9 100644
 +          }
 +          if (last) {
 +            for (const index of [offset, offset + 3]) {
-+              const device = ret.get(index) as tvmjs.Tensor;
-+              const host = this.tvm.detachFromCurrentScope(
-+                this.tvm.empty(device.shape, "float32", this.tvm.cpu()),
++              keepOnHost(ret.get(index) as tvmjs.Tensor);
++            }
++            // What the next segment's gates read besides probe slots and unit taps, in the same
++            // sync: the geometry readout, the `[L, d]` capture (`slens/` gates, when the program
++            // asks for it) and the J-lens probabilities of kind-3 probe slots.
++            if (geometryDevice !== undefined) {
++              geometryHost = keepOnHost(geometryDevice);
++            }
++            if (this.drowseHiddenCaptureRequested) {
++              hiddenHost = keepOnHost(hiddenStates);
++            }
++            if (jlens) {
++              await this.computeDrowseJlensProbabilities(
++                hiddenStates,
++                structured.jLensTokenIds!,
 +              );
-+              hosts.push(host);
-+              host.copyFrom(device);
 +            }
 +          }
 +          this.filledKVCacheLength += chunk.length;
@@ -5514,13 +5567,36 @@ index 616cff4..d1659b9 100644
 +        }
 +      }
 +      await this.device.sync();
++      const measurements = new Float32Array(hosts[0].toArray());
++      if (jlens) {
++        this.materializeDrowseJlensReadback();
++        const probabilities = this.drowseJlensProbabilitiesHost!;
++        const kinds = this.drowseProbeKindHost!;
++        for (let index = 0; index < measurements.length; index += 1) {
++          if (kinds[index] === 3) measurements[index] = probabilities[index];
++        }
++      }
 +      return {
-+        measurements: new Float32Array(hosts[0].toArray()),
++        measurements,
 +        unitTaps: new Float32Array(hosts[1].toArray()),
++        geometry:
++          geometryHost === undefined
++            ? null
++            : new Float32Array(geometryHost.toArray()),
++        hidden:
++          hiddenHost === undefined
++            ? null
++            : new Float32Array(hiddenHost.toArray()),
 +      };
 +    } finally {
 +      for (const host of hosts) host.dispose();
 +      hosts = [];
++      if (jlens) {
++        // The replay's J-lens readback is not generation's: nothing reads it after this.
++        this.disposeDrowsePendingReadbacks();
++        this.drowseJlensProbabilitiesHost = undefined;
++        this.drowseJlensTopTokensHost = undefined;
++      }
 +    }
 +  }
 +
@@ -7330,7 +7406,7 @@ index 616cff4..d1659b9 100644
    }
  
    /**
-@@ -514,6 +3827,11 @@ export class LLMChatPipeline {
+@@ -514,6 +3896,11 @@ export class LLMChatPipeline {
      return this.outputMessage;
    }
  
@@ -7342,7 +7418,7 @@ index 616cff4..d1659b9 100644
    /**
     * Reset the runtime statistics
     */
-@@ -535,6 +3853,7 @@ export class LLMChatPipeline {
+@@ -535,6 +3922,7 @@ export class LLMChatPipeline {
      }
      this.resetKVCache();
      this.filledKVCacheLength = 0;
@@ -7350,7 +7426,7 @@ index 616cff4..d1659b9 100644
      this.logitProcessor?.resetState();
      this.tvm.endScope();
    }
-@@ -543,6 +3862,7 @@ export class LLMChatPipeline {
+@@ -543,6 +3931,7 @@ export class LLMChatPipeline {
     * Reset KV Cache
     */
    resetKVCache() {
@@ -7358,7 +7434,7 @@ index 616cff4..d1659b9 100644
      const states = this.getActiveKVStates();
      for (const state of states) {
        this.fclearKVCaches(state);
-@@ -572,6 +3892,10 @@ export class LLMChatPipeline {
+@@ -572,6 +3961,10 @@ export class LLMChatPipeline {
      return this.finishReason;
    }
  
@@ -7369,7 +7445,7 @@ index 616cff4..d1659b9 100644
    /**
     * @returns tokenLogprobArray for this current round of autoregressive generation.
     * Updated upon each sampled token, cleared upon each prefillStep().
-@@ -587,6 +3911,10 @@ export class LLMChatPipeline {
+@@ -587,6 +3980,10 @@ export class LLMChatPipeline {
      return this.curRoundDecodingTotalTokens;
    }
  
@@ -7380,7 +7456,7 @@ index 616cff4..d1659b9 100644
    /**
     * @returns the number of tokens decoded for a single request or a single choice in the request.
     */
-@@ -721,13 +4049,17 @@ export class LLMChatPipeline {
+@@ -721,13 +4118,17 @@ export class LLMChatPipeline {
     */
    async prefillStep(
      inp: string,
@@ -7401,7 +7477,7 @@ index 616cff4..d1659b9 100644
        );
      }
      if (this.resetStatsPerPrefill) {
-@@ -738,8 +4070,10 @@ export class LLMChatPipeline {
+@@ -738,8 +4139,10 @@ export class LLMChatPipeline {
  
      // cleanup the per convo states
      this.outputIds = [];
@@ -7412,7 +7488,7 @@ index 616cff4..d1659b9 100644
      this.tokenLogprobArray = [];
      this.curRoundDecodingTotalTokens = 0;
      this.curRoundPrefillTotalTokens = 0;
-@@ -747,6 +4081,10 @@ export class LLMChatPipeline {
+@@ -747,6 +4150,10 @@ export class LLMChatPipeline {
      this.curRoundDecodingTotalTime = 0;
      this.curRoundGrammarInitTotalTime = 0;
      this.curRoundGrammarPerTokenTotalTime = 0;
@@ -7423,7 +7499,7 @@ index 616cff4..d1659b9 100644
  
      this.curRoundLatencyBreakdown = {
        logitProcessorTime: [],
-@@ -758,6 +4096,8 @@ export class LLMChatPipeline {
+@@ -758,6 +4165,8 @@ export class LLMChatPipeline {
      };
  
      this.stopTriggered = false;
@@ -7432,7 +7508,7 @@ index 616cff4..d1659b9 100644
      const conversation = this.conversation;
  
      // -1. Instantiate grammar matcher according to generation config. This step is overlapped
-@@ -835,17 +4175,28 @@ export class LLMChatPipeline {
+@@ -835,17 +4244,28 @@ export class LLMChatPipeline {
        conversation.prompt = inp;
      } else {
        conversation.appendMessage(msgRole, inp, inp_role_str);
@@ -7465,7 +7541,7 @@ index 616cff4..d1659b9 100644
        }
      }
      const [inputData, promptLen, getEmbedSize] = await this.getInputData();
-@@ -944,8 +4295,9 @@ export class LLMChatPipeline {
+@@ -944,8 +4364,9 @@ export class LLMChatPipeline {
      }
      this.stopTriggered = true;
      this.finishReason = "abort";
@@ -7476,7 +7552,7 @@ index 616cff4..d1659b9 100644
      }
    }
  
-@@ -999,9 +4351,11 @@ export class LLMChatPipeline {
+@@ -999,9 +4420,11 @@ export class LLMChatPipeline {
      if (stopTokens.includes(nextToken)) {
        this.stopTriggered = true;
        this.finishReason = "stop";
@@ -7488,7 +7564,7 @@ index 616cff4..d1659b9 100644
        // Update token appearance frequency
        const curFreq = this.appearedTokensFreq.get(nextToken);
        if (curFreq !== undefined) {
-@@ -1013,6 +4367,7 @@ export class LLMChatPipeline {
+@@ -1013,6 +4436,7 @@ export class LLMChatPipeline {
  
      // Stop condition 2: stop string; update `this.outputMessage` subsequently
      let outputMessage = this.tokenizer.decode(new Int32Array(this.outputIds));
@@ -7496,7 +7572,7 @@ index 616cff4..d1659b9 100644
      let stopPos = -1;
      for (const stopStr of stopStrs) {
        // Stop at the first stopStr we find
-@@ -1021,32 +4376,36 @@ export class LLMChatPipeline {
+@@ -1021,32 +4445,36 @@ export class LLMChatPipeline {
          outputMessage = outputMessage.substring(0, stopPos);
          this.stopTriggered = true;
          this.finishReason = "stop";
@@ -7535,7 +7611,7 @@ index 616cff4..d1659b9 100644
        }
      }
    }
-@@ -1227,7 +4586,87 @@ export class LLMChatPipeline {
+@@ -1227,7 +4655,87 @@ export class LLMChatPipeline {
    private async embedAndForward(
      inputData: Array<Array<number> | ImageURL>,
      inputDataLen: number,
@@ -7623,7 +7699,7 @@ index 616cff4..d1659b9 100644
      if (inputDataLen > this.prefillChunkSize) {
        throw new Error(
          "InternalError: expect inputDataLen <= this.prefillChunkSize.",
-@@ -1238,51 +4677,140 @@ export class LLMChatPipeline {
+@@ -1238,51 +4746,140 @@ export class LLMChatPipeline {
  
      // 1. Embed all inputData
      this.tvm.beginScope();
@@ -7805,7 +7881,7 @@ index 616cff4..d1659b9 100644
      this.tvm.attachToCurrentScope(logits);
      return logits;
    }
-@@ -1292,7 +4820,14 @@ export class LLMChatPipeline {
+@@ -1292,7 +4889,14 @@ export class LLMChatPipeline {
      names: string[],
    ): VMFunctionRegistry {
      const registry: VMFunctionRegistry = {};
@@ -7821,7 +7897,7 @@ index 616cff4..d1659b9 100644
        try {
          const func = vm.getFunction(name) as unknown;
          if (typeof func === "function") {
-@@ -1365,6 +4900,7 @@ export class LLMChatPipeline {
+@@ -1365,6 +4969,7 @@ export class LLMChatPipeline {
    private static resolveModelABI(
      kvStateKind: KVStateKind,
      availability: VMFunctionAvailability,
@@ -7829,7 +7905,7 @@ index 616cff4..d1659b9 100644
    ): ResolvedModelABI {
      const hasSingleKernelPair = availability.prefill && availability.decode;
      const hasBatchKernelPair =
-@@ -1450,6 +4986,17 @@ export class LLMChatPipeline {
+@@ -1450,6 +5055,17 @@ export class LLMChatPipeline {
      }
  
      // kv_cache
@@ -7847,7 +7923,7 @@ index 616cff4..d1659b9 100644
      if (hasSingleKernelPair) {
        return {
          kvStateKind,
-@@ -1525,14 +5072,151 @@ export class LLMChatPipeline {
+@@ -1525,14 +5141,151 @@ export class LLMChatPipeline {
      return states;
    }
  
@@ -8000,7 +8076,7 @@ index 616cff4..d1659b9 100644
          this.params,
        );
      }
-@@ -1549,27 +5233,42 @@ export class LLMChatPipeline {
+@@ -1549,27 +5302,42 @@ export class LLMChatPipeline {
        this.resolvedModelABI.needsKVCache &&
        this.resolvedModelABI.needsRNNState
      ) {
@@ -8047,7 +8123,7 @@ index 616cff4..d1659b9 100644
          this.params,
        );
      }
-@@ -1577,20 +5276,68 @@ export class LLMChatPipeline {
+@@ -1577,20 +5345,68 @@ export class LLMChatPipeline {
        this.resolvedModelABI.needsKVCache &&
        this.resolvedModelABI.needsRNNState
      ) {
@@ -8118,7 +8194,7 @@ index 616cff4..d1659b9 100644
    // NOTE: caller must call device.sync()
    private updateLogitsOnCPU(logits: tvmjs.Tensor): tvmjs.Tensor {
      if (this.logitsOnCPU == undefined) {
-@@ -1610,7 +5357,7 @@ export class LLMChatPipeline {
+@@ -1610,7 +5426,7 @@ export class LLMChatPipeline {
      logitsOnGPU: tvmjs.Tensor,
      genConfig?: GenerationConfig,
    ) {
@@ -8127,7 +8203,7 @@ index 616cff4..d1659b9 100644
      // Also load other genConfig items like logit_bias. Consume all fields of `genConfig` here.
      function _hasValue(value: any): boolean {
        // if we use `if value` directly, `value` being 0 evaluates to false, violating semantics
-@@ -1618,6 +5365,7 @@ export class LLMChatPipeline {
+@@ -1618,6 +5434,7 @@ export class LLMChatPipeline {
      }
      let temperature: number = this.config.temperature;
      let top_p: number = this.config.top_p;
@@ -8135,7 +8211,7 @@ index 616cff4..d1659b9 100644
      let repetition_penalty: number = this.config.repetition_penalty;
      let frequency_penalty: number = this.config.frequency_penalty;
      let presence_penalty: number = this.config.presence_penalty;
-@@ -1633,6 +5381,9 @@ export class LLMChatPipeline {
+@@ -1633,6 +5450,9 @@ export class LLMChatPipeline {
        if (_hasValue(genConfig.top_p)) {
          top_p = genConfig.top_p!;
        }
@@ -8145,7 +8221,7 @@ index 616cff4..d1659b9 100644
        // TODO: setting top_p to 1.0 by default might run into issues since
        // top_p masking in relax uses < instead of <=
        // Set default top_p to 1.0 if not set
-@@ -1675,11 +5426,14 @@ export class LLMChatPipeline {
+@@ -1675,11 +5495,14 @@ export class LLMChatPipeline {
        }
      }
      // Check range validity
@@ -8163,7 +8239,7 @@ index 616cff4..d1659b9 100644
      }
      if (repetition_penalty <= 0) {
        throw new MinValueError("repetition_penalty", 0);
-@@ -1894,13 +5648,38 @@ export class LLMChatPipeline {
+@@ -1894,13 +5717,38 @@ export class LLMChatPipeline {
      // 4. Sample token from logits
      const sampleBegin = performance.now();
  
@@ -8206,7 +8282,7 @@ index 616cff4..d1659b9 100644
  
      this.tvm.beginScope();
      const temperaturesDevice = this.tvm
-@@ -1913,79 +5692,131 @@ export class LLMChatPipeline {
+@@ -1913,79 +5761,131 @@ export class LLMChatPipeline {
      );
      probs = probs.view([numProbs, this.fullVocabSize]);
  
@@ -8388,7 +8464,7 @@ index 616cff4..d1659b9 100644
    }
  
    /**
-@@ -2028,20 +5859,37 @@ export class LLMChatPipeline {
+@@ -2028,20 +5928,37 @@ export class LLMChatPipeline {
        if (this.filledKVCacheLength !== 0) {
          throw new TextCompletionExpectsKVEmptyError();
        }
@@ -8437,7 +8513,7 @@ index 616cff4..d1659b9 100644
      }
  
      // 1.5. Preload image dimensions to compute per-image embed sizes
-@@ -2082,7 +5930,7 @@ export class LLMChatPipeline {
+@@ -2082,7 +5999,7 @@ export class LLMChatPipeline {
  
      // 3. Encode all prompts. Iterate through each message in the prompt array, where each
      // prompt can either be a string, or an array of a mixture of string and ImageURLs.
@@ -8446,7 +8522,7 @@ index 616cff4..d1659b9 100644
      for (let i = 0; i < prompts.length; i++) {
        const curPrompt = prompts[i];
        if (typeof curPrompt === "string") {
-@@ -2116,6 +5964,26 @@ export class LLMChatPipeline {
+@@ -2116,6 +6033,26 @@ export class LLMChatPipeline {
          }
        }
      }
@@ -8473,7 +8549,7 @@ index 616cff4..d1659b9 100644
      // Deal with last curTokens
      if (curTokens.length !== 0) {
        ret.push([...curTokens]);
-@@ -2186,50 +6054,51 @@ export class LLMChatPipeline {
+@@ -2186,50 +6123,51 @@ export class LLMChatPipeline {
    }
  
    /**
@@ -8541,7 +8617,7 @@ index 616cff4..d1659b9 100644
      } as ChatCompletionTokenLogprob;
    }
  
-@@ -2284,3 +6153,10 @@ export class LLMChatPipeline {
+@@ -2284,3 +6222,10 @@ export class LLMChatPipeline {
      log.info(msg);
    }
  }

@@ -306,11 +306,19 @@ export function validateBlockSitesCapabilities(value: BlockSitesCapabilities): B
  *  its single measurement-bundle sync (B1 §2.2). The worker divides each tap by its schema
  *  entry's reading scale; gates read the prior step's scaled value through `priorScores`. */
 export interface BlockSitesForwardReadback {
-  /** `[L, maxProbes]` probe slots, as v3's `measurements`. */
+  /** `[L, maxProbes]` probe slots, as the measurement bundle's `scalar` (a kind-3 slot holds
+   *  its J-lens probability; NaN where the backend cannot read one). */
   readonly measurements: F32Tensor;
   /** `[maxUnitTaps]` raw tap values at the forward's last row in slot order (`act[last, n]`;
    *  `sqrt(max(0, z_hᵀ G_h z_h))·r_ao`), null when the program has no unit section. */
   readonly unitTaps: F32Tensor | null;
+  /** `[L, maxGeometryProbes, geometryOutputStride]` geometry readout of the forward's last row
+   *  (feet threaded through the replay as generation threads them), null when the program has
+   *  no geometry probes. */
+  readonly geometry: F32Tensor | null;
+  /** `[L, d]` capture of the forward's last row when the program sets `hiddenCapture` (its
+   *  `slens/` reads), else null. */
+  readonly hidden: F32Tensor | null;
 }
 
 // ---------------------------------------------------------------------- replay ---

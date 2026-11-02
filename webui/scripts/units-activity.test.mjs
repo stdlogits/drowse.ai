@@ -174,6 +174,91 @@ try {
     assert.notDeepEqual(spanned.slice(2, 4), plain.slice(2, 4));
     console.log("units activity: position-targeted steering replays with its spans");
   }
+
+  // Probe-gated steering replays one decode position per forward, its gates scored from the
+  // previous forward's readback (native's gate run): a name-scored gate reads the scorer's
+  // value, a slot gate the readback's probe slots. A gate the replay cannot score (no scorer,
+  // a key it does not produce, a slot the backend could not read) refuses with native's 422
+  // instead of staying shut.
+  {
+    const v4 = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4;
+    const gated = (gate) => {
+      const base = hooks.compileStructuredHookProgram(64, [{}, {}, {}, {}], v4);
+      return hooks.withStructuredUnitSection(base, { dFF: 96, nHeads: 4, headDim: 16 }, {
+        ablations: [hooks.structuredUnitAblationTerm("neuron", 1, 5, 1, 0, 0)],
+        taps: [],
+        controls: [{ enabled: true, phase: { kind: "both" }, gate }],
+      });
+    };
+    const named = gated({ slots: [], scoreKey: "slens/e", operator: ">", threshold: 0.5 });
+    const slotted = gated({ slots: [{ layer: 2, probe: 0 }], operator: ">", threshold: 0.5 });
+    const forward = { ids: Int32Array.of(1, 2, 3, 4, 5, 6), promptLength: 3 };
+    const stub = (slotValue) => {
+      const fed = [];
+      let cancelled = false;
+      let step = 0;
+      const backend = {
+        async openReplay() {
+          return {
+            async forward(segment) {
+              fed.push({ tokens: [...segment.tokenIds], unitActive: segment.controls.unitActive?.[0] ?? null });
+              step += 1;
+              const measurements = new Float32Array(4 * v4.maxProbes);
+              measurements[2 * v4.maxProbes] = slotValue(step);
+              return {
+                measurements: { dtype: "f32", shape: [4, v4.maxProbes], data: measurements },
+                unitTaps: null,
+                geometry: null,
+                hidden: { dtype: "f32", shape: [4, 64], data: Float32Array.from({ length: 256 }, () => step) },
+              };
+            },
+            async finish() { return { anatomyTaps: null, activity: null, patterns: null }; },
+            async cancel() { cancelled = true; },
+          };
+        },
+      };
+      return { backend, fed, cancelled: () => cancelled };
+    };
+    const request = (program) => ({ program, anatomyPosition: null, activity: null, patternLayers: null });
+    // Name-scored: the prefill's score (1) opens position 3, position 3's (0) shuts position 4,
+    // position 4's (1) opens position 5. The scorer sees each forward's [L, d] capture.
+    {
+      const { backend, fed } = stub(() => 0);
+      const seen = [];
+      await replayModule.driveReplay(backend, request(named), forward, {
+        gateScores: async (_program, readback) => {
+          seen.push(readback.hidden.data[0]);
+          return { "slens/e": readback.hidden.data[0] % 2 };
+        },
+      });
+      assert.deepEqual(fed.map((entry) => entry.tokens), [[1, 2, 3], [4], [5], [6]]);
+      assert.deepEqual(fed.map((entry) => entry.unitActive), [0, 1, 0, 1]);
+      assert.deepEqual(seen, [1, 2, 3]);
+    }
+    // Slot-scored: the readback's probe slot feeds the gate.
+    {
+      const { backend, fed } = stub((step) => (step === 2 ? 0 : 1));
+      await replayModule.driveReplay(backend, request(slotted), forward, { gateScores: async () => ({}) });
+      assert.deepEqual(fed.map((entry) => entry.unitActive), [0, 1, 0, 1]);
+    }
+    const refusal = (name) => (error) =>
+      error.status === 422 && error.code === "SteeringCompositionError" && error.message.includes(`(@when:…) on ${name},`);
+    for (const [label, program, options, slot] of [
+      ["no scorer", named, {}, () => 0],
+      ["a key the scorer does not produce", named, { gateScores: async () => ({ other: 1 }) }, () => 0],
+      ["a slot the backend could not read", slotted, { gateScores: async () => ({}) }, () => Number.NaN],
+    ]) {
+      const { backend, fed, cancelled } = stub(slot);
+      await assert.rejects(
+        replayModule.driveReplay(backend, request(program), forward, options),
+        refusal(program === named ? "slens/e" : "probe slot 0"),
+        label,
+      );
+      assert.equal(fed.length, 1, `${label}: refused after the prefill`);
+      assert.ok(cancelled(), `${label}: the replay is cancelled`);
+    }
+    console.log("units activity: gated replays score every gate from the previous forward or refuse");
+  }
 } finally {
   await server.close();
 }
