@@ -331,7 +331,7 @@ test("a model without unit sites refuses every unit read with the lock's refusal
 });
 
 test("the refusal reads as the model's refusal, not another tab's lock", async ({ page }) => {
-  // drowse bug, fixed in stdlogits/drowse webui/unit-refusal-wording (lanes/N3.md): userFacingError
+  // drowse bug, fixed in stdlogits/drowse#73 (lanes/N3.md): userFacingError
   // upper-cases the code to UNSUPPORTEDBLOCKERROR, whose BLOCK matched its tab-lock pattern. Expected
   // to fail until the pin takes the fix; then this line goes.
   test.fail(true, "the pinned drowse reads a 422 UnsupportedBlockError as a tab lock");

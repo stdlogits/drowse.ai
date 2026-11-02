@@ -218,7 +218,7 @@ test("Weave keeps branch controls reachable on narrow phones and in landscape", 
 });
 
 test("Weave scrolls only vertically on a phone", async ({ page }) => {
-  // drowse bug, fixed in stdlogits/drowse webui/unit-refusal-wording (lanes/N3.md): in one column
+  // drowse bug, fixed in stdlogits/drowse#73 (lanes/N3.md): in one column
   // the .weave is the scroller and its sections keep their desktop focus gutter (margin 0 -4px), so
   // its content is 4 px wider than it (overflow-x hidden, but scrollIntoView still shifts it).
   // Expected to fail until the pin takes the fix; then this line goes.
