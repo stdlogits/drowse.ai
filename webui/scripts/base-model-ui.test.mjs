@@ -188,10 +188,19 @@ try {
   measured[0].probes = { "fixture/trait": -0.5, "sae/7": 0.2 };
   measured[1].probes = { "fixture/trait": 0.5, "sae/7": 0.8 };
   highlightState.target = "fixture/trait";
-  const probeColors = render(RawBuffer).body;
-  assert.match(probeColors, /class="color-mirror /, "probe readings colour the mirror");
-  highlightState.target = "sae/7";
-  assert.match(render(RawBuffer).body, /class="color-mirror /, "SAE readings colour the mirror");
+  // A reading paints its value: each token's mirror span carries the shared ramp's style for its
+  // own score, and different scores take different tints.
+  for (const [target, what] of [["fixture/trait", "probe"], ["sae/7", "SAE"]]) {
+    highlightState.target = target;
+    const body = render(RawBuffer).body;
+    assert.match(body, /class="color-mirror /, `${what} readings colour the mirror`);
+    for (const token of measured) {
+      const style = highlightStyleString(token);
+      assert.match(style, /\S/, `${what} readings have a tint`);
+      assert.ok(body.includes(style), `${what} readings colour their tokens with the shared ramp`);
+    }
+    assert.notEqual(highlightStyleString(measured[0]), highlightStyleString(measured[1]), `different ${what} readings have different tints`);
+  }
   highlightState.target = SURPRISE_TARGET;
   highlightState.compareTwo = true;
   highlightState.compareTarget = ENTROPY_TARGET;
