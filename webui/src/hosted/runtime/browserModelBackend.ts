@@ -84,11 +84,11 @@ export async function prepareBrowserInstrumentDictionaries(
     reportLoadProgress(
       request,
       "jlens_dictionary_uploading",
-      "Loading J-lens insights onto the GPU",
+      "Loading the R lens onto the GPU",
     );
     await runtime.warmJlensDictionary();
     request.signal.throwIfAborted();
-    reportLoadProgress(request, "jlens_dictionary_ready", "J-lens insights ready");
+    reportLoadProgress(request, "jlens_dictionary_ready", "R lens ready");
   }
 }
 

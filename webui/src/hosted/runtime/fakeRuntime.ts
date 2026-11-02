@@ -401,7 +401,7 @@ export class DeterministicFakeRuntime implements RuntimeClient {
       if (body.enabled && !block.source) {
         throw fakeError(
           "INSTRUMENT_SOURCE_REQUIRED",
-          "Install a J-lens pack before enabling live readout",
+          "Install an R-lens pack before enabling live readout",
         );
       }
       block.live = {
@@ -430,7 +430,7 @@ export class DeterministicFakeRuntime implements RuntimeClient {
     if (!selected) {
       throw fakeError(
         "INSTRUMENT_SOURCE_NOT_FOUND",
-        `J-lens source ${source} is not installed`,
+        `R-lens source ${source} is not installed`,
       );
     }
     for (const candidate of this.sourcesByFamily.lens) candidate.active = candidate === selected;
@@ -464,13 +464,13 @@ export class DeterministicFakeRuntime implements RuntimeClient {
     if (selected === null) {
       throw fakeError(
         "INSTRUMENT_PACK_NOT_LOADED",
-        `No compatible ${family === "lens" ? "J-lens" : "SAE"} pack is loaded. Download it in Model settings, then close and reopen the model`,
+        `No compatible ${family === "lens" ? "R-lens" : "SAE"} pack is loaded. Download it in Model settings, then close and reopen the model`,
       );
     }
     if (body.source !== selected.source) {
       throw fakeError(
         "INSTRUMENT_PACK_SOURCE_MISMATCH",
-        `The loaded ${family === "lens" ? "J-lens" : "SAE"} pack is ${selected.source}; close the model before changing model tools`,
+        `The loaded ${family === "lens" ? "R-lens" : "SAE"} pack is ${selected.source}; close the model before changing model tools`,
       );
     }
     if (
@@ -501,7 +501,7 @@ export class DeterministicFakeRuntime implements RuntimeClient {
     if (family === "lens" && body.operation === "fit") {
       throw fakeError(
         "HOSTED_JLENS_FITTING_EXCLUDED",
-        "J-lens fitting is available in the Python runtime; install a compatible browser pack instead",
+        "Lens fitting is available in the Python runtime; install a compatible browser pack instead",
       );
     }
     if (family === "sae" && body.operation === "train") {
@@ -708,14 +708,14 @@ export class DeterministicFakeRuntime implements RuntimeClient {
     if (!this.instrumentBlock("lens").source) {
       throw fakeError(
         "INSTRUMENT_SOURCE_REQUIRED",
-        "Install a J-lens pack before selecting a token",
+        "Install an R-lens pack before selecting a token",
       );
     }
     const trimmed = word.trim().replace(/^jlens\//, "");
     if (!trimmed || /\s/.test(trimmed)) {
       throw fakeError(
         "INVALID_LENS_TOKEN",
-        "J-lens tokens must be one non-empty tokenizer token",
+        "R-lens tokens must be one non-empty tokenizer token",
       );
     }
     return { word: trimmed, token_id: stableId(trimmed) };

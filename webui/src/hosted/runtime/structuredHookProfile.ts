@@ -376,7 +376,7 @@ export function structuredHookMemoryRequirements(
   }
   if (options.includeJlens === true) {
     hostElements.push(
-      checkedStructuredHookProduct("J-lens Jacobian elements", l, h, h),
+      checkedStructuredHookProduct("R-lens matrix elements", l, h, h),
       p,
     );
   }
@@ -411,7 +411,7 @@ export function structuredHookMemoryRequirements(
   }
   if (options.includeJlens === true) {
     gpuInputElements.push(
-      checkedStructuredHookProduct("GPU J-lens Jacobian elements", h, h),
+      checkedStructuredHookProduct("GPU R-lens matrix elements", h, h),
       p,
       1,
     );
@@ -429,9 +429,9 @@ export function structuredHookMemoryRequirements(
       : []),
     ...(options.includeJlens === true
       ? [
-          checkedStructuredHookProduct("GPU J-lens hidden elements", l, h),
+          checkedStructuredHookProduct("GPU R-lens hidden elements", l, h),
           p,
-          checkedStructuredHookProduct("GPU J-lens direction elements", p, h),
+          checkedStructuredHookProduct("GPU R-lens direction elements", p, h),
         ]
       : []),
   ];

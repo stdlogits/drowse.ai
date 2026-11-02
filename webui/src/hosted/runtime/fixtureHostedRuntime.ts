@@ -199,7 +199,7 @@ class FixtureHostedController implements HostedController {
     const result = structuredClone(catalog);
     result.document.models[0].variants[0].packs.push({
       ...fixtureModel.variants[0].packs[0], id: "fixture-jlens", kind: "jlens",
-      displayName: "Fixture J-lens", bytes: 1000, required: false,
+      displayName: "Fixture R-lens", bytes: 1000, required: false,
     });
     result.exactBytes = new TextEncoder().encode(JSON.stringify(result.document));
     return result;
@@ -368,7 +368,7 @@ export function createFixtureHostedRuntime(withInstruments = false, baseModel = 
     modelId: baseModel ? "fixture/pythia-70m-base" : VARIANT_ID,
     ...(baseModel ? { sessionOverrides: { is_base_model: true, supports_thinking: false, scene_mode: false, role_substitution_supported: false, user_role_supported: false, default_user_role: null, default_assistant_role: null } } : {}),
     instrumentPacks: withInstruments ? [
-      { id: "fixture-jlens", kind: "jlens", displayName: "Fixture J-lens" },
+      { id: "fixture-jlens", kind: "jlens", displayName: "Fixture R-lens" },
       { id: "fixture-sae", kind: "sae", displayName: "Fixture SAE" },
     ] : [],
   });

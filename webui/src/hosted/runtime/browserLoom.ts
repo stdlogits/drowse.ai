@@ -1244,7 +1244,7 @@ export class BrowserLoomRuntime {
       );
       const total = forcedPrefix.length;
       const readoutLabel = request.family === "lens"
-        ? "J-lens"
+        ? "R-lens"
         : request.family === "sae"
           ? "model features"
           : "geometry";

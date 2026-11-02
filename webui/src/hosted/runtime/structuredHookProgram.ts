@@ -320,16 +320,16 @@ export function jLensTokenDirection(
 ): Float32Array {
   const hiddenSize = unembeddingRow.length;
   if (hiddenSize === 0 || jacobian.length !== hiddenSize * hiddenSize) {
-    throw new TypeError("J-lens direction requires one square Jacobian");
+    throw new TypeError("R-lens direction requires one square Jacobian");
   }
   const output = new Float32Array(hiddenSize);
   for (let column = 0; column < hiddenSize; column += 1) {
     let value = 0;
     for (let row = 0; row < hiddenSize; row += 1) {
-      value += finiteFloat(unembeddingRow[row], "J-lens unembedding") *
-        finiteFloat(jacobian[row * hiddenSize + column], "J-lens Jacobian");
+      value += finiteFloat(unembeddingRow[row], "R-lens unembedding") *
+        finiteFloat(jacobian[row * hiddenSize + column], "R-lens Jacobian");
     }
-    output[column] = finiteFloat(value, "J-lens direction");
+    output[column] = finiteFloat(value, "R-lens direction");
   }
   return output;
 }
@@ -779,7 +779,7 @@ export function validateStructuredHookProgram(program: StructuredHookProgramBuff
       !program.jLensLayerIndices!.includes(layer) ||
       index > 0 && layer <= program.jLensReadoutLayerIndices![index - 1]
     )
-  )) throw new TypeError("J-lens readout layers must be an ordered subset of probability layers");
+  )) throw new TypeError("R-lens readout layers must be an ordered subset of probability layers");
   const hasJlensProbe = program.probeKind.some((value) => value === 3);
   const hasJlensProgram = program.jLensBindingId !== undefined;
   if (
@@ -787,7 +787,7 @@ export function validateStructuredHookProgram(program: StructuredHookProgramBuff
     hasJlensProgram !== (program.jLensTokenIds !== undefined) ||
     hasJlensProbe && !hasJlensProgram
   ) {
-    throw new TypeError("J-lens probes and readouts require one complete probability program");
+    throw new TypeError("R-lens probes and readouts require one complete probability program");
   }
   if (hasJlensProgram) {
     if (
@@ -795,7 +795,7 @@ export function validateStructuredHookProgram(program: StructuredHookProgramBuff
       !(program.jLensLayerIndices instanceof Int32Array) ||
       !(program.jLensTokenIds instanceof Int32Array)
     ) {
-      throw new TypeError("J-lens probability buffers have the wrong types");
+      throw new TypeError("R-lens probability buffers have the wrong types");
     }
     const layerIndices = program.jLensLayerIndices!;
     if (
@@ -803,7 +803,7 @@ export function validateStructuredHookProgram(program: StructuredHookProgramBuff
         layer < 0 || layer >= l || (index > 0 && layer <= layerIndices[index - 1])
       )
     ) {
-      throw new TypeError("J-lens layer indices must be unique, ordered, and in range");
+      throw new TypeError("R-lens layer indices must be unique, ordered, and in range");
     }
     if (hasJlensProbe) {
       const activeLayers: number[] = [];
@@ -817,14 +817,14 @@ export function validateStructuredHookProgram(program: StructuredHookProgramBuff
         layerIndices.length !== activeLayers.length ||
         layerIndices.some((layer, index) => layer !== activeLayers[index])
       ) {
-        throw new TypeError("J-lens layer indices do not match the active probability probes");
+        throw new TypeError("R-lens layer indices do not match the active probability probes");
       }
     }
     if (program.jLensTokenIds!.length !== p) {
-      throw new TypeError("J-lens token IDs have the wrong length");
+      throw new TypeError("R-lens token IDs have the wrong length");
     }
     if (program.jLensTokenIds!.some((tokenId) => tokenId < 0)) {
-      throw new TypeError("J-lens token IDs are invalid");
+      throw new TypeError("R-lens token IDs are invalid");
     }
   }
   if (
@@ -914,7 +914,7 @@ export function validateStructuredHookProgram(program: StructuredHookProgramBuff
       throw new TypeError("Structured measurement schema has the wrong shape");
     }
     if (schema.lensReadout === true && !hasJlensProgram) {
-      throw new TypeError("J-lens live readout requires the full-vocabulary probability program");
+      throw new TypeError("R-lens live readout requires the full-vocabulary probability program");
     }
     if (schema.saeFeatureMetadata !== undefined) {
       for (const [featureId, metadata] of Object.entries(schema.saeFeatureMetadata)) {

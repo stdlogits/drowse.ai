@@ -3036,7 +3036,7 @@ function operationUnavailableFallback(
     case "jlens_fitting":
       return {
         code: "HOSTED_JLENS_FITTING_EXCLUDED",
-        message: "J-lens fitting is available only in the Python runtime",
+        message: "Lens fitting is available only in the Python runtime",
       };
     case "sae_training":
       return {

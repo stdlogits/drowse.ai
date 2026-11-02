@@ -474,7 +474,7 @@ export class DrowseWebLlmRuntime {
       ) {
         throw runtimeError(
           "STRUCTURED_HOOKS_UNAVAILABLE",
-          "The installed browser model cannot run the selected precomputed SAE or J-lens pack",
+          "The installed browser model cannot run the selected precomputed SAE or R-lens pack",
         );
       }
       this.saeHooks = this.structuredHooks &&
@@ -493,7 +493,7 @@ export class DrowseWebLlmRuntime {
       ) {
         throw runtimeError(
           "EXACT_JLENS_READOUT_UNAVAILABLE",
-          "The installed browser runtime does not expose exact full-vocabulary J-lens readout",
+          "The installed browser runtime does not expose exact full-vocabulary R-lens readout",
         );
       }
       if (
@@ -851,7 +851,7 @@ export class DrowseWebLlmRuntime {
     if (typeof engine.setDrowseJlensDictionary !== "function") {
       throw runtimeError(
         "EXACT_JLENS_READOUT_UNAVAILABLE",
-        "The loaded browser runtime cannot install a precomputed J-lens dictionary",
+        "The loaded browser runtime cannot install a precomputed R-lens dictionary",
       );
     }
     const resident: DrowseJlensDictionary = {
@@ -899,7 +899,7 @@ export class DrowseWebLlmRuntime {
     if (this.jlensDictionary?.bindingId !== bindingId) {
       throw runtimeError(
         "JLENS_DICTIONARY_BINDING_MISMATCH",
-        "The structured program does not match the configured J-lens dictionary",
+        "The structured program does not match the configured R-lens dictionary",
       );
     }
     if (this.jlensDictionaryInstalled) return;
@@ -1223,7 +1223,7 @@ function validateJlensTopTokenReadout(value: DrowseJlensTopTokenReadout): void {
   ) {
     throw runtimeError(
       "INVALID_JLENS_TOP_READOUT",
-      "The browser model returned an invalid full-vocabulary J-lens readout",
+      "The browser model returned an invalid full-vocabulary R-lens readout",
     );
   }
 }
@@ -1448,7 +1448,7 @@ function assertExactReadoutProfile(
   ) {
     throw runtimeError(
       "EXACT_READOUT_ABI_MISMATCH",
-      "The compiled model does not attest the exact GPU readout ABI required by precomputed J-lens and SAE packs",
+      "The compiled model does not attest the exact GPU readout ABI required by precomputed R-lens and SAE packs",
     );
   }
 }
@@ -1536,7 +1536,7 @@ function assertJlensMatrixBufferSupported(
   if (!Number.isSafeInteger(bytes)) {
     throw runtimeError(
       "JLENS_GPU_BUFFER_TOO_LARGE",
-      "The selected model's J-lens matrix exceeds safe browser buffer arithmetic",
+      "The selected model's R-lens matrix exceeds safe browser buffer arithmetic",
     );
   }
   const limits = adapter.limits as Record<string, unknown>;
@@ -1549,7 +1549,7 @@ function assertJlensMatrixBufferSupported(
     ) {
       throw runtimeError(
         "JLENS_GPU_BUFFER_TOO_LARGE",
-        `The selected model needs a ${bytes}-byte J-lens matrix buffer, but WebGPU ${name} is insufficient`,
+        `The selected model needs a ${bytes}-byte R-lens matrix buffer, but WebGPU ${name} is insufficient`,
       );
     }
   }
@@ -1591,7 +1591,7 @@ function assertMatchingJlensDictionary(
   ) {
     throw runtimeError(
       "JLENS_DICTIONARY_BINDING_COLLISION",
-      "The same J-lens binding identity was configured with a different tensor shape",
+      "The same R-lens binding identity was configured with a different tensor shape",
     );
   }
 }

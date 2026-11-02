@@ -12,7 +12,7 @@ interface FilterClause {
 
 const AGGREGATE_OPERATORS = new Set<AggregateOperator>(["agg", "any", "last"]);
 // A persisted reading key's probe name (drowse/loom/filter.py): `[ns/]name[.pole]`
-// for geometry and J-lens probes, `jlens/#<id>` / `slens/#<id>` for lens probes
+// for geometry and R-lens probes, `jlens/#<id>` / `slens/#<id>` for lens probes
 // by vocab id, `sae/<feature id>` for SAE features.
 const PROBE_NAME = /^(?:(?:[A-Za-z][A-Za-z0-9_-]*\/)?[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z][A-Za-z0-9_-]*)?|(?:jlens|slens)\/#[0-9]+|sae\/[0-9]+)$/u;
 
