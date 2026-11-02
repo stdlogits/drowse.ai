@@ -4,12 +4,12 @@ import { f32Tensor, u32Tensor, type BlockSitesLensLayer, type BrowserBlockSitesB
 import type { DenseModelWeights } from "./denseModel";
 import type { LensBand, LensFamilyName, UnitsEmbeddings, UnitsLens, UnitsReadContext } from "./lensReads";
 
-/** Native's absent texts for a missing lens family (`LensInstrument`'s wording). */
+/** The absent text for a lens family with no lens installed. Native's names CLI commands
+ *  (`drowse lens fetch …`); the browser names the pack to install, in its own copy rules. */
 export function noLensText(family: LensFamilyName, modelId: string): string {
-  if (family === "S") {
-    return `no S-lens available for ${modelId} — run \`drowse lens fetch ${modelId} rs-s\` where rs-lenses publishes one, or select a local S lens with \`drowse lens use\``;
-  }
-  return `no R-family lens is selected for ${modelId} (\`drowse lens fetch ${modelId}\` or \`drowse lens fit\`)`;
+  return family === "S"
+    ? `no S-lens is installed for ${modelId} (install the model's S lens pack)`
+    : `no R-family lens is selected for ${modelId} (install the model's R lens pack)`;
 }
 
 export function hostLens(

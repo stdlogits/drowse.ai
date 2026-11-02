@@ -32,7 +32,12 @@ try {
         site: request.site,
         of: request.of,
       }], request.k);
-      const problems = compareRecord(actual, request.reads, {
+      // The browser's missing-lens text names the pack to install, not native's CLI command.
+      const expected = request.lens === "none prepared"
+        ? request.reads.map((read) => ({ ...read, s: { ...read.s, absent: context.noLens.S } }))
+        : request.reads;
+      if (request.lens === "none prepared") assert.match(request.reads[0].s.absent, /^no S-lens available for <model>/);
+      const problems = compareRecord(actual, expected, {
         root: `requests[${i}].reads`,
         ties: golden.declared_ties,
         numberTol: (path, expected) => path.endsWith(".value") && /\.s\.tokens/.test(path)
