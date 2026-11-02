@@ -676,7 +676,11 @@ export class BrowserLoomRuntime {
             node.tokens ??= [];
           }
           (token.thinking ? node.thinking_tokens! : node.tokens!).push(row);
-          if (token.measurements) lastEnvelope = token.measurements;
+          // A stopped reply pools the last token's aggregate view (its readings of families whose
+          // live readout is off ride no token envelope).
+          if (token.aggregateMeasurements ?? token.measurements) {
+            lastEnvelope = token.aggregateMeasurements ?? token.measurements;
+          }
           await emit({
             type: "token",
             text: token.text,

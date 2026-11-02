@@ -116,6 +116,9 @@ export interface WebLlmGeneratedToken {
   /** The live unit tap of this token's forward (`[maxUnitTaps]` raw values in slot order, B1
    *  §2.2), when the program has a unit section. */
   hookUnitTaps?: Float32Array;
+  /** What this token offers a reply's aggregate: `measurements` plus the readings of families
+   *  whose live readout is off (they ride the aggregate only). A stopped reply pools from it. */
+  aggregateMeasurements?: MeasurementsEnvelopeJSON;
 }
 
 export interface WebLlmGenerationUsage {
@@ -626,6 +629,7 @@ export async function streamWebLlmGeneration(
                 piece.hookMeasurements,
                 piece.replayScore,
                 piece.hookUnitTaps,
+                piece.aggregateSource?.envelope,
               );
               (token.thinking ? thinkingText : text).push(token.text);
               if (token.text !== "") {
@@ -691,6 +695,7 @@ export async function streamWebLlmGeneration(
         piece.hookMeasurements,
         piece.replayScore,
         piece.hookUnitTaps,
+        piece.aggregateSource?.envelope,
       );
       (token.thinking ? thinkingText : text).push(token.text);
       if (token.text !== "") {
@@ -1245,6 +1250,7 @@ function emittedToken(
   hookMeasurements: Float32Array | undefined,
   replayScore: WebLlmReplayScore | undefined,
   hookUnitTaps?: Float32Array,
+  aggregateMeasurements?: MeasurementsEnvelopeJSON,
 ): WebLlmGeneratedToken {
   return {
     text,
@@ -1266,6 +1272,7 @@ function emittedToken(
     ...(hookUnitTaps === undefined
       ? {}
       : { hookUnitTaps: new Float32Array(hookUnitTaps) }),
+    ...(aggregateMeasurements === undefined ? {} : { aggregateMeasurements }),
   };
 }
 

@@ -1640,6 +1640,9 @@ try {
   // no envelope at all, and the reply's aggregate still reads both probes.
   assert.equal(scopedTokens[0].measurements, undefined);
   assert.equal(scopedTokens[1].measurements, undefined);
+  // Each token still offers its readings to the reply's aggregate (a stopped reply pools them).
+  assert.equal(scopedTokens[0].aggregateMeasurements.instruments.lens.readings["jlens/calm"].value, 0.5);
+  assert.equal(scopedTokens[0].aggregateMeasurements.instruments.sae.readings["sae/3"].value, 0.25);
   assert.equal(scopedResult.measurements.scope, "aggregate");
   assert.equal(scopedResult.measurements.instruments.sae.readings["sae/3"].value, 0.25);
   assert.equal(scopedResult.measurements.instruments.lens.readings["jlens/calm"].value, 0.5);
