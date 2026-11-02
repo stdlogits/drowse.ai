@@ -531,8 +531,9 @@ def test_rebind_carries_a_published_conversion_to_the_current_abi_byte_for_byte(
     source = tmp_path / "published"
     source.mkdir()
     files = []
-    for name, payload in (("mlc-chat-config.json", b"{}"), ("params_shard_0.bin", b"\x01\x02\x03"),
-                          ("tensor-cache.json", b"{\"records\": []}")):
+    # Published manifests are not always in path order (qwen3-1.7b's is not).
+    for name, payload in (("tensor-cache.json", b"{\"records\": []}"), ("mlc-chat-config.json", b"{}"),
+                          ("params_shard_0.bin", b"\x01\x02\x03")):
         (source / name).write_bytes(payload)
         files.append({"path": name, "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()})
     (source / "unlisted.txt").write_bytes(b"not part of the conversion")

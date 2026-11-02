@@ -266,7 +266,9 @@ def rebind(args) -> None:
                 "fromStructuredHookProfile": previous.get("structuredHookProfile"),
             },
         }
-        if artifact_files(stage) != files:
+        listed = sorted(files, key=lambda file: file["path"])
+        if artifact_files(stage) != [{key: file.get(key) for key in ("path", "bytes", "sha256")}
+                                     for file in listed]:
             raise SystemExit("rebound files differ from the build manifest")
         (stage / "drowse-build.json").write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
