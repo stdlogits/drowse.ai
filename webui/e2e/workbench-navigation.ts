@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { expect, type Page } from "@playwright/test";
 
 export async function openWorkspaceMenu(page: Page): Promise<void> {
@@ -25,24 +26,24 @@ export async function selectWorkspaceView(page: Page, name: string | RegExp): Pr
   if (collapsed) await page.getByRole("button", { name: "Hide left sidebar", exact: true }).click();
 }
 
+/** Sets an explicit light or dark theme through Ledger's ThemeButton, which steps auto, the
+ *  system's opposite, then its own look (theme-default.spec covers that order). Where no button
+ *  is on screen (a phone's workbench keeps it in the header menu) the dev server's theme module
+ *  sets it directly. */
 export async function setAppearance(page: Page, name: string): Promise<void> {
-  const sidebarWasOpen = await page.getByRole("button", { name: "Hide left sidebar", exact: true }).isVisible();
-  const appearance = page.getByRole("group", { name: "Appearance", exact: true });
-  await expect.poll(async () => await appearance.isVisible()
-    || await page.getByRole("button", { name: "Workspace menu", exact: true }).isVisible()
-    || await page.getByRole("button", { name: "Hide left sidebar", exact: true }).isVisible()).toBe(true);
-  const openMenu = !(await appearance.isVisible());
-  if (openMenu) {
-    await openWorkspaceMenu(page);
+  const choice = name.toLowerCase();
+  const html = page.locator("html");
+  const button = page.getByRole("button", { name: /^(Use the (light|dark) theme|Follow the system's theme)$/ }).first();
+  for (let step = 0; step < 3 && await html.getAttribute("data-theme") !== choice; step += 1) {
+    if (await button.isVisible()) await button.click();
+    else await page.evaluate(async ({ url, choice }) => (await import(url)).setTheme(choice),
+      { url: `/@fs${resolve("../drowse/webui/src/lib/theme.ts")}`, choice });
   }
-  if (await page.locator("html").getAttribute("data-theme") !== name.toLowerCase()) {
-    await appearance.getByRole("button", { name: `Switch to ${name.toLowerCase()} theme`, exact: true }).click();
-  }
-  if (openMenu) await page.keyboard.press("Escape");
-  if (sidebarWasOpen && await page.getByRole("button", { name: "Show left sidebar", exact: true }).isVisible()) {
-    await page.getByRole("button", { name: "Show left sidebar", exact: true }).click();
-  }
-  await expect(page.locator("html")).toHaveAttribute("data-theme", name.toLowerCase());
+  await expect(html).toHaveAttribute("data-theme", choice);
+  // Leave nothing transient behind: a focused button keeps its tip up.
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.mouse.move(0, 0);
+  await expect(page.locator("#tip.shown")).toHaveCount(0);
 }
 
 export async function returnToChats(page: Page): Promise<void> {

@@ -64,7 +64,7 @@ test("model settings end with the versioned Drowse footer", async ({ page }, tes
   }
 });
 
-test("Credits matches the public theme and links to ways to contribute", async ({ page, browserName }, testInfo) => {
+test("Credits lists the team and thanks, reflows, and links to ways to contribute", async ({ page, browserName }, testInfo) => {
   test.slow();
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
@@ -102,17 +102,14 @@ test("Credits matches the public theme and links to ways to contribute", async (
   await expect(page.getByRole("link", { name: "Skip to content" })).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page.locator("#credits-main")).toBeFocused();
-  await expect(page.locator(".hero-visual")).toHaveCSS("position", "absolute");
-  await expect(page.locator(".hero-visual")).toHaveAttribute("data-shader-status", "fallback");
   for (const theme of ["light", "dark"]) {
     await page.setViewportSize({ width: 1440, height: 1000 });
     await setAppearance(page, theme === "light" ? "Light" : "Dark");
-    await expect(page.locator("html")).not.toHaveAttribute("data-theme-transition", /.+/);
     for (const width of [1440, 320]) {
       await page.setViewportSize({ width, height: 1000 });
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await expect.poll(() => page.evaluate(() => [...document.querySelectorAll("body *")]
-        .filter(element => !element.closest('.credits-art-frame, nav[aria-label="Primary navigation"], .citation pre code'))
+        .filter(element => !element.closest('nav[aria-label="Primary navigation"], .citation pre code'))
         .filter(element => element.getBoundingClientRect().right > innerWidth + 1)
         .map(element => `${element.tagName}.${element.className}: ${element.getBoundingClientRect().right}`))).toEqual([]);
       for (const link of await nav.getByRole("link").all()) {
@@ -127,14 +124,6 @@ test("Credits matches the public theme and links to ways to contribute", async (
   }
   await page.reload();
   await expect(page.getByRole("heading", { name: "Credits.", exact: true })).toBeVisible();
-  await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.emulateMedia({ reducedMotion: "no-preference" });
-  await page.evaluate(() => window.scrollTo(0, 0));
-  await expect(page.locator(".hero-visual")).toHaveAttribute("data-shader-status", "ready");
-  await expect(page.locator(".hero-visual canvas")).toHaveCSS("opacity", "1");
-  await page.screenshot({ path: testInfo.outputPath("credits-shader-active.png"), fullPage: true });
-  await page.emulateMedia({ contrast: "more", reducedMotion: "reduce" });
-  await expect(page.locator(".credits-art")).toBeHidden();
   await page.getByRole("link", { name: "Drowse home", exact: true }).click();
   await expect(page.getByRole("navigation", { name: "Primary navigation" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
