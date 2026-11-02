@@ -229,6 +229,7 @@ try {
   })));
   // Each context's whitener is the one the neutral rows gave (the units pack binds the rows).
   const whitenerBytes = { 2048: new Uint8Array([1, 2, 3]), 4096: new Uint8Array([1, 2, 3]) };
+  const sidecarBytes = { 2048: new Uint8Array([4, 2048]), 4096: new Uint8Array([4, 4096 % 256]) };
   const coreVariant = {
     ...variant,
     contextProfiles: [2048, 4096].map((contextTokens) => ({ contextTokens, bindingSha256: "9".repeat(64) })),
@@ -240,16 +241,18 @@ try {
     whitener: {
       rows_sha256: "d".repeat(64),
       tensors_sha256: { 2048: sha(whitenerBytes[2048]), 4096: sha(whitenerBytes[4096]) },
+      sidecars_sha256: { 2048: sha(sidecarBytes[2048]), 4096: sha(sidecarBytes[4096]) },
     },
   };
   const coreFile = (path, bytes) => ({
     manifest: { path, role: "core_pack", bytes: bytes.byteLength, sha256: sha(bytes) },
     file: new File([bytes], path),
   });
-  const corePack = (record, whiteners = whitenerBytes) => [
+  const corePack = (record, whiteners = whitenerBytes, sidecars = sidecarBytes) => [
     coreFile("neutral-statistics.json", new TextEncoder().encode(JSON.stringify(record))),
     coreFile("neutral-statistics.safetensors", statisticsBytes),
     ...Object.entries(whiteners).map(([context, bytes]) => coreFile(`${context}/neutral-whitener.safetensors`, bytes)),
+    ...Object.entries(sidecars).map(([context, bytes]) => coreFile(`${context}/neutral-whitener.json`, bytes)),
   ];
   const statistics = await readNeutralStatistics(corePack(statisticsRecord), { variant: coreVariant, signal });
   assert.equal(statistics.nDocuments, 96);
@@ -263,6 +266,10 @@ try {
     })],
     ["a refitted whitener", corePack(statisticsRecord, { ...whitenerBytes, 4096: new Uint8Array([9]) })],
     ["a missing context", corePack(statisticsRecord, { 2048: whitenerBytes[2048] })],
+    ["another ridge", corePack(statisticsRecord, whitenerBytes, { ...sidecarBytes, 2048: new Uint8Array([5]) })],
+    ["no sidecar digests", corePack({
+      ...statisticsRecord, whitener: { ...statisticsRecord.whitener, sidecars_sha256: undefined },
+    })],
     ["no whitener binding", corePack({ ...statisticsRecord, whitener: undefined })],
   ]) {
     await assert.rejects(

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { selectHostedJlensLayers } from "./hosted-instrument-layers.mjs";
+import { nativeFitModel } from "./hosted-native-models.mjs";
 
 const repositoryRoot = resolve(import.meta.dirname, "../..");
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -25,6 +26,14 @@ export async function validateReleaseInstrumentPack({
   modelLock,
   nativeLensCorpus = NATIVE_LENS_CORPUS,
 }) {
+  // A model drowse fits natively ships its own R and S lenses and units; a provider R lens is
+  // only for the models it cannot fit (GPT-2, Pythia), and S and units only for those it can.
+  if (kind === "jlens" && providerInstrument(kind, instrumentManifest) && nativeFitModel(modelLock)) {
+    throw new Error(`${modelLock.id}'s release R lens is drowse's native fit, not a provider lens`);
+  }
+  if ((kind === "slens" || kind === "units") && !nativeFitModel(modelLock)) {
+    throw new Error(`${modelLock.id} has no native ${kind === "slens" ? "S lens" : "units"} (drowse cannot fit it)`);
+  }
   if (providerInstrument(kind, instrumentManifest)) {
     return validateProviderInstrument(
       kind,

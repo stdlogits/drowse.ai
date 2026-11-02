@@ -2121,18 +2121,22 @@ async function readCoreNeutralBinding(
   const neutral = isRecord(record.neutral) ? record.neutral : invalid("no neutral pass");
   const whitener = isRecord(record.whitener) ? record.whitener : invalid("no whitener binding");
   const tensors = isRecord(whitener.tensors_sha256) ? whitener.tensors_sha256 : invalid("no whitener digests");
+  const sidecars = isRecord(whitener.sidecars_sha256) ? whitener.sidecars_sha256 : invalid("no whitener sidecar digests");
   const contexts = (request.variant.contextProfiles ?? []).map((profile) => String(profile.contextTokens)).sort();
   if (
     typeof neutral.sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(neutral.sha256) ||
     typeof neutral.rows_sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(neutral.rows_sha256) ||
     whitener.rows_sha256 !== neutral.rows_sha256 || contexts.length === 0 ||
-    !sameStrings(Object.keys(tensors).sort(), contexts)
+    !sameStrings(Object.keys(tensors).sort(), contexts) || !sameStrings(Object.keys(sidecars).sort(), contexts)
   ) invalid("its neutral pass or whitener binding");
+  // Each context's whitener, tensors and sidecar (its ridge), is the one fitted from the rows.
   for (const context of contexts) {
-    const path = siblingPath(records[0].manifest.path, `${context}/neutral-whitener.safetensors`);
-    const matches = artifacts.filter((artifact) => artifact.manifest.path === path);
-    if (matches.length !== 1 || matches[0].manifest.sha256 !== tensors[context]) {
-      invalid(`the ${context}-token whitener is not the one fitted from the neutral rows`);
+    for (const [file, digest] of [["neutral-whitener.safetensors", tensors[context]], ["neutral-whitener.json", sidecars[context]]]) {
+      const path = siblingPath(records[0].manifest.path, `${context}/${file}`);
+      const matches = artifacts.filter((artifact) => artifact.manifest.path === path);
+      if (matches.length !== 1 || matches[0].manifest.sha256 !== digest) {
+        invalid(`the ${context}-token whitener is not the one fitted from the neutral rows`);
+      }
     }
   }
   return {

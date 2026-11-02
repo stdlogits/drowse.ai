@@ -313,28 +313,51 @@ assert.deepEqual(await validateReleaseInstrumentPack({
   features: 16_384,
   activation: "jump_relu",
 });
+// A provider R lens is only for a model drowse cannot fit (GPT-2, Pythia); a Gemma 3 or Qwen 3
+// pack calling itself one would skip the native corpus and depth gates.
+const providerLock = runtimeLock.models.find((model) => model.id === "gpt2-base");
+const providerLens = (lock) => ({
+  d_model: lock.hiddenSize,
+  estimator_policy: { method: "provider_jacobian_lens" },
+  format_version: 7,
+  model_layer_count: lock.layerMap.length,
+  n_prompts: 278,
+  seq_len: 128,
+  sites: { out: { layers: selectHostedJlensLayers(lock.layerMap, lock.hiddenSize) } },
+});
 assert.deepEqual(await validateReleaseInstrumentPack({
   directory: join(root, "provider-jlens"),
   kind: "jlens",
-  instrumentManifest: {
-    d_model: modelLock.hiddenSize,
-    estimator_policy: { method: "provider_jacobian_lens" },
-    format_version: 7,
-    model_layer_count: modelLock.layerMap.length,
-    n_prompts: 278,
-    seq_len: 128,
-    sites: { out: { layers: selectHostedJlensLayers(modelLock.layerMap, modelLock.hiddenSize) } },
-  },
+  instrumentManifest: providerLens(providerLock),
   vocabularyManifest: { words: [{ word: "yes", row: 0, token_id: 1 }] },
   runtimeLock,
-  modelLock,
+  modelLock: providerLock,
 }), {
   source: "provider",
   prompts: 278,
   sequenceLength: 128,
-  layers: selectHostedJlensLayers(modelLock.layerMap, modelLock.hiddenSize).length,
+  layers: selectHostedJlensLayers(providerLock.layerMap, providerLock.hiddenSize).length,
   words: 1,
 });
+await assert.rejects(
+  validateReleaseInstrumentPack({
+    directory: join(root, "provider-jlens"), kind: "jlens",
+    instrumentManifest: { ...providerLens(modelLock), corpus_spec: nativeCorpus.corpusSpec },
+    vocabularyManifest: { words: [{ word: "yes", row: 0, token_id: 1 }] }, runtimeLock, modelLock,
+  }),
+  /native fit, not a provider lens/,
+  "a natively fitted model's R lens cannot pass as a provider's",
+);
+for (const kind of ["slens", "units"]) {
+  await assert.rejects(
+    validateReleaseInstrumentPack({
+      directory: join(root, `native-${kind}`), kind, instrumentManifest: nativeLens("S"),
+      runtimeLock, modelLock: providerLock, nativeLensCorpus: approvedCorpus,
+    }),
+    /drowse cannot fit it/,
+    `${kind} only for a natively fitted model`,
+  );
+}
 
 for (const scenario of [
   "scoped", "missing-target", "unknown-model", "duplicate-model", "wrong-tokenizer",

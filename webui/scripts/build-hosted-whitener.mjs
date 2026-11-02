@@ -17,6 +17,7 @@ import { dirname, extname, join, resolve } from "node:path";
 import { createServer as createViteServer } from "vite";
 import { readCoreManifoldSource } from "./hosted-core-manifold-source.mjs";
 import { nativeFitModel } from "./hosted-native-models.mjs";
+import { fitNativeNeutralWhitener, neutralWhitenerSidecar } from "./neutral-whitener-node.mjs";
 import { lockedModelExecutionProfiles } from "./hosted-model-profiles.mjs";
 import {
   grantReleaseToolStorageQuota,
@@ -181,6 +182,11 @@ const vite = await createViteServer({
   publicDir: resolve(webuiRoot, "public-hosted"),
   server: { middlewareMode: true, watch: null },
 });
+// The whitener the native rows give, refitted here with the same kernel: the browser's must be
+// it, tensors and ridge, in every context.
+const nativeRefit = neutralStatistics === null
+  ? null
+  : await fitNativeNeutralWhitener(vite, neutralStatistics.rowsBytes, lock);
 const server = createHttpServer(async (request, response) => {
   for (const [name, value] of Object.entries({
     "Cross-Origin-Opener-Policy": "same-origin",
@@ -367,6 +373,7 @@ if (
   throw new Error("browser whitener metadata does not match the runtime lock");
 }
 
+const sidecarSha256ByContext = {};
 const stage = await mkdtemp(join(dirname(outputDirectory), ".drowse-whitener-"));
 try {
   for (const contextTokens of lock.contextProfiles) {
@@ -383,18 +390,22 @@ try {
         JSON.stringify(Object.keys(context.ridgePerLayer).map(Number)) !== JSON.stringify(lock.layerMap)) {
       throw new Error(`browser core pack identity or payload differs for context ${contextTokens}`);
     }
+    if (nativeRefit !== null && (
+      sha256(tensorBytes) !== sha256(nativeRefit.tensorBytes) ||
+      JSON.stringify(context.ridgePerLayer) !== JSON.stringify(nativeRefit.ridgePerLayer)
+    )) throw new Error(`the ${contextTokens}-token whitener is not the one the native neutral rows give`);
     const directory = resolve(stage, String(contextTokens));
     await mkdir(directory, { recursive: true });
     await writeFile(resolve(directory, "neutral-whitener.safetensors"), tensorBytes);
-    await writeFile(resolve(directory, "neutral-whitener.json"), `${JSON.stringify({
-      format_version: 1,
-      runtime_identity_sha256: result.runtimeIdentitySha256,
-      context_binding_sha256: context.bindingSha256,
-      hidden_size: lock.hiddenSize,
-      layer_map: lock.layerMap,
-      tensors_sha256: context.tensorsSha256,
-      ridge_per_layer: context.ridgePerLayer,
-    }, null, 2)}\n`);
+    const sidecarBytes = neutralWhitenerSidecar({
+      runtimeIdentitySha256: result.runtimeIdentitySha256,
+      contextBindingSha256: context.bindingSha256,
+      modelLock: lock,
+      tensorsSha256: context.tensorsSha256,
+      ridgePerLayer: context.ridgePerLayer,
+    });
+    sidecarSha256ByContext[String(contextTokens)] = sha256(sidecarBytes);
+    await writeFile(resolve(directory, "neutral-whitener.json"), sidecarBytes);
     const manifoldDirectory = resolve(stage, "manifolds", String(contextTokens));
     await mkdir(manifoldDirectory, { recursive: true });
     for (const [index, manifold] of manifolds.entries()) {
@@ -413,6 +424,7 @@ try {
         rows_sha256: neutralStatistics.record.neutral.rows_sha256,
         tensors_sha256: Object.fromEntries(result.contexts.map((context) =>
           [String(context.contextTokens), context.tensorsSha256])),
+        sidecars_sha256: sidecarSha256ByContext,
       },
     };
     if (new Set(Object.values(shipped.whitener.tensors_sha256)).size !== 1) {

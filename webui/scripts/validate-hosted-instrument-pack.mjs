@@ -8,7 +8,7 @@ import { createServer } from "vite";
 import { validatePackDirectory } from "./build-hosted-catalog.mjs";
 import { validateReleaseInstrumentPack } from "./hosted-instrument-release-policy.mjs";
 import { lockedRuntimeIdentity } from "./hosted-runtime-identity.mjs";
-import { fitNativeNeutralWhitener } from "./neutral-whitener-node.mjs";
+import { fitNativeNeutralWhitener, neutralWhitenerSidecar } from "./neutral-whitener-node.mjs";
 
 const KINDS = ["sae", "jlens", "slens", "units"];
 
@@ -101,14 +101,17 @@ async function packEntry(packDirectory, packKind) {
 /** The core files a units pack binds: a core pack's neutral statistics and every context's
  *  whitener, or, from `build_hosted_packs.py`'s staged `core/` before the core pack exists, the
  *  statistics with the whitener the core builder will fit from its native rows. */
-async function coreStatisticsFiles(directory) {
+async function coreStatisticsFiles(directory, runtimeIdentitySha256, contextBindingSha256) {
   const record = JSON.parse(await readFile(resolve(directory, "neutral-statistics.json"), "utf8"));
   const files = new Map([[record.tensor_file, await readFile(resolve(directory, record.tensor_file))]]);
   const whitenerPath = (contextTokens) => `${contextTokens}/neutral-whitener.safetensors`;
+  const sidecarPath = (contextTokens) => `${contextTokens}/neutral-whitener.json`;
   if (record.whitener !== undefined) {
     files.set("neutral-statistics.json", await readFile(resolve(directory, "neutral-statistics.json")));
     for (const contextTokens of lock.contextProfiles) {
-      files.set(whitenerPath(contextTokens), await readFile(resolve(directory, whitenerPath(contextTokens))));
+      for (const path of [whitenerPath(contextTokens), sidecarPath(contextTokens)]) {
+        files.set(path, await readFile(resolve(directory, path)));
+      }
     }
     return files;
   }
@@ -116,14 +119,27 @@ async function coreStatisticsFiles(directory) {
   if (createHash("sha256").update(rows).digest("hex") !== record.neutral?.rows_sha256) {
     throw new Error("the staged neutral rows are not the ones their statistics name");
   }
-  const whitener = await fitNativeNeutralWhitener(vite, rows, lock);
-  const digest = createHash("sha256").update(whitener).digest("hex");
-  for (const contextTokens of lock.contextProfiles) files.set(whitenerPath(contextTokens), whitener);
+  const fitted = await fitNativeNeutralWhitener(vite, rows, lock);
+  const digest = createHash("sha256").update(fitted.tensorBytes).digest("hex");
+  const sidecars = {};
+  for (const contextTokens of lock.contextProfiles) {
+    const sidecar = neutralWhitenerSidecar({
+      runtimeIdentitySha256,
+      contextBindingSha256: contextBindingSha256(runtimeIdentitySha256, contextTokens),
+      modelLock: lock,
+      tensorsSha256: digest,
+      ridgePerLayer: fitted.ridgePerLayer,
+    });
+    files.set(whitenerPath(contextTokens), fitted.tensorBytes);
+    files.set(sidecarPath(contextTokens), sidecar);
+    sidecars[String(contextTokens)] = createHash("sha256").update(sidecar).digest("hex");
+  }
   files.set("neutral-statistics.json", new TextEncoder().encode(JSON.stringify({
     ...record,
     whitener: {
       rows_sha256: record.neutral.rows_sha256,
       tensors_sha256: Object.fromEntries(lock.contextProfiles.map((contextTokens) => [String(contextTokens), digest])),
+      sidecars_sha256: sidecars,
     },
   })));
   return files;
@@ -187,7 +203,9 @@ try {
     requiredCorePack: { files: [] },
     contextTokens: lock.contextProfiles[0],
     adapter: {},
-    artifacts: coreStatistics === null ? [] : [...await coreStatisticsFiles(coreStatistics)].map(([path, bytes]) => ({
+    artifacts: coreStatistics === null ? [] : [...await coreStatisticsFiles(
+      coreStatistics, fingerprint, contextBindingSha256,
+    )].map(([path, bytes]) => ({
       manifest: {
         path, role: "core_pack", revision, bytes: bytes.byteLength,
         sha256: createHash("sha256").update(bytes).digest("hex"),

@@ -69,6 +69,9 @@ try {
   ]);
   const identitySha256 = runtimeIdentitySha256(runtimeIdentity);
   const tensorSha256ByContext = {};
+  const sidecarSha256ByContext = {};
+  const ridgeByContext = {};
+  const whitenerMeansByContext = {};
   const coreArtifacts = [];
   for (const contextTokens of lock.contextProfiles) {
     const contextDirectory = resolve(directory, String(contextTokens));
@@ -78,7 +81,9 @@ try {
     ]);
     const currentTensorSha256 = sha256(tensorBytes);
     tensorSha256ByContext[contextTokens] = currentTensorSha256;
+    sidecarSha256ByContext[contextTokens] = sha256(sidecarBytes);
     const sidecar = JSON.parse(sidecarBytes);
+    ridgeByContext[contextTokens] = sidecar.ridge_per_layer;
     assert.deepEqual(Object.keys(sidecar).sort(), [
       "context_binding_sha256",
       "format_version",
@@ -116,7 +121,7 @@ try {
         `${prefix}.inverse_scales`,
         `${prefix}.mean`,
       );
-      tensors.tensor(`${prefix}.mean`, [lock.hiddenSize]);
+      (whitenerMeansByContext[contextTokens] ??= []).push(tensors.tensor(`${prefix}.mean`, [lock.hiddenSize]).data);
       const eigenvalues = tensors.tensor(`${prefix}.eigenvalues`, [rank]).data;
       const inverseScales = tensors.tensor(`${prefix}.inverse_scales`, [rank]).data;
       assert.ok(eigenvalues.every((value) => value > 0));
@@ -188,13 +193,18 @@ try {
     assert.deepEqual(record.whitener?.tensors_sha256, Object.fromEntries(
       lock.contextProfiles.map((contextTokens) => [String(contextTokens), tensorSha256ByContext[contextTokens]]),
     ), "the neutral statistics name each context's whitener");
+    assert.deepEqual(record.whitener?.sidecars_sha256, Object.fromEntries(
+      lock.contextProfiles.map((contextTokens) => [String(contextTokens), sidecarSha256ByContext[contextTokens]]),
+    ), "the neutral statistics name each context's whitener sidecar (its ridge)");
     if (options.neutralRows !== null) {
       const rowsBytes = await readFile(resolve(options.neutralRows));
       assert.equal(sha256(rowsBytes), record.neutral.rows_sha256, "--neutral-rows are not this pass's rows");
-      const refit = sha256(await fitNativeNeutralWhitener(vite, rowsBytes, lock));
+      const refit = await fitNativeNeutralWhitener(vite, rowsBytes, lock);
       for (const contextTokens of lock.contextProfiles) {
-        assert.equal(tensorSha256ByContext[contextTokens], refit,
+        assert.equal(tensorSha256ByContext[contextTokens], sha256(refit.tensorBytes),
           `context ${contextTokens}'s whitener is not the one the neutral rows give`);
+        assert.deepEqual(ridgeByContext[contextTokens], refit.ridgePerLayer,
+          `context ${contextTokens}'s whitener ridge is not the one the neutral rows give`);
       }
     }
     neutralStatistics = {
@@ -240,6 +250,16 @@ try {
     if (statistics !== null) {
       for (const [name, tensor] of statistics.tensors) {
         assert.equal(tensor.shape[0], lock.layerMap.length, `${name} covers every layer`);
+      }
+      // Without the rows (a catalog or publish check), the whitener's centring mean must still be
+      // the neutral pass's `out` mean: a whitener fitted from other rows is refused.
+      const outMean = statistics.tensors.get("out_mean").data;
+      for (const [slot, mean] of whitenerMeansByContext[contextTokens].entries()) {
+        const expected = outMean.subarray(slot * lock.hiddenSize, (slot + 1) * lock.hiddenSize);
+        const scale = expected.reduce((largest, value) => Math.max(largest, Math.abs(value)), 0);
+        const worst = mean.reduce((largest, value, index) => Math.max(largest, Math.abs(value - expected[index])), 0);
+        assert.ok(worst <= 2e-6 * scale + 1e-7,
+          `context ${contextTokens} layer ${lock.layerMap[slot]}: the whitener mean is not the neutral pass's (${worst})`);
       }
     }
   }
