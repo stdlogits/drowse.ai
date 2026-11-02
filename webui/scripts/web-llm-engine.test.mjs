@@ -578,7 +578,7 @@ try {
     runtime.installHookProgram({ ...hookProgram, hookAbi: "post-block-residual-v4" }),
     (error) => error.code === "HOOK_ABI_MISMATCH",
   );
-  // Rank-one buffers have no v5 entry point.
+  // A program of any other format (the deleted rank-one buffers) is refused.
   await assert.rejects(
     runtime.installHookProgram({
       hookAbi: "block-sites-v5", hiddenSize: 2, layerCount: 2, enabled: Uint32Array.of(1, 0),

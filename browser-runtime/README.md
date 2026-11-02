@@ -10,16 +10,18 @@ and chat-template identities are bound by digest. The public signed catalog
 contains only immutable packages that match those identities.
 
 The browser core-pack compiler produces the required neutral whitener and seed
-manifold pack for each release model. Its raw rank-one path shares Python
-goldens for Mahalanobis normalization, mean-normalized per-layer share, and
-uncapped affine gain. The structured path lowers independent
-push/ablation groups, prior-step gates, response phases, SAE and R-lens
-programs, box/custom/sphere curved manifolds, and exact v3 geometry reads.
+manifold pack for each release model. Every steering expression lowers to one
+drowse-structured-v4 program (native's `synthesize_subspace` lowering, which
+needs the neutral whitener); it shares Python goldens for Mahalanobis
+normalization, mean-normalized per-layer share, and uncapped affine gain, and
+lowers independent push/ablation groups, prior-step gates, response phases,
+SAE and R-lens programs, box/custom/sphere curved manifolds, in-block unit
+ablation, and exact geometry reads.
 Curved steering retains its separate safety cap. Every published pack passes the
 semantic validator and a physical WebGPU runtime check before catalog inclusion.
 
 The checked-in TypeScript parser accepts the full Python steering grammar. The
-current compiler supports rank-one and composed affine pushes, mixed or
+current compiler supports single and composed affine pushes, mixed or
 multiaxis mean-replacement ablation, Mahalanobis `~`/`|` projections,
 response/prompt/count/thinking phases, prior-step scalar gates, and up to four
 curved terms per layer. Curves may use bounded, unbounded, periodic, or spherical
