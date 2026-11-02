@@ -388,6 +388,31 @@ try {
     assert.equal(generationOnly.current().models[0].setupComplete, true);
   });
 
+  test("choosing units on a base model chooses the R and S packs it reads through", async () => {
+    const document = catalogFixture();
+    document.models[0].modelType = "base";
+    const variant = document.models[0].variants[0];
+    variant.packs.push(
+      optionalInstrumentPack(variant, "base-slens", "slens", 64, "b".repeat(64)),
+      optionalInstrumentPack(variant, "base-units", "units", 64, "c".repeat(64)),
+    );
+    const shell = createShellController(createBundle({}, document).bundle);
+    await shell.check();
+    const selection = () => Object.fromEntries(
+      shell.current().models[0].firstRunPacks.map((pack) => [pack.kind, pack.selected]),
+    );
+    assert.deepEqual(selection(), { jlens: false, slens: false, units: false }, "a base model chooses no lens by default");
+    shell.setOptionalPackSelected(variant.id, "base-units", true);
+    assert.deepEqual(selection(), { jlens: true, slens: true, units: true });
+    const lens = shell.current().models[0].firstRunPacks.find((pack) => pack.kind === "jlens");
+    shell.setOptionalPackSelected(variant.id, lens.id, false);
+    assert.deepEqual(selection(), { jlens: false, slens: true, units: false }, "dropping the R pack drops units");
+    shell.setOptionalPackSelected(variant.id, "base-units", true);
+    shell.setOptionalPackSelected(variant.id, "base-slens", false);
+    assert.deepEqual(selection(), { jlens: true, slens: false, units: false }, "dropping the S pack drops units");
+    shell.dispose();
+  });
+
   test("base models cannot bypass the combined instrument memory budget", async () => {
     const document = catalogFixture();
     document.models[0].modelType = "base";

@@ -1242,20 +1242,28 @@ function isPreviewDesktopRuntime(capabilities: RuntimeCapabilities): boolean {
     capabilities.signals.runtimeClass === "desktop-gecko";
 }
 
-/** A units pack reads through the S lens (and the R lens, which a chat model always installs):
- *  choosing units chooses the S pack too, and dropping the S pack drops units. Installed packs
- *  stay as they are. */
+/** A units pack reads through the R and S lenses it binds: choosing units chooses an S and an R
+ *  pack when none of that kind is chosen or installed (a base model does not choose its R pack
+ *  by default), and dropping the last of either drops units. Installed packs stay as they are. */
 function withUnitsCompanions(
   packs: HostedModelOption["firstRunPacks"],
   changed: FirstRunPack,
   selected: boolean,
 ): HostedModelOption["firstRunPacks"] {
   const kind = changed.kind as string;
+  const companions = ["slens", "jlens"];
+  const chosen = (candidates: HostedModelOption["firstRunPacks"], lens: string) =>
+    candidates.some((candidate) => (candidate.kind as string) === lens && (candidate.selected || candidate.installed));
   if (selected && kind === "units") {
-    return packs.map((candidate) =>
-      (candidate.kind as string) === "slens" && !candidate.selected ? { ...candidate, selected: true } : candidate);
+    let next = packs;
+    for (const lens of companions) {
+      if (chosen(next, lens)) continue;
+      const index = next.findIndex((candidate) => (candidate.kind as string) === lens);
+      if (index >= 0) next = next.map((candidate, at) => at === index ? { ...candidate, selected: true } : candidate);
+    }
+    return next;
   }
-  if (!selected && kind === "slens") {
+  if (!selected && companions.includes(kind) && !chosen(packs, kind)) {
     return packs.map((candidate) =>
       (candidate.kind as string) === "units" && !candidate.installed ? { ...candidate, selected: false } : candidate);
   }
