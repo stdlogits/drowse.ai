@@ -47,7 +47,14 @@ try {
     const attached = await instruments.request({ service: "probes", method: "attach", args: [{ selector: `slens/${word}` }] }, () => null);
     assert.deepEqual([attached.family, attached.namespace, attached.word], ["lens", "slens", word]);
     assert.match(instruments.probeHashes()[`slens/${word}`], /^[0-9a-f]{64}$/u);
+    // A manifold refresh hands the runtime a new compiler: the unit source carries over and the
+    // slens/ and unit probes re-attach through it, digests unchanged.
+    await instruments.request({ service: "probes", method: "attach", args: [{ selector: "neuron/L1n5" }] }, () => null);
+    const before = instruments.probeHashes();
+    await instruments.replaceCompiler(await compiler.withInstalledManifolds([], new AbortController().signal));
+    assert.deepEqual(instruments.probeHashes(), before);
     await instruments.request({ service: "probes", method: "detach", args: [`slens/${word}`] }, () => null);
+    await instruments.request({ service: "probes", method: "detach", args: ["neuron/L1n5"] }, () => null);
 
     // ------------------------------------------------------------------ neuron pushes
     const push = archGolden("neuron-push", arch);

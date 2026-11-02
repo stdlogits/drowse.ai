@@ -74,7 +74,10 @@ export class BrowserInstrumentRuntime {
     if (lensWords.length > 0 && this.jlensResolver !== null) {
       await compiler.prepareJlensWords(lensWords, this.jlensResolver);
     }
-    for (const probe of probes) compiler.attachProbe(probeRefreshRequest(probe));
+    for (const probe of probes) {
+      if (probe.family === "lens" && probe.namespace === "slens") await compiler.prepareUnitProbe(`slens/${probe.word}`);
+      compiler.attachProbe(probeRefreshRequest(probe));
+    }
     compiler.setInstrumentLive("geometry", live.geometry);
     compiler.setInstrumentLive("lens", live.lens, live.lensLayers ?? undefined);
     compiler.setInstrumentLive("sae", live.sae);

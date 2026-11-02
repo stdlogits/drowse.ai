@@ -310,7 +310,7 @@ export class BrowserFeasibilityCorePackCompiler {
       manifolds.push(...await loadInstalledManifolds(archive, request, this.structuredHookProfile));
     }
     signal.throwIfAborted();
-    return new BrowserFeasibilityCorePackCompiler(
+    const next = new BrowserFeasibilityCorePackCompiler(
       this.modelId,
       this.hiddenSize,
       this.layerMap,
@@ -321,6 +321,10 @@ export class BrowserFeasibilityCorePackCompiler {
       this.loadRequest,
       this.coreManifolds,
     );
+    // The loaded library's unit sites outlive a manifold refresh (unit and slens/ probes
+    // re-attach to the new compiler through them).
+    next.setUnitSource(this.unitSource);
+    return next;
   }
 
   fittingWhiteners(): ReadonlyMap<number, SerializedMahalanobisWhitener> {
