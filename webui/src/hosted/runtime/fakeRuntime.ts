@@ -58,6 +58,8 @@ export interface FakeRuntimeOptions {
   tokenDelayMs?: number;
   instrumentPacks?: readonly FakeInstrumentPack[];
   contextBindingSha256?: string;
+  /** Serve the units members as a residual library does: each answers this refusal (422). */
+  unitRefusal?: string;
 }
 
 export class DeterministicFakeRuntime implements RuntimeClient {
@@ -99,6 +101,7 @@ export class DeterministicFakeRuntime implements RuntimeClient {
       (text, index, scope) => this.fixtureMeasurements(text, index, scope),
     );
     this.contextBindingSha256 = options.contextBindingSha256 ?? "fixture-context-binding";
+    this.unitRefusal = options.unitRefusal ?? null;
     this.configureInstrumentPacks(options.instrumentPacks ?? []);
 
     this.sessions = {
@@ -557,9 +560,10 @@ export class DeterministicFakeRuntime implements RuntimeClient {
   }
 
   private unitsService: ReturnType<typeof createFixtureUnitsService> | null = null;
+  private readonly unitRefusal: string | null;
 
   private units(): ReturnType<typeof createFixtureUnitsService> {
-    this.unitsService ??= createFixtureUnitsService(this.session.model_id, () => this.loom);
+    this.unitsService ??= createFixtureUnitsService(this.session.model_id, () => this.loom, this.unitRefusal);
     return this.unitsService;
   }
 

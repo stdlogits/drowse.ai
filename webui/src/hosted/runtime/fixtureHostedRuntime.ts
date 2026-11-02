@@ -377,10 +377,15 @@ const FIXTURE_UNITS_MEMBERS: ReadonlySet<string> = new Set(
   UNITS_SERVICE_METHODS.map((method) => `instruments.${method}`),
 );
 
+/** Pythia's refusal in the runtime lock (`unitRefusal`, native's UnsupportedBlockError text): the
+ *  base fixture model's library is residual, as Pythia's is. */
+const PYTHIA_UNIT_REFUSAL =
+  "layer 0: block has no softmax self-attention ('self_attn'; found attention, input_layernorm, mlp, post_attention_dropout, post_attention_layernorm, post_mlp_dropout)";
+
 export function createFixtureHostedRuntime(withInstruments = false, baseModel = false): HostedRuntimeBundle {
   const controller = new FixtureHostedController(withInstruments);
   const runtime = new DeterministicFakeRuntime({
-    ...(baseModel ? { rootId: crypto.randomUUID(), tokenDelayMs: 150 } : {}),
+    ...(baseModel ? { rootId: crypto.randomUUID(), tokenDelayMs: 150, unitRefusal: PYTHIA_UNIT_REFUSAL } : {}),
     modelId: baseModel ? "fixture/pythia-70m-base" : VARIANT_ID,
     ...(baseModel ? { sessionOverrides: { is_base_model: true, supports_thinking: false, scene_mode: false, role_substitution_supported: false, user_role_supported: false, default_user_role: null, default_assistant_role: null } } : {}),
     instrumentPacks: withInstruments ? [
@@ -392,7 +397,8 @@ export function createFixtureHostedRuntime(withInstruments = false, baseModel = 
   return {
     controller,
     // The fake runtime serves the units members through the real host ports on the tiny
-    // fixture model (units/fixtureUnits.ts), ahead of the worker's routes.
+    // fixture model (units/fixtureUnits.ts), ahead of the worker's routes; the base model's
+    // library is residual, so there they answer Pythia's refusal.
     runtime: offeredRuntimeClient(runtime, FIXTURE_UNITS_MEMBERS),
     async dispose() {
       if (disposed) return;

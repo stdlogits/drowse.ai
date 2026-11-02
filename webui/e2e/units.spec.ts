@@ -1,7 +1,6 @@
-import { resolve } from "node:path";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import {
-  inspectToken, inspector, openLayoutWorkbench, selectRoom, sendMessage, sourceUrl, storesUrl,
+  devUrl, inspectToken, inspector, openLayoutWorkbench, selectRoom, sendMessage, sourceUrl, storesUrl, waitForReply,
 } from "./workbench-navigation";
 
 // Half B of drowse 6.0 in the browser: the Units room, a token's anatomy, a unit's activity and
@@ -232,6 +231,14 @@ test("neurons and heads steer from the picker, the recipe and the rooms", async 
   const marker = reply.locator(".dw-under span").filter({ hasText: /^(steered|unsteered)$/ });
   await expect(marker).toHaveText("steered");
   await expect(marker).toHaveAttribute("data-tip", "3 neuron/L1n5 + !head/L2h1");
+  // The stored reply node: the steering it ran with and its recipe (what a replay or a saved chat
+  // reads back).
+  const stored = await page.evaluate(async (url) => {
+    const tree = await (await import(url)).getRuntimeClient().tree.get();
+    const reply = tree.nodes.find((node: any) => node.id === tree.active_node_id);
+    return [reply.role, reply.applied_steering, reply.recipe?.steering];
+  }, registryUrl);
+  expect(stored).toEqual(["assistant", "3 neuron/L1n5 + !head/L2h1", "3 neuron/L1n5 + !head/L2h1"]);
 
   // A typed recipe from elsewhere (an agent's, a saved chat's) becomes the same chips.
   await page.evaluate(async url => (await import(url)).applyRecipe("0.3 neuron/L0n1 + !neuron/L3n86"), storesUrl);
@@ -247,37 +254,92 @@ test("neurons and heads steer from the picker, the recipe and the rooms", async 
   const chosen = (await selected.getByRole("heading", { level: 2 }).innerText()).trim();
   await selected.getByRole("button", { name: "Silence", exact: true }).click();
   const [layer, index] = chosen.match(/^L(\d+) n(\d+)$/)!.slice(1);
-  await expect.poll(() => expression(page)).toContain(`!neuron/L${layer}n${index}`);
+  const silenced = `!neuron/L${layer}n${index}`;
+  await expect.poll(() => expression(page)).toBe(silenced);
   await selectRoom(page, "Workbench");
   const token = await inspectToken(page, "deterministic");
   const push = token.getByRole("region", { name: "Units that pushed the token", exact: true }).getByRole("button", { name: /^Push L\d n\d+/ }).first();
-  const pushed = (await push.getAttribute("aria-label"))!.match(/^Push L(\d+) n(\d+)/)!;
+  const label = (await push.getAttribute("aria-label"))!;
+  const [, pushLayer, pushIndex] = label.match(/^Push L(\d+) n(\d+)/)!;
   await push.click();
-  await expect.poll(() => expression(page)).toContain(`neuron/L${pushed[1]}n${pushed[2]}`);
+  // UNIT_PUSH_ALPHA (3), negative on a neuron's − pole; a push on the silenced neuron replaces it.
+  const negative = label.endsWith("on its − pole");
+  const unitName = `neuron/L${pushLayer}n${pushIndex}`;
+  await expect.poll(() => expression(page)).toBe(pushLayer === layer && pushIndex === index
+    ? `${negative ? "-" : ""}3 ${unitName}`
+    : `${silenced} ${negative ? "-" : "+"} 3 ${unitName}`);
 });
 
-test("a model without unit sites answers every unit read with its refusal", async ({ page }) => {
-  // No fixture serves a residual library yet (lanes/N3.md): the runtime client's unit members
-  // answer as BrowserUnitsService does on one, native's 422 UnsupportedBlockError with the
-  // lock's refusal (here GPT-2's reason, as drowse 6.0 words it).
-  // drowse bug (lanes/N3.md): userFacingError upper-cases the code to UNSUPPORTEDBLOCKERROR, whose
-  // "BLOCK" matches its /LOCK|…/ pattern, so the refusal reads "Another Drowse tab is using the
-  // local model". Natively too. Without the code the room and the Token view show the refusal.
-  test.fixme(true, "drowse's userFacingError shows a 422 UnsupportedBlockError as a tab lock; see lanes/N3.md");
-  const refusal = "no rotary embedding beside the block list ('rotary_emb'); a dense block here is RoPE attention";
-  await openLayoutWorkbench(page, "instruments");
-  await page.evaluate(async ({ registryUrl, backendUrl, refusal }) => {
-    const units = (await import(registryUrl)).getRuntimeClient().instruments;
-    const { UnsupportedBlockError } = await import(backendUrl);
-    for (const member of ["tokenAnatomy", "unitActivity", "unitRead", "unitTop", "unitFind", "unitLabels"]) {
-      units[member] = () => Promise.reject(new UnsupportedBlockError(refusal));
-    }
-  }, { registryUrl, backendUrl: `/@fs${resolve("src/hosted/runtime/modelBackend.ts")}`, refusal });
-  await sendMessage(page, "Read units on a residual model.");
+// The base layout fixture's model is Pythia, whose library is residual (standard-v4-residual): its
+// units members answer through BrowserUnitsService with the lock's refusal (fixtureHostedRuntime.ts).
+const PYTHIA_REFUSAL = "layer 0: block has no softmax self-attention ('self_attn'; found attention, input_layernorm, mlp, post_attention_dropout, post_attention_layernorm, post_mlp_dropout)";
+
+/** A base model's continuation, with the R lens installed (the Token view reads the anatomy
+ *  where a lens is ready). */
+async function continueBaseText(page: Page): Promise<void> {
+  await page.goto(`${devUrl}/app?layoutFixture=base&fixtureInstruments=1`);
+  await page.getByRole("textbox", { name: "Editable completion buffer" }).fill("A field note: ");
+  await page.getByRole("button", { name: "Continue text", exact: true }).click();
+  await waitForReply(page);
+}
+
+/** The completion's Token view on one of the model's tokens (docked in the Inspector). */
+async function inspectBaseToken(page: Page): Promise<Locator> {
+  await page.getByRole("button", { name: "Inspect tokens", exact: true }).click();
+  await page.getByRole("button", { name: /^Inspect token deterministic\b/ }).first().click();
+  const token = inspector(page).getByRole("region", { name: "Token", exact: true });
+  await expect(token).toBeVisible();
+  return token;
+}
+
+test("a model without unit sites refuses every unit read with the lock's refusal", async ({ page }) => {
+  await continueBaseText(page);
+  // Through the dashboard's own runtime client: each read, and labels (which check each unit
+  // against the model's blocks, native `_parse`), answer native's 422 UnsupportedBlockError with
+  // the refusal; the catalog answers, as on any model (disk only natively).
+  const answers = await page.evaluate(async (url) => {
+    const client = (await import(url)).getRuntimeClient();
+    const units = client.instruments;
+    const tree = await client.tree.get();
+    const refused = async (call: () => Promise<unknown>) => {
+      try { await call(); return "answered"; } catch (error: any) { return [error.code, error.status, error.message]; }
+    };
+    return {
+      reads: [
+        await refused(() => units.tokenAnatomy(tree.active_node_id, 0)),
+        await refused(() => units.unitActivity(tree.active_node_id)),
+        await refused(() => units.unitRead("neuron/L0n1")),
+        await refused(() => units.unitTop("a")),
+        await refused(() => units.unitFind({ vector: Array.from({ length: 64 }, (_, k) => Math.sin(k)), layer: 1 })),
+        await refused(() => units.unitLabels(["neuron/L0n1"])),
+      ],
+      catalog: await units.unitCatalog().then((catalog: any) => [catalog.available, catalog.bound]),
+    };
+  }, registryUrl);
+  expect(answers.reads).toEqual(Array(6).fill(["UnsupportedBlockError", 422, PYTHIA_REFUSAL]));
+  expect(answers.catalog).toEqual([false, false]);
+
+  // The Units room shows the failure with Try again, the Token view's Anatomy an alert (their
+  // wording: next test).
   await selectRoom(page, "Units");
-  await expect(page.getByRole("main")).toContainText(refusal);
-  await expect(page.getByRole("button", { name: "Try again", exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("main").getByRole("button", { name: "Try again", exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("main").getByRole("button", { name: ROW })).toHaveCount(0);
   await selectRoom(page, "Workbench");
-  const token = await inspectToken(page, "deterministic");
-  await expect(token).toContainText(refusal);
+  const token = await inspectBaseToken(page);
+  await expect(token.getByRole("region", { name: "Anatomy", exact: true }).getByRole("alert")).toBeVisible();
+  await expect(token.getByRole("region", { name: "Units that pushed the token", exact: true })).toHaveCount(0);
+});
+
+test("the refusal reads as the model's refusal, not another tab's lock", async ({ page }) => {
+  // drowse bug, fixed in stdlogits/drowse webui/unit-refusal-wording (lanes/N3.md): userFacingError
+  // upper-cases the code to UNSUPPORTEDBLOCKERROR, whose BLOCK matched its tab-lock pattern. Expected
+  // to fail until the pin takes the fix; then this line goes.
+  test.fail(true, "the pinned drowse reads a 422 UnsupportedBlockError as a tab lock");
+  await continueBaseText(page);
+  await selectRoom(page, "Units");
+  await expect(page.getByRole("main")).toContainText(PYTHIA_REFUSAL);
+  await expect(page.getByRole("main")).not.toContainText("Another Drowse tab");
+  await selectRoom(page, "Workbench");
+  const token = await inspectBaseToken(page);
+  await expect(token.getByRole("region", { name: "Anatomy", exact: true }).getByRole("alert")).toHaveText(PYTHIA_REFUSAL);
 });

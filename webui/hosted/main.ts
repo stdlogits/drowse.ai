@@ -79,7 +79,12 @@ try {
       import("../src/hosted/runtime/fixtureHostedRuntime"),
       import("../../drowse/webui/src/lib/runtime/registry"),
     ]);
-    const fixture = createFixtureHostedRuntime(searchParams.get("layoutFixture") === "instruments", searchParams.get("layoutFixture") === "base");
+    // `instruments` installs the R lens and SAE packs; `fixtureInstruments=1` adds them to another
+    // layout fixture (the base model's).
+    const fixture = createFixtureHostedRuntime(
+      searchParams.get("layoutFixture") === "instruments" || searchParams.get("fixtureInstruments") === "1",
+      searchParams.get("layoutFixture") === "base",
+    );
     const capabilities = await fixture.controller.check();
     installRuntimeClient(fixture.runtime);
     installRuntimeCapabilities(capabilities);
