@@ -181,10 +181,8 @@ export function validateBrowserFullRuntimeModelClosure({
   }
   if (manifest.schemaVersion !== 1)
     throw new Error("browser model closure schema is unsupported");
-  const legacyRuntimeAlias = runtimeLock.runtimeAbi === "drowse-web-runtime-v1" &&
-    ["saklas-web-runtime-v1", "polythetic-web-runtime-v1"].includes(manifest.runtimeAbi);
   for (const [label, actual, expected] of [
-    ["runtime ABI", legacyRuntimeAlias ? runtimeLock.runtimeAbi : manifest.runtimeAbi, runtimeLock.runtimeAbi],
+    ["runtime ABI", manifest.runtimeAbi, runtimeLock.runtimeAbi],
     ["hook ABI", manifest.hookAbi, runtimeLock.hookAbi],
     ["architecture", manifest.architecture, lock.architecture],
     ["quantization", manifest.quantization, lock.quantization],

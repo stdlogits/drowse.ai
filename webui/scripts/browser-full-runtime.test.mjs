@@ -227,28 +227,12 @@ test("requires a model closure that exactly matches the selected runtime lock", 
   }
 });
 
-test("accepts only the production loader's exact legacy runtime aliases", () => {
-  for (const runtimeAbi of ["saklas-web-runtime-v1", "polythetic-web-runtime-v1"]) {
+test("a closure names exactly the lock's runtime ABI", () => {
+  for (const runtimeAbi of ["drowse-web-runtime-v1", "saklas-web-runtime-v1", "polythetic-web-runtime-v1"]) {
     const fixture = modelClosure();
-    fixture.runtimeLock.runtimeAbi = "drowse-web-runtime-v1";
-    fixture.manifest.runtimeAbi = runtimeAbi;
-    const original = structuredClone(fixture);
-    assert.doesNotThrow(() => validateBrowserFullRuntimeModelClosure(fixture));
-    assert.deepEqual(fixture, original);
-
-    fixture.files.find(file => file.role === "model_library").sha256 = "f".repeat(64);
-    assert.throws(() => validateBrowserFullRuntimeModelClosure(fixture), /model_library/);
-  }
-  for (const runtimeAbi of ["saklas-web-runtime-v2", "other-web-runtime-v1"]) {
-    const fixture = modelClosure();
-    fixture.runtimeLock.runtimeAbi = "drowse-web-runtime-v1";
     fixture.manifest.runtimeAbi = runtimeAbi;
     assert.throws(() => validateBrowserFullRuntimeModelClosure(fixture), /runtime ABI/);
   }
-  const future = modelClosure();
-  future.runtimeLock.runtimeAbi = "drowse-web-runtime-v2";
-  future.manifest.runtimeAbi = "saklas-web-runtime-v1";
-  assert.throws(() => validateBrowserFullRuntimeModelClosure(future), /runtime ABI/);
 });
 
 test("recognizes uncaptured WebGPU and device-loss console failures", () => {
