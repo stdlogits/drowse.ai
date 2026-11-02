@@ -218,6 +218,12 @@ try {
   } else {
     const units = registry.unitsPack();
     assert.ok(units !== null, "the units pack did not load");
+    // Read through the R source the units pack was built over.
+    for (const row of registry.jlensSources()) {
+      if (row.summary?.family !== "R") continue;
+      await registry.activateJlensSource(row.source);
+      if (registry.lensIdentity("R") === units.binding.rLensIdentity) break;
+    }
     const nullBasis = await registry.unitsNullBasis(signal);
     assert.equal(nullBasis.length, units.dModel * units.nullRank);
     const layers = {};

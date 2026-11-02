@@ -323,7 +323,7 @@ try {
   );
   await assert.rejects(
     () => prepareCatalog(noJlensSpec, runtimeLock, root, validateSemantics),
-    /must include an existing compatible J-lens pack/u,
+    /must include an existing compatible R-lens pack/u,
   );
   const semanticCallCount = semanticCalls.length;
   const missingExactLimit = structuredClone(spec);

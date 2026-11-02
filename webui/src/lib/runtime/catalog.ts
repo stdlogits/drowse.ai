@@ -659,16 +659,25 @@ function validateVariant(value: unknown, index: number): ModelVariant {
     }
   }
   for (const profile of contextProfiles) {
-    const compatible = packs.filter((pack) =>
-      pack.kind === "sae" &&
-      pack.compatibleContextBindingSha256.includes(profile.bindingSha256)
+    // One SAE, one S lens and one units pack per context; R packs may be several (the active
+    // one is chosen in the Lens room). A units pack reads through the R and S lenses it binds.
+    const compatible = (kind: CatalogInstrumentPack["kind"]) => packs.filter((pack) =>
+      pack.kind === kind && pack.compatibleContextBindingSha256.includes(profile.bindingSha256)
     );
-    if (compatible.length > 1) {
-      throw invalid(
-        `${path} context ${profile.contextTokens} has multiple compatible sae packs: ${
-          compatible.map((pack) => pack.id).join(", ")
-        }`,
-      );
+    for (const kind of ["sae", "slens", "units"] as const) {
+      if (compatible(kind).length > 1) {
+        throw invalid(
+          `${path} context ${profile.contextTokens} has multiple compatible ${kind} packs: ${
+            compatible(kind).map((pack) => pack.id).join(", ")
+          }`,
+        );
+      }
+    }
+    if (
+      compatible("units").length === 1 &&
+      (compatible("slens").length !== 1 || compatible("jlens").length === 0)
+    ) {
+      throw invalid(`${path} context ${profile.contextTokens} has a units pack without its R and S lens packs`);
     }
   }
   return {
@@ -853,7 +862,7 @@ function validatePack(value: unknown, index: number): CatalogInstrumentPack {
     path,
   );
   identifier(item.id, `${path}.id`);
-  if (item.kind !== "core" && item.kind !== "jlens" && item.kind !== "sae") {
+  if (!["core", "jlens", "slens", "units", "sae"].includes(item.kind as string)) {
     throw invalid(`${path}.kind is invalid`);
   }
   text(item.displayName, `${path}.displayName`);

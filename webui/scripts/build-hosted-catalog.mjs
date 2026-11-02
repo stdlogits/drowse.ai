@@ -141,6 +141,10 @@ async function prepareModel(entry, runtimeLock, specDirectory, semanticValidator
     throw new Error(`${lock.id} has no required core pack`);
   }
   const packs = [];
+  // A units pack validates through the R and S lens packs it binds, so they load beside it.
+  const lensDirectories = entry.packs
+    .filter((pack) => pack?.kind === "jlens" || pack?.kind === "slens")
+    .map((pack) => resolvePortable(specDirectory, pack.directory, `${lock.id} pack directory`));
   for (const pack of entry.packs) {
     packs.push(await preparePack(
       pack,
@@ -149,6 +153,7 @@ async function prepareModel(entry, runtimeLock, specDirectory, semanticValidator
       runtimeIdentitySha256,
       contextProfiles,
       semanticValidator,
+      pack?.kind === "units" ? lensDirectories : [],
     ));
   }
   const requiredCore = packs.filter((pack) => pack.kind === "core" && pack.required);
@@ -156,20 +161,24 @@ async function prepareModel(entry, runtimeLock, specDirectory, semanticValidator
     throw new Error(`${lock.id} must have exactly one required core pack`);
   }
   if (entry.modelType !== "base" && !packs.some((pack) => pack.kind === "jlens")) {
-    throw new Error(`${lock.id} must include an existing compatible J-lens pack`);
+    throw new Error(`${lock.id} must include an existing compatible R-lens pack`);
   }
   if (entry.modelType !== undefined && !["chat", "base"].includes(entry.modelType)) {
     throw new Error(`${lock.id} modelType must be chat or base`);
   }
   for (const profile of contextProfiles) {
-    const sae = packs.filter((pack) =>
-      pack.kind === "sae" &&
-      pack.compatibleContextBindingSha256.includes(profile.bindingSha256)
+    const compatible = (kind) => packs.filter((pack) =>
+      pack.kind === kind && pack.compatibleContextBindingSha256.includes(profile.bindingSha256)
     );
-    if (sae.length > 1) {
-      throw new Error(
-        `${lock.id} context ${profile.contextTokens} has multiple compatible SAE packs`,
-      );
+    for (const [kind, label] of [["sae", "SAE"], ["slens", "S-lens"], ["units", "units"]]) {
+      if (compatible(kind).length > 1) {
+        throw new Error(
+          `${lock.id} context ${profile.contextTokens} has multiple compatible ${label} packs`,
+        );
+      }
+    }
+    if (compatible("units").length === 1 && (compatible("slens").length !== 1 || compatible("jlens").length === 0)) {
+      throw new Error(`${lock.id} context ${profile.contextTokens} has a units pack without its R and S lens packs`);
     }
   }
   return {
@@ -234,12 +243,13 @@ async function preparePack(
   runtimeIdentitySha256,
   contextProfiles,
   semanticValidator,
+  companions = [],
 ) {
   exactKeys(entry, [
     "id", "kind", "displayName", "license", "directory", "sourceRepository",
     "sourceRevision", "required", "compatibleContextTokens",
   ], `${lock.id} pack`);
-  if (!["core", "jlens", "sae"].includes(entry.kind)) {
+  if (!["core", "jlens", "slens", "units", "sae"].includes(entry.kind)) {
     throw new Error(`${lock.id} pack kind is invalid`);
   }
   if (typeof entry.required !== "boolean" || (entry.kind === "core") !== entry.required) {
@@ -259,7 +269,7 @@ async function preparePack(
   }
   const directory = resolvePortable(specDirectory, entry.directory, `${lock.id} pack directory`);
   const manifest = await validatePackDirectory(directory);
-  await semanticValidator(lock.id, entry.kind, directory);
+  await semanticValidator(lock.id, entry.kind, directory, undefined, companions);
   const baseUrl = `https://huggingface.co/${entry.sourceRepository}/resolve/${entry.sourceRevision}/`;
   const files = manifest.files.map((file) => catalogFile(
     { ...file, role: entry.kind === "core" ? "core_pack" : "instrument" },
@@ -287,10 +297,13 @@ async function preparePack(
   };
 }
 
-export async function validatePackSemantics(modelId, kind, directory, runner = exec) {
+export async function validatePackSemantics(modelId, kind, directory, runner = exec, companions = []) {
   const args = kind === "core"
     ? [fileURLToPath(coreValidatorUrl), modelId, directory]
-    : [fileURLToPath(instrumentValidatorUrl), modelId, kind, directory];
+    : [
+        fileURLToPath(instrumentValidatorUrl), modelId, kind, directory,
+        ...companions.flatMap((companion) => ["--with", companion]),
+      ];
   try {
     await runner(process.execPath, args, { encoding: "utf8" });
   } catch (error) {
