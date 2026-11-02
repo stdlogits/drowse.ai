@@ -20,9 +20,10 @@ const near = (actual, expected, tol, where) => {
 
 const server = await viteServer();
 try {
-  const [hooks, grammar] = await Promise.all([
+  const [hooks, grammar, { BrowserInstrumentRuntime }] = await Promise.all([
     server.ssrLoadModule("/src/hosted/runtime/structuredHookProgram.ts"),
     server.ssrLoadModule("/src/hosted/runtime/steeringExpression.ts"),
+    server.ssrLoadModule("/src/hosted/runtime/browserInstrumentRuntime.ts"),
   ]);
   // Native's trigger record (`Trigger` fields) of a unit or affine control.
   const trigger = (control) => {
@@ -36,7 +37,17 @@ try {
   for (const arch of ARCHES) {
     const fx = await unitsFixture(server, arch);
     const d = fx.model.hiddenSize;
-    const { compile } = await unitsCompiler(server, fx, arch);
+    const { compiler, compile } = await unitsCompiler(server, fx, arch);
+
+    // A fresh slens/ probe attaches through the instrument runtime (its atom is prepared first)
+    // and carries native's slens-footprint-z-v3 digest, so probeHashes (read on every
+    // generation) never throws on it.
+    const instruments = new BrowserInstrumentRuntime(compiler, null, null, false);
+    const word = arch === "gemma3" ? "e" : "a";
+    const attached = await instruments.request({ service: "probes", method: "attach", args: [{ selector: `slens/${word}` }] }, () => null);
+    assert.deepEqual([attached.family, attached.namespace, attached.word], ["lens", "slens", word]);
+    assert.match(instruments.probeHashes()[`slens/${word}`], /^[0-9a-f]{64}$/u);
+    await instruments.request({ service: "probes", method: "detach", args: [`slens/${word}`] }, () => null);
 
     // ------------------------------------------------------------------ neuron pushes
     const push = archGolden("neuron-push", arch);
