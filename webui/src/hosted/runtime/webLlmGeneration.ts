@@ -337,6 +337,9 @@ export async function streamWebLlmGeneration(
         });
         plan.hookProgram.affineActive.set(controls.affineActive);
         plan.hookProgram.curveActive.set(controls.curveActive);
+        if (controls.unitActive !== undefined) {
+          plan.hookProgram.unitActive?.set(controls.unitActive);
+        }
       }
       await hooks.install(plan.hookProgram);
     }

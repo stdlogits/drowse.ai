@@ -298,6 +298,8 @@ def write_chat_config(directory: Path, checkpoint: Path, args, entry: dict, mode
         "bos_token_id": tokenizer["bos"] if tokenizer["bos"] is not None else eos,
         "eos_token_id": eos,
         "pad_token_id": tokenizer["pad"],
+        # Raw completions start at the family's BOS, as the goldens' short prompt does.
+        "drowse_completion_prefix_token_ids": [] if tokenizer["bos"] is None else [tokenizer["bos"]],
         "drowse_capture_special_token_ids": sorted(
             vocab["model"]["vocab"][token] if token in vocab["model"]["vocab"] else
             next(item["id"] for item in vocab["added_tokens"] if item["content"] == token)
