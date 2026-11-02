@@ -88,9 +88,7 @@ try {
     "/../drowse/webui/src/lib/runtime/samplingCapabilities.ts",
   );
   const {
-    STANDARD_STRUCTURED_HOOK_PROFILE,
-    STANDARD_STRUCTURED_HOOK_PROFILE_V2,
-    STANDARD_STRUCTURED_HOOK_PROFILE_V3,
+    STANDARD_STRUCTURED_HOOK_PROFILE_V4,
   } = await server.ssrLoadModule(
     "/src/hosted/runtime/structuredHookProfile.ts",
   );
@@ -985,7 +983,7 @@ try {
       kappa: [0],
     }],
     probes: [{ kind: "linear", direction: [1], bias: 0 }],
-  }], STANDARD_STRUCTURED_HOOK_PROFILE);
+  }], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
   gatedProgram.controls = {
     affine: [{
       enabled: true,
@@ -1361,11 +1359,11 @@ try {
       { kind: "sae", direction: [1], bias: 0 },
       { kind: "jlens", direction: [0], bias: 0 },
     ],
-  }], STANDARD_STRUCTURED_HOOK_PROFILE_V2, {
+  }], STANDARD_STRUCTURED_HOOK_PROFILE_V4, {
     bindingId: "a".repeat(64),
     layerIndices: Int32Array.of(0),
     tokenIds: Int32Array.from(
-      { length: STANDARD_STRUCTURED_HOOK_PROFILE_V2.maxProbes },
+      { length: STANDARD_STRUCTURED_HOOK_PROFILE_V4.maxProbes },
       (_, index) => index === 1 ? 17 : 0,
     ),
   });
@@ -1381,8 +1379,8 @@ try {
     saeSource: "fixture-sae",
   };
   scopedProgram.controls = {
-    affine: new Array(STANDARD_STRUCTURED_HOOK_PROFILE_V2.maxAffineGroups).fill(null),
-    curve: new Array(STANDARD_STRUCTURED_HOOK_PROFILE_V2.maxCurves).fill(null),
+    affine: new Array(STANDARD_STRUCTURED_HOOK_PROFILE_V4.maxAffineGroups).fill(null),
+    curve: new Array(STANDARD_STRUCTURED_HOOK_PROFILE_V4.maxCurves).fill(null),
   };
   const scopedReads = [];
   const scopedTokens = [];
@@ -1435,7 +1433,7 @@ try {
       along: 0.5,
       kappa: [0],
     }],
-  }], STANDARD_STRUCTURED_HOOK_PROFILE);
+  }], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
   staticProgram.controls = {
     affine: [{
       enabled: true,
@@ -1470,7 +1468,7 @@ try {
   assert.equal(staticControlUpdates, 0);
 
   const oriented = measurementEnvelope({
-    format: "drowse-structured-v2",
+    format: "drowse-structured-v4",
     layerCount: 2,
     probeKind: Uint32Array.of(1, 3, 2, 1, 3, 2),
     measurementSchema: {
@@ -1514,7 +1512,7 @@ try {
   assert.equal(oriented.instruments.sae.readout, undefined);
 
   const preciseProgram = {
-    format: "drowse-structured-v2", layerCount: 2,
+    format: "drowse-structured-v4", layerCount: 2,
     probeKind: Uint32Array.of(3, 2, 3, 2),
     measurementSchema: {
       layerMap: [0, 1], modelLayerCount: 2,
@@ -1579,7 +1577,7 @@ try {
   const exactReadoutProgram = compileStructuredHookProgram(
     1,
     [{}, {}, {}],
-    STANDARD_STRUCTURED_HOOK_PROFILE_V3,
+    STANDARD_STRUCTURED_HOOK_PROFILE_V4,
     {
       bindingId: "a".repeat(64),
       layerIndices: Int32Array.of(0, 2),
@@ -1931,7 +1929,7 @@ try {
           coordinateBias: [0, 0],
         }],
       })),
-      STANDARD_STRUCTURED_HOOK_PROFILE_V2,
+      STANDARD_STRUCTURED_HOOK_PROFILE_V4,
     );
     program.measurementSchema = {
       layerMap,
@@ -2048,7 +2046,7 @@ try {
         coordinateBias: [0],
       }],
     })),
-    STANDARD_STRUCTURED_HOOK_PROFILE_V2,
+    STANDARD_STRUCTURED_HOOK_PROFILE_V4,
   );
   const sharedProbeCount = sharedProgram.profile.maxProbes;
   for (let layer = 0; layer < sharedProgram.layerCount; layer += 1) {
@@ -2386,9 +2384,9 @@ try {
   geometryValues.set([1, 0.25, 0.2, 0.8, 0.2, 0.4, 0, 0, 1, 3], 0);
   geometryValues.set([1, 0.75, 0.4, 0.6, 0.8, 0.6, 0, 0, 3, 1], 8 * 41);
   const geometryEnvelope = measurementEnvelope({
-    format: "drowse-structured-v3",
+    format: "drowse-structured-v4",
     layerCount: 2,
-    profile: STANDARD_STRUCTURED_HOOK_PROFILE_V2,
+    profile: STANDARD_STRUCTURED_HOOK_PROFILE_V4,
     probeKind: new Uint32Array(16),
     measurementSchema: {
       layerMap: [4, 9],
@@ -2446,7 +2444,7 @@ try {
       along: 0.5,
       kappa: [0],
     }],
-  }], STANDARD_STRUCTURED_HOOK_PROFILE);
+  }], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
   thinkingProgram.controls = {
     affine: [{
       enabled: true,
@@ -2949,9 +2947,9 @@ try {
     async reload() {},
     async interruptGenerate() {},
     async resetChat() {},
-    async supportsDrowseRankOneHooks() { return true; },
-    async setDrowseRankOneProgram() {},
-    async clearDrowseRankOneProgram() {},
+    async supportsDrowseStructuredHooks() { return true; },
+    async setDrowseStructuredProgram() {},
+    async clearDrowseProgram() {},
     async readDrowseMeasurements() { return undefined; },
   };
   const runtime = new DrowseWebLlmRuntime({
