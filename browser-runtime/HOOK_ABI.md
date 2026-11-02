@@ -552,10 +552,12 @@ library allocates at its largest context and prefill chunk, the larger of:
 The catalog builder derives every variant's `maxStorageBufferBindingSize` and `maxBufferSize` as
 this binding (a release spec cannot declare them); the browser's catalog check refuses a units
 variant whose limits fall below its lock entry's `blockSitesBindingBytes`; capability admission
-compares the adapter's reported limits with the variant's. The bridge (0.2.84-drowse.47) asks the
-device for exactly the variant's binding (`buffer_size_required_bytes`; WebGPU's defaults of
-128 MiB binding and 256 MiB buffer when they are larger) and refuses an adapter that reports less
-before any weight is fetched, so every admitted adapter runs the model under the same limits and
+compares the adapter's reported limits with the variant's. At load the adapter derives the same
+binding from the verified `tensor-cache.json` and `mlc-chat-config.json` and the lock entry
+(`webLlmEngine.ts`; the variant's declared limits only gate admission), and the bridge
+(0.2.84-drowse.47) asks the device for exactly it (`buffer_size_required_bytes`; WebGPU's defaults
+of 128 MiB binding and 256 MiB buffer when they are larger) and refuses an adapter that reports
+less before any weight is read, so every admitted adapter runs the model under the same limits and
 an adapter the catalog admits can load it. (The bridge used to request 1 GiB when offered and
 128 MiB otherwise, so an adapter between the catalog's 256 or 512 MiB and 1 GiB was admitted and
 then could not bind the embedding.) On the M5's Chrome (adapter `maxStorageBufferBindingSize`
