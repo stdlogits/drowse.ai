@@ -2599,7 +2599,7 @@ function resolveGenerationSettings(
   };
 }
 
-function seedOf(recipe: Pick<PartialRecipe, "seed" | "sampling"> | null): number | null {
+function seedOf(recipe: Pick<ComposeTier, "seed" | "sampling"> | null): number | null {
   if (recipe === null) return null;
   return recipe.seed ?? recipe.sampling?.seed ?? null;
 }
