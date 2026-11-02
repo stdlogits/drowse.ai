@@ -112,7 +112,7 @@ try {
     (error) => error.code === "HOOK_ABI_MISMATCH",
   );
   // A library compiled with the smallest context as its prefill chunk does not attest under a
-  // lock recording 32 (the old adoption rule's value is refused).
+  // lock recording 32 (a prefill derived from the contexts is refused).
   const contextPrefill = Array.from(profiles.expectedHookProfileDescriptor(v4, { ...model, prefillChunkSize: 64 }));
   assert.throws(
     () => attest(bridgeProfile({ descriptor: contextPrefill })),

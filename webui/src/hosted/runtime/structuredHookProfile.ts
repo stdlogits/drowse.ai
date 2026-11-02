@@ -432,7 +432,7 @@ export interface HookProfileDescriptorModel {
   readonly hiddenSize: number;
   /** The compiled context window: the largest of the lock's `contextProfiles`. */
   readonly contextTokens: number;
-  /** The compiled prefill chunk: the smallest of the lock's `contextProfiles` (adoption rule). */
+  /** The compiled prefill chunk: the lock's `prefillChunkSize` (at most its smallest context). */
   readonly prefillChunkSize: number;
   /** Required with `standard-v4`, null with `standard-v4-residual`. */
   readonly blockSpec: BlockSpec | null;

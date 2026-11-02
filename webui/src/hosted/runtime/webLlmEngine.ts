@@ -1446,8 +1446,6 @@ function sameTokenIds(actual: readonly number[], expected: readonly number[]): b
     actual.every((tokenId, index) => tokenId === expected[index]);
 }
 
-/** The descriptor model a variant's library must attest (B1 §3.5): the lock's context profiles
- *  (largest compiled window, smallest prefill chunk, the adoption rule) and its block spec. */
 /** The model half of a library's descriptor (HOOK_ABI.md §6): CONTEXT_TOKENS is the largest of
  *  the variant's context profiles, PREFILL_CHUNK_SIZE the lock's `prefillChunkSize` (the chunk the
  *  library was compiled with, no larger than the smallest context it is offered at). */
