@@ -14,7 +14,7 @@ import type {
 } from "../../../../drowse/webui/src/lib/types";
 import type { BrowserFeasibilityCorePackCompiler } from "./browserCorePack";
 import type { BrowserJlensRuntimeResolver } from "./browserInstrumentPacks";
-import { BROWSER_EXACT_READOUT_TOP_K_CAPACITY } from "./webLlmGeneration";
+import { BROWSER_EXACT_READOUT_TOP_K_CAPACITY, type WebLlmLiveInstruments } from "./webLlmGeneration";
 import { loadSaeDescription } from "../../../../drowse/webui/src/lib/saeDescriptions";
 import { UnsupportedBlockError } from "./modelBackend";
 import { isUnitsServiceMethod, type BrowserUnitsService, type UnitsPackSource } from "./units/unitsService";
@@ -143,6 +143,23 @@ export class BrowserInstrumentRuntime {
    *  family live. */
   unitsLiveEnabled(): boolean {
     return this.units !== null && this.unitsLive;
+  }
+
+  /** What a generation's units channel and `slens/` reads take (B1 §2.2, §5.1): the attached
+   *  unit probes, whether the units and lens families are live, and the S read over a
+   *  forward's `[L, d]` capture through the units service. Null without a service (a program
+   *  then has neither unit taps nor `slens/` probes). */
+  liveInstruments(): WebLlmLiveInstruments | null {
+    const units = this.units;
+    if (units === null) return null;
+    return {
+      unitProbes: new Set(this.compiler.listProbes().flatMap((probe) =>
+        probe.family === "units" ? [probe.name] : []
+      )),
+      unitsLive: this.unitsLiveEnabled(),
+      lensLive: this.compiler.instrumentLiveState().lens,
+      slensReads: (hidden, probes) => units.slensReads(hidden, probes),
+    };
   }
 
   blocks(): InstrumentFamilyBlock[] {

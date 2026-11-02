@@ -257,20 +257,14 @@ try {
       scale: { source: "neutral", detail: "", top: 1, value: 7.324882 } },
     null,
   ];
-  const program = {
-    format: "drowse-structured-v4",
-    affineActive: new Uint32Array(16),
-    measurementSchema: { probes: [], unitTaps: tapSchema },
-  };
+  const unitTaps = await server.ssrLoadModule("/src/hosted/runtime/units/unitProgram.ts");
   // unit-probes-gemma3-v1.json, unsteered forward 0: raw −0.97013634 → −0.29285887 (− pole),
   // write norm 4.0678535 → 0.5553473; the ablated neuron's 0.21354148 → 0.04218963 (+ pole).
-  const scores = generation.unitTapReadings(program, Float32Array.of(-0.97013634, 4.0678535, 0));
+  const scores = unitTaps.unitTapGateScores(tapSchema, Float32Array.of(-0.97013634, 4.0678535, 0));
   assert.ok(Math.abs(scores["neuron/L1n5"] - -0.29285887) < 1e-6);
   assert.ok(Math.abs(scores["head/L2h1"] - 0.5553473) < 1e-6);
-  const positive = generation.unitTapReadings(program, Float32Array.of(0.21354148, 4.0678535, 0));
+  const positive = unitTaps.unitTapGateScores(tapSchema, Float32Array.of(0.21354148, 4.0678535, 0));
   assert.ok(Math.abs(positive["neuron/L1n5"] - 0.04218963) < 1e-6);
-  assert.equal(generation.unitTapReadings(program, undefined), undefined);
-  assert.throws(() => generation.unitTapReadings(program, Float32Array.of(Number.NaN, 1)), /finite tap/);
 
   // ------------------------------------------------- controls reach the bridge whole ---
   const runtime = new engine.DrowseWebLlmRuntime({});

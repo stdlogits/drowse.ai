@@ -156,6 +156,18 @@ export interface StructuredMeasurementSchema {
   saeFeatureMetadata?: Record<string, { label: string | null; maxAct: number | null }>;
   /** drowse-structured-v4: one entry per unit tap slot (`maxUnitTaps`), null when unused. */
   unitTaps?: Array<StructuredUnitTap | null>;
+  /** `slens/` probes the host reads post-forward over the `[L, d]` capture (`hiddenCapture`,
+   *  HOOK_ABI §5): every attached one and every `slens/` word a gate reads. */
+  slensProbes?: StructuredSlensProbe[];
+}
+
+/** One post-forward `slens/` read: its reading's name, its token, and whether it is an attached
+ *  probe (its readings ride the lens channel) or only a gate's (`@when:slens/<word>`). */
+export interface StructuredSlensProbe {
+  readonly name: string;
+  readonly word: string;
+  readonly tokenId: number;
+  readonly attached: boolean;
 }
 
 export interface StructuredHookProgramBuffers {
@@ -229,6 +241,9 @@ export interface StructuredHookProgramBuffers {
   jLensReadoutLayerIndices?: Int32Array;
   jLensTokenIds?: Int32Array;
   saeBindingId?: string;
+  /** The bridge keeps each forward's `[L, d]` capture and returns it with the measurement
+   *  bundle (`hidden`): set exactly when the schema lists `slensProbes`. */
+  hiddenCapture?: boolean;
   /** drowse-structured-v4 unit section (B1 §3.1, §3.4), present together or not at all: a v4
    *  program without it is v3's buffers exactly and runs the v4-identical structured or curved
    *  functions; with it, the units pair (`drowse_units_batch_{prefill,decode}`). */
@@ -880,6 +895,7 @@ export function validateStructuredHookProgram(program: StructuredHookProgramBuff
   ) {
     throw new TypeError("SAE readout binding is invalid");
   }
+  validateSlensProbes(program);
   for (let slot = 0; slot < curveSlots; slot += 1) {
     if (
       program.curveRank[slot] > r || program.curveNodeCount[slot] > n ||
@@ -3010,6 +3026,29 @@ export interface StructuredUnitTapScale {
 
 /** One live unit tap (B1 §2.2): `unit_taps[slot]` is `act[last, index]` for a neuron and
  *  `sqrt(max(0, z_hᵀ G_h z_h))·r_ao` for a head, after any ablation. */
+/** The post-forward `slens/` reads and the capture they need agree: the flag is set exactly when
+ *  probes are listed, names are distinct and token ids are vocabulary indices. */
+function validateSlensProbes(program: StructuredHookProgramBuffers): void {
+  const probes = program.measurementSchema?.slensProbes ?? [];
+  if (program.hiddenCapture !== undefined && typeof program.hiddenCapture !== "boolean") {
+    throw new TypeError("The hidden-capture flag must be a boolean");
+  }
+  if ((program.hiddenCapture === true) !== (probes.length > 0)) {
+    throw new TypeError("The hidden capture must be asked for exactly when slens/ probes are read");
+  }
+  const names = new Set<string>();
+  for (const probe of probes) {
+    if (
+      typeof probe.name !== "string" || probe.name.length === 0 || names.has(probe.name) ||
+      typeof probe.word !== "string" || probe.word.length === 0 ||
+      !Number.isSafeInteger(probe.tokenId) || probe.tokenId < 0 || typeof probe.attached !== "boolean"
+    ) {
+      throw new TypeError("slens/ probe entries are invalid");
+    }
+    names.add(probe.name);
+  }
+}
+
 export interface StructuredUnitTap {
   readonly name: string;
   /** `neuron/L<layer>n<index>` or `head/L<layer>h<index>`. */

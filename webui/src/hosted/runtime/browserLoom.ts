@@ -619,6 +619,7 @@ export class BrowserLoomRuntime {
           steeringExpression: effectiveSteering,
           position_spans: settings.positionSpans,
           hookProgram,
+          liveInstruments: this.instruments?.liveInstruments() ?? null,
           maxOutputTokens: this.maxOutputTokens,
           ...(fork === null ? {} : { measurementStartRawIndex: prefix!.length }),
           ...(fork !== null
@@ -1315,6 +1316,7 @@ export class BrowserLoomRuntime {
         steeringExpression: settings.steering,
         position_spans: settings.positionSpans,
         hookProgram,
+        liveInstruments: this.instruments?.liveInstruments() ?? null,
         maxOutputTokens: this.maxOutputTokens,
         replay: { forcedPrefixTokenIds: forcedPrefix },
         measurementTargetRawIndex: request.rawIndex,
@@ -1488,6 +1490,7 @@ export class BrowserLoomRuntime {
       steeringExpression: settings.steering,
       position_spans: settings.positionSpans,
       hookProgram,
+      liveInstruments: this.instruments?.liveInstruments() ?? null,
       maxOutputTokens: this.maxOutputTokens,
       replay: { forcedPrefixTokenIds: forcedPrefix, scoreTokenIds },
       onRawToken: (token) => {

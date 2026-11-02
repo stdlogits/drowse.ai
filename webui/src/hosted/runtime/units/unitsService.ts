@@ -3,6 +3,7 @@
 // routes do it, the host ports over the loaded library's block-sites backend, B6's packs, and
 // the loom's node replays. A library without unit sites answers native's 422 refusal.
 import type { SerializedMahalanobisWhitener } from "../../fitting/workerContracts";
+import type { ScalarReadingJSON } from "../../../../../drowse/webui/src/lib/types";
 import {
   f32Tensor,
   u32Tensor,
@@ -21,7 +22,7 @@ import { readingScales, type UnitScales, type UnitStatistics } from "./scales";
 import { parseLayerSelector, parseSteeringExpression, resolveModelLayers, type LayerSelector } from "../steeringExpression";
 import { slensAtomDirections } from "./slens";
 import { centreDigest } from "./probeDigest";
-import { lensProbeReadings, UNIT_MEAN_FOOTPRINT_Z, type LensProbe } from "./replayProbes";
+import { lensProbeReadings, slensReadings, UNIT_MEAN_FOOTPRINT_Z, type LensProbe } from "./replayProbes";
 import type { BrowserUnitProgramSource } from "./unitProgram";
 import { layerRequest, NO_CATALOG, parseUnit, unitCatalogStatus, UnitReader, UnitRequestError, type UnitLayerArtifacts } from "./unitReader";
 
@@ -284,6 +285,16 @@ export class BrowserUnitsService {
       sources: { R: packs.lens("R")?.source ?? null, S: packs.lens("S")?.source ?? null },
     };
     return this.session;
+  }
+
+  /** A generation forward's `slens/` reads over its `[L, d]` capture (native
+   *  `_InputBlock.readings`) and the S source label the lens binding names. */
+  async slensReads(
+    hidden: Float32Array,
+    probes: readonly { readonly name: string; readonly tokenId: number }[],
+  ): Promise<{ readings: Record<string, ScalarReadingJSON>; values: Record<string, number>; source: string | null }> {
+    const session = await this.open();
+    return { ...await slensReadings(session.context, hidden, probes), source: session.sources.S };
   }
 
   /** The structured compiler's unit source (`BrowserFeasibilityCorePackCompiler.setUnitSource`)

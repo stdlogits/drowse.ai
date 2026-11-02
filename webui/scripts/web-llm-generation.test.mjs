@@ -1076,6 +1076,144 @@ try {
       "generation must not write the caller's unit groups");
   }
 
+  // Envelope v2's units channel and the lens channel's slens/ readings (B1 §2.2, §5.1): an
+  // attached unit probe and an attached slens/ probe read out (token envelopes while their
+  // family is live, the aggregate always); a unit tapped for a gate and a gate-only slens/ word
+  // feed gates only; slens/ reads run over the bridge's [L, d] capture.
+  const liveBase = compileStructuredHookProgram(2, [{}], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
+  liveBase.measurementSchema = {
+    layerMap: [0],
+    modelLayerCount: 4,
+    probes: Array.from({ length: STANDARD_STRUCTURED_HOOK_PROFILE_V4.maxProbes }, () => null),
+    lensSource: null,
+    saeSource: null,
+  };
+  const neutralScale = (value) => ({ source: "neutral", detail: "", top: [1, 1], value });
+  const unitLive = withStructuredUnitSection(liveBase, { dFF: 4, nHeads: 1, headDim: 1 }, {
+    ablations: [{ kind: "neuron", layer: 0, index: 3, keep: 0, bias: 0, group: 0 }],
+    taps: [
+      { name: "probe-a", unit: "neuron/L0n1", kind: "neuron", layer: 0, index: 1, slot: 0, scale: neutralScale([2, 4]) },
+      { name: "neuron/L0n2", unit: "neuron/L0n2", kind: "neuron", layer: 0, index: 2, slot: 1, scale: neutralScale([8, 8]) },
+    ],
+    controls: [{ enabled: true, phase: { kind: "both" }, gate: { slots: [], scoreKey: "slens/dog", operator: ">", threshold: 0 } }],
+  });
+  const liveProgram = {
+    ...unitLive,
+    hiddenCapture: true,
+    measurementSchema: {
+      ...unitLive.measurementSchema,
+      slensProbes: [
+        { name: "slens/cat", word: "cat", tokenId: 5, attached: true },
+        { name: "slens/dog", word: "dog", tokenId: 6, attached: false },
+      ],
+    },
+  };
+  const liveRun = async (instruments) => {
+    const tokens = [];
+    const slensCalls = [];
+    let forward = 0;
+    const result = await streamWebLlmGeneration(engine, {
+      async clear() {},
+      async interrupt() {},
+      async install() {},
+      async updateControls() {},
+      async read() { return new Float32Array(8); },
+      async readBundle() {
+        forward += 1;
+        const unitTaps = new Float32Array(64);
+        unitTaps.set([forward === 1 ? 1 : -2, 4]);
+        return { scalar: new Float32Array(8), unitTaps, hidden: Float32Array.of(forward, 0) };
+      },
+      assertSteeringSupported() {},
+    }, {
+      input: { kind: "chat", messages: [{ role: "user", content: "Hi" }] },
+      hookProgram: liveProgram,
+      liveInstruments: {
+        ...instruments,
+        async slensReads(hidden, probes) {
+          slensCalls.push([hidden[0], probes.map((probe) => probe.name)]);
+          const reading = (value) => ({ value, unit: "mean_footprint_z", per_layer: { 3: value }, depth: { center: [0.75], spread: [0], basis: "footprint_z" } });
+          return {
+            readings: Object.fromEntries(probes.map((probe) => [probe.name, reading(roundReading(hidden[0] / 3))])),
+            values: Object.fromEntries(probes.map((probe) => [probe.name, hidden[0] / 3])),
+            source: "s-pack",
+          };
+        },
+      },
+      measurementSpecialTokenIds: [99],
+    }, (token) => tokens.push(token));
+    return { tokens, result, slensCalls };
+  };
+  const liveOn = await liveRun({ unitProbes: new Set(["probe-a"]), unitsLive: true, lensLive: true });
+  assert.equal(liveOn.tokens.length, 2);
+  const firstLive = liveOn.tokens[0].measurements;
+  assert.deepEqual(firstLive.instruments.units, {
+    binding: { source: null, steering: null },
+    readings: {
+      "probe-a": {
+        value: 0.5,
+        unit: "activation_over_scale",
+        per_layer: { 0: 0.5 },
+        depth: { center: [0], spread: [0], basis: "single_layer" },
+        meta: { unit: "neuron/L0n1", activation: 1, scale: "neutral" },
+      },
+    },
+  }, "only the attached unit probe reads out, over its + pole");
+  assert.deepEqual(firstLive.instruments.lens.binding, { sources: { S: "s-pack" }, steering: null });
+  assert.deepEqual(Object.keys(firstLive.instruments.lens.readings), ["slens/cat"], "a gate-only slens/ word never reads out");
+  assert.deepEqual(firstLive.scores, { "probe-a": 0.5, "slens/cat": roundReading(1 / 3) });
+  assert.deepEqual(liveOn.slensCalls, [[1, ["slens/cat", "slens/dog"]], [2, ["slens/cat", "slens/dog"]]],
+    "a gated slens/ word reads every forward");
+  assert.equal(liveOn.tokens[1].measurements.instruments.units.readings["probe-a"].value, -0.5, "a negative act reads over the − pole");
+  assert.equal(liveOn.result.measurements.scope, "aggregate");
+  assert.deepEqual(Object.keys(liveOn.result.measurements.instruments).sort(), ["lens", "units"]);
+
+  const liveOff = await liveRun({ unitProbes: new Set(["probe-a"]), unitsLive: false, lensLive: false });
+  assert.equal(liveOff.tokens[0].measurements?.instruments.units, undefined, "units off: no per-token units channel");
+  assert.equal(liveOff.tokens[0].measurements?.instruments.lens, undefined, "lens off: no per-token slens/ readings");
+  assert.equal(liveOff.result.measurements.instruments.units.readings["probe-a"].value, -0.5,
+    "the aggregate keeps the last content token's unit readings");
+  assert.deepEqual(liveOff.result.measurements.instruments.lens.readings["slens/cat"].value, roundReading(2 / 3),
+    "and its slens/ readings");
+  const ungated = { ...liveProgram, controls: { ...liveProgram.controls, units: [null, null, null, null] },
+    measurementSchema: { ...liveProgram.measurementSchema, slensProbes: [liveProgram.measurementSchema.slensProbes[0]] } };
+  const deferredCalls = [];
+  const deferred = await streamWebLlmGeneration(engine, {
+    async clear() {},
+    async interrupt() {},
+    async install() {},
+    async updateControls() {},
+    async read() { return new Float32Array(8); },
+    async readBundle() { return { scalar: new Float32Array(8), unitTaps: new Float32Array(64), hidden: Float32Array.of(9, 0) }; },
+    assertSteeringSupported() {},
+  }, {
+    input: { kind: "chat", messages: [{ role: "user", content: "Hi" }] },
+    hookProgram: ungated,
+    liveInstruments: {
+      unitProbes: new Set(), unitsLive: false, lensLive: false,
+      async slensReads(hidden, probes) {
+        deferredCalls.push(probes.map((probe) => probe.name));
+        return { readings: { "slens/cat": { value: 3, unit: "mean_footprint_z", per_layer: {}, depth: { center: [0], spread: [0], basis: "footprint_z" } } }, values: { "slens/cat": 3 }, source: "s-pack" };
+      },
+    },
+    measurementSpecialTokenIds: [99],
+  }, () => {});
+  assert.deepEqual(deferredCalls, [["slens/cat"]], "ungated and not live: the aggregate reads its slens/ probes once");
+  assert.equal(deferred.measurements.instruments.lens.readings["slens/cat"].value, 3);
+  await assert.rejects(streamWebLlmGeneration(engine, {
+    async clear() {},
+    async interrupt() {},
+    async install() {},
+    async read() { return new Float32Array(8); },
+    async readBundle() { return { scalar: new Float32Array(8), unitTaps: new Float32Array(64) }; },
+    assertSteeringSupported() {},
+  }, {
+    input: { kind: "chat", messages: [{ role: "user", content: "Hi" }] },
+    hookProgram: ungated,
+    liveInstruments: { unitProbes: new Set(), unitsLive: false, lensLive: false, async slensReads() { assert.fail(); } },
+    measurementSpecialTokenIds: [99],
+  }, () => {}), /HIDDEN_CAPTURE_UNAVAILABLE|\[L, d\] capture/);
+
   const measurementOnlyProgram = { ...gatedProgram, controls: undefined };
   const tokenOnlyMeasurements = [];
   const tokenOnlyResult = await streamWebLlmGeneration(

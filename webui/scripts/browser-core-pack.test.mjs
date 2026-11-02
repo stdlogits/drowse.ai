@@ -947,6 +947,20 @@ try {
     const slensGated = compiler.compile("!neuron/L1n2@when:slens/e>1");
     assert.equal(slensGated.controls.units[0].gate.scoreKey, "slens/e");
     assert.equal(slensGated.measurementSchema.probes.filter((probe) => probe !== null).length, 0, "no GPU slot");
+    // Its reads run post-forward over the bridge's [L, d] capture, which the program asks for.
+    assert.equal(slensGated.hiddenCapture, true);
+    assert.deepEqual(slensGated.measurementSchema.slensProbes, [
+      { name: "slens/e", word: "e", tokenId: 72, attached: true },
+    ]);
+    const gateOnly = compiler.compile("!neuron/L1n2@when:slens/e>1");
+    compiler.detachProbe("slens/e");
+    const unattached = compiler.compile("!neuron/L1n2@when:slens/e>1");
+    assert.deepEqual(unattached.measurementSchema.slensProbes, [
+      { name: "slens/e", word: "e", tokenId: 72, attached: false },
+    ], "a gate's slens/ word is read for the gate alone");
+    assert.equal(compiler.compile("!neuron/L1n2").hiddenCapture, undefined, "no slens/ read, no capture");
+    assert.ok(gateOnly.hiddenCapture);
+    compiler.attachProbe({ selector: "slens/e" });
     // Unit and slens/ probes carry native's digests (units-readout-v2, slens-footprint-z-v3).
     const digests = await server.ssrLoadModule("/src/hosted/runtime/units/probeDigest.ts");
     const scales = readingScales(statistics, spec, 2);

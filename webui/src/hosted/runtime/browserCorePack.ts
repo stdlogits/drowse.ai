@@ -61,6 +61,7 @@ import {
   type StructuredMeasurementProbe,
   type StructuredMeasurementSlot,
   type StructuredProbe,
+  type StructuredSlensProbe,
 } from "./structuredHookProgram";
 import {
   resolveStructuredHookProfile,
@@ -1282,7 +1283,38 @@ export class BrowserFeasibilityCorePackCompiler {
     }
     program.controls = { affine: affineControls, curve: curveControls };
     validateStructuredHookProgram(program);
-    return this.withUnitSection(program, unitTerms, unitGateNames, gateSlots);
+    return this.withSlensReads(this.withUnitSection(program, unitTerms, unitGateNames, gateSlots), slensGateNames);
+  }
+
+  /** The post-forward `slens/` reads (HOOK_ABI §5): every attached `slens/` probe, and every
+   *  `slens/<word>` a gate reads that no probe attached, scored over the bridge's `[L, d]`
+   *  capture, which the program then asks for (`hiddenCapture`). */
+  private withSlensReads(
+    program: StructuredHookProgramBuffers,
+    slensGateNames: readonly string[],
+  ): StructuredHookProgramBuffers {
+    const probes: StructuredSlensProbe[] = [];
+    for (const [name, probe] of this.attachedProbes) {
+      if (probe.family !== "lens" || probe.namespace !== "slens" || probe.token_id === null) continue;
+      probes.push({ name, word: probe.word, tokenId: probe.token_id, attached: true });
+    }
+    for (const name of slensGateNames) {
+      if (probes.some((probe) => probe.name === name)) continue;
+      const word = name.slice("slens/".length);
+      const prepared = this.unitSource?.slensAtom(word) ?? null;
+      if (prepared === null) {
+        throw coreError("SLENS_ATOM_UNPREPARED", `${name} was not resolved before compiling`);
+      }
+      probes.push({ name, word, tokenId: prepared.tokenId, attached: false });
+    }
+    if (probes.length === 0) return program;
+    const out: StructuredHookProgramBuffers = {
+      ...program,
+      hiddenCapture: true,
+      measurementSchema: { ...program.measurementSchema!, slensProbes: probes },
+    };
+    validateStructuredHookProgram(out);
+    return out;
   }
 
   private isSlensGate(name: string): boolean {

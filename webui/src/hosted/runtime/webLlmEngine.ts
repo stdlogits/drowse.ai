@@ -100,6 +100,8 @@ interface DrowseMeasurementBundle {
   geometry?: Float32Array;
   /** Hook ABI v5's live unit tap (`[maxUnitTaps]`), when the program has a unit section. */
   unitTaps?: Float32Array;
+  /** The forward's `[L, d]` capture, when the program asks for it (`hiddenCapture`). */
+  hidden?: Float32Array;
   jlensTopTokens?: DrowseJlensTopTokenReadout;
   saeTopFeatures?: DrowseSaeTopFeatureReadout;
 }
@@ -1086,6 +1088,7 @@ export class DrowseWebLlmRuntime {
     scalar: Float32Array | undefined;
     geometry: Float32Array | undefined;
     unitTaps?: Float32Array;
+    hidden?: Float32Array;
     jlensTopTokens: WebLlmJlensTopTokenReadout | undefined;
     saeTopFeatures: WebLlmSaeTopFeatureReadout | undefined;
   }> {
@@ -1107,6 +1110,7 @@ export class DrowseWebLlmRuntime {
         ? undefined
         : new Float32Array(value.geometry),
       ...(value.unitTaps === undefined ? {} : { unitTaps: new Float32Array(value.unitTaps) }),
+      ...(value.hidden === undefined ? {} : { hidden: new Float32Array(value.hidden) }),
       jlensTopTokens,
       saeTopFeatures,
     };
