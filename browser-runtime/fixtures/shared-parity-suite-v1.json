@@ -4,8 +4,9 @@
   "fixtures": [
     "drowse/tests/fixtures/browser/post-block-rank-one-v2.json",
     "drowse/tests/fixtures/browser/structured-program-parity-v1.json",
-    "drowse/tests/fixtures/browser/measurement-envelope-v1.json",
+    "drowse/tests/fixtures/browser/measurement-envelope-v2.json",
     "drowse/tests/fixtures/browser/loom-operation-transcript-v1.json",
+    "drowse/tests/fixtures/browser/recipe-compose-v1.json",
     "drowse/tests/fixtures/browser/sampling-parity-v1.json",
     "drowse/tests/fixtures/browser/topology-rbf-parity-v1.json",
     "browser-runtime/fixtures/drowse-interchange-v1.json"
@@ -13,6 +14,7 @@
   "claims": [
     "expression parsing",
     "authoritative loom mutations",
+    "call composition precedence",
     "measurement envelopes",
     "structured steering and instruments",
     "top-k/top-p sampling distribution",
