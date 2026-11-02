@@ -148,7 +148,16 @@ test("home token popovers support hover, pinning, keyboard, and setting changes"
   await expect(panel).toBeVisible();
   await page.mouse.move(0, 0);
   await expect(panel).toBeVisible();
-  await panel.getByRole("button", { name: "Close token probabilities" }).click();
+  // A closing panel goes inert at once, before its fade ends, so nothing in it can be clicked or
+  // focused on the way out.
+  const closing = await panel.getByRole("button", { name: "Close token probabilities" }).evaluate(async el => {
+    const panel = el.closest<HTMLElement>(".recorded-token-panel")!;
+    (el as HTMLButtonElement).click();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    return { inert: panel.inert, open: panel.matches(":popover-open") };
+  });
+  expect(closing).toEqual({ inert: true, open: true });
+  await expect(panel).toBeHidden();
   await expect(trigger).toBeFocused();
   await trigger.press("Enter");
   await expect(panel).toBeFocused();

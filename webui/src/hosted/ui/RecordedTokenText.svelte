@@ -196,7 +196,7 @@
 <svelte:element this={layout === "message" ? "h1" : "div"} class="message-title" class:inline={layout === "inline"} aria-label={tokens.map(token => token.text).join("").trim()}><span class="recorded-tokens">{#if layout === "inline"}{#each tokens as piece, index (index)}<span class="inline-piece" animate:flip={{ duration: reducedMotion() ? 0 : GLIDE }}>{@render tokenButton(piece.text, index)}</span>{/each}{:else}{#each [groups.slice(0, 2), groups.slice(2)] as section, sectionIndex}{sectionIndex === 0 ? "" : " "}<span class={sectionIndex === 0 ? "message-prefix" : "message-body"}>{#each section as group, groupIndex}{groupIndex === 0 ? "" : group.space}<span class="word">{#each group.pieces as piece}{@render tokenButton(piece.text, piece.index, piece.first)}{/each}</span>{/each}</span>{/each}{/if}</span></svelte:element>
 
 <div bind:this={panel} id={`${uid}-panel`} class="recorded-token-panel" class:fallback-open={fallbackOpen} popover="manual" role="dialog" tabindex="-1"
-  aria-labelledby={`${uid}-title`} aria-hidden={active === null} onpointerenter={cancelTimers} onpointerleave={leave}>
+  aria-labelledby={`${uid}-title`} inert={active === null} onpointerenter={cancelTimers} onpointerleave={leave}>
   {#if token}
     <header>
       <div><span class="source">Model token · Gemma 3 4B</span><h2 id={`${uid}-title`}>{visibleTokenText(token.text)}</h2></div>
