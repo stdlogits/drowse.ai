@@ -4621,10 +4621,10 @@ index 00000000..d67ebc61
 +    return op.tensor_expr_op(_take, name_hint=name, args=[values])
 diff --git a/python/mlc_llm/model/drowse_units.py b/python/mlc_llm/model/drowse_units.py
 new file mode 100644
-index 00000000..70ac263e
+index 00000000..5c793921
 --- /dev/null
 +++ b/python/mlc_llm/model/drowse_units.py
-@@ -0,0 +1,472 @@
+@@ -0,0 +1,1326 @@
 +"""Drowse hook ABI v5 (`block-sites-v5`): in-block unit sites for dense blocks.
 +
 +Every eligible model's decoder layer runs `drowse_block(hidden, cache, layer_id, sites)`. With
@@ -4637,6 +4637,7 @@ index 00000000..70ac263e
 +
 +import struct
 +
++from tvm import tirx
 +from tvm.relax.frontend import nn
 +from tvm.relax.frontend.nn import Tensor, op
 +from tvm.script import tirx as T
@@ -4795,6 +4796,20 @@ index 00000000..70ac263e
 +        return act
 +
 +    def tap(self, z: Tensor, attn_o: Tensor, act: Tensor, layer_id: int) -> None:
++        return None
++
++    def qkv(self, qkv: Tensor, layer_id: int) -> None:
++        """The attention input `[b, s, H + 2·KV, hd]` after the q/k norms (and, on Gemma 3, the
++        in-graph rotary): the pattern capture's source (B1 §6)."""
++        return None
++
++    def block_in(self, hidden: Tensor, layer_id: int) -> None:
++        return None
++
++    def out_pre(self, hidden: Tensor, layer_id: int) -> None:
++        return None
++
++    def out(self, hidden: Tensor, layer_id: int) -> None:
 +        return None
 +
 +
@@ -5097,8 +5112,847 @@ index 00000000..70ac263e
 +        inplace_indices=[5],
 +        out=Tensor.placeholder((UNIT_MAX_TAPS,), "float32"),
 +    )
++
++
++# ----------------------------------------------------------------------------- replay ---
++
++REPLAY_FLAG_ANATOMY = 1
++REPLAY_FLAG_ACTIVITY = 2
++REPLAY_FLAG_PATTERNS = 4
++_FLOAT32_LOWEST = -3.4028234663852886e38
++
++
++def replay_meta_layout() -> dict[str, int]:
++    """Offsets in `replay_meta` (i32; HOOK_ABI.md §7, drowse.ai `replayMetaLayout`)."""
++    spans = 2
++    population_row = spans + 4 * UNIT_MAX_ACTIVITY_SPANS
++    traces = population_row + 2
++    pattern_layer_count = traces + 3 * UNIT_MAX_ACTIVITY_TRACES
++    pattern_layers = pattern_layer_count + 1
++    flags = pattern_layers + UNIT_MAX_PATTERN_LAYERS
++    return {
++        "anatomy_position": 0,
++        "span_count": 1,
++        "spans": spans,
++        "population_row": population_row,
++        "trace_count": population_row + 1,
++        "traces": traces,
++        "pattern_layer_count": pattern_layer_count,
++        "pattern_layers": pattern_layers,
++        "flags": flags,
++        "length": flags + 1,
++    }
++
++
++def anatomy_layout(hidden_size: int, block: dict) -> dict[str, int]:
++    """Per-layer anatomy tap offsets: `block_in | mid | out_pre | out | attn_o | mlp_o | act | z`."""
++    d = hidden_size
++    return {
++        "block_in": 0,
++        "mid": d,
++        "out_pre": 2 * d,
++        "out": 3 * d,
++        "attn_o": 4 * d,
++        "mlp_o": 5 * d,
++        "act": 6 * d,
++        "z": 6 * d + block["d_ff"],
++        "stride": 6 * d + block["d_ff"] + block["n_heads"] * block["head_dim"],
++    }
++
++
++def replay_program_spec(num_layers: int, block: dict, context: int) -> dict[str, nn.spec.Tensor]:
++    """The replay arguments after the units program's (B1 §3.4)."""
++    d_ff, heads, kv_heads, head_dim = (
++        block["d_ff"], block["n_heads"], block["n_kv_heads"], block["head_dim"]
++    )
++    return {
++        "replay_meta": nn.spec.Tensor([replay_meta_layout()["length"]], "int32"),
++        "unit_scales": nn.spec.Tensor([num_layers, 2 * d_ff + heads], "float32"),
++        "head_grams": nn.spec.Tensor([num_layers, heads, head_dim, head_dim], "float32"),
++        "activity_state": nn.spec.Tensor([num_layers, 3 * d_ff + 3 * heads], "float32"),
++        "traces": nn.spec.Tensor([UNIT_MAX_ACTIVITY_TRACES, context], "float32"),
++        "population": nn.spec.Tensor([num_layers, d_ff + heads], "float32"),
++        "pattern_keys": nn.spec.Tensor(
++            [UNIT_MAX_PATTERN_LAYERS, kv_heads, context, head_dim], "float32"
++        ),
++    }
++
++
++def attention_rows_spec(block: dict, context: int) -> dict[str, nn.spec.Tensor]:
++    return {
++        "pattern_keys": nn.spec.Tensor(
++            [UNIT_MAX_PATTERN_LAYERS, block["n_kv_heads"], context, block["head_dim"]], "float32"
++        ),
++        "pattern_q": nn.spec.Tensor(
++            [UNIT_MAX_PATTERN_LAYERS, block["n_heads"], block["head_dim"]], "float32"
++        ),
++        "rows_meta": nn.spec.Tensor([UNIT_MAX_PATTERN_HEADS, 4], "int32"),
++    }
++
++
++def _flag(value, bit: int):
++    return T.floormod(T.floordiv(value, bit), 2) == 1
++
++
++class ReplaySites(UnitSites):
++    """The units forward plus the replay taps (B1 §2.3, §6): anatomy stores at one absolute
++    position, the per-layer unit-activity reduction into a state threaded through the replay's
++    forwards, and the post-RoPE key and query capture at the asked pattern layers."""
++
++    def __init__(
++        self,
++        num_layers: int,
++        hidden_size: int,
++        block: dict,
++        context: int,
++        positions: Tensor,
++        unit_meta: Tensor,
++        unit_coeff: Tensor,
++        unit_active: Tensor,
++        tap_grams: Tensor,
++        replay_meta: Tensor,
++        unit_scales: Tensor,
++        head_grams: Tensor,
++        activity_state: Tensor,
++        traces: Tensor,
++        population: Tensor,
++        pattern_keys: Tensor,
++    ):
++        super().__init__(
++            num_layers, block["head_dim"], positions, unit_meta, unit_coeff, unit_active,
++            tap_grams, block["sandwich"], block["rms_eps"],
++        )
++        self.hidden_size = hidden_size
++        self.block = block
++        self.context = context
++        self.replay_meta = replay_meta
++        self.unit_scales = unit_scales
++        self.head_grams = head_grams
++        self.state = activity_state
++        self.traces = traces
++        self.population = population
++        self.pattern_keys = pattern_keys
++        self.layout = anatomy_layout(hidden_size, block)
++        self.anatomy = op.zeros((num_layers, self.layout["stride"]), "float32")
++        self.pattern_q = op.zeros(
++            (UNIT_MAX_PATTERN_LAYERS, block["n_heads"], block["head_dim"]), "float32"
++        )
++
++    def block_in(self, hidden: Tensor, layer_id: int) -> None:
++        self.anatomy = _anatomy_store(hidden, layer_id, "block_in", self)
++
++    def mid(self, h_mid: Tensor, layer_id: int) -> None:
++        self.anatomy = _anatomy_store(h_mid, layer_id, "mid", self)
++
++    def out_pre(self, hidden: Tensor, layer_id: int) -> None:
++        self.anatomy = _anatomy_store(hidden, layer_id, "out_pre", self)
++
++    def out(self, hidden: Tensor, layer_id: int) -> None:
++        self.anatomy = _anatomy_store(hidden, layer_id, "out", self)
++
++    def mlp(self, mlp_o: Tensor, layer_id: int) -> None:
++        self.anatomy = _anatomy_store(mlp_o, layer_id, "mlp_o", self)
++
++    def tap(self, z: Tensor, attn_o: Tensor, act: Tensor, layer_id: int) -> None:
++        super().tap(z, attn_o, act, layer_id)
++        self.anatomy = _anatomy_store(attn_o, layer_id, "attn_o", self)
++        self.anatomy = _anatomy_store(act, layer_id, "act", self)
++        self.anatomy = _anatomy_store(z, layer_id, "z", self)
++        self.state, self.traces, self.population = _activity_neurons(act, layer_id, self)
++        values = _head_values(z, attn_o, layer_id, self)
++        self.state, self.traces, self.population = _activity_heads(values, layer_id, self)
++
++    def qkv(self, qkv: Tensor, layer_id: int) -> None:
++        self.pattern_keys, self.pattern_q = _pattern_capture(qkv, layer_id, self)
++
++
++def _anatomy_store(x: Tensor, layer_id: int, site: str, sites: ReplaySites) -> Tensor:
++    """Copies `x[row of the anatomy position]` into `anatomy_taps[layer, site]` (in place)."""
++    batch_size, sequence_length, width = x.shape
++    dtype = x.dtype
++    total = batch_size * sequence_length
++    num_layers = sites.num_layers
++    stride = sites.layout["stride"]
++    offset = sites.layout[site]
++    meta = replay_meta_layout()
++    meta_len, at, flags = meta["length"], meta["anatomy_position"], meta["flags"]
++    blocks = (width + _LANES - 1) // _LANES
++
++    @T.prim_func(private=True, s_tir=True)
++    def _store(var_x: T.handle, var_positions: T.handle, var_meta: T.handle, var_taps: T.handle):
++        T.func_attr({"op_pattern": 8, "tirx.is_scheduled": 1, "tirx.noalias": True})
++        values = T.match_buffer(var_x, (batch_size, sequence_length, width), dtype)
++        positions = T.match_buffer(var_positions, (total,), "int32")
++        replay_meta = T.match_buffer(var_meta, (meta_len,), "int32")
++        taps = T.match_buffer(var_taps, (num_layers, stride), "float32")
++        for block in T.thread_binding(blocks, thread="blockIdx.x"):
++            for lane in T.thread_binding(_LANES, thread="threadIdx.x"):
++                with T.sblock("drowse_anatomy_store"):
++                    k = T.axis.spatial(blocks, block)
++                    t = T.axis.spatial(_LANES, lane)
++                    column = T.meta_var(k * _LANES + t)
++                    row = T.meta_var(replay_meta[at] - positions[0])
++                    if T.And(
++                        T.And(_flag(replay_meta[flags], REPLAY_FLAG_ANATOMY), replay_meta[at] >= 0),
++                        column < width,
++                    ):
++                        if T.And(row >= 0, row < total):
++                            if positions[row] == replay_meta[at]:
++                                taps[layer_id, offset + column] = T.Cast(
++                                    "float32",
++                                    values[
++                                        T.floordiv(row, sequence_length),
++                                        T.floormod(row, sequence_length),
++                                        column,
++                                    ],
++                                )
++
++    return op.tensor_ir_inplace_op(
++        _store,
++        f"drowse_anatomy_{site}_{layer_id}",
++        args=[x, sites.positions, sites.replay_meta, sites.anatomy],
++        inplace_indices=[3],
++        out=Tensor.placeholder((num_layers, stride), "float32"),
++    )
++
++
++def _activity_shapes(sites: ReplaySites) -> dict:
++    d_ff, heads = sites.block["d_ff"], sites.block["n_heads"]
++    return {
++        "num_layers": sites.num_layers,
++        "d_ff": d_ff,
++        "heads": heads,
++        "state_stride": 3 * d_ff + 3 * heads,
++        "scale_stride": 2 * d_ff + heads,
++        "population_stride": d_ff + heads,
++        "context": sites.context,
++        "meta": replay_meta_layout(),
++    }
++
++
++def _activity_neurons(act: Tensor, layer_id: int, sites: ReplaySites):
++    """Per neuron, over the forward's rows in order: `v = act / S_pole` (pole by sign), 0 and
++    rank −1 below `UNIT_POSITIONS_FROM`; the strictly greater `|v|` wins (ties keep the earlier
++    row); the traced neurons' rows and the population row are written as they pass (B1 §2.3)."""
++    batch_size, sequence_length, d_ff = act.shape
++    dtype = act.dtype
++    total = batch_size * sequence_length
++    sh = _activity_shapes(sites)
++    meta = sh["meta"]
++    blocks = (d_ff + _LANES - 1) // _LANES
++
++    @T.prim_func(private=True, s_tir=True)
++    def _reduce(
++        var_act: T.handle,
++        var_positions: T.handle,
++        var_meta: T.handle,
++        var_scales: T.handle,
++        var_state: T.handle,
++        var_traces: T.handle,
++        var_population: T.handle,
++    ):
++        T.func_attr({"op_pattern": 8, "tirx.is_scheduled": 1, "tirx.noalias": True})
++        acts = T.match_buffer(var_act, (batch_size, sequence_length, d_ff), dtype)
++        positions = T.match_buffer(var_positions, (total,), "int32")
++        replay_meta = T.match_buffer(var_meta, (meta["length"],), "int32")
++        scales = T.match_buffer(var_scales, (sh["num_layers"], sh["scale_stride"]), "float32")
++        state = T.match_buffer(var_state, (sh["num_layers"], sh["state_stride"]), "float32")
++        traces = T.match_buffer(var_traces, (UNIT_MAX_ACTIVITY_TRACES, sh["context"]), "float32")
++        population = T.match_buffer(
++            var_population, (sh["num_layers"], sh["population_stride"]), "float32"
++        )
++        slot = T.sblock_alloc_buffer((1,), "int32", scope="local")
++        node = T.sblock_alloc_buffer((1,), "int32", scope="local")
++        best = T.sblock_alloc_buffer((5,), "float32", scope="local")
++        for block in T.thread_binding(blocks, thread="blockIdx.x"):
++            for lane in T.thread_binding(_LANES, thread="threadIdx.x"):
++                with T.sblock("drowse_activity_neurons"):
++                    k = T.axis.spatial(blocks, block)
++                    t = T.axis.spatial(_LANES, lane)
++                    n = T.meta_var(k * _LANES + t)
++                    if T.And(_flag(replay_meta[meta["flags"]], REPLAY_FLAG_ACTIVITY), n < d_ff):
++                        slot[0] = -1
++                        for i in T.serial(UNIT_MAX_ACTIVITY_TRACES):
++                            if T.And(
++                                T.And(
++                                    i < replay_meta[meta["trace_count"]],
++                                    replay_meta[meta["traces"] + 3 * i] == layer_id,
++                                ),
++                                T.And(
++                                    replay_meta[meta["traces"] + 3 * i + 1] == 0,
++                                    replay_meta[meta["traces"] + 3 * i + 2] == n,
++                                ),
++                            ):
++                                if slot[0] < 0:
++                                    slot[0] = i
++                        best[0] = state[layer_id, n]
++                        best[1] = state[layer_id, d_ff + n]
++                        best[2] = state[layer_id, 2 * d_ff + n]
++                        for r in T.serial(total):
++                            node[0] = -1
++                            for span in T.serial(UNIT_MAX_ACTIVITY_SPANS):
++                                if T.And(
++                                    span < replay_meta[meta["span_count"]],
++                                    T.And(
++                                        positions[r] >= replay_meta[meta["spans"] + 4 * span + 2],
++                                        positions[r]
++                                        < replay_meta[meta["spans"] + 4 * span + 2]
++                                        + replay_meta[meta["spans"] + 4 * span + 1],
++                                    ),
++                                ):
++                                    node[0] = (
++                                        replay_meta[meta["spans"] + 4 * span]
++                                        + positions[r]
++                                        - replay_meta[meta["spans"] + 4 * span + 2]
++                                    )
++                            if node[0] >= 0:
++                                best[3] = T.Cast(
++                                    "float32",
++                                    acts[
++                                        T.floordiv(r, sequence_length),
++                                        T.floormod(r, sequence_length),
++                                        n,
++                                    ],
++                                )
++                                if positions[r] < UNIT_POSITIONS_FROM:
++                                    best[3] = T.float32(0)
++                                    best[4] = T.float32(-1)
++                                else:
++                                    if best[3] >= T.float32(0):
++                                        best[3] = best[3] / scales[layer_id, n]
++                                    else:
++                                        best[3] = best[3] / scales[layer_id, d_ff + n]
++                                    best[4] = T.max(best[3], T.float32(0) - best[3])
++                                if best[4] > best[2]:
++                                    best[0] = best[3]
++                                    best[1] = T.Cast("float32", node[0])
++                                    best[2] = best[4]
++                                if T.And(slot[0] >= 0, node[0] < sh["context"]):
++                                    traces[slot[0], node[0]] = best[3]
++                                if node[0] == replay_meta[meta["population_row"]]:
++                                    population[layer_id, n] = best[3]
++                        state[layer_id, n] = best[0]
++                        state[layer_id, d_ff + n] = best[1]
++                        state[layer_id, 2 * d_ff + n] = best[2]
++
++    return op.tensor_ir_inplace_op(
++        _reduce,
++        f"drowse_activity_neurons_{layer_id}",
++        args=[act, sites.positions, sites.replay_meta, sites.unit_scales, sites.state,
++              sites.traces, sites.population],
++        inplace_indices=[4, 5, 6],
++        out=[
++            Tensor.placeholder(sites.state.shape, "float32"),
++            Tensor.placeholder(sites.traces.shape, "float32"),
++            Tensor.placeholder(sites.population.shape, "float32"),
++        ],
++    )
++
++
++def _head_values(z: Tensor, attn_o: Tensor, layer_id: int, sites: ReplaySites) -> Tensor:
++    """`head_values [rows, H]`: every row's scaled write norm
++    `sqrt(max(0, z_hᵀ G_h z_h)) · r_ao / S_h` from the resident `head_grams` (this layer's slice
++    at a constant offset), one workgroup per row; nothing is computed unless activity is asked."""
++    batch_size, sequence_length, width = z.shape
++    hidden_size = attn_o.shape[2]
++    total = batch_size * sequence_length
++    sh = _activity_shapes(sites)
++    meta = sh["meta"]
++    heads, head_dim, d_ff = sh["heads"], sites.head_dim, sh["d_ff"]
++    sandwich, rms_eps = sites.sandwich, sites.rms_eps
++    z_dtype, o_dtype = z.dtype, attn_o.dtype
++    head_chunks = (head_dim + _LANES - 1) // _LANES
++    hidden_chunks = (hidden_size + _LANES - 1) // _LANES
++
++    @T.prim_func(private=True, s_tir=True)
++    def _values(
++        var_z: T.handle,
++        var_o: T.handle,
++        var_grams: T.handle,
++        var_scales: T.handle,
++        var_meta: T.handle,
++        var_values: T.handle,
++    ):
++        T.func_attr({"op_pattern": 8, "tirx.is_scheduled": 1, "tirx.noalias": True})
++        zs = T.match_buffer(var_z, (batch_size, sequence_length, width), z_dtype)
++        outs = T.match_buffer(var_o, (batch_size, sequence_length, hidden_size), o_dtype)
++        grams = T.match_buffer(
++            var_grams, (sh["num_layers"], heads, head_dim, head_dim), "float32"
++        )
++        scales = T.match_buffer(var_scales, (sh["num_layers"], sh["scale_stride"]), "float32")
++        replay_meta = T.match_buffer(var_meta, (meta["length"],), "int32")
++        values = T.match_buffer(var_values, (total, heads), "float32")
++        local_z = T.sblock_alloc_buffer((head_dim,), "float32", scope="shared")
++        partial = T.sblock_alloc_buffer((_LANES,), "float32", scope="shared")
++        norm = T.sblock_alloc_buffer((1,), "float32", scope="shared")
++        acc = T.sblock_alloc_buffer((1,), "float32", scope="local")
++        row_acc = T.sblock_alloc_buffer((1,), "float32", scope="local")
++        for row in T.thread_binding(total, thread="blockIdx.x"):
++            for lane in T.thread_binding(_LANES, thread="threadIdx.x"):
++                with T.sblock("drowse_head_values"):
++                    r = T.axis.spatial(total, row)
++                    t = T.axis.spatial(_LANES, lane)
++                    b = T.meta_var(T.floordiv(r, sequence_length))
++                    s = T.meta_var(T.floormod(r, sequence_length))
++                    # Barriers stay in control flow that depends on the workgroup id only; the
++                    # activity flag guards loads, arithmetic and stores.
++                    active = T.meta_var(_flag(replay_meta[meta["flags"]], REPLAY_FLAG_ACTIVITY))
++                    if t == 0:
++                        norm[0] = T.float32(1)
++                    if sandwich:
++                        acc[0] = T.float32(0)
++                        if active:
++                            for chunk in T.serial(hidden_chunks):
++                                if chunk * _LANES + t < hidden_size:
++                                    acc[0] = acc[0] + T.Cast(
++                                        "float32", outs[b, s, chunk * _LANES + t]
++                                    ) * T.Cast("float32", outs[b, s, chunk * _LANES + t])
++                        partial[t] = acc[0]
++                        T.tvm_storage_sync("shared")
++                        for stage in T.unroll(6):
++                            if t < (32 >> stage):
++                                partial[t] = partial[t] + partial[t + (32 >> stage)]
++                            T.tvm_storage_sync("shared")
++                        if t == 0:
++                            norm[0] = T.rsqrt(
++                                partial[0] / T.float32(hidden_size) + T.float32(rms_eps)
++                            )
++                        T.tvm_storage_sync("shared")
++                    for h in T.serial(heads):
++                        for chunk in T.serial(head_chunks):
++                            if chunk * _LANES + t < head_dim:
++                                local_z[chunk * _LANES + t] = T.float32(0)
++                                if active:
++                                    local_z[chunk * _LANES + t] = T.Cast(
++                                        "float32", zs[b, s, h * head_dim + chunk * _LANES + t]
++                                    )
++                        T.tvm_storage_sync("shared")
++                        acc[0] = T.float32(0)
++                        if active:
++                            for chunk in T.serial(head_chunks):
++                                if chunk * _LANES + t < head_dim:
++                                    row_acc[0] = T.float32(0)
++                                    for c in T.serial(head_dim):
++                                        row_acc[0] = (
++                                            row_acc[0]
++                                            + grams[layer_id, h, chunk * _LANES + t, c] * local_z[c]
++                                        )
++                                    acc[0] = acc[0] + local_z[chunk * _LANES + t] * row_acc[0]
++                        partial[t] = acc[0]
++                        T.tvm_storage_sync("shared")
++                        for stage in T.unroll(6):
++                            if t < (32 >> stage):
++                                partial[t] = partial[t] + partial[t + (32 >> stage)]
++                            T.tvm_storage_sync("shared")
++                        if T.And(active, t == 0):
++                            values[r, h] = (
++                                T.sqrt(T.max(partial[0], T.float32(0)))
++                                * norm[0]
++                                / scales[layer_id, 2 * d_ff + h]
++                            )
++                        T.tvm_storage_sync("shared")
++
++    return op.tensor_ir_op(
++        _values,
++        f"drowse_head_values_{layer_id}",
++        args=[z, attn_o, sites.head_grams, sites.unit_scales, sites.replay_meta],
++        out=Tensor.placeholder((total, heads), "float32"),
++    )
++
++
++def _activity_heads(values: Tensor, layer_id: int, sites: ReplaySites):
++    """The head half of the activity reduction over `head_values` (already scaled)."""
++    total, heads = values.shape
++    sh = _activity_shapes(sites)
++    meta = sh["meta"]
++    d_ff = sh["d_ff"]
++    blocks = (heads + _LANES - 1) // _LANES
++
++    @T.prim_func(private=True, s_tir=True)
++    def _reduce(
++        var_values: T.handle,
++        var_positions: T.handle,
++        var_meta: T.handle,
++        var_state: T.handle,
++        var_traces: T.handle,
++        var_population: T.handle,
++    ):
++        T.func_attr({"op_pattern": 8, "tirx.is_scheduled": 1, "tirx.noalias": True})
++        head_values = T.match_buffer(var_values, (total, heads), "float32")
++        positions = T.match_buffer(var_positions, (total,), "int32")
++        replay_meta = T.match_buffer(var_meta, (meta["length"],), "int32")
++        state = T.match_buffer(var_state, (sh["num_layers"], sh["state_stride"]), "float32")
++        traces = T.match_buffer(var_traces, (UNIT_MAX_ACTIVITY_TRACES, sh["context"]), "float32")
++        population = T.match_buffer(
++            var_population, (sh["num_layers"], sh["population_stride"]), "float32"
++        )
++        slot = T.sblock_alloc_buffer((1,), "int32", scope="local")
++        node = T.sblock_alloc_buffer((1,), "int32", scope="local")
++        best = T.sblock_alloc_buffer((5,), "float32", scope="local")
++        for block in T.thread_binding(blocks, thread="blockIdx.x"):
++            for lane in T.thread_binding(_LANES, thread="threadIdx.x"):
++                with T.sblock("drowse_activity_heads"):
++                    k = T.axis.spatial(blocks, block)
++                    t = T.axis.spatial(_LANES, lane)
++                    h = T.meta_var(k * _LANES + t)
++                    if T.And(_flag(replay_meta[meta["flags"]], REPLAY_FLAG_ACTIVITY), h < heads):
++                        slot[0] = -1
++                        for i in T.serial(UNIT_MAX_ACTIVITY_TRACES):
++                            if T.And(
++                                T.And(
++                                    i < replay_meta[meta["trace_count"]],
++                                    replay_meta[meta["traces"] + 3 * i] == layer_id,
++                                ),
++                                T.And(
++                                    replay_meta[meta["traces"] + 3 * i + 1] == 1,
++                                    replay_meta[meta["traces"] + 3 * i + 2] == h,
++                                ),
++                            ):
++                                if slot[0] < 0:
++                                    slot[0] = i
++                        best[0] = state[layer_id, 3 * d_ff + h]
++                        best[1] = state[layer_id, 3 * d_ff + heads + h]
++                        best[2] = state[layer_id, 3 * d_ff + 2 * heads + h]
++                        for r in T.serial(total):
++                            node[0] = -1
++                            for span in T.serial(UNIT_MAX_ACTIVITY_SPANS):
++                                if T.And(
++                                    span < replay_meta[meta["span_count"]],
++                                    T.And(
++                                        positions[r] >= replay_meta[meta["spans"] + 4 * span + 2],
++                                        positions[r]
++                                        < replay_meta[meta["spans"] + 4 * span + 2]
++                                        + replay_meta[meta["spans"] + 4 * span + 1],
++                                    ),
++                                ):
++                                    node[0] = (
++                                        replay_meta[meta["spans"] + 4 * span]
++                                        + positions[r]
++                                        - replay_meta[meta["spans"] + 4 * span + 2]
++                                    )
++                            if node[0] >= 0:
++                                if positions[r] < UNIT_POSITIONS_FROM:
++                                    best[3] = T.float32(0)
++                                    best[4] = T.float32(-1)
++                                else:
++                                    best[3] = head_values[r, h]
++                                    best[4] = T.max(best[3], T.float32(0) - best[3])
++                                if best[4] > best[2]:
++                                    best[0] = best[3]
++                                    best[1] = T.Cast("float32", node[0])
++                                    best[2] = best[4]
++                                if T.And(slot[0] >= 0, node[0] < sh["context"]):
++                                    traces[slot[0], node[0]] = best[3]
++                                if node[0] == replay_meta[meta["population_row"]]:
++                                    population[layer_id, d_ff + h] = best[3]
++                        state[layer_id, 3 * d_ff + h] = best[0]
++                        state[layer_id, 3 * d_ff + heads + h] = best[1]
++                        state[layer_id, 3 * d_ff + 2 * heads + h] = best[2]
++
++    return op.tensor_ir_inplace_op(
++        _reduce,
++        f"drowse_activity_heads_{layer_id}",
++        args=[values, sites.positions, sites.replay_meta, sites.state, sites.traces,
++              sites.population],
++        inplace_indices=[3, 4, 5],
++        out=[
++            Tensor.placeholder(sites.state.shape, "float32"),
++            Tensor.placeholder(sites.traces.shape, "float32"),
++            Tensor.placeholder(sites.population.shape, "float32"),
++        ],
++    )
++
++
++def _pattern_capture(qkv: Tensor, layer_id: int, sites: ReplaySites):
++    """At an asked pattern layer, every KV head's post-RoPE key for every row of the forward into
++    `pattern_keys[slot, g, position]`, and every query head at the anatomy position into
++    `pattern_q[slot]` (B1 §6). Gemma 3 rotates in the graph (its `qkv` is post-RoPE); a model
++    whose paged KV cache rotates (`RopeMode.NORMAL`: Qwen 3, B40 §7.2) gets the cache's own
++    rotation here, `llama_rope_with_position_map`'s `rope_freq_default` with `rope_scale = 1`, so
++    the keys are the ones the attention kernel read."""
++    batch_size, sequence_length, fused_heads, head_dim = qkv.shape
++    dtype = qkv.dtype
++    total = batch_size * sequence_length
++    block = sites.block
++    heads, kv_heads = block["n_heads"], block["n_kv_heads"]
++    rope = not block["rope_in_graph"]
++    theta = float(block["rope_theta"])
++    half = head_dim // 2
++    context = sites.context
++    meta = replay_meta_layout()
++    width = (heads + kv_heads) * head_dim
++    steps = (width + _LANES - 1) // _LANES
++
++    def rotated(x, b, s, head, d, position):
++        if not rope:
++            return T.Cast("float32", x[b, s, head, d])
++        freq = (T.Cast("float32", position) * T.float32(1.0)) / tirx.power(
++            T.float32(theta), T.Cast("float32", T.floormod(d * 2, head_dim)) / T.float32(head_dim)
++        )
++        paired = T.if_then_else(
++            d < half, T.Cast("float32", -x[b, s, head, d + half]),
++            T.Cast("float32", x[b, s, head, d - half]),
++        )
++        return T.Cast(
++            "float32",
++            T.Cast(dtype, T.cos(freq) * T.Cast("float32", x[b, s, head, d]) + T.sin(freq) * paired),
++        )
++
++    @T.prim_func(private=True, s_tir=True)
++    def _capture(
++        var_qkv: T.handle,
++        var_positions: T.handle,
++        var_meta: T.handle,
++        var_keys: T.handle,
++        var_queries: T.handle,
++    ):
++        T.func_attr({"op_pattern": 8, "tirx.is_scheduled": 1, "tirx.noalias": True})
++        x = T.match_buffer(var_qkv, (batch_size, sequence_length, fused_heads, head_dim), dtype)
++        positions = T.match_buffer(var_positions, (total,), "int32")
++        replay_meta = T.match_buffer(var_meta, (meta["length"],), "int32")
++        keys = T.match_buffer(
++            var_keys, (UNIT_MAX_PATTERN_LAYERS, kv_heads, context, head_dim), "float32"
++        )
++        queries = T.match_buffer(var_queries, (UNIT_MAX_PATTERN_LAYERS, heads, head_dim), "float32")
++        slot = T.sblock_alloc_buffer((1,), "int32", scope="local")
++        for row in T.thread_binding(total, thread="blockIdx.x"):
++            for lane in T.thread_binding(_LANES, thread="threadIdx.x"):
++                with T.sblock("drowse_pattern_capture"):
++                    r = T.axis.spatial(total, row)
++                    t = T.axis.spatial(_LANES, lane)
++                    b = T.meta_var(T.floordiv(r, sequence_length))
++                    s = T.meta_var(T.floormod(r, sequence_length))
++                    slot[0] = -1
++                    for i in T.serial(UNIT_MAX_PATTERN_LAYERS):
++                        if T.And(
++                            i < replay_meta[meta["pattern_layer_count"]],
++                            replay_meta[meta["pattern_layers"] + i] == layer_id,
++                        ):
++                            slot[0] = i
++                    if T.And(
++                        T.And(_flag(replay_meta[meta["flags"]], REPLAY_FLAG_PATTERNS), slot[0] >= 0),
++                        T.And(positions[r] >= 0, positions[r] < context),
++                    ):
++                        for step in T.serial(steps):
++                            if step * _LANES + t < width:
++                                if T.floordiv(step * _LANES + t, head_dim) >= heads:
++                                    keys[
++                                        slot[0],
++                                        T.floordiv(step * _LANES + t, head_dim) - heads,
++                                        positions[r],
++                                        T.floormod(step * _LANES + t, head_dim),
++                                    ] = rotated(
++                                        x, b, s, T.floordiv(step * _LANES + t, head_dim),
++                                        T.floormod(step * _LANES + t, head_dim), positions[r],
++                                    )
++                                elif positions[r] == replay_meta[meta["anatomy_position"]]:
++                                    queries[
++                                        slot[0],
++                                        T.floordiv(step * _LANES + t, head_dim),
++                                        T.floormod(step * _LANES + t, head_dim),
++                                    ] = rotated(
++                                        x, b, s, T.floordiv(step * _LANES + t, head_dim),
++                                        T.floormod(step * _LANES + t, head_dim), positions[r],
++                                    )
++
++    return op.tensor_ir_inplace_op(
++        _capture,
++        f"drowse_pattern_capture_{layer_id}",
++        args=[qkv, sites.positions, sites.replay_meta, sites.pattern_keys, sites.pattern_q],
++        inplace_indices=[3, 4],
++        out=[
++            Tensor.placeholder(sites.pattern_keys.shape, "float32"),
++            Tensor.placeholder(sites.pattern_q.shape, "float32"),
++        ],
++    )
++
++
++def attention_rows(pattern_keys: Tensor, pattern_q: Tensor, rows_meta: Tensor, block: dict) -> Tensor:
++    """`drowse_attention_rows`: for each `(slot, layer, head, p)` of `rows_meta` (slot −1 unused),
++    `a_j = softmax_j(q_p·k_j · scaling)` over `j ≤ p` (on a local layer also `j > p − W`), fp32,
++    0 elsewhere → `[MAX_PATTERN_HEADS, context]` (B1 §6)."""
++    slots, kv_heads, context, head_dim = pattern_keys.shape
++    heads = block["n_heads"]
++    group = heads // kv_heads
++    scaling = float(block["attn_scaling"])
++    window = int(block.get("sliding_window") or 0)
++    pattern = int(block.get("sliding_pattern") or 0)
++    rows = UNIT_MAX_PATTERN_HEADS
++    steps = (context + _LANES - 1) // _LANES
++
++    @T.prim_func(private=True, s_tir=True)
++    def _rows(var_keys: T.handle, var_q: T.handle, var_meta: T.handle, var_out: T.handle):
++        T.func_attr({"op_pattern": 8, "tirx.is_scheduled": 1, "tirx.noalias": True})
++        keys = T.match_buffer(var_keys, (slots, kv_heads, context, head_dim), "float32")
++        queries = T.match_buffer(var_q, (slots, heads, head_dim), "float32")
++        meta = T.match_buffer(var_meta, (rows, 4), "int32")
++        out = T.match_buffer(var_out, (rows, context), "float32")
++        partial = T.sblock_alloc_buffer((_LANES,), "float32", scope="shared")
++        reduced = T.sblock_alloc_buffer((2,), "float32", scope="shared")
++        acc = T.sblock_alloc_buffer((2,), "float32", scope="local")
++        lo = T.sblock_alloc_buffer((1,), "int32", scope="local")
++        for row in T.thread_binding(rows, thread="blockIdx.x"):
++            for lane in T.thread_binding(_LANES, thread="threadIdx.x"):
++                with T.sblock("drowse_attention_rows"):
++                    i = T.axis.spatial(rows, row)
++                    t = T.axis.spatial(_LANES, lane)
++                    valid = T.meta_var(
++                        T.And(
++                            T.And(meta[i, 0] >= 0, meta[i, 0] < slots),
++                            T.And(
++                                T.And(meta[i, 2] >= 0, meta[i, 2] < heads),
++                                T.And(meta[i, 3] >= 0, meta[i, 3] < context),
++                            ),
++                        )
++                    )
++                    lo[0] = 0
++                    if pattern > 0:
++                        if T.floormod(meta[i, 1] + 1, pattern) != 0:
++                            lo[0] = meta[i, 3] - window + 1
++                    acc[0] = T.float32(_FLOAT32_LOWEST)
++                    for step in T.serial(steps):
++                        if step * _LANES + t < context:
++                            out[i, step * _LANES + t] = T.float32(0)
++                            if T.And(
++                                valid,
++                                T.And(step * _LANES + t >= lo[0], step * _LANES + t <= meta[i, 3]),
++                            ):
++                                acc[1] = T.float32(0)
++                                for d in T.serial(head_dim):
++                                    acc[1] = acc[1] + queries[meta[i, 0], meta[i, 2], d] * keys[
++                                        meta[i, 0], T.floordiv(meta[i, 2], group),
++                                        step * _LANES + t, d,
++                                    ]
++                                out[i, step * _LANES + t] = acc[1] * T.float32(scaling)
++                                acc[0] = T.max(acc[0], out[i, step * _LANES + t])
++                    partial[t] = acc[0]
++                    T.tvm_storage_sync("shared")
++                    for stage in T.unroll(6):
++                        if t < (32 >> stage):
++                            partial[t] = T.max(partial[t], partial[t + (32 >> stage)])
++                        T.tvm_storage_sync("shared")
++                    if t == 0:
++                        reduced[0] = partial[0]
++                    T.tvm_storage_sync("shared")
++                    acc[0] = T.float32(0)
++                    for step in T.serial(steps):
++                        if step * _LANES + t < context:
++                            if T.And(
++                                valid,
++                                T.And(step * _LANES + t >= lo[0], step * _LANES + t <= meta[i, 3]),
++                            ):
++                                out[i, step * _LANES + t] = T.exp(
++                                    out[i, step * _LANES + t] - reduced[0]
++                                )
++                                acc[0] = acc[0] + out[i, step * _LANES + t]
++                    partial[t] = acc[0]
++                    T.tvm_storage_sync("shared")
++                    for stage in T.unroll(6):
++                        if t < (32 >> stage):
++                            partial[t] = partial[t] + partial[t + (32 >> stage)]
++                        T.tvm_storage_sync("shared")
++                    if t == 0:
++                        reduced[1] = partial[0]
++                    T.tvm_storage_sync("shared")
++                    for step in T.serial(steps):
++                        if step * _LANES + t < context:
++                            if T.And(
++                                valid,
++                                T.And(step * _LANES + t >= lo[0], step * _LANES + t <= meta[i, 3]),
++                            ):
++                                out[i, step * _LANES + t] = out[i, step * _LANES + t] / reduced[1]
++
++    return op.tensor_ir_op(
++        _rows,
++        "drowse_attention_rows",
++        args=[pattern_keys, pattern_q, rows_meta],
++        out=Tensor.placeholder((rows, context), "float32"),
++    )
++
++
++def dequantized_weight(linear) -> Tensor:
++    """A linear layer's weight `[out, in]` in fp32 as its forward reads it: a plain weight, or a
++    group-quantized one through the quantization config's own `_dequantize` (B40 §7.4)."""
++    if hasattr(linear, "q_weight") and hasattr(linear, "q_scale"):
++        config = linear.config
++        if config.linear_weight_layout != "NK":
++            raise ValueError("drowse static reads expect NK group-quantized weights")
++        weight = nn.op.tensor_expr_op(
++            lambda w, s: config._dequantize(
++                w, s, axis=config.linear_quant_axis,
++                out_shape=[
++                    tirx.IntImm("int64", linear.out_features),
++                    tirx.IntImm("int64", linear.in_features),
++                ],
++            ),
++            name_hint="dequantize",
++            args=[linear.q_weight, linear.q_scale],
++        )
++    elif hasattr(linear, "weight") and not hasattr(linear, "q_weight"):
++        weight = linear.weight
++    else:
++        raise ValueError(f"drowse static reads cannot dequantize {type(linear).__name__}")
++    return weight.astype("float32") if weight.dtype != "float32" else weight
++
++
++def head_write_grams(model) -> Tensor:
++    """`drowse_head_write_grams`: `G_h = Bᵀ B`, `B = γ_ao ⊙ W_O[:, h·hd:(h+1)·hd]` (γ_ao the
++    attention-output norm's gain on a sandwich block, 1 otherwise), every head of every layer,
++    fp32 from the weights the library runs, written per layer into one `[L, H, hd, hd]` buffer."""
++    block = model._drowse_block_spec()
++    num_layers = model.num_hidden_layers
++    grams = op.zeros((num_layers, block["n_heads"], block["head_dim"], block["head_dim"]), "float32")
++    for layer_id, layer in enumerate(model.model.layers):
++        weight = dequantized_weight(layer.self_attn.o_proj)
++        if block["sandwich"]:
++            gamma = layer.post_attention_layernorm.weight
++            gamma = gamma.astype("float32") if gamma.dtype != "float32" else gamma
++            weight = weight * op.reshape(gamma, (weight.shape[0], 1))
++        grams = _gram_store(weight, grams, layer_id)
++    return grams
++
++
++def _gram_store(weight: Tensor, grams: Tensor, layer_id: int) -> Tensor:
++    """`grams[layer, h, i, j] = Σ_k W[k, h·hd + i] · W[k, h·hd + j]`, one workgroup per `(h, i)`
++    (a TIR kernel, not a Relax matmul: MLC's dequantize-matmul fusion would fold the two uses of
++    the dequantized weight into one group)."""
++    num_layers, heads, head_dim, _ = grams.shape
++    hidden_size = weight.shape[0]
++    rows = heads * head_dim
++    chunks = (head_dim + _LANES - 1) // _LANES
++
++    @T.prim_func(private=True, s_tir=True)
++    def _store(var_weight: T.handle, var_grams: T.handle):
++        T.func_attr({"op_pattern": 8, "tirx.is_scheduled": 1, "tirx.noalias": True})
++        w = T.match_buffer(var_weight, (hidden_size, rows), "float32")
++        output = T.match_buffer(var_grams, (num_layers, heads, head_dim, head_dim), "float32")
++        acc = T.sblock_alloc_buffer((1,), "float32", scope="local")
++        for block in T.thread_binding(rows, thread="blockIdx.x"):
++            for lane in T.thread_binding(_LANES, thread="threadIdx.x"):
++                with T.sblock("drowse_head_write_gram"):
++                    r = T.axis.spatial(rows, block)
++                    t = T.axis.spatial(_LANES, lane)
++                    for chunk in T.serial(chunks):
++                        if chunk * _LANES + t < head_dim:
++                            acc[0] = T.float32(0)
++                            for k in T.serial(hidden_size):
++                                acc[0] = acc[0] + w[k, r] * w[
++                                    k, T.floordiv(r, head_dim) * head_dim + chunk * _LANES + t
++                                ]
++                            output[
++                                layer_id, T.floordiv(r, head_dim), T.floormod(r, head_dim),
++                                chunk * _LANES + t,
++                            ] = acc[0]
++
++    return op.tensor_ir_inplace_op(
++        _store,
++        f"drowse_head_write_gram_{layer_id}",
++        args=[weight, grams],
++        inplace_indices=[1],
++        out=Tensor.placeholder(grams.shape, "float32"),
++    )
 diff --git a/python/mlc_llm/model/gemma3/gemma3_model.py b/python/mlc_llm/model/gemma3/gemma3_model.py
-index b022bab9..83457440 100644
+index b022bab9..740a27cd 100644
 --- a/python/mlc_llm/model/gemma3/gemma3_model.py
 +++ b/python/mlc_llm/model/gemma3/gemma3_model.py
 @@ -3,13 +3,15 @@
@@ -5159,7 +6013,7 @@ index b022bab9..83457440 100644
  
  
  class Gemma3Attention(nn.Module):
-@@ -195,8 +199,17 @@ class Gemma3Attention(nn.Module):
+@@ -195,8 +199,20 @@ class Gemma3Attention(nn.Module):
          )
          # self.scaling_factor = (self.head_dim / config.text_config.query_pre_attn_scalar) ** 0.5
          self.scaling = config.text_config.query_pre_attn_scalar**-0.5
@@ -5172,12 +6026,15 @@ index b022bab9..83457440 100644
      def forward(self, hidden_states: Tensor, paged_kv_cache: PagedKVCache, layer_id: int):
 +        return self.o_proj(self.drowse_heads(hidden_states, paged_kv_cache, layer_id))
 +
-+    def drowse_heads(self, hidden_states: Tensor, paged_kv_cache: PagedKVCache, layer_id: int):
-+        """Attention up to the output projection's input `z` [b, s, H·hd] (the head site)."""
++    def drowse_heads(
++        self, hidden_states: Tensor, paged_kv_cache: PagedKVCache, layer_id: int, sites=NO_SITES
++    ):
++        """Attention up to the output projection's input `z` [b, s, H·hd] (the head site); `sites`
++        observes the cache's input `qkv`, already rotated in the graph (`RopeMode.NONE`)."""
          d, h_q = self.head_dim, self.num_q_heads
          b, s, _ = hidden_states.shape
          # QKV Projection
-@@ -208,6 +221,14 @@ class Gemma3Attention(nn.Module):
+@@ -208,6 +224,15 @@ class Gemma3Attention(nn.Module):
          k_norm = self.k_norm(k_proj)
  
          qkv = op.concat([q_norm, k_norm, v_proj], dim=2)
@@ -5189,10 +6046,11 @@ index b022bab9..83457440 100644
 +            self.local_rope_theta if local else self.global_rope_theta,
 +            1.0 if local else self.global_rope_scale,
 +        )
++        sites.qkv(qkv, layer_id)
  
          # Attention
          output = op.reshape(
-@@ -216,7 +237,29 @@ class Gemma3Attention(nn.Module):
+@@ -216,7 +241,29 @@ class Gemma3Attention(nn.Module):
              ),
              (b, s, h_q * d),
          )
@@ -5223,7 +6081,7 @@ index b022bab9..83457440 100644
  
  
  class Gemma3DecoderLayer(nn.Module):
-@@ -259,12 +302,24 @@ class Gemma3DecoderLayer(nn.Module):
+@@ -259,12 +306,24 @@ class Gemma3DecoderLayer(nn.Module):
          _set_tp()
  
      def forward(self, hidden_states: Tensor, paged_kv_cache: PagedKVCache, layer_id: int):
@@ -5234,7 +6092,7 @@ index b022bab9..83457440 100644
 +    def drowse_block(self, hidden_states: Tensor, paged_kv_cache: PagedKVCache, layer_id: int, sites):
 +        """The block with hook ABI v5's sites (B1 §1.2); `NO_SITES` is the upstream layer."""
 +        z = self.self_attn.drowse_heads(
-+            self.input_layernorm(hidden_states), paged_kv_cache, layer_id
++            self.input_layernorm(hidden_states), paged_kv_cache, layer_id, sites
 +        )
 +        z = sites.head(z, layer_id)
 +        attn_o = self.self_attn.o_proj(z)
@@ -5251,7 +6109,7 @@ index b022bab9..83457440 100644
          out = self._apply_post_matmul_norm(out, norm=self.post_feedforward_layernorm)
          hidden_states = out + hidden_states
  
-@@ -410,9 +465,10 @@ class Gemma3LanguageModel(nn.Module):
+@@ -410,9 +469,10 @@ class Gemma3LanguageModel(nn.Module):
              num_key_value_heads=self.num_key_value_heads // self.tensor_parallel_shards,
              qk_head_dim=self.head_dim,
              v_head_dim=self.head_dim,
@@ -5263,7 +6121,7 @@ index b022bab9..83457440 100644
              dtype=self.dtype,
          )
  
-@@ -489,6 +545,37 @@ class Gemma3ForCausalLM(nn.Module):
+@@ -489,6 +549,37 @@ class Gemma3ForCausalLM(nn.Module):
          self.vocab_size = config.vocab_size
          self.dtype = "float32"
          self.tensor_parallel_shards = config.tensor_parallel_shards
@@ -5301,7 +6159,7 @@ index b022bab9..83457440 100644
  
      def to(self, dtype: Optional[str] = None):
          super().to(dtype=dtype)
-@@ -588,9 +675,10 @@ class Gemma3ForCausalLM(nn.Module):
+@@ -588,9 +679,10 @@ class Gemma3ForCausalLM(nn.Module):
              // self.tensor_parallel_shards,
              qk_head_dim=self.language_model.head_dim,
              v_head_dim=self.language_model.head_dim,
@@ -5313,7 +6171,7 @@ index b022bab9..83457440 100644
              dtype=self.dtype,
          )
  
-@@ -665,3 +753,74 @@ class Gemma3ForCausalLM(nn.Module):
+@@ -665,3 +757,77 @@ class Gemma3ForCausalLM(nn.Module):
              },
          }
          return nn.spec.ModuleSpec.from_raw(mod_spec, self)
@@ -5371,6 +6229,9 @@ index b022bab9..83457440 100644
 +Gemma3ForCausalLM._drowse_unit_sites = Qwen3LMHeadModel._drowse_unit_sites
 +Gemma3ForCausalLM.drowse_units_batch_prefill = Qwen3LMHeadModel.drowse_units_batch_prefill
 +Gemma3ForCausalLM.drowse_units_batch_decode = Qwen3LMHeadModel.drowse_units_batch_decode
++Gemma3ForCausalLM.drowse_replay_batch_prefill = Qwen3LMHeadModel.drowse_replay_batch_prefill
++Gemma3ForCausalLM.drowse_attention_rows = Qwen3LMHeadModel.drowse_attention_rows
++Gemma3ForCausalLM.drowse_head_write_grams = Qwen3LMHeadModel.drowse_head_write_grams
 +Gemma3ForCausalLM.drowse_jlens_probabilities = Qwen3LMHeadModel.drowse_jlens_probabilities
 +Gemma3ForCausalLM.drowse_jlens_readout_accumulate = (
 +    Qwen3LMHeadModel.drowse_jlens_readout_accumulate
@@ -6628,10 +7489,10 @@ index 4659a249..48289578 100644
                  "input_embeds": nn.spec.Tensor([1, "seq_len", self.hidden_size], self.dtype),
                  "paged_kv_cache": nn.spec.Object(object_type=PagedKVCache),
 diff --git a/python/mlc_llm/model/qwen3/qwen3_model.py b/python/mlc_llm/model/qwen3/qwen3_model.py
-index f3bdfec1..ed68c81e 100644
+index f3bdfec1..70c0178c 100644
 --- a/python/mlc_llm/model/qwen3/qwen3_model.py
 +++ b/python/mlc_llm/model/qwen3/qwen3_model.py
-@@ -12,6 +12,40 @@ from tvm.relax.frontend.nn import Tensor, op
+@@ -12,6 +12,45 @@ from tvm.relax.frontend.nn import Tensor, op
  
  from mlc_llm import op as op_ext
  from mlc_llm.model.model_utils import index_last_token
@@ -6666,24 +7527,39 @@ index f3bdfec1..ed68c81e 100644
 +from mlc_llm.model.drowse_units import (
 +    ACTIVATION_SILU,
 +    NO_SITES,
++    ReplaySites,
 +    UnitSites,
++    attention_rows,
++    attention_rows_spec,
++    head_write_grams,
++    replay_program_spec,
 +    unit_program_spec,
 +)
  from mlc_llm.nn import PagedKVCache, RopeMode
  from mlc_llm.support import logging
  from mlc_llm.support import tensor_parallel as tp
-@@ -130,6 +164,10 @@ class Qwen3Attention(nn.Module):
+@@ -130,6 +169,13 @@ class Qwen3Attention(nn.Module):
          self.k_norm = nn.RMSNorm(config.head_dim, -1, config.rms_norm_eps, bias=False)
  
      def forward(self, hidden_states: Tensor, paged_kv_cache: PagedKVCache, layer_id: int):
 +        return self.o_proj(self.drowse_heads(hidden_states, paged_kv_cache, layer_id))
 +
-+    def drowse_heads(self, hidden_states: Tensor, paged_kv_cache: PagedKVCache, layer_id: int):
-+        """Attention up to the output projection's input `z` [b, s, H·hd] (the head site)."""
++    def drowse_heads(
++        self, hidden_states: Tensor, paged_kv_cache: PagedKVCache, layer_id: int, sites=NO_SITES
++    ):
++        """Attention up to the output projection's input `z` [b, s, H·hd] (the head site); `sites`
++        observes the cache's input `qkv` (pre-RoPE: the cache rotates, `RopeMode.NORMAL`)."""
          d, h_q, h_kv = self.head_dim, self.num_attention_heads, self.num_key_value_heads
          b, s, _ = hidden_states.shape
          qkv = self.c_attn(hidden_states)
-@@ -144,8 +182,7 @@ class Qwen3Attention(nn.Module):
+@@ -138,14 +184,14 @@ class Qwen3Attention(nn.Module):
+         q = self.q_norm(q)
+         k = self.k_norm(k)
+         qkv = op.concat([q, k, v], dim=2)
++        sites.qkv(qkv, layer_id)
+         output = op.reshape(
+             paged_kv_cache.attention_with_fused_qkv(
+                 layer_id, qkv, self.num_attention_heads, sm_scale=self.head_dim**-0.5
              ),
              (b, s, h_q * d),
          )
@@ -6693,7 +7569,7 @@ index f3bdfec1..ed68c81e 100644
  
  
  ACT2FN = {
-@@ -183,9 +220,13 @@ class Qwen3MLP(nn.Module):
+@@ -183,9 +229,13 @@ class Qwen3MLP(nn.Module):
          self.act_fn = ACT2FN[config.hidden_act]
  
      def forward(self, x: Tensor):
@@ -6708,7 +7584,7 @@ index f3bdfec1..ed68c81e 100644
  
  
  class Qwen3DecoderLayer(nn.Module):
-@@ -226,11 +267,20 @@ class Qwen3DecoderLayer(nn.Module):
+@@ -226,11 +276,20 @@ class Qwen3DecoderLayer(nn.Module):
          _set_tp()
  
      def forward(self, hidden_states: Tensor, paged_kv_cache: PagedKVCache, layer_id: int):
@@ -6719,7 +7595,7 @@ index f3bdfec1..ed68c81e 100644
          out = self.input_layernorm(hidden_states)
 -        out = self.self_attn(out, paged_kv_cache, layer_id)
 -        hidden_states = self._apply_residual(out, residual=hidden_states)
-+        z = sites.head(self.self_attn.drowse_heads(out, paged_kv_cache, layer_id), layer_id)
++        z = sites.head(self.self_attn.drowse_heads(out, paged_kv_cache, layer_id, sites), layer_id)
 +        attn_o = self.self_attn.o_proj(z)
 +        hidden_states = self._apply_residual(attn_o, residual=hidden_states)
 +        sites.mid(hidden_states, layer_id)
@@ -6732,7 +7608,7 @@ index f3bdfec1..ed68c81e 100644
          hidden_states = self._apply_residual(out, residual=hidden_states)
          return hidden_states
  
-@@ -255,6 +305,248 @@ class Qwen3Model(nn.Module):
+@@ -255,6 +314,251 @@ class Qwen3Model(nn.Module):
          hidden_states = self.norm(hidden_states)
          return hidden_states
  
@@ -6950,7 +7826,9 @@ index f3bdfec1..ed68c81e 100644
 +        next_feet = curve_feet
 +        jlens_hidden = empty_jlens_hidden_buffer(len(self.layers), hidden_states.shape[2])
 +        for layer_id, layer in enumerate(self.layers):
++            sites.block_in(hidden_states, layer_id)
 +            hidden_states = layer.drowse_block(hidden_states, paged_kv_cache, layer_id, sites)
++            sites.out_pre(hidden_states, layer_id)
 +            hidden_states, layer_measurements, foot = apply_structured_curved_hook(
 +                hidden_states,
 +                layer_id,
@@ -6976,12 +7854,13 @@ index f3bdfec1..ed68c81e 100644
 +            )
 +            next_feet = store_curve_foot(next_feet, foot, layer_id)
 +            jlens_hidden = store_jlens_hidden(jlens_hidden, hidden_states, layer_id)
++            sites.out(hidden_states, layer_id)
 +        return self.norm(hidden_states), measurements, next_feet, jlens_hidden, sites.taps
 +
  
  class Qwen3LMHeadModel(nn.Module):
      def __init__(self, config: Qwen3Config):
-@@ -274,6 +566,8 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -274,6 +578,8 @@ class Qwen3LMHeadModel(nn.Module):
          self.tensor_parallel_shards = config.tensor_parallel_shards
          self.head_dim = config.head_dim
          self.weight_block_size = config.weight_block_size
@@ -6990,7 +7869,7 @@ index f3bdfec1..ed68c81e 100644
  
      def to(self, dtype: Optional[str] = None):
          super().to(dtype=dtype)
-@@ -330,6 +624,811 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -330,6 +636,913 @@ class Qwen3LMHeadModel(nn.Module):
              logits = logits.astype("float32")
          return logits, paged_kv_cache
  
@@ -7584,6 +8463,108 @@ index f3bdfec1..ed68c81e 100644
 +            unit_taps,
 +        )
 +
++    def drowse_replay_batch_prefill(
++        self,
++        input_embeds: Tensor,
++        logit_positions: Tensor,
++        paged_kv_cache: PagedKVCache,
++        affine_active: Tensor,
++        affine_basis: Tensor,
++        affine_neutral: Tensor,
++        affine_target: Tensor,
++        affine_along: Tensor,
++        affine_kappa: Tensor,
++        probe_kind: Tensor,
++        probe_direction: Tensor,
++        probe_bias: Tensor,
++        probe_threshold: Tensor,
++        curve_basis: Tensor,
++        curve_neutral: Tensor,
++        curve_domain_kind: Tensor,
++        curve_parameters: Tensor,
++        curve_feet: Tensor,
++        unit_meta: Tensor,
++        unit_coeff: Tensor,
++        unit_active: Tensor,
++        tap_grams: Tensor,
++        replay_meta: Tensor,
++        unit_scales: Tensor,
++        head_grams: Tensor,
++        activity_state: Tensor,
++        traces: Tensor,
++        population: Tensor,
++        pattern_keys: Tensor,
++    ):
++        """One KV-continuing replay forward (B1 §2.3, §3.4): the units prefill plus the anatomy,
++        activity and pattern taps `replay_meta` asks for; `activity_state`, `traces`,
++        `population` and `pattern_keys` are threaded through the replay's forwards."""
++        spec = self._drowse_block_spec()
++        b, s, _ = input_embeds.shape
++        sites = ReplaySites(
++            self.num_hidden_layers,
++            self.hidden_size,
++            spec,
++            self.drowse_context_window_size,
++            paged_kv_cache.get_query_positions(b * s),
++            unit_meta,
++            unit_coeff,
++            unit_active,
++            tap_grams,
++            replay_meta,
++            unit_scales,
++            head_grams,
++            activity_state,
++            traces,
++            population,
++            pattern_keys,
++        )
++        hidden_states, measurements, next_feet, jlens_hidden, unit_taps = (
++            self.model.drowse_units_forward(
++                input_embeds,
++                paged_kv_cache,
++                False,
++                sites,
++                affine_active,
++                affine_basis,
++                affine_neutral,
++                affine_target,
++                affine_along,
++                affine_kappa,
++                probe_kind,
++                probe_direction,
++                probe_bias,
++                probe_threshold,
++                curve_basis,
++                curve_neutral,
++                curve_domain_kind,
++                curve_parameters,
++                curve_feet,
++            )
++        )
++        hidden_states = op.take(hidden_states, logit_positions, axis=1)
++        return (
++            self._get_logits(hidden_states),
++            paged_kv_cache,
++            measurements,
++            next_feet,
++            jlens_hidden,
++            unit_taps,
++            sites.anatomy,
++            sites.state,
++            sites.traces,
++            sites.population,
++            sites.pattern_keys,
++            sites.pattern_q,
++        )
++
++    def drowse_attention_rows(self, pattern_keys: Tensor, pattern_q: Tensor, rows_meta: Tensor):
++        """Attention rows of chosen heads from a replay's pattern capture (B1 §6)."""
++        return attention_rows(pattern_keys, pattern_q, rows_meta, self._drowse_block_spec())
++
++    def drowse_head_write_grams(self):
++        """`head_grams [L, H, hd, hd]` from the resident weights (B1 §2.3, §4.1)."""
++        return head_write_grams(self)
++
 +    def drowse_capture_batch_decode(
 +        self,
 +        input_embeds: Tensor,
@@ -7802,7 +8783,7 @@ index f3bdfec1..ed68c81e 100644
      def batch_prefill(
          self,
          input_embeds: Tensor,
-@@ -375,8 +1474,151 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -375,8 +1588,157 @@ class Qwen3LMHeadModel(nn.Module):
              dtype=self.dtype,
          )
  
@@ -7852,6 +8833,12 @@ index f3bdfec1..ed68c81e 100644
 +        )
 +        units_spec = unit_program_spec(
 +            self.num_hidden_layers, self._drowse_block_spec()["head_dim"]
++        )
++        replay_spec = replay_program_spec(
++            self.num_hidden_layers, self._drowse_block_spec(), self.drowse_context_window_size
++        )
++        attention_spec = attention_rows_spec(
++            self._drowse_block_spec(), self.drowse_context_window_size
 +        )
          mod_spec = {
 +            "drowse_hook_profile": {
@@ -7954,7 +8941,7 @@ index f3bdfec1..ed68c81e 100644
              "embed": {
                  "input_ids": nn.spec.Tensor(["seq_len"], "int32"),
                  "$": {
-@@ -400,6 +1642,62 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -400,6 +1762,62 @@ class Qwen3LMHeadModel(nn.Module):
                      "effect_mode": "none",
                  },
              },
@@ -8017,7 +9004,7 @@ index f3bdfec1..ed68c81e 100644
              "batch_prefill": {
                  "input_embeds": nn.spec.Tensor([1, "seq_len", self.hidden_size], self.dtype),
                  "logit_positions": nn.spec.Tensor(["batch_size"], "int32"),
-@@ -417,6 +1715,144 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -417,6 +1835,169 @@ class Qwen3LMHeadModel(nn.Module):
                      "effect_mode": "none",
                  },
              },
@@ -8114,6 +9101,31 @@ index f3bdfec1..ed68c81e 100644
 +                "paged_kv_cache": nn.spec.Object(object_type=PagedKVCache),
 +                **curved_spec,
 +                **units_spec,
++                "$": {
++                    "param_mode": "packed",
++                    "effect_mode": "none",
++                },
++            },
++            "drowse_replay_batch_prefill": {
++                "input_embeds": nn.spec.Tensor([1, "seq_len", self.hidden_size], self.dtype),
++                "logit_positions": nn.spec.Tensor(["batch_size"], "int32"),
++                "paged_kv_cache": nn.spec.Object(object_type=PagedKVCache),
++                **curved_spec,
++                **units_spec,
++                **replay_spec,
++                "$": {
++                    "param_mode": "packed",
++                    "effect_mode": "none",
++                },
++            },
++            "drowse_attention_rows": {
++                **attention_spec,
++                "$": {
++                    "param_mode": "none",
++                    "effect_mode": "none",
++                },
++            },
++            "drowse_head_write_grams": {
 +                "$": {
 +                    "param_mode": "packed",
 +                    "effect_mode": "none",

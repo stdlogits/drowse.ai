@@ -12,7 +12,13 @@ compared with the goldens' `library` tolerance:
   the case's own lowered tables (logits, the last row's `out` at every layer), and the site-level
   forward for the sink rows and `out_last_layer`;
 - `unit-probes`: the unit tap's raw value per forward (neuron `act`, head write norm through the
-  tap grams), its reading over the neutral scale, and the gate the decode loop saw.
+  tap grams), its reading over the neutral scale, and the gate the decode loop saw;
+- replay (`drowse_replay_batch_prefill`, fed in forwards of at most 16 rows on one KV sequence):
+  `attention-patterns` (every head's row at positions 2, 5, 8 through `drowse_attention_rows`),
+  `token-anatomy` (the taps at the producing position, every head's write norm from the captured
+  `z` and `attn_o`, the MLP write, the chosen heads' rows) and `unit-activity` (every unit's device
+  peak, row and rank against the diagnostics, the host ranking, traces, the float16 population),
+  with `head_grams` built by `drowse_head_write_grams`.
 
 Returns the worst |Δ| per golden so the caller can record it.
 """
@@ -176,7 +182,7 @@ def parse_trigger(text: str | None) -> dict | None:
     """The browser-relevant subset of native triggers used by the units goldens."""
     if text is None:
         return None
-    if text == "prompt":
+    if text in ("prompt", "before"):
         return {"prompt": True, "generated": False}
     if text == "response":
         return {"prompt": False, "generated": True, "response": True}
@@ -246,6 +252,10 @@ class FixtureVM:
         head_dim = model._drowse_block_spec()["head_dim"]
         curved = env.structured_curve_program_spec(model.num_hidden_layers, d)
         units = env.unit_program_spec(model.num_hidden_layers, head_dim)
+        block = model._drowse_block_spec()
+        context = model.drowse_context_window_size
+        replay = env.drowse_units.replay_program_spec(model.num_hidden_layers, block, context)
+        rows = env.drowse_units.attention_rows_spec(block, context)
         packed = {"param_mode": "packed", "effect_mode": "none"}
         install_block_sites_forward(type(model), env)
         raw = {
@@ -266,6 +276,14 @@ class FixtureVM:
                 "paged_kv_cache": nn.spec.Object(object_type=PagedKVCache),
                 **curved, **units, "$": packed,
             },
+            "drowse_replay_batch_prefill": {
+                "input_embeds": nn.spec.Tensor([1, "seq_len", d], "float32"),
+                "logit_positions": nn.spec.Tensor(["batch_size"], "int32"),
+                "paged_kv_cache": nn.spec.Object(object_type=PagedKVCache),
+                **curved, **units, **replay, "$": packed,
+            },
+            "drowse_attention_rows": {**rows, "$": {"param_mode": "none", "effect_mode": "none"}},
+            "drowse_head_write_grams": {"$": packed},
             "drowse_verify_block_sites": {
                 "input_embeds": nn.spec.Tensor([1, "seq_len", d], "float32"),
                 "logit_positions": nn.spec.Tensor(["batch_size"], "int32"),
@@ -323,6 +341,59 @@ class FixtureVM:
         sites = {name: np.stack([out[1 + layer * 7 + k].numpy()[0] for layer in range(self.num_layers)])
                  for k, name in enumerate(names)}
         return out[0].numpy().reshape(-1)[: self.vocab], sites
+
+
+    # ------------------------------------------------------------------ replay (B1 §2.3, §6) ---
+
+    def head_grams(self) -> np.ndarray:
+        return self.vm["drowse_head_write_grams"](self.params).numpy()
+
+    def replay_carry(self) -> dict:
+        """A fresh replay's threaded buffers: activity state (value 0, row −1, rank −1), traces,
+        population and pattern keys."""
+        tvm, du = self.env.tvm, self.env.drowse_units
+        block, L = self.block, self.num_layers
+        f, h = block["d_ff"], block["n_heads"]
+        state = np.zeros((L, 3 * f + 3 * h), np.float32)
+        state[:, f: 3 * f] = -1
+        state[:, 3 * f + h:] = -1
+        arrays = {
+            "state": state,
+            "traces": np.zeros((du.UNIT_MAX_ACTIVITY_TRACES, self.context), np.float32),
+            "population": np.zeros((L, f + h), np.float32),
+            "keys": np.zeros((du.UNIT_MAX_PATTERN_LAYERS, block["n_kv_heads"], self.context,
+                              block["head_dim"]), np.float32),
+        }
+        return {name: tvm.runtime.tensor(value) for name, value in arrays.items()}
+
+    def replay_forward(self, cache, ids, program_buffers, meta, scales, grams, carry, affine=None):
+        """One `drowse_replay_batch_prefill` forward continuing `cache` (positions follow the
+        cache's length); the threaded buffers come back in `carry`."""
+        tvm = self.env.tvm
+        embeds = self.embed(ids)
+        self.begin_forward(cache, tvm.runtime.ShapeTuple([0]), tvm.runtime.ShapeTuple([len(ids)]))
+        curve = [tvm.runtime.tensor((affine or {}).get(name, value))
+                 for name, value in self.curve_zeros.items()]
+        units = [tvm.runtime.tensor(v) for v in program_buffers]
+        out = self.vm["drowse_replay_batch_prefill"](
+            tvm.runtime.tensor(embeds), tvm.runtime.tensor(np.asarray([len(ids) - 1], np.int32)),
+            cache, *curve, *units, tvm.runtime.tensor(meta), scales, grams,
+            carry["state"], carry["traces"], carry["population"], carry["keys"], self.params,
+        )
+        self.end_forward(cache)
+        return {
+            "logits": out[0].numpy().reshape(-1)[: self.vocab],
+            "measurements": out[2].numpy(),
+            "jlens": out[4].numpy(),
+            "taps": out[5].numpy(),
+            "anatomy": out[6].numpy(),
+            "pattern_q": out[11],
+            "carry": {"state": out[7], "traces": out[8], "population": out[9], "keys": out[10]},
+        }
+
+    def attention_rows(self, keys, queries, rows_meta: np.ndarray) -> np.ndarray:
+        tvm = self.env.tvm
+        return self.vm["drowse_attention_rows"](keys, queries, tvm.runtime.tensor(rows_meta)).numpy()
 
 
 def strip_scheduled_kernels(module, tvm, strip):
@@ -584,6 +655,7 @@ def verify_arch(env, fixtures: Path, goldens: Path, arch: str, quantization: str
                 gate = probes["gate_unit"]
                 tolerance.check(label + ".gate", case["gate_scalars"][number][gate], scores[gate],
                                 atol=tolerance.z_atol, rtol=0.0)
+    verify_replay(env, vm, tensors, stats, goldens, arch, program, tolerance.worst)
     tolerance.worst["skipped"] = skipped
     return tolerance.worst
 
@@ -628,8 +700,11 @@ def split_terms(steering: str | None):
 
 def verify(env, fixtures: Path, goldens: Path) -> dict:
     results = {}
+    only = os.environ.get("DROWSE_UNITS_ONLY")
     for arch in ("qwen3", "gemma3"):
         for quantization in ("q0f32", "q4f32_1"):
+            if only and f"{arch}-{quantization}" not in only.split(","):
+                continue
             if not (fixtures / f"units-{arch}-{quantization}").is_dir():
                 raise SystemExit(f"missing fixture model units-{arch}-{quantization} in {fixtures}")
             results[f"{arch}-{quantization}"] = verify_arch(env, fixtures, goldens, arch, quantization)
@@ -638,3 +713,384 @@ def verify(env, fixtures: Path, goldens: Path) -> dict:
                   + ", ".join(f"{k} {v:.2e}" for k, v in sorted(worst.items()) if k != "skipped")
                   + f"; skipped {worst['skipped']}", flush=True)
     return results
+
+
+# ---------------------------------------------------------------------- replay (stage 2) ---
+
+#: Replay forwards carry at most this many rows here, so every case also exercises the
+#: KV-continuing chunk path (the bridge chunks at the library's `prefill_chunk_size`).
+REPLAY_CHUNK = 16
+#: Native `UnitScales` floor (drowse/units/capture.py `SCALE_FLOOR`).
+SCALE_FLOOR = 1e-6
+#: The raw first turn's one-token prompt (`browser_units.RAW_FIRST` through the fixture
+#: tokenizer: "K" on qwen3, "=" on gemma3; no BOS, so its first row is produced at the sink).
+RAW_FIRST_IDS = {"qwen3": [45], "gemma3": [32]}
+
+
+def replay_meta(du, *, anatomy=None, spans=None, population_row=None, traces=(),
+                pattern_layers=()) -> np.ndarray:
+    """`replay_meta` as drowse.ai's `encodeReplayMeta` packs it (HOOK_ABI.md §7)."""
+    lay = du.replay_meta_layout()
+    meta = np.full(lay["length"], -1, np.int32)
+    flags = 0
+    if anatomy is not None:
+        meta[lay["anatomy_position"]] = anatomy
+        flags |= du.REPLAY_FLAG_ANATOMY
+    meta[lay["span_count"]] = 0
+    meta[lay["trace_count"]] = 0
+    if spans is not None:
+        meta[lay["span_count"]] = len(spans)
+        for i, (first_row, rows, first_position) in enumerate(spans):
+            meta[lay["spans"] + 4 * i: lay["spans"] + 4 * i + 4] = [
+                first_row, rows, first_position, 1 if first_position < 0 else 0]
+        meta[lay["population_row"]] = -1 if population_row is None else population_row
+        meta[lay["trace_count"]] = len(traces)
+        for i, (kind, layer, index) in enumerate(traces):
+            meta[lay["traces"] + 3 * i: lay["traces"] + 3 * i + 3] = [
+                layer, 0 if kind == "neuron" else 1, index]
+        flags |= du.REPLAY_FLAG_ACTIVITY
+    meta[lay["pattern_layer_count"]] = len(pattern_layers)
+    if pattern_layers:
+        meta[lay["pattern_layers"]: lay["pattern_layers"] + len(pattern_layers)] = sorted(pattern_layers)
+        flags |= du.REPLAY_FLAG_PATTERNS
+    meta[lay["flags"]] = flags
+    return meta
+
+
+def unit_scales(stats: dict) -> np.ndarray:
+    """`[L, 2·d_ff + H]`: `S+ | S− | S_head`, floored as native's activity reads them."""
+    neuron, head = stats["neuron_scale"], stats["head_scale"]
+    return np.maximum(np.concatenate([neuron[:, 0], neuron[:, 1], head], axis=1),
+                      SCALE_FLOOR).astype(np.float32)
+
+
+def run_replay(vm, segments, *, program, meta, scales, grams, affine=None, anatomy=None):
+    """Feed `segments` (`(ids, active)` each: one control state) on one fresh sequence in
+    forwards of at most `REPLAY_CHUNK` rows, threading the carried buffers. Returns the carry,
+    every forward's output, and the forward holding the anatomy position (its taps and
+    queries)."""
+    cache, carry = vm.new_cache(), vm.replay_carry()
+    meta_t = meta
+    position, outputs, at = 0, [], None
+    for ids, active in segments:
+        buffers = program.buffers(active)
+        for start in range(0, len(ids), REPLAY_CHUNK):
+            chunk = list(ids[start: start + REPLAY_CHUNK])
+            out = vm.replay_forward(cache, chunk, buffers, meta_t, scales, grams, carry, affine)
+            carry = out["carry"]
+            if anatomy is not None and position <= anatomy < position + len(chunk):
+                at = out
+            outputs.append((position, chunk, out))
+            position += len(chunk)
+    return carry, outputs, at
+
+
+def check_next_tokens(label: str, outputs, tokens: dict[int, int], *, distinct: bool = False) -> None:
+    """Each forward's last logits pick the token the golden says was produced there (greedy, or
+    `distinct` greedy over the tokens not yet generated, as the goldens' generated nodes ran)."""
+    order = sorted(tokens)
+    for position, chunk, out in outputs:
+        last = position + len(chunk) - 1
+        if last not in tokens:
+            continue
+        logits = out["logits"].astype(np.float64).copy()
+        if distinct:
+            logits[[tokens[p] for p in order if p < last]] = -np.inf
+        if int(np.argmax(logits)) != tokens[last]:
+            raise SystemExit(f"{label}: the replay at position {last} does not pick token {tokens[last]}")
+
+
+def program_for(make_program, steering, stats, vm, push, affine_fn):
+    """A unit program (and push buffers) for one golden's steering string."""
+    unit, affine = make_program(), None
+    if steering is None:
+        return unit, affine
+    terms = []
+    for text in steering.split(" + "):
+        text = text.strip()
+        if text.startswith("0.3 neuron/"):
+            affine = affine_fn(vm, push, text)
+        else:
+            terms.append(text)
+    for kind, layer, index, alpha, trigger in split_terms(" + ".join(terms) if terms else None):
+        mean = stats["neuron_mean"][layer, index] if kind == "neuron" else stats["head_mean"][layer, index]
+        unit.ablate(kind, layer, index, np.float32(1 - alpha),
+                    np.float32(alpha) * np.asarray(mean, np.float32), trigger)
+    return unit, affine
+
+
+def head_write_norms(anatomy, layout, block, grams, hidden_size):
+    L = anatomy.shape[0]
+    hd, H = block["head_dim"], block["n_heads"]
+    out = np.zeros((L, H), np.float64)
+    for layer in range(L):
+        z = anatomy[layer, layout["z"]: layout["z"] + H * hd].astype(np.float64).reshape(H, hd)
+        o = anatomy[layer, layout["attn_o"]: layout["attn_o"] + hidden_size].astype(np.float64)
+        q = np.einsum("hi,hij,hj->h", z, grams[layer].astype(np.float64), z)
+        norm = np.sqrt(np.maximum(q, 0))
+        if block["sandwich"]:
+            norm = norm / np.sqrt(np.mean(o * o) + block["rms_eps"])
+        out[layer] = norm
+    return out
+
+
+def pattern_rows(vm, carry, queries, heads, slots, position):
+    """`drowse_attention_rows` for `(layer, head)` pairs, in batches of `MAX_PATTERN_HEADS`."""
+    du = vm.env.drowse_units
+    rows = []
+    for start in range(0, len(heads), du.UNIT_MAX_PATTERN_HEADS):
+        batch = heads[start: start + du.UNIT_MAX_PATTERN_HEADS]
+        meta = np.full((du.UNIT_MAX_PATTERN_HEADS, 4), -1, np.int32)
+        for i, (layer, head) in enumerate(batch):
+            meta[i] = [slots[layer], layer, head, position]
+        out = vm.attention_rows(carry["keys"], queries, meta)
+        rows.extend(out[: len(batch)])
+        if np.any(out[len(batch):] != 0):
+            raise SystemExit("attention rows: an unused row is not zero")
+    return np.asarray(rows)
+
+
+def verify_replay(env, vm, tensors, stats, goldens: Path, arch: str, make_program, worst: dict):
+    du = vm.env.drowse_units
+    block, L, d = vm.block, vm.num_layers, vm.hidden_size
+    layout = du.anatomy_layout(d, block)
+    scales_np = unit_scales(stats)
+    grams_np = vm.head_grams()
+    host_grams = np.stack([np.stack([head_gram(tensors, block, layer, h) for h in range(block["n_heads"])])
+                           for layer in range(L)])
+    if not np.allclose(grams_np, host_grams, rtol=1e-4, atol=1e-5):
+        raise SystemExit(f"drowse_head_write_grams differs from the converted tensors' grams "
+                         f"(max |Δ| {float(np.abs(grams_np - host_grams).max()):.3g})")
+    tvm = env.tvm
+    scales, grams = tvm.runtime.tensor(scales_np), tvm.runtime.tensor(grams_np)
+    push = json.loads((goldens / f"neuron-push-{arch}-v1.json").read_text())
+    all_layers = list(range(L))
+    slots = {layer: i for i, layer in enumerate(all_layers)}
+
+    # attention-patterns: every head at positions 2, 5, 8 of the short prompt, every layer.
+    golden = json.loads((goldens / f"attention-patterns-{arch}-v1.json").read_text())
+    tol = Tolerance(golden["tolerance"])
+    prob = golden["tolerance"]["library"]["probability_atol"]
+    heads = [(layer, h) for layer in all_layers for h in range(block["n_heads"])]
+    for case in golden["cases"]:
+        unit, affine = program_for(make_program, case["steering"], stats, vm, push, push_affine)
+        for row in case["rows"]:
+            p = row["position"]
+            meta = replay_meta(du, anatomy=p, pattern_layers=all_layers)
+            carry, outputs, at = run_replay(vm, [(golden["ids"], [True] * len(unit.triggers))],
+                                            program=unit, meta=meta, scales=scales, grams=grams,
+                                            affine=affine, anatomy=p)
+            got = pattern_rows(vm, carry, at["pattern_q"], heads, slots, p)
+            for layer in all_layers:
+                expected = decode(row["layers"][layer])
+                block_rows = got[layer * block["n_heads"]: (layer + 1) * block["n_heads"]]
+                tol.check(f"attention-patterns:{case['name']}@{p}.L{layer}", expected,
+                          block_rows[:, : p + 1], atol=prob, rtol=0.0)
+                if np.any(block_rows[:, p + 1:] != 0):
+                    raise SystemExit(f"attention-patterns:{case['name']}@{p}: weight past p")
+    worst.update(tol.worst)
+
+    # token-anatomy: the taps at the producing position, write norms, chosen heads' rows.
+    golden = json.loads((goldens / f"token-anatomy-{arch}-v1.json").read_text())
+    tol = Tolerance(golden["tolerance"])
+    prob = golden["tolerance"]["library"]["probability_atol"]
+    rounded = golden["tolerance"]["rounded"]["atol"]
+    for case in golden["cases"]:
+        inter = case["intermediates"]
+        ids = inter["ids"]
+        p = len(ids) - 1
+        unit, affine = program_for(make_program, case["steering"], stats, vm, push, push_affine)
+        meta = replay_meta(du, anatomy=p, pattern_layers=all_layers)
+        carry, outputs, at = run_replay(vm, [(ids, [True] * len(unit.triggers))], program=unit,
+                                        meta=meta, scales=scales, grams=grams, affine=affine,
+                                        anatomy=p)
+        anatomy = at["anatomy"]
+        label = f"token-anatomy:{case['name']}"
+        for name in ("block_in", "mid", "out", "act", "z"):
+            expected = decode(inter["taps"][name])
+            tol.check(f"{label}.{name}", expected,
+                      anatomy[:, layout[name]: layout[name] + expected.shape[1]])
+        tol.check(f"{label}.head_write_norms", decode(inter["head_write_norms"]),
+                  head_write_norms(anatomy, layout, block, host_grams, d))
+        # block_in[L+1] is out[L]; out_pre − mid is the MLP's write (after the post-norm on Gemma).
+        tol.check(f"{label}.block_in=out", anatomy[1:, layout["block_in"]: layout["block_in"] + d],
+                  anatomy[:-1, layout["out"]: layout["out"] + d])
+        mlp = anatomy[:, layout["mlp_o"]: layout["mlp_o"] + d].astype(np.float64)
+        if block["sandwich"]:
+            gamma = np.stack([tensors[next(n for n in tensors if n.endswith(
+                f"layers.{layer}.post_feedforward_layernorm.weight"))] for layer in all_layers])
+            mlp = gamma * mlp / np.sqrt(np.mean(mlp * mlp, axis=1, keepdims=True) + block["rms_eps"])
+        tol.check(f"{label}.mlp_write", mlp,
+                  anatomy[:, layout["out_pre"]: layout["out_pre"] + d]
+                  - anatomy[:, layout["mid"]: layout["mid"] + d])
+        record = case["envelope"]["measurements"]["anatomy"]
+        if record.get("patterns"):
+            chosen = [(item["layer"], item["head"]) for item in record["patterns"]]
+            got = pattern_rows(vm, carry, at["pattern_q"], chosen, slots, p)
+            for item, row in zip(record["patterns"], got):
+                tol.check(f"{label}.pattern.{item['unit']}", item["weights"], row[: p + 1],
+                          atol=prob + rounded, rtol=0.0)
+    worst.update(tol.worst)
+
+    # unit-activity: device peaks against every unit's diagnostics, the host ranking, traces and
+    # the population (B1-goldens §2.5).
+    verify_activity(env, vm, goldens, arch, make_program, stats, scales, grams, worst)
+
+
+def spans_from_runs(runs, rows: int):
+    """Native `ReplayForward.spans()`: `(first_row, rows, producing position of the first row)`."""
+    stops = [first for first, _ in runs[1:]] + [rows]
+    return [(int(first), int(stop) - int(first), int(at) - 1) for (first, at), stop in zip(runs, stops)]
+
+
+def rank_activity(state: np.ndarray, block: dict, top: int):
+    """The host's ranking of the device state (native `_activity`): each kind's top `top` by rank
+    over the flat order `[(neuron, 0), (head, 0), (neuron, 1), …]`, rank descending, flat index
+    ascending on ties, rank −1 dropped."""
+    f, h = block["d_ff"], block["n_heads"]
+    flat = []
+    for layer in range(state.shape[0]):
+        row = state[layer]
+        for n in range(f):
+            flat.append(("neuron", layer, n, row[n], row[f + n], row[2 * f + n]))
+        for k in range(h):
+            flat.append(("head", layer, k, row[3 * f + k], row[3 * f + h + k], row[3 * f + 2 * h + k]))
+    out = []
+    for kind in ("neuron", "head"):
+        items = sorted(((i, e) for i, e in enumerate(flat) if e[0] == kind),
+                       key=lambda item: (-float(item[1][5]), item[0]))
+        out += [e for _, e in items[:top] if e[5] >= 0]
+    return out
+
+
+def unit_name(kind: str, layer: int, index: int) -> str:
+    return f"{kind}/L{layer}{'n' if kind == 'neuron' else 'h'}{index}"
+
+
+def f16_close(golden_text: str, actual: np.ndarray) -> bool:
+    golden = np.frombuffer(base64.b64decode(golden_text), "<f2").astype(np.float64)
+    if golden.shape != actual.shape:
+        return False
+    rounded = actual.astype(np.float16).astype(np.float64)
+    ulp = np.spacing(np.abs(golden.astype(np.float16))).astype(np.float64)
+    return bool(np.all(np.abs(rounded - golden) <= ulp))
+
+
+def verify_activity(env, vm, goldens: Path, arch: str, make_program, stats, scales, grams, worst):
+    du = vm.env.drowse_units
+    block, L = vm.block, vm.num_layers
+    f, h = block["d_ff"], block["n_heads"]
+    golden = json.loads((goldens / f"unit-activity-{arch}-v1.json").read_text())
+    tol = Tolerance(golden["tolerance"])
+    z_atol = tol.z_atol + golden["tolerance"]["rounded"]["atol"]
+    anatomy = json.loads((goldens / f"token-anatomy-{arch}-v1.json").read_text())
+    first = anatomy["cases"][0]
+    prompt_length = first["envelope"]["measurements"]["anatomy"]["token"]["prompt_length"]
+    chat = list(first["intermediates"]["ids"][:prompt_length])
+    every = [("neuron", layer, n) for layer in range(L) for n in range(f)] + [
+        ("head", layer, k) for layer in range(L) for k in range(h)]
+    ties = {t["path"]: t for t in golden["declared_ties"]}
+    for number, case in enumerate(golden["cases"]):
+        name, args, result = case["name"], case["arguments"], case["result"]
+        label = f"unit-activity:{name}"
+        if "refusal" in case:
+            raise SystemExit(f"{label}: refusal cases are host-only and not expected here")
+        tokens = [t["token_id"] for t in result["tokens"]]
+        unit = make_program()
+        if name in ("generated", "segmented"):
+            ids = chat + tokens[:-1]
+            spans = [(0, len(tokens), prompt_length - 1)]
+            if result["steering"] is not None:
+                kind, layer, index, alpha, trigger = split_terms(result["steering"])[0]
+                mean = stats["neuron_mean"][layer, index] if kind == "neuron" else stats["head_mean"][layer, index]
+                unit.ablate(kind, layer, index, np.float32(1 - alpha),
+                            np.float32(alpha) * np.asarray(mean, np.float32), trigger)
+                if trigger != {"prompt": True, "generated": False}:
+                    raise SystemExit(f"{label}: only a prompt-only segmented case is handled")
+                segments = [(ids[:prompt_length], [True]), (ids[prompt_length:], [False])]
+            else:
+                segments = [(ids, [])]
+            produced = {prompt_length - 1 + i: t for i, t in enumerate(tokens)}
+        elif name in ("sink", "sink-population"):
+            ids = RAW_FIRST_IDS[arch] + tokens[:-1]
+            spans = [(0, len(tokens), 0)]
+            segments = [(ids, [])]
+            produced = {i: t for i, t in enumerate(tokens)}
+        elif name == "authored":
+            start = next(i for i in range(len(chat)) if chat[i: i + len(tokens)] == tokens)
+            ids = chat[: start + len(tokens) - 1]
+            spans = [(0, len(tokens), start - 1)]
+            segments = [(ids, [])]
+            produced = {}
+        else:
+            ids = list(args["ids"])
+            spans = spans_from_runs(args["runs"], len(args["raw_ids"]))
+            if name == "excluded-and-zero":
+                unit.ablate("neuron", 1, 5, np.float32(0), np.float32(0), None)
+                segments = [(ids, [True])]
+            else:
+                segments = [(ids, [])]
+            produced = {}
+        traces = [parse_unit(u) for u in args.get("units", [])]
+        population_row = args.get("raw_index")
+        meta = replay_meta(du, spans=spans, population_row=population_row, traces=traces)
+        carry, outputs, _ = run_replay(vm, segments, program=unit, meta=meta, scales=scales,
+                                       grams=grams)
+        check_next_tokens(label, outputs, produced, distinct=name in ("generated", "segmented"))
+        state = carry["state"].numpy()
+        # every unit's device peak against the diagnostics
+        peak = decode(case["diagnostics"]["peak"])
+        row = decode(case["diagnostics"]["row"])
+        margin = decode(case["diagnostics"]["row_margin"])
+        for i, (kind, layer, index) in enumerate(every):
+            base = 0 if kind == "neuron" else 3 * f
+            width = f if kind == "neuron" else h
+            value = float(state[layer, base + index])
+            at = int(state[layer, base + width + index])
+            rank = float(state[layer, base + 2 * width + index])
+            unit_label = f"{label}.{unit_name(kind, layer, index)}"
+            if int(row[i]) < 0:
+                if at != -1 or rank != -1:
+                    raise SystemExit(f"{unit_label}: every row is excluded, the device peaked at {at}")
+                continue
+            tol.check(f"{label}.peak", [peak[i]], [value], atol=z_atol, rtol=0.0)
+            if rank != abs(value):
+                raise SystemExit(f"{unit_label}: rank {rank} is not |{value}|")
+            forced = name == "excluded-and-zero" and (kind, layer, index) == ("neuron", 1, 5)
+            if forced and at != int(row[i]):
+                raise SystemExit(f"{unit_label}: a unit 0 everywhere peaks at row {at}, not {int(row[i])}")
+            if margin[i] >= 1e-3 * max(1.0, abs(float(peak[i]))) and at != int(row[i]):
+                raise SystemExit(f"{unit_label}: peak row {at}, golden {int(row[i])}")
+        # the host ranking of the device state
+        ranked = rank_activity(state, block, int(args["top"]))
+        listed = result["top"]
+        if len(ranked) != len(listed):
+            raise SystemExit(f"{label}: {len(ranked)} ranked units, golden {len(listed)}")
+        groups = ties.get(f"cases[{number}].result.top", {"groups": []})["groups"]
+        grouped = {i: tuple(g) for g in groups for i in g}
+        for i, (entry, (kind, layer, index, value, at, _rank)) in enumerate(zip(listed, ranked)):
+            name_i = unit_name(kind, layer, index)
+            if i in grouped:
+                members = {listed[j]["unit"] for j in grouped[i]}
+                if name_i not in members:
+                    raise SystemExit(f"{label}: tie group {grouped[i]} lacks {name_i}")
+                entry = next(e for e in listed if e["unit"] == name_i)
+            elif entry["unit"] != name_i:
+                raise SystemExit(f"{label}: top[{i}] is {name_i}, golden {entry['unit']}")
+            tol.check(f"{label}.top", [entry["peak"]], [value], atol=z_atol, rtol=0.0)
+            if name_i not in case["tied_peak_rows"] and int(at) != entry["raw_index"]:
+                raise SystemExit(f"{label}: {name_i} peaks at row {int(at)}, golden {entry['raw_index']}")
+        # traces (unproduced rows were never written: 0) and the population
+        trace_values = carry["traces"].numpy()
+        for slot, unit_text in enumerate(args.get("units", [])):
+            expected = result["traces"][unit_text]
+            tol.check(f"{label}.trace", expected, trace_values[slot, : len(expected)],
+                      atol=z_atol, rtol=0.0)
+        if population_row is not None:
+            population = carry["population"].numpy()
+            for entry in result["population"]["layers"]:
+                layer = entry["layer"]
+                if not f16_close(entry["neurons"], population[layer, :f]) or not f16_close(
+                        entry["heads"], population[layer, f:]):
+                    raise SystemExit(f"{label}: population at layer {layer} is not within one f16 ulp")
+    worst.update(tol.worst)

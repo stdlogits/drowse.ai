@@ -1407,6 +1407,7 @@ def verify_units_fixtures(args, tvm, relax, nn, op) -> None:
         unit_meta_layout=drowse_units.unit_meta_layout,
         unit_coeff_layout=drowse_units.unit_coeff_layout,
         UnitSites=drowse_units.UnitSites,
+        drowse_units=drowse_units,
         UNIT_MAX_GROUPS=drowse_units.UNIT_MAX_GROUPS,
         UNIT_MAX_HEAD_TAPS=drowse_units.UNIT_MAX_HEAD_TAPS,
     )
@@ -1414,7 +1415,8 @@ def verify_units_fixtures(args, tvm, relax, nn, op) -> None:
                   cutlass=False)
     results = units_goldens.verify(env, args.units_fixtures.resolve(strict=True),
                                    args.goldens.resolve(strict=True))
-    print("units goldens (block-sites, unit-ablation, unit-probes) passed on the C TVM VM: "
+    print("units goldens (block-sites, unit-ablation, unit-probes, attention-patterns, "
+          "token-anatomy, unit-activity) passed on the C TVM VM: "
           + json.dumps(results, sort_keys=True))
 
 
