@@ -30,7 +30,26 @@ assert.deepEqual(executionProfiles, {
   thinkingProfile: qwen4b.thinkingProfile,
   quantization: "q4f32_1",
   requiredFeatures: [],
+  blockSpec: null,
+  unitRefusal: null,
 });
+// A v5 library: the block spec travels with standard-v4, the refusal with -residual.
+const blockSpec = { dFF: 9728, nHeads: 32 };
+const v5 = (profile, extra) => lockedModelExecutionProfiles(
+  { ...qwen4b, structuredHookProfile: profile, ...extra },
+  { structuredHookProfile: profile, thinkingProfile: qwen4b.thinkingProfile, quantization: qwen4b.quantization },
+);
+assert.deepEqual(v5("standard-v4", { blockSpec }).blockSpec, blockSpec);
+assert.equal(v5("standard-v4-residual", { unitRefusal: "fused qkv" }).unitRefusal, "fused qkv");
+for (const [profile, extra] of [
+  ["standard-v4", {}],
+  ["standard-v4", { blockSpec, unitRefusal: "fused qkv" }],
+  ["standard-v4-residual", {}],
+  ["standard-v4-residual", { blockSpec, unitRefusal: "fused qkv" }],
+  ["standard-v3", { blockSpec }],
+]) {
+  assert.throws(() => v5(profile, extra), /blockSpec and unitRefusal/, `${profile} ${JSON.stringify(extra)}`);
+}
 assert.throws(
   () => lockedModelExecutionProfiles(qwen4b, {
     structuredHookProfile: "standard-v1",

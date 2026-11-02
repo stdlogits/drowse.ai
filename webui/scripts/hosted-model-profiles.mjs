@@ -1,4 +1,12 @@
-const structuredHookProfiles = new Set(["standard-v1", "standard-v2", "standard-v3"]);
+// The v1-v3 profiles go when the runtime lock moves to hook ABI v5 (its entries still name
+// standard-v3); a v5 library attests standard-v4 or standard-v4-residual.
+const structuredHookProfiles = new Set([
+  "standard-v1",
+  "standard-v2",
+  "standard-v3",
+  "standard-v4",
+  "standard-v4-residual",
+]);
 
 export function structuredHookProfile(value) {
   if (!structuredHookProfiles.has(value)) {
@@ -58,12 +66,34 @@ export function lockedModelExecutionProfiles(lock, manifest) {
   ) {
     throw new Error("hosted model artifacts do not match runtime-lock execution profile");
   }
+  const { blockSpec, unitRefusal } = lockedBlockSites(lock, lockedStructuredHookProfile);
   return {
     structuredHookProfile: lockedStructuredHookProfile,
     thinkingProfile: lockedThinkingProfile,
     quantization,
     requiredFeatures: quantization === "q4f16_1" ? ["shader-f16"] : [],
+    // What the runtime attests a v5 library's descriptor against (HOOK_ABI.md §6): the block
+    // spec of a standard-v4 library, the refusal text of a standard-v4-residual one.
+    blockSpec,
+    unitRefusal,
   };
+}
+
+function lockedBlockSites(lock, profile) {
+  const blockSpec = lock?.blockSpec ?? null;
+  const unitRefusal = lock?.unitRefusal ?? null;
+  const units = profile === "standard-v4";
+  const residual = profile === "standard-v4-residual";
+  if (
+    units !== (blockSpec !== null) || residual !== (unitRefusal !== null) ||
+    (blockSpec !== null && (typeof blockSpec !== "object" || Array.isArray(blockSpec))) ||
+    (unitRefusal !== null && (typeof unitRefusal !== "string" || unitRefusal.length === 0))
+  ) {
+    throw new Error(
+      "runtime-lock blockSpec and unitRefusal do not match the structured hook profile",
+    );
+  }
+  return { blockSpec, unitRefusal };
 }
 
 function lockedQuantization(value) {
