@@ -154,6 +154,18 @@ npm run provision:hosted:check
 npm run provision:hosted:create
 ```
 
+Weights do not depend on the hook ABI. A model whose conversion is already published moves to a
+new runtime ABI without reconverting: `forks/build-production-webgpu.py rebind --model PUBLISHED_DIR
+--model-id ID --architecture ARCH --quantization Q --output DIR` checks that the directory is the
+runtime lock's conversion (its `tensor-cache.json` is the lock's `manifestSha256`), copies every file
+its `drowse-build.json` lists, checked by SHA-256, and rewrites only that manifest; then
+`compile --model DIR`. The four instruct q4
+models (Gemma 3 1B and 4B, Qwen3 1.7B and 4B) ship this way: their published weights were adopted
+and precision-promoted (`CONVERSION-SOURCE.json`), and `convert --quantization q4f32_1` would
+produce different, bf16-stored scales and norms. Check a compiled library on the CPU with
+`forks/verify-production-library.py --model DIR [--parity --reference-python PYTHON]` (the PyTorch
+reference needs Transformers 5).
+
 After converting and compiling a model, assemble its exact runtime closure and
 validate it against `runtime-lock.json`:
 

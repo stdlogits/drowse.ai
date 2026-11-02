@@ -91,6 +91,8 @@ def main() -> None:
         register_candidate_models(include_hybrid=args.architecture == "qwen3_5")
     if args.command == "convert":
         convert(args, mlc_repository, tvm_repository)
+    elif args.command == "rebind":
+        rebind(args)
     else:
         compile_library(args, mlc_repository, tvm_repository)
 
@@ -122,6 +124,35 @@ def parse_args() -> argparse.Namespace:
         help="defaults to the architecture's profile; any other value is refused",
     )
     convert_parser.add_argument("--output", required=True, type=Path)
+
+    rebind_parser = subparsers.add_parser(
+        "rebind",
+        help="carry a verified model directory (a published conversion) to the current runtime "
+        "ABI and toolchain without reconverting: its files are copied byte for byte and only "
+        "drowse-build.json changes",
+    )
+    rebind_parser.add_argument("--model", required=True, type=Path)
+    rebind_parser.add_argument(
+        "--model-id", required=True,
+        help="the runtime lock's model id: binds the published conversion to the lock",
+    )
+    rebind_parser.add_argument(
+        "--runtime-lock", type=Path,
+        default=Path(__file__).resolve().parents[1] / "runtime-lock.json",
+    )
+    rebind_parser.add_argument(
+        "--architecture", required=True, choices=PRODUCTION_ARCHITECTURES
+    )
+    rebind_parser.add_argument(
+        "--quantization", default="q4f16_1", choices=PRODUCTION_QUANTIZATIONS
+    )
+    rebind_parser.add_argument(
+        "--structured-hook-profile",
+        choices=STRUCTURED_HOOK_PROFILES,
+        default=None,
+        help="defaults to the architecture's profile; any other value is refused",
+    )
+    rebind_parser.add_argument("--output", required=True, type=Path)
 
     compile_parser = subparsers.add_parser("compile")
     compile_parser.add_argument("--model", required=True, type=Path)
@@ -195,6 +226,76 @@ def convert(args, mlc_repository: Path, tvm_repository: Path) -> None:
             validate_qwen3_attention_config(source, stage)
         copy_notices(source, stage, args.source_repository)
         write_build_manifest(args, source, stage)
+        stage.rename(output)
+    except BaseException:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
+    print(json.dumps(output_summary(output), sort_keys=True))
+
+
+def rebind(args) -> None:
+    """The weights do not depend on the hook ABI, so a published conversion moves to a new runtime
+    ABI by its manifest alone: the conversion must be the runtime lock's (its tensor-cache.json is
+    the lock's `manifestSha256`, its architecture and quantization the lock's and its chat
+    config's), every file its drowse-build.json lists is verified and copied unchanged, and the
+    manifest takes the current ABI names, profile and toolchain, recording the manifest and
+    conversion toolchain it came from."""
+    source = args.model.resolve(strict=True)
+    output = args.output.resolve()
+    validate_new_output(output, directory=True)
+    previous_bytes = (source / "drowse-build.json").read_bytes()
+    previous = json.loads(previous_bytes)
+    if previous.get("architecture") != args.architecture or previous.get("quantization") != args.quantization:
+        raise SystemExit("rebind keeps the conversion's architecture and quantization")
+    locked = [entry for entry in json.loads(args.runtime_lock.read_text(encoding="utf-8"))["models"]
+              if entry.get("id") == args.model_id]
+    if len(locked) != 1:
+        raise SystemExit(f"the runtime lock has no single model {args.model_id}")
+    if (locked[0].get("architecture"), locked[0].get("quantization")) != (args.architecture, args.quantization):
+        raise SystemExit("the runtime lock names another architecture or quantization for this model")
+    if sha256(source / "tensor-cache.json") != locked[0].get("manifestSha256"):
+        raise SystemExit("tensor-cache.json is not the runtime lock's published conversion")
+    chat = json.loads((source / "mlc-chat-config.json").read_text(encoding="utf-8"))
+    if (chat.get("model_type"), chat.get("quantization")) != (args.architecture, args.quantization):
+        raise SystemExit("mlc-chat-config.json names another architecture or quantization")
+    files = previous.get("files")
+    if not isinstance(files, list) or not files:
+        raise SystemExit("model build manifest lists no files")
+    stage = Path(tempfile.mkdtemp(prefix=f"{output.name}.partial-", dir=output.parent))
+    try:
+        for file in files:
+            name = file.get("path")
+            if not isinstance(name, str) or Path(name).name != name or name == "drowse-build.json":
+                raise SystemExit("model build manifest lists an unsafe path")
+            path = source / name
+            if not path.is_file() or path.stat().st_size != file.get("bytes") or sha256(path) != file.get("sha256"):
+                raise SystemExit(f"model file does not match its build manifest: {name}")
+            shutil.copyfile(path, stage / name)
+        if args.quantization == "q0f32":
+            validate_weight_encoding(stage, args.quantization)
+        manifest = {
+            **previous,
+            "runtimeAbi": RUNTIME_ABI,
+            "hookAbi": HOOK_ABI,
+            "structuredHookProfile": args.structured_hook_profile,
+            "thinkingProfile": derive_thinking_profile(stage, args.architecture),
+            "toolchain": toolchain_manifest(args.architecture),
+            "rebind": {
+                "modelId": args.model_id,
+                "fromBuildSha256": hashlib.sha256(previous_bytes).hexdigest(),
+                "fromRuntimeAbi": previous.get("runtimeAbi"),
+                "fromHookAbi": previous.get("hookAbi"),
+                "fromStructuredHookProfile": previous.get("structuredHookProfile"),
+                "fromToolchain": previous.get("toolchain"),
+            },
+        }
+        listed = sorted(files, key=lambda file: file["path"])
+        if artifact_files(stage) != [{key: file.get(key) for key in ("path", "bytes", "sha256")}
+                                     for file in listed]:
+            raise SystemExit("rebound files differ from the build manifest")
+        (stage / "drowse-build.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         stage.rename(output)
     except BaseException:
         shutil.rmtree(stage, ignore_errors=True)

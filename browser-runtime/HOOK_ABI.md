@@ -26,6 +26,7 @@ The TypeScript side of this contract, pinned by script tests:
 | `webui/src/hosted/runtime/modelBackend.ts` | `BrowserBlockSitesBackend` (the device surface), typed tensors, replay layouts | `block-sites-backend.test.mjs` |
 | `webui/src/hosted/runtime/webLlmBlockSites.ts`, `webLlmStaticReads.ts` | the surface over the bridge (replay, residents, static reads) | `web-llm-block-sites.test.mjs`; WebGPU `browser-units-goldens.mjs --suite all` |
 | `browser-runtime/forks/units_goldens.py`, `static_reads.py` | the C TVM VM checks against the goldens | `verify-mlc-hook.py --units-fixtures` |
+| `browser-runtime/forks/verify-production-library.py` | a production library on the CPU: export and shader checks, its descriptor, and (`--parity`) its block sites, greedy tokens and static reads on the C TVM VM against PyTorch on the dequantized MLC tensors (B1 §4.3) | run per library before release |
 
 ## 1. Names (§8.1)
 
@@ -123,19 +124,19 @@ drowse_replay_batch_prefill(
   unit_scales f32 [L, 2·d_ff + H],
   head_grams f32 [L, H, hd, hd],                # resident, built once per model
   activity_state f32 [L, 3·d_ff + 3·H], traces f32 [32, trace_rows], population f32 [L, d_ff + H],
-  pattern_keys f32 [8, KV, pattern_tokens, hd],
+  pattern_keys f32 [16, KV, pattern_tokens, hd],
 ) -> (logits, paged_kv_cache, measurements, next_feet, jlens_hidden, unit_taps,
       anatomy_taps [L, STRIDE], activity_state', traces', population',
-      pattern_keys', pattern_q [8, H, hd])
+      pattern_keys', pattern_q [16, H, hd])
 
-drowse_attention_rows(pattern_keys [8, KV, pattern_tokens, hd], pattern_q [8, H, hd],
+drowse_attention_rows(pattern_keys [16, KV, pattern_tokens, hd], pattern_q [16, H, hd],
                       rows_meta i32 [16, 4]) -> rows f32 [16, pattern_tokens]
 drowse_head_write_grams() -> head_grams f32 [L, H, hd, hd]
 ```
 
 `trace_rows` and `pattern_tokens` are symbolic: the caller sizes `traces` to the node's rows and
 `pattern_keys` to the positions the replay feeds (1 when not asked), both at most the context
-window, so a replay holds only what it reads (a 4B model's keys at full context would be 128 MiB).
+window, so a replay holds only what it reads (a 4B model's keys at full context would be 256 MiB).
 `activity_state`, `traces`, `population` and `pattern_keys` are written in place and returned
 (the outputs alias the inputs), so they thread through the replay's forwards; `anatomy_taps` and
 `pattern_q` are fresh per forward, and the caller keeps the ones of the forward holding the
@@ -269,7 +270,7 @@ meaning:
 48 ROPE_IN_GRAPH (0|1)        49 SLIDING_WINDOW          50 SLIDING_PATTERN
 51 PREFILL_CHUNK_SIZE         52 MAX_UNIT_GROUPS 4       53 MAX_NEURON_ABLATIONS 256
 54 MAX_HEAD_ABLATIONS 64      55 MAX_UNIT_TAPS 64        56 MAX_HEAD_TAPS 16
-57 MAX_ACTIVITY_TRACES 32     58 MAX_ACTIVITY_SPANS 4    59 MAX_PATTERN_LAYERS 8
+57 MAX_ACTIVITY_TRACES 32     58 MAX_ACTIVITY_SPANS 4    59 MAX_PATTERN_LAYERS 16
 60 MAX_PATTERN_HEADS 16       61 ANATOMY_STRIDE          62 UNIT_POSITIONS_FROM 1
 63 MAX_LENS_READ_TOP_K 256    64 MAX_ANATOMY_UNITS 64    65 DROWSE_KERNEL_STORAGE_BINDINGS 8
 66 CONTEXT_TOKENS
@@ -345,11 +346,11 @@ the captures and drops the sequence (`cancel()` drops it unread).
 - **Peaks, as built.** One thread per unit walks the forward's rows in order with a strict `>`,
   so within a forward the first maximum wins and across forwards the earlier one keeps a tie:
   native's `rank.max(dim=0)` then `best > held` exactly.
-- **`replay_meta`** (i32, `replayMetaLayout`/`encodeReplayMeta`, 126 values under `standard-v4`):
+- **`replay_meta`** (i32, `replayMetaLayout`/`encodeReplayMeta`, 134 values under `standard-v4`):
   `[0]` anatomy position (−1 none), `[1]` span count, `[2..18)` four spans of
   `(first_row, rows, first_position, unproduced)`, `[18]` population row (−1 none), `[19]` trace
   count, `[20..116)` 32 traces of `(layer, kind 0 neuron | 1 head, index)`, `[116]` pattern layer
-  count, `[117..125)` eight pattern layers ascending, `[125]` flags (1 anatomy, 2 activity,
+  count, `[117..133)` sixteen pattern layers ascending, `[133]` flags (1 anatomy, 2 activity,
   4 patterns). Unused entries are −1. Patterns need the anatomy flag (queries are captured there).
 - **Bridge (B4).** The vendored WebLLM takes one request per call, `drowseBlockSites(request)`
   (one worker message kind): `headGrams`, `uploadUnitScales`, `release`, `openReplay`
@@ -429,8 +430,8 @@ run. Head grams are resident per model. A matrix that cannot fit `maxBufferSize`
 
 Paged attention computes an online softmax and never materializes probabilities, so a pattern row
 `a_pj = softmax_j(q_p·k_j·scaling + mask)` is rebuilt from captured rows. The replay captures, at up
-to eight asked layers, every KV head's post-RoPE key for every position into `pattern_keys`, and
-every head's query at the anatomy position into `pattern_q [8, H, hd]`; `attentionRows` then
+to sixteen asked layers, every KV head's post-RoPE key for every position into `pattern_keys`, and
+every head's query at the anatomy position into `pattern_q [16, H, hd]`; `attentionRows` then
 computes, for each chosen `(layer, head)`:
 
 ```text
@@ -453,9 +454,11 @@ window support switches to `kInline` and stores un-rotated K. `attention_kv_cach
 is a debugging oracle only (every layer, K and V, and it refuses Gemma3's sliding layers).
 
 **Layers.** With full-depth lens packs every layer can hold R:mid, so a head that ranks may sit at
-any layer. A pattern request names at most `MAX_PATTERN_LAYERS = 8` layers; when the chosen heads
-span more, or are only known after the anatomy's contributions, the worker runs a pattern pass: a
-second replay of the same segments asking only for those layers (§6 alternative (a), exact).
+any layer. A pattern request names at most `MAX_PATTERN_LAYERS = 16` layers, as many as
+`MAX_PATTERN_HEADS`, so the chosen heads' layers always fit one request (a9 raised the cap from 8,
+2026-11-02). The heads are known only after the anatomy's contributions, so the worker runs one
+pattern pass: a second replay of the same segments asking only for those layers (§6 alternative
+(a), exact).
 Patterns are mandatory under `standard-v4`; a library that cannot capture them fails attestation.
 
 ## 10. Binding budget (§2.4)
@@ -488,9 +491,12 @@ whose position is below `UNIT_POSITIONS_FROM` is untouched. The upstream graph i
 unchanged: every v4 kernel is byte-identical in a v5 library (binding names aside).
 
 Largest buffers (`blockSitesBufferElements`): `head_grams` 72 MiB and a pattern key slot 16 MiB
-(qwen3-4b, 4096 tokens: `pattern_keys` whole is 128 MiB, exactly the default binding limit, and
-one buffer as built; it is sized to the positions a replay feeds, so only a full-context pattern
-replay reaches it, and WebLLM asks the adapter for its maximum); `tap_grams` 4 MiB at
+(qwen3-4b, 4096 tokens: `pattern_keys` whole is 256 MiB, one buffer as built; it is sized to
+the positions a replay feeds, so only a full-context pattern replay reaches it). The bridge asks
+for a 1 GiB binding when the adapter offers it and the WebGPU default of 128 MiB otherwise, and
+every units model's largest weight tensor already exceeds 128 MiB, so a device that loads a units
+library binds 1 GiB; the largest `pattern_keys` (256 MiB: qwen3-1.7b, qwen3-4b and gemma3-4b at
+4096 tokens; 128 MiB for qwen3-1.7b at the 2,048 tokens iPhone and iPad run) fits it; `tap_grams` 4 MiB at
 `hd = 256`; the unit tables under 100 KiB. A replay chunk's transient `act` is
 `prefill_chunk_size × d_ff`, never larger than ordinary prefill's.
 
