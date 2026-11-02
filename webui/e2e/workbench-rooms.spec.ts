@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
-  composer, devUrl, openFixtureWorkbench, openMenuItem, selectRoom, sendMessage, toolDialog,
+  composer, devUrl, openFixtureWorkbench, openLayoutWorkbench, openMenuItem, selectRoom, sendMessage, toolDialog,
 } from "./workbench-navigation";
 
 // drowse 6.0's rooms under the hosted shell: the header's tabs (the Menu on a phone), the model
@@ -10,10 +10,11 @@ test.beforeEach(async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
 });
 
-test("room tabs, the model pill and the drowse mark move between rooms", async ({ page }) => {
-  await openFixtureWorkbench(page);
+test("room tabs, the model pill and the drowse mark move between rooms", async ({ page, isMobile }) => {
+  test.skip(isMobile, "A phone keeps the rooms in the Menu (the next test).");
+  await openLayoutWorkbench(page);
   const tabs = page.getByRole("navigation", { name: "Rooms", exact: true });
-  // The fixture runtime reads no units, so the Units room is hidden.
+  // The fixture runtimes read no units, so the Units room is hidden.
   await expect(tabs.getByRole("button")).toHaveText(["Workbench", "Lens", "Probes", "Artifacts", "Model"]);
   for (const room of ["Lens", "Probes", "Artifacts", "Workbench"]) {
     await selectRoom(page, room);
@@ -29,14 +30,14 @@ test("room tabs, the model pill and the drowse mark move between rooms", async (
 
 test("a phone reaches every room from the Menu", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await openFixtureWorkbench(page);
+  await openLayoutWorkbench(page);
   await expect(page.getByRole("navigation", { name: "Rooms", exact: true })).toHaveCount(0);
   for (const room of ["Lens", "Artifacts", "Workbench"]) await selectRoom(page, room);
   await expect(composer(page)).toBeVisible();
 });
 
-test("a tool dialog has one close action and also closes from the scrim and Escape", async ({ page }) => {
-  await openFixtureWorkbench(page);
+test("a tool dialog has one close action and also closes from the scrim and Escape", async ({ page, isMobile }) => {
+  await openLayoutWorkbench(page);
   const help = toolDialog(page, "Help and shortcuts");
   await openMenuItem(page, "Help and shortcuts");
   await expect(help).toBeVisible();
@@ -44,17 +45,20 @@ test("a tool dialog has one close action and also closes from the scrim and Esca
   await expect(close).toHaveCount(1);
   await close.click();
   await expect(help).toHaveCount(0);
-  await openMenuItem(page, "Help and shortcuts");
-  await expect(help).toBeVisible();
-  await page.mouse.click(4, 400);
-  await expect(help).toHaveCount(0);
+  if (!isMobile) {
+    // A phone's dialog covers the page, so only a wider screen leaves scrim to click.
+    await openMenuItem(page, "Help and shortcuts");
+    await expect(help).toBeVisible();
+    await page.mouse.click(4, 400);
+    await expect(help).toHaveCount(0);
+  }
   await openMenuItem(page, "Help and shortcuts");
   await expect(help).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(help).toHaveCount(0);
 });
 
-test("the landing, chooser and workbench mirror without clipping in RTL", async ({ page }) => {
+test("the landing and workbench mirror without clipping in RTL", async ({ page }) => {
   const rtl = () => page.evaluate(() => document.documentElement.setAttribute("dir", "rtl"));
   const contained = () => expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
   for (const width of [390, 1280]) {
@@ -63,7 +67,7 @@ test("the landing, chooser and workbench mirror without clipping in RTL", async 
     await rtl();
     await contained();
   }
-  await openFixtureWorkbench(page);
+  await openLayoutWorkbench(page);
   await rtl();
   const tabs = page.getByRole("navigation", { name: "Rooms", exact: true }).getByRole("button");
   const xs = await tabs.evaluateAll(buttons => buttons.map(button => button.getBoundingClientRect().x));

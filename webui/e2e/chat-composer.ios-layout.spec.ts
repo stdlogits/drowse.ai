@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
-import { composer, storesUrl } from "./workbench-navigation";
+import { composer, composerAction, storesUrl } from "./workbench-navigation";
 
 const compose = composer;
 const send = (page: Page) => page.getByRole("button", { name: "Send", exact: true });
@@ -44,7 +44,7 @@ test("clearing during generation finishes before the next queued message", async
   await send(page).click();
   await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeEnabled();
   await compose(page).focus();
-  const clear = page.getByRole("button", { name: "Clear conversation", exact: true });
+  const clear = await composerAction(page, "Clear conversation");
   if (isMobile) await clear.tap();
   else await clear.click();
   const confirm = page.getByRole("button", { name: "Confirm clear conversation", exact: true });
@@ -71,7 +71,7 @@ test("clearing during generation finishes before the next queued message", async
 test("clear confirmation supports keyboard activation, Escape, and focus dismissal", async ({ page }) => {
   await submit(page, "Keep this until I confirm", 1);
   await compose(page).focus();
-  const clear = page.getByRole("button", { name: "Clear conversation", exact: true });
+  const clear = await composerAction(page, "Clear conversation");
   await clear.focus();
   await expect(clear).toBeFocused();
   await page.keyboard.press("Enter");

@@ -1,13 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
-import { sendMessage, storesUrl } from "./workbench-navigation";
+import { openLoom as openLoomView, sendMessage, storesUrl } from "./workbench-navigation";
 
 const loomViews = (page: Page) => page.getByRole("group", { name: "Loom views", exact: true });
 
 /** Opens the Loom page from the Thread's Map or Weave entry. */
 async function openLoom(page: Page, view: "Map" | "Weave") {
-  await page.getByRole("complementary", { name: "Thread", exact: true })
-    .getByRole("button", { name: view, exact: true }).click();
-  await expect(page.getByRole("region", { name: "Loom", exact: true })).toBeVisible();
+  await openLoomView(page, view);
   await expect(loomViews(page).getByRole("button", { name: view, exact: true })).toHaveAttribute("aria-pressed", "true");
 }
 

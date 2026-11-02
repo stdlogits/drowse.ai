@@ -62,7 +62,8 @@ test("the runtime follows the system when storage is unavailable", async ({ page
   await expect(page.locator("html")).not.toHaveAttribute("data-theme", /.+/);
 });
 
-test("a chosen theme holds across the landing, the model chooser and the workbench", async ({ page }) => {
+test("a chosen theme holds across the landing, the model chooser and the workbench", async ({ page, browserName }) => {
+  test.skip(browserName === "webkit", "The worker fixture needs OPFS, which headless WebKit rejects.");
   const theme = page.locator("html");
   const expectTheme = async (chosen: string | null) => {
     if (chosen) await expect(theme).toHaveAttribute("data-theme", chosen);

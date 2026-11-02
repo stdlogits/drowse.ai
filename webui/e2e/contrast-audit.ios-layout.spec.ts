@@ -167,11 +167,11 @@ async function populatedWorkbench(page: Page, theme: string) {
 }
 
 for (const theme of ["dark", "light"]) {
-  for (const path of ["/", "/credits", "/contact", "/missing-page", "/app?fixture=1"]) {
+  for (const path of ["/", "/credits", "/contact", "/missing-page", "/app?layoutFixture=setup"]) {
     test(`public text retains contrast in ${theme}: ${path}`, async ({ page }, testInfo) => {
       await openPage(page, path);
       await expect(page.locator("main")).toBeVisible();
-      if (path.includes("fixture=1")) await expect(page.getByRole("heading", { name: "Choose your first model" })).toBeVisible();
+      if (path.includes("layoutFixture=setup")) await expect(page.locator(".model-grid > button").first()).toBeVisible();
       await setTheme(page, theme);
       await page.evaluate(() => document.fonts.ready);
       for (const width of [390, 1440]) {

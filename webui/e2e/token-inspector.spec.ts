@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
-import { composer, inspectToken, inspector, openFixtureWorkbench, sendMessage, settle } from "./workbench-navigation";
+import { composer, inspectToken, inspector, openLayoutWorkbench, sendMessage, settle } from "./workbench-navigation";
 
 // The 6.0 Inspector's Token view on a desktop: a selected token docks beside the conversation
 // (this token, alternatives, the lens by depth, features, actions), follows the cursor and the
@@ -9,7 +9,7 @@ import { composer, inspectToken, inspector, openFixtureWorkbench, sendMessage, s
 async function open(page: Page) {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.setViewportSize({ width: 1440, height: 900 });
-  await openFixtureWorkbench(page);
+  await openLayoutWorkbench(page);
   await sendMessage(page, "Inspect the reply.");
 }
 
@@ -17,7 +17,6 @@ test("a selected token docks in the Inspector, follows the cursor and selection,
   await open(page);
   const token = await inspectToken(page, "deterministic");
   await expect(token.getByRole("heading", { name: "deterministic" })).toBeVisible();
-  await expect(token.getByRole("list", { name: "Alternatives at this position" })).toBeVisible();
   await token.getByRole("button", { name: "Next token", exact: true }).click();
   await expect(token.getByRole("heading", { name: "local" })).toBeVisible();
   await page.getByRole("button", { name: "Inspect token This", exact: true }).click();

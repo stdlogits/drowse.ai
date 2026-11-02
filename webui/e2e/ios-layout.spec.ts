@@ -75,7 +75,7 @@ async function expectConversationUsable(page: Page): Promise<void> {
 test("hosted setup reflows across representative iPhone viewports", async ({ page }) => {
   for (const viewport of [...portraitViewports, ...landscapeViewports]) {
     await page.setViewportSize(viewport);
-    await page.goto(`${devUrl}/app?fixture=1`);
+    await page.goto(`${devUrl}/app?layoutFixture=setup`);
     await chooseFixtureModel(page);
     const action = page.getByRole("button", { name: "Download and open", exact: true });
     await action.scrollIntoViewIfNeeded();
@@ -112,24 +112,34 @@ test("keyboard-short visual viewports keep the composer actions reachable", asyn
   }
 });
 
-test("saved chats and token details stay contained on a phone", async ({ page }) => {
-  for (const viewport of [{ width: 320, height: 568 }, { width: 667, height: 375 }]) {
-    await page.setViewportSize(viewport);
-    await openWorkbench(page);
-    await openMenuItem(page, "Saved chats");
-    const library = toolDialog(page, "Saved chats");
-    await expect(library).toBeVisible();
-    await expectInsideVisualViewport(library);
-    await expectNoHorizontalOverflow(library);
-    await page.keyboard.press("Escape");
-    await expect(library).toHaveCount(0);
+async function savedChatsAndToken(page: Page) {
+  await openWorkbench(page);
+  await openMenuItem(page, "Saved chats");
+  const library = toolDialog(page, "Saved chats");
+  await expect(library).toBeVisible();
+  await expectInsideVisualViewport(library);
+  await expectNoHorizontalOverflow(library);
+  await page.keyboard.press("Escape");
+  await expect(library).toHaveCount(0);
 
-    await sendMessage(page, "Inspect this reply on a phone.");
-    const token = await inspectToken(page, "deterministic");
-    await expect(token.getByRole("heading", { name: "deterministic" })).toBeVisible();
-    await expectNoHorizontalOverflow(token);
-    await expectNoPageOverflow(page);
-  }
+  await sendMessage(page, "Inspect this reply on a phone.");
+  const token = await inspectToken(page, "deterministic");
+  await expect(token.getByRole("heading", { name: "deterministic" })).toBeVisible();
+  await expectNoHorizontalOverflow(token);
+  await expectNoPageOverflow(page);
+}
+
+test("saved chats and token details stay contained on a portrait phone", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  await savedChatsAndToken(page);
+});
+
+test("saved chats and token details stay contained on a landscape phone", async ({ page, isMobile }) => {
+  // Product bug (lanes/A5.md, "phone landscape conversation"): on a touch phone at 667x375 the
+  // conversation log is 39px tall and its words paint under the Thread toggle, so none can be tapped.
+  test.fixme(isMobile, "the landscape phone conversation is 39px tall and covered; see lanes/A5.md");
+  await page.setViewportSize({ width: 667, height: 375 });
+  await savedChatsAndToken(page);
 });
 
 test("every Menu dialog stays operable at 320 px", async ({ page }) => {

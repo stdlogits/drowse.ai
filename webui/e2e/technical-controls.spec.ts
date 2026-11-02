@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { composer, devUrl, sourceUrl, storesUrl } from "./workbench-navigation";
+import { composer, devUrl, inspector, sourceUrl, storesUrl } from "./workbench-navigation";
 
 // Sampling controls under the hosted runtime: the Inspector's Sampling region and the Sampling
 // settings dialog, bounded by the hosted model's context.
@@ -12,8 +12,13 @@ async function open(page: Page) {
   await expect(composer(page)).toBeVisible();
 }
 
-const sampling = (page: Page) => page.getByRole("complementary", { name: "Inspector", exact: true })
-  .getByRole("region", { name: "Sampling", exact: true });
+/** The Inspector's Sampling section; a phone opens the sheet from the composer's sampling line. */
+async function samplingSection(page: Page) {
+  const section = inspector(page).getByRole("region", { name: "Sampling", exact: true });
+  if (!await section.isVisible()) await page.getByRole("button", { name: /^temperature / }).click();
+  await expect(section).toBeVisible();
+  return section;
+}
 
 test("max tokens follows the model limit and clamps oversized values", async ({ page }) => {
   await open(page);
@@ -27,7 +32,7 @@ test("max tokens follows the model limit and clamps oversized values", async ({ 
     }, { storesUrl, registryUrl, limit });
   }
   await setModelLimit(2048);
-  const slider = sampling(page).getByRole("slider", { name: "Max tokens", exact: true });
+  const slider = (await samplingSection(page)).getByRole("slider", { name: "Max tokens", exact: true });
   await expect(slider).toHaveAttribute("max", "2048");
   await slider.focus();
   await slider.press("End");

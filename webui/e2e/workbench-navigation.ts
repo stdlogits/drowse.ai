@@ -53,6 +53,32 @@ export async function sendMessage(page: Page, text: string): Promise<void> {
   await waitForReply(page);
 }
 
+/** Opens the workbench on the deterministic in-page runtime (`?layoutFixture=1`, dev only). It
+ *  needs no OPFS, so it also runs in headless WebKit, where the worker fixture cannot. */
+export async function openLayoutWorkbench(page: Page, fixture = "1"): Promise<void> {
+  await page.goto(`${devUrl}/app?layoutFixture=${fixture}`);
+  await expect(composer(page)).toBeVisible({ timeout: 30_000 });
+}
+
+/** A composer action; a compact composer (phones, coarse pointers) folds them under More. */
+export async function composerAction(page: Page, name: string): Promise<Locator> {
+  const action = page.locator("#conversation-composer").getByRole("button", { name, exact: true });
+  if (!await action.isVisible()) {
+    const more = page.locator("#conversation-composer").getByRole("button", { name: "More", exact: true });
+    if (await more.isVisible() && await more.getAttribute("aria-expanded") !== "true") await more.click();
+  }
+  await expect(action).toBeVisible();
+  return action;
+}
+
+/** Opens the Loom page on a view from the Thread (folded under its toggle on a phone). */
+export async function openLoom(page: Page, view: "Map" | "Weave"): Promise<void> {
+  const entry = page.getByRole("complementary", { name: "Thread", exact: true }).getByRole("button", { name: view, exact: true });
+  if (!await entry.isVisible()) await page.getByRole("button", { name: "Thread", exact: true }).click();
+  await entry.click();
+  await expect(page.getByRole("region", { name: "Loom", exact: true })).toBeVisible();
+}
+
 /** Opens a room: the header's room tabs on a wide screen, the Menu's Rooms group on a phone. */
 export async function selectRoom(page: Page, name: string): Promise<void> {
   const tabs = page.getByRole("navigation", { name: "Rooms", exact: true });
@@ -91,7 +117,10 @@ export const inspector = (page: Page): Locator => page.getByRole("complementary"
 
 /** Selects a generated token and returns the Inspector's Token region. */
 export async function inspectToken(page: Page, text: string): Promise<Locator> {
-  await page.getByRole("button", { name: `Inspect token ${text}`, exact: true }).first().click();
+  const word = page.getByRole("button", { name: `Inspect token ${text}`, exact: true }).first();
+  // Centre it: scrolled to the top edge, a phone's sticky Thread toggle sits over it.
+  await word.evaluate(element => element.scrollIntoView({ block: "center" }));
+  await word.click();
   const token = inspector(page).getByRole("region", { name: "Token", exact: true });
   await expect(token).toBeVisible();
   return token;
