@@ -914,10 +914,10 @@ index 0000000..74d754a
 +}
 diff --git a/src/drowse.ts b/src/drowse.ts
 new file mode 100644
-index 0000000..f75baa1
+index 0000000..d711c01
 --- /dev/null
 +++ b/src/drowse.ts
-@@ -0,0 +1,1760 @@
+@@ -0,0 +1,1742 @@
 +export const DROWSE_HOOK_ABI = "block-sites-v5" as const;
 +export const DROWSE_EXACT_READOUT_ABI = "exact-readout-v2" as const;
 +
@@ -2659,24 +2659,6 @@ index 0000000..f75baa1
 +
 +function validDrowseBindingId(value: unknown): value is string {
 +  return typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
-+}
-+
-+function requireUnitLayer(
-+  values: Float32Array,
-+  layer: number,
-+  hiddenSize: number,
-+  label: string,
-+  allowZero = false,
-+): void {
-+  let squaredNorm = 0;
-+  const start = layer * hiddenSize;
-+  for (let index = start; index < start + hiddenSize; index += 1) {
-+    squaredNorm += values[index] * values[index];
-+  }
-+  if (allowZero && squaredNorm === 0) return;
-+  if (Math.abs(squaredNorm - 1) > 1e-3) {
-+    throw new TypeError(`Drowse ${label} layer ${layer} must be unit length`);
-+  }
 +}
 diff --git a/src/engine.ts b/src/engine.ts
 index 1934771..633784e 100644
