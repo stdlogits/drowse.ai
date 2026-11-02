@@ -7,6 +7,9 @@ const devPort = 4176;
 const previewPort = 4177;
 const browserChannel = process.env.PLAYWRIGHT_CHANNEL;
 const runCacheRoot = resolve(tmpdir(), `drowse-playwright-vite-${process.pid}`);
+// PLAYWRIGHT_REUSE_SERVERS=1 attaches to dev and preview servers already listening on the fixed
+// ports (fast spec-by-spec runs); without it every run starts and builds its own.
+const reuseServers = Boolean(process.env.PLAYWRIGHT_REUSE_SERVERS);
 const desktopFirefox = {
   ...devices["Desktop Firefox"],
   userAgent: undefined,
@@ -63,14 +66,14 @@ export default defineConfig({
       command: `npm run dev:hosted -- --force --host ${host} --port ${devPort} --strictPort`,
       url: `http://${host}:${devPort}`,
       env: { DROWSE_VITE_CACHE_DIR: resolve(runCacheRoot, "dev") },
-      reuseExistingServer: false,
+      reuseExistingServer: reuseServers,
       timeout: 120_000,
     },
     {
       command: `npm run build:hosted && npm run preview:hosted -- --host ${host} --port ${previewPort} --strictPort`,
       url: `http://${host}:${previewPort}`,
       env: { DROWSE_VITE_CACHE_DIR: resolve(runCacheRoot, "preview") },
-      reuseExistingServer: false,
+      reuseExistingServer: reuseServers,
       timeout: 120_000,
     },
   ],

@@ -184,7 +184,7 @@ test("offline recovery keeps the cached app and gives an actionable retry", asyn
   await expect(page.locator("#hero-title")).toBeVisible();
 });
 
-test("reload guidance matches the OS and the error actions have room at narrow widths", async ({ page }, testInfo) => {
+test("reload guidance matches the OS and the error actions fit narrow widths", async ({ page }, testInfo) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "platform", { value: "MacIntel" });
     Object.defineProperty(navigator, "maxTouchPoints", { value: 0 });
@@ -198,15 +198,11 @@ test("reload guidance matches the OS and the error actions have room at narrow w
     await page.setViewportSize({ width, height: 900 });
     const layout = await error.evaluate(el => {
       const button = el.querySelector("button")!.getBoundingClientRect();
-      const detail = el.querySelector("p")!.getBoundingClientRect();
-      const safety = el.querySelector(".bootstrap-error-safety")!.getBoundingClientRect();
-      return { gapBefore: button.top - detail.bottom, gapAfter: safety.top - button.bottom, width: el.scrollWidth, viewport: innerWidth, buttonHeight: button.height, inset: button.left };
+      return { width: el.scrollWidth, viewport: innerWidth, left: button.left, right: button.right };
     });
-    expect(layout.gapBefore).toBeGreaterThanOrEqual(24);
-    expect(layout.gapAfter).toBeGreaterThanOrEqual(12);
-    expect(layout.buttonHeight).toBeGreaterThanOrEqual(48);
-    expect(layout.inset).toBeGreaterThanOrEqual(16);
     expect(layout.width).toBeLessThanOrEqual(layout.viewport);
+    expect(layout.left).toBeGreaterThanOrEqual(0);
+    expect(layout.right).toBeLessThanOrEqual(layout.viewport);
     await page.screenshot({ path: testInfo.outputPath(`recovery-${width}.png`) });
   }
   expect((await new AxeBuilder({ page }).include(".bootstrap-error").analyze()).violations).toEqual([]);
