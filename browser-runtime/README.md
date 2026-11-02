@@ -354,6 +354,12 @@ registry. `--feature-metadata FEATURES.json` adds the validated optional
 sidecar to that closure. Raw activation rows remain local and are removed after
 the validated pack is produced.
 
+The Gemma 3 instruct models' SAE packs are not trained here: they are Google's Gemma Scope 2
+JumpReLU SAEs (`resid_post`, 16k, `l0_medium`, the layer at 65% depth), packaged unchanged as
+fp32 tensors and bound to the runtime identity by `import-provider-sae.py` (`--runtime-fingerprint`
+from `hosted-runtime-identity.mjs`). A new runtime identity takes the same provider files to the
+same tensor bytes; only the manifest's `model_fingerprint` changes.
+
 ## Lens, units and core packs
 
 Hosted lenses are drowse's own fits. For each model with units (the six whose blocks
