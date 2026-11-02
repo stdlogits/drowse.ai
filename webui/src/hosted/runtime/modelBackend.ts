@@ -40,7 +40,12 @@ export interface BrowserModelArtifact {
 
 export interface BrowserInstrumentPackArtifacts {
   pack: CatalogInstrumentPack;
+  /** The files that install with the pack (`packInstallFiles`). */
   artifacts: BrowserModelArtifact[];
+  /** A layer file the pack fetches on first read (`packFileResidency` "on_demand"): the verified
+   *  local copy, downloaded into the pack's install the first time. Absent where nothing can be
+   *  fetched (release validation, a fixture): such a read refuses. */
+  fetchFile?: (manifest: CatalogFile, signal: AbortSignal) => Promise<File>;
 }
 
 export interface BrowserModelLoadRequest {

@@ -16,6 +16,9 @@ import {
 } from "../../lib/runtime/catalog";
 import {
   BrowserInstrumentRegistry,
+  isNeutralStatisticsPath,
+  readNeutralStatistics,
+  type BrowserNeutralStatistics,
   type BrowserJlensGpuDictionary,
   type BrowserJlensRuntimeResolver,
   type BrowserSaeGpuDictionary,
@@ -182,6 +185,8 @@ export type BrowserHookProgramBuffers =
   | StructuredHookProgramBuffers;
 
 export class BrowserFeasibilityCorePackCompiler {
+  private neutralStatisticsRead: Promise<BrowserNeutralStatistics | null> | null;
+
   private geometryLive = true;
   private lensLive = false;
   private lensLiveLayers: readonly number[] | null = null;
@@ -200,6 +205,7 @@ export class BrowserFeasibilityCorePackCompiler {
     private readonly loadRequest: BrowserModelLoadRequest,
     private readonly coreManifolds: readonly CoreManifold[],
   ) {
+    this.neutralStatisticsRead = null;
     const keys = new Set<string>();
     for (const manifold of manifolds) {
       if (keys.has(manifold.selectorKey)) {
@@ -239,7 +245,8 @@ export class BrowserFeasibilityCorePackCompiler {
       artifact.manifest.path.endsWith("/neutral-whitener.json")
     );
     const manifoldArtifacts = artifacts.filter((artifact) =>
-      !whitenerTensor.includes(artifact) && !whitenerSidecar.includes(artifact)
+      !whitenerTensor.includes(artifact) && !whitenerSidecar.includes(artifact) &&
+      !isNeutralStatisticsPath(artifact.manifest.path)
     );
     if (manifoldArtifacts.length === 0) {
       throw coreError("CORE_PACK_MANIFOLD_INVALID", "The required core pack has no manifold");
@@ -326,6 +333,24 @@ export class BrowserFeasibilityCorePackCompiler {
         inverseScales: whitener.inverseScales.slice(),
       },
     ]));
+  }
+
+  /** The loaded packs (lens layers, S statistics, units), read on first use (B5's members). */
+  instrumentRegistry(): BrowserInstrumentRegistry {
+    return this.instruments;
+  }
+
+  /** The core pack's neutral statistics (unit statistics, `out` and `mid` means), or null. */
+  async neutralStatistics(signal: AbortSignal): Promise<BrowserNeutralStatistics | null> {
+    this.neutralStatisticsRead ??= readNeutralStatistics(
+      this.loadRequest.artifacts.filter((artifact) => artifact.manifest.role === "core_pack"),
+      { variant: this.loadRequest.variant, signal },
+    )
+      .catch((error) => {
+        this.neutralStatisticsRead = null;
+        throw error;
+      });
+    return this.neutralStatisticsRead;
   }
 
   instrumentDescriptor(): ReturnType<BrowserInstrumentRegistry["descriptor"]> {

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "purpose": "The corpus every hosted R and S lens is fitted on: drowse's own `lens fit` (fit_lens) over the dequantized browser weights in fp32, 64 documents of 128 tokens after the first 16, both sites, every layer (B2-fits.md). No corpus text is redistributed; the packs carry fitted matrices and token counts.",
+  "corpusSpec": "hf:HuggingFaceFW/fineweb-edu/sample-10BT@87f09149ef4734204d70ed1d046ddc9ca3f2b8f9;preprocess=1;doc_chars=4000",
+  "dataset": {
+    "repository": "HuggingFaceFW/fineweb-edu",
+    "config": "sample-10BT",
+    "revision": "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9",
+    "license": "ODC-By-1.0",
+    "url": "https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu"
+  },
+  "minimums": {
+    "prompts": 64,
+    "sequenceLength": 128
+  },
+  "attributionApproval": null
+}

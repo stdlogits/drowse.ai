@@ -1110,6 +1110,25 @@ try {
       /multiple compatible sae packs/,
     );
 
+    // 6.0's kinds: one S lens and one units pack per context, and units only beside R and S.
+    const withUnits = catalogDocument();
+    const unitsVariant = withUnits.models[0].variants[0];
+    const unitsBinding = unitsVariant.contextProfiles[0].bindingSha256;
+    unitsVariant.packs.push(pack(unitsVariant, "units", unitsBinding, "d".repeat(64), "units"));
+    assert.throws(
+      () => catalog.validateCatalogDocument(withUnits),
+      /units pack without its R and S lens packs/,
+    );
+    unitsVariant.packs.push(pack(unitsVariant, "slens", unitsBinding, "e".repeat(64), "slens"));
+    if (unitsVariant.packs.some((candidate) => candidate.kind === "jlens")) {
+      assert.doesNotThrow(() => catalog.validateCatalogDocument(withUnits));
+    }
+    unitsVariant.packs.push(pack(unitsVariant, "slens-two", unitsBinding, "f".repeat(64), "slens"));
+    assert.throws(
+      () => catalog.validateCatalogDocument(withUnits),
+      /multiple compatible slens packs/,
+    );
+
     const missingJlens = catalogDocument();
     missingJlens.models[0].variants[0].packs =
       missingJlens.models[0].variants[0].packs.filter((candidate) =>

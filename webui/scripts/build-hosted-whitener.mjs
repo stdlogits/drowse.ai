@@ -16,6 +16,8 @@ import {
 import { dirname, extname, join, resolve } from "node:path";
 import { createServer as createViteServer } from "vite";
 import { readCoreManifoldSource } from "./hosted-core-manifold-source.mjs";
+import { nativeFitModel } from "./hosted-native-models.mjs";
+import { fitNativeNeutralWhitener, neutralWhitenerSidecar } from "./neutral-whitener-node.mjs";
 import { lockedModelExecutionProfiles } from "./hosted-model-profiles.mjs";
 import {
   grantReleaseToolStorageQuota,
@@ -30,8 +32,11 @@ const options = parseArguments(process.argv.slice(2));
 if (options.help) {
   process.stdout.write(
     "Usage: npm run build:hosted:whitener -- MODEL_ID MODEL_DIR MODEL.wasm WEBLLM.js OUTPUT_DIR\n" +
-    "       --manifold-source DIR [--browser-channel chrome] [--timeout-ms 1800000]\n" +
-    "       [--runtime-lock PATH] [--manual-browser]\n",
+    "       --manifold-source DIR [--manifold-source DIR]... [--neutral-statistics DIR]\n" +
+    "       [--browser-channel chrome] [--timeout-ms 1800000] [--runtime-lock PATH] [--manual-browser]\n" +
+    "  --manifold-source  one core concept source each (browser-runtime/release-inputs/core-manifolds/*)\n" +
+    "  --neutral-statistics  the core/ directory build_hosted_packs.py wrote for this runtime (required for\n" +
+    "                        Gemma 3 and Qwen 3; the whitener is fitted from its native neutral rows)\n",
   );
   process.exit(0);
 }
@@ -129,7 +134,23 @@ const runtimeIdentity = {
   hiddenSize: lock.hiddenSize,
   layerMap: [...lock.layerMap],
 };
-const manifold = await readCoreManifoldSource(resolve(options.manifoldSource), repositoryRoot);
+const manifolds = [];
+for (const source of options.manifoldSources) {
+  manifolds.push(await readCoreManifoldSource(resolve(source), repositoryRoot));
+}
+if (new Set(manifolds.map((manifold) => `${manifold.namespace}/${manifold.name}`)).size !== manifolds.length) {
+  throw new Error("the core concept sources repeat a manifold identity");
+}
+// A model drowse fits natively carries its neutral statistics, and its whitener is fitted from
+// the same native neutral rows the units pack's write norms were measured with.
+if (nativeFitModel(lock) !== (options.neutralStatistics !== null)) {
+  throw new Error(nativeFitModel(lock)
+    ? `${options.modelId} is fitted natively: --neutral-statistics (build_hosted_packs.py core/) is required`
+    : `${options.modelId} has no native neutral pass: --neutral-statistics does not apply`);
+}
+const neutralStatistics = options.neutralStatistics === null
+  ? null
+  : await readNeutralStatistics(resolve(options.neutralStatistics));
 const captureRequest = {
   type: "run",
   modelId: options.modelId,
@@ -138,11 +159,12 @@ const captureRequest = {
   contexts: lock.contextProfiles,
   baselinePrompts,
   rows,
+  nativeNeutralRows: neutralStatistics !== null,
   runtimeIdentity,
   quantization: lock.quantization,
   requiredFeatures: lock.quantization === "q4f16_1" ? ["shader-f16"] : [],
   ...executionProfiles,
-  manifold,
+  manifolds,
   artifactProducer,
 };
 
@@ -160,6 +182,11 @@ const vite = await createViteServer({
   publicDir: resolve(webuiRoot, "public-hosted"),
   server: { middlewareMode: true, watch: null },
 });
+// The whitener the native rows give, refitted here with the same kernel: the browser's must be
+// it, tensors and ridge, in every context.
+const nativeRefit = neutralStatistics === null
+  ? null
+  : await fitNativeNeutralWhitener(vite, neutralStatistics.rowsBytes, lock);
 const server = createHttpServer(async (request, response) => {
   for (const [name, value] of Object.entries({
     "Cross-Origin-Opener-Policy": "same-origin",
@@ -170,6 +197,9 @@ const server = createHttpServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (request.method === "GET" && url.pathname === "/") {
       return send(response, pageHtml(), "text/html; charset=utf-8");
+    }
+    if (request.method === "GET" && url.pathname === "/neutral-rows" && neutralStatistics !== null) {
+      return send(response, neutralStatistics.rowsBytes, "application/octet-stream");
     }
     if (options.manualBrowser && request.method === "GET" && url.pathname === "/request") {
       return send(response, JSON.stringify(captureRequest), "application/json");
@@ -221,10 +251,15 @@ const server = createHttpServer(async (request, response) => {
     }
     if (request.method === "POST" && url.pathname === "/manifold-output") {
       const context = Number(url.searchParams.get("context"));
-      if (!lock.contextProfiles.includes(context) || manifoldBytesByContext.has(context)) {
-        return send(response, "invalid or repeated context", "text/plain", 400);
+      const index = Number(url.searchParams.get("manifold"));
+      const key = `${context}:${index}`;
+      if (
+        !lock.contextProfiles.includes(context) || !Number.isSafeInteger(index) || index < 0 ||
+        index >= manifolds.length || manifoldBytesByContext.has(key)
+      ) {
+        return send(response, "invalid or repeated context or manifold", "text/plain", 400);
       }
-      manifoldBytesByContext.set(context, await readBoundedBody(request, 2 * 1024 * 1024 * 1024));
+      manifoldBytesByContext.set(key, await readBoundedBody(request, 2 * 1024 * 1024 * 1024));
       return send(response, "ok", "text/plain");
     }
     vite.middlewares(request, response);
@@ -338,36 +373,65 @@ if (
   throw new Error("browser whitener metadata does not match the runtime lock");
 }
 
+const sidecarSha256ByContext = {};
 const stage = await mkdtemp(join(dirname(outputDirectory), ".drowse-whitener-"));
 try {
   for (const contextTokens of lock.contextProfiles) {
     const context = result.contexts.find((candidate) => candidate.contextTokens === contextTokens);
     if (!context) throw new Error(`browser whitener omitted context ${contextTokens}`);
     const tensorBytes = tensorBytesByContext.get(contextTokens);
-    const manifoldBytes = manifoldBytesByContext.get(contextTokens);
+    const manifoldBytes = manifolds.map((_, index) => manifoldBytesByContext.get(`${contextTokens}:${index}`));
     if (!tensorBytes || sha256(tensorBytes) !== context.tensorsSha256 ||
-        !manifoldBytes || sha256(manifoldBytes) !== context.manifoldSha256 ||
+        !Array.isArray(context.manifoldSha256) || context.manifoldSha256.length !== manifolds.length ||
+        manifoldBytes.some((bytes, index) => !bytes || sha256(bytes) !== context.manifoldSha256[index]) ||
         context.bindingSha256 !== sha256(canonicalJson({
           runtimeIdentitySha256: result.runtimeIdentitySha256, contextTokens,
         })) ||
         JSON.stringify(Object.keys(context.ridgePerLayer).map(Number)) !== JSON.stringify(lock.layerMap)) {
       throw new Error(`browser core pack identity or payload differs for context ${contextTokens}`);
     }
+    if (nativeRefit !== null && (
+      sha256(tensorBytes) !== sha256(nativeRefit.tensorBytes) ||
+      JSON.stringify(context.ridgePerLayer) !== JSON.stringify(nativeRefit.ridgePerLayer)
+    )) throw new Error(`the ${contextTokens}-token whitener is not the one the native neutral rows give`);
     const directory = resolve(stage, String(contextTokens));
     await mkdir(directory, { recursive: true });
     await writeFile(resolve(directory, "neutral-whitener.safetensors"), tensorBytes);
-    await writeFile(resolve(directory, "neutral-whitener.json"), `${JSON.stringify({
-      format_version: 1,
-      runtime_identity_sha256: result.runtimeIdentitySha256,
-      context_binding_sha256: context.bindingSha256,
-      hidden_size: lock.hiddenSize,
-      layer_map: lock.layerMap,
-      tensors_sha256: context.tensorsSha256,
-      ridge_per_layer: context.ridgePerLayer,
-    }, null, 2)}\n`);
+    const sidecarBytes = neutralWhitenerSidecar({
+      runtimeIdentitySha256: result.runtimeIdentitySha256,
+      contextBindingSha256: context.bindingSha256,
+      modelLock: lock,
+      tensorsSha256: context.tensorsSha256,
+      ridgePerLayer: context.ridgePerLayer,
+    });
+    sidecarSha256ByContext[String(contextTokens)] = sha256(sidecarBytes);
+    await writeFile(resolve(directory, "neutral-whitener.json"), sidecarBytes);
     const manifoldDirectory = resolve(stage, "manifolds", String(contextTokens));
     await mkdir(manifoldDirectory, { recursive: true });
-    await writeFile(resolve(manifoldDirectory, `${manifold.namespace}-${manifold.name}.drowse`), manifoldBytes);
+    for (const [index, manifold] of manifolds.entries()) {
+      await writeFile(resolve(manifoldDirectory, `${manifold.namespace}-${manifold.name}.drowse`), manifoldBytes[index]);
+    }
+  }
+  if (neutralStatistics !== null) {
+    if (neutralStatistics.record.runtime_identity_sha256 !== result.runtimeIdentitySha256) {
+      throw new Error("the neutral statistics were built for another runtime identity");
+    }
+    // The shipped record names the whitener the rows gave in each context, which the units
+    // pack's binding reaches through it (browserInstrumentPacks.ts; validate-hosted-core-pack.mjs).
+    const shipped = {
+      ...neutralStatistics.record,
+      whitener: {
+        rows_sha256: neutralStatistics.record.neutral.rows_sha256,
+        tensors_sha256: Object.fromEntries(result.contexts.map((context) =>
+          [String(context.contextTokens), context.tensorsSha256])),
+        sidecars_sha256: sidecarSha256ByContext,
+      },
+    };
+    if (new Set(Object.values(shipped.whitener.tensors_sha256)).size !== 1) {
+      throw new Error("the native neutral rows gave different whiteners in different contexts");
+    }
+    await writeFile(resolve(stage, "neutral-statistics.json"), `${JSON.stringify(shipped, null, 2)}\n`);
+    await writeFile(resolve(stage, neutralStatistics.record.tensor_file), neutralStatistics.tensorBytes);
   }
   await rename(stage, outputDirectory);
 } catch (error) {
@@ -379,15 +443,18 @@ process.stdout.write(`${JSON.stringify({
   modelId: options.modelId,
   runtimeLockSource,
   outputDirectory,
-  rows: rows.length,
+  neutralRows: neutralStatistics === null
+    ? { source: "browser capture", rows: rows.length }
+    : { source: "native", rows: neutralStatistics.record.neutral_rows.rows, sha256: neutralStatistics.record.neutral.rows_sha256 },
   hiddenSize: lock.hiddenSize,
   layers: lock.layerMap.length,
   runtimeIdentitySha256: result.runtimeIdentitySha256,
   contexts: result.contexts,
-  manifold: {
+  manifolds: manifolds.map((manifold, index) => ({
     identity: `${manifold.namespace}/${manifold.name}`,
-    sha256ByContext: Object.fromEntries(result.contexts.map(context => [context.contextTokens, context.manifoldSha256])),
-  },
+    sha256ByContext: Object.fromEntries(result.contexts.map(context => [context.contextTokens, context.manifoldSha256[index]])),
+  })),
+  neutralStatistics: neutralStatistics === null ? null : neutralStatistics.record.tensor_sha256,
 }, null, 2)}\n`);
 
 function parseArguments(args) {
@@ -395,7 +462,8 @@ function parseArguments(args) {
   const positional = [];
   const result = {
     browserChannel: "chrome",
-    manifoldSource: null,
+    manifoldSources: [],
+    neutralStatistics: null,
     runtimeLock: null,
     manualBrowser: false,
     timeoutMs: 1_800_000,
@@ -412,14 +480,16 @@ function parseArguments(args) {
     }
     if (
       argument !== "--browser-channel" && argument !== "--manifold-source" &&
-      argument !== "--timeout-ms" && argument !== "--runtime-lock"
+      argument !== "--timeout-ms" && argument !== "--runtime-lock" &&
+      argument !== "--neutral-statistics"
     ) {
       throw new Error(`unexpected argument ${argument}`);
     }
     const value = args[index + 1];
     if (!value || value.startsWith("--")) throw new Error(`missing value for ${argument}`);
     if (argument === "--browser-channel") result.browserChannel = value;
-    else if (argument === "--manifold-source") result.manifoldSource = value;
+    else if (argument === "--manifold-source") result.manifoldSources.push(value);
+    else if (argument === "--neutral-statistics") result.neutralStatistics = value;
     else if (argument === "--runtime-lock") result.runtimeLock = value;
     else result.timeoutMs = Number(value);
     index += 1;
@@ -427,7 +497,7 @@ function parseArguments(args) {
   if (positional.length !== 5) {
     throw new Error("expected MODEL_ID MODEL_DIR MODEL.wasm WEBLLM.js OUTPUT_DIR");
   }
-  if (result.manifoldSource === null) {
+  if (result.manifoldSources.length === 0) {
     throw new Error("--manifold-source is required for a releasable core pack");
   }
   if (!Number.isSafeInteger(result.timeoutMs) || result.timeoutMs < 1_000) {
@@ -439,6 +509,32 @@ function parseArguments(args) {
 
 async function readJson(path) {
   return JSON.parse(await readFile(path, "utf8"));
+}
+
+/** The core statistics `build_hosted_packs.py` wrote (`core/neutral-statistics.*`), checked
+ *  against their own record; the record's runtime identity is checked against the build's. */
+async function readNeutralStatistics(directory) {
+  const recordBytes = await readFile(resolve(directory, "neutral-statistics.json"));
+  const record = JSON.parse(recordBytes.toString("utf8"));
+  if (
+    record?.format !== "drowse-neutral-statistics-v1" || record.tensor_file !== "neutral-statistics.safetensors" ||
+    !/^[0-9a-f]{64}$/u.test(record.tensor_sha256 ?? "") || !/^[0-9a-f]{64}$/u.test(record.runtime_identity_sha256 ?? "")
+  ) {
+    throw new Error("neutral-statistics.json is not a neutral statistics record");
+  }
+  const tensorBytes = await readFile(resolve(directory, record.tensor_file));
+  if (sha256(tensorBytes) !== record.tensor_sha256) {
+    throw new Error("the neutral statistics tensor does not match its record");
+  }
+  if (
+    record.neutral_rows?.file !== "neutral-rows.safetensors" || "whitener" in record ||
+    !/^[0-9a-f]{64}$/u.test(record.neutral?.rows_sha256 ?? "")
+  ) throw new Error("neutral-statistics.json names no neutral rows");
+  const rowsBytes = await readFile(resolve(directory, record.neutral_rows.file));
+  if (sha256(rowsBytes) !== record.neutral.rows_sha256) {
+    throw new Error("the neutral rows do not match their record");
+  }
+  return { record, tensorBytes, rowsBytes };
 }
 
 async function requireFile(path, label) {

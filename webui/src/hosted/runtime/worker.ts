@@ -80,7 +80,11 @@ import {
   unavailableRuntimeMethod,
 } from "./operationPolicy";
 import { BrowserDrowseArchiveService } from "../artifacts/service";
-import { optionalPackHardwareBlock } from "./optionalPackCompatibility";
+import {
+  optionalPackHardwareBlock,
+  packInstallCovers,
+  packInstallFiles,
+} from "./optionalPackCompatibility";
 import { clearOwnedRuntimeStorage } from "./legacyRuntimeStorage";
 import { LEGACY_PRODUCT_SLUGS } from "../../../../drowse/webui/src/lib/brandMigration";
 import {
@@ -126,6 +130,15 @@ interface ArtifactDownloaderLike {
     catalog: VerifiedCatalog,
     modelVariantId: string,
     packId: string,
+    options: ArtifactDownloadOptions,
+  ): Promise<ArtifactDownloadResult>;
+  /** One on-demand layer file into an installed pack (`VerifiedArtifactDownloader`). */
+  downloadPackFile?(
+    catalog: VerifiedCatalog,
+    modelVariantId: string,
+    packId: string,
+    path: string,
+    installedHashes: readonly string[],
     options: ArtifactDownloadOptions,
   ): Promise<ArtifactDownloadResult>;
   cancel(): boolean;
@@ -194,6 +207,9 @@ export class HostedRuntimeWorker {
   private readonly sessionCoordinatorFactory: SessionCoordinatorFactory;
   private readonly clearRuntimeStorage: () => Promise<void>;
   private acceptedCatalog: VerifiedCatalog | null = null;
+  /** On-demand pack files are fetched one at a time: each fetch rewrites its pack's install
+   *  record from the record it reads, so two at once would drop one's object from the record. */
+  private packFileFetches: Promise<unknown> = Promise.resolve();
   private checkedCapabilities: RuntimeCapabilities | null = null;
   private admittedDownloadRequestId: string | null = null;
   private cancelAdmittedDownload = false;
@@ -1153,10 +1169,7 @@ export class HostedRuntimeWorker {
         !pack.compatibleContextBindingSha256.includes(contextBindingSha256)
       ) continue;
       const install = installedPacks.get(pack.id);
-      if (
-        !install ||
-        !sameObjectHashes(install.objectHashes, pack.files.map((file) => file.sha256))
-      ) {
+      if (!install || !packInstallCovers(pack, selection.variant, install.objectHashes)) {
         continue;
       }
       if (
@@ -1168,7 +1181,8 @@ export class HostedRuntimeWorker {
         ) !== null
       ) continue;
       const packArtifacts: BrowserModelArtifact[] = [];
-      for (const manifest of pack.files) {
+      const installFiles = packInstallFiles(pack, selection.variant);
+      for (const manifest of installFiles) {
         const file = await this.contentStore.verifiedFile(manifest.sha256);
         if (!file || file.size !== manifest.bytes) {
           await this.contentStore.removeInstall(pack.id, "pack");
@@ -1177,7 +1191,7 @@ export class HostedRuntimeWorker {
         }
         packArtifacts.push({ manifest, file });
       }
-      if (packArtifacts.length === pack.files.length) {
+      if (packArtifacts.length === installFiles.length) {
         const activeKind = optionalPacks.find(({ pack: active }) => active.kind === pack.kind);
         if (activeKind && pack.kind !== "jlens") {
           throw runtimeFailure(
@@ -1187,7 +1201,11 @@ export class HostedRuntimeWorker {
             409,
           );
         }
-        optionalPacks.push({ pack, artifacts: packArtifacts });
+        optionalPacks.push({
+          pack,
+          artifacts: packArtifacts,
+          fetchFile: this.packFileFetcher(selection.variant.id, pack),
+        });
         selectedPackManifests.push(pack);
       }
     }
@@ -2164,7 +2182,7 @@ export class HostedRuntimeWorker {
       const pack = current.variant.packs.find((candidate) =>
         candidate.id === previousPack.pack.id
       );
-      const previousHashes = previousPack.artifacts.map(({ manifest }) => manifest.sha256);
+      const previousHashes = previousPack.pack.files.map((file) => file.sha256);
       if (
         !pack || pack.kind !== previousPack.pack.kind || pack.required ||
         pack.kind === "core" ||
@@ -2190,7 +2208,7 @@ export class HostedRuntimeWorker {
           409,
         );
       }
-      if (!sameObjectHashes(install.objectHashes, pack.files.map((file) => file.sha256))) {
+      if (!packInstallCovers(pack, current.variant, install.objectHashes)) {
         throw runtimeFailure(
           "INSTRUMENT_PACK_BINDING_MISMATCH",
           `Reinstall ${pack.displayName} from the current verified catalog before recovering it`,
@@ -2210,10 +2228,11 @@ export class HostedRuntimeWorker {
       optionalPacks.push({
         pack,
         artifacts: await this.reopenVerifiedArtifacts(
-          pack.files,
+          packInstallFiles(pack, current.variant),
           "VERIFIED_PACK_OBJECT_MISSING",
           `instrument pack ${pack.displayName}`,
         ),
+        fetchFile: this.packFileFetcher(current.variant.id, pack),
       });
       selectedPackManifests.push(pack);
     }
@@ -2233,6 +2252,89 @@ export class HostedRuntimeWorker {
       artifacts,
       optionalPacks,
     };
+  }
+
+  /** A pack's on-demand layer files (`BrowserInstrumentPackArtifacts.fetchFile`): the verified
+   *  local copy, else a download of that one file into the pack's install, authorized by the
+   *  accepted catalog like any download. */
+  private packFileFetcher(
+    modelVariantId: string,
+    pack: CatalogInstrumentPack,
+  ): (manifest: BrowserModelArtifact["manifest"], signal: AbortSignal) => Promise<File> {
+    return (manifest, signal) => {
+      const fetch = this.packFileFetches.then(() => this.fetchPackFile(modelVariantId, pack, manifest, signal));
+      this.packFileFetches = fetch.catch(() => undefined);
+      return fetch;
+    };
+  }
+
+  private async fetchPackFile(
+    modelVariantId: string,
+    pack: CatalogInstrumentPack,
+    manifest: BrowserModelArtifact["manifest"],
+    signal: AbortSignal,
+  ): Promise<File> {
+    signal.throwIfAborted();
+    if (!pack.files.some((file) => file.path === manifest.path && file.sha256 === manifest.sha256)) {
+      throw runtimeFailure(
+        "INSTRUMENT_PACK_ARTIFACT_MISMATCH",
+        `${manifest.path} is not in ${pack.displayName}'s verified closure`,
+        false,
+        409,
+      );
+    }
+    const install = (await this.contentStore.listInstalls()).find((candidate) =>
+      candidate.kind === "pack" && candidate.id === pack.id
+    );
+    if (!install) {
+      throw runtimeFailure(
+        "INSTRUMENT_PACK_NOT_INSTALLED",
+        `Instrument pack ${pack.displayName} is no longer installed`,
+        true,
+        409,
+      );
+    }
+    const stored = await this.contentStore.verifiedFile(manifest.sha256);
+    if (stored && stored.size === manifest.bytes && install.objectHashes.includes(manifest.sha256)) {
+      return stored;
+    }
+    const catalog = this.acceptedCatalog;
+    if (catalog === null || this.downloader.downloadPackFile === undefined) {
+      throw runtimeFailure(
+        "CATALOG_UNAVAILABLE",
+        `Reconnect to fetch ${manifest.path} of ${pack.displayName}`,
+        true,
+        503,
+      );
+    }
+    await this.downloader.downloadPackFile(
+      catalog,
+      modelVariantId,
+      pack.id,
+      manifest.path,
+      install.objectHashes,
+      {
+        signal,
+        withCatalogAuthorization: (operation, authorizationSignal) =>
+          this.catalogRepository.withDownloadAuthorization(catalog, operation, authorizationSignal),
+        checkQuota: async ({ remainingManifestBytes }) => {
+          if (remainingManifestBytes === 0) return true;
+          const estimate = await this.storageEstimator();
+          return estimate.availableBytes !== null &&
+            estimate.availableBytes >= remainingManifestBytes + 64 * MEBIBYTE;
+        },
+      },
+    );
+    const fetched = await this.contentStore.verifiedFile(manifest.sha256);
+    if (!fetched || fetched.size !== manifest.bytes) {
+      throw runtimeFailure(
+        "VERIFIED_PACK_OBJECT_MISSING",
+        `${manifest.path} of ${pack.displayName} is missing after its download`,
+        true,
+        409,
+      );
+    }
+    return fetched;
   }
 
   private async reopenVerifiedArtifacts(
@@ -3251,13 +3353,13 @@ function packInstallIds(
   catalog: VerifiedCatalog | null,
 ): string[] {
   const packs = catalog?.document.models.flatMap((model) =>
-    model.variants.flatMap((variant) => variant.packs)
+    model.variants.flatMap((variant) => variant.packs.map((pack) => ({ pack, variant })))
   );
   return installs
     .filter((install) => {
       if (install.kind !== "pack") return false;
-      const pack = packs?.find((candidate) => candidate.id === install.id);
-      return !pack || sameObjectHashes(install.objectHashes, pack.files.map((file) => file.sha256));
+      const entry = packs?.find((candidate) => candidate.pack.id === install.id);
+      return !entry || packInstallCovers(entry.pack, entry.variant, install.objectHashes);
     })
     .map((install) => install.id)
     .sort();

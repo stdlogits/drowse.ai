@@ -145,6 +145,106 @@ try {
   assert.ok(transformed.code.includes("fittingWorker.dispose()"));
   assert.ok(transformed.code.includes("consensusGram: foundation.consensusGram"));
   assert.ok(transformed.code.includes("evaluatedLayers: foundation.layers"));
+  // One-node concepts fold monopolar; the whitener comes from the native neutral rows when given.
+  assert.ok(transformed.code.includes("manifold.nodes.length === 1"));
+  assert.ok(transformed.code.includes("monopolarFoundation(centroids, whiteners)"));
+  assert.ok(transformed.code.includes('fetch("/neutral-rows"'));
+  assert.ok(transformed.code.includes("fitNeutralWhitener(fitting, native.matrices, native.rows, columns, layerMap)"));
+
+  // The monopolar fold against drowse's own (`_fit_monopolar`, `fold_directions_to_subspace`):
+  // the kernel's whitener over neutral rows, a concept centroid, and drowse's fp32 whitener over
+  // the same rows give the same ray and share.
+  const [{ monopolarFoundation }, { fitNeutralWhitener }, kernel] = await Promise.all([
+    vite.ssrLoadModule("/src/hosted/fitting/monopolar.ts"),
+    vite.ssrLoadModule("/src/hosted/fitting/neutralWhitener.ts"),
+    import("../public-hosted/wasm/drowse_fitting_wasm.js"),
+  ]);
+  await kernel.default({
+    module_or_path: await readFile(resolve(webuiRoot, "public-hosted/wasm/drowse_fitting_wasm_bg.wasm")),
+  });
+  const N = 12;
+  const D = 6;
+  const layerMap = [0, 1];
+  let state = 7;
+  const noise = () => ((state = (state * 1103515245 + 12345) % 2147483648) / 2147483648) - 0.5;
+  const neutralRows = layerMap.map((layer) => Array.from({ length: N * D }, (_, i) => noise() * (1 + (i % D)) + layer));
+  const concept = layerMap.map((layer) => Array.from({ length: D }, (_, i) => (i === layer ? 3 : 0.5) + noise()));
+  const fitted = fitNeutralWhitener(kernel, neutralRows.map((rows) => Float64Array.from(rows)), N, D, layerMap);
+  const foundation = monopolarFoundation({
+    identity: {},
+    captureRetained: false,
+    layers: new Map(layerMap.map((layer, slot) =>
+      [layer, { rows: 1, columns: D, values: Float64Array.from(concept[slot]) }])),
+  }, fitted.whiteners);
+  const scratch = await mkdtemp(join(tmpdir(), "drowse-monopolar-"));
+  try {
+    await writeFile(join(scratch, "inputs.json"), JSON.stringify({ neutralRows, concept, N, D }));
+    const reference = JSON.parse((await exec(python, ["-c", [
+      "import json, sys, torch",
+      "from drowse.geometry.whitener import LayerWhitener",
+      "from drowse.geometry.fold import fold_directions_to_subspace",
+      "x = json.load(open(sys.argv[1]))",
+      "rows = {L: torch.tensor(r, dtype=torch.float32).reshape(x['N'], x['D']) for L, r in enumerate(x['neutralRows'])}",
+      "means = {L: r.mean(0) for L, r in rows.items()}",
+      "w = LayerWhitener.from_neutral_activations(rows, means)",
+      "d = {L: torch.tensor(c, dtype=torch.float32) - means[L] for L, c in enumerate(x['concept'])}",
+      "m = fold_directions_to_subspace('c', d, means, whitener=w, label='c')",
+      "print(json.dumps({str(L): {'basis': s.basis.reshape(-1).tolist(), 'mean': s.mean.tolist(), 'coord': float(s.node_coords.reshape(-1)[0]), 'share': m.mahalanobis_share[L]} for L, s in m.layers.items()}))",
+    ].join("\n"), join(scratch, "inputs.json")], {
+      cwd: repositoryRoot,
+      env: { ...process.env, PYTHONPATH: resolve(repositoryRoot, "drowse") },
+    })).stdout);
+    const close = (actual, expected, label) => {
+      for (let i = 0; i < expected.length; i += 1) {
+        assert.ok(Math.abs(actual[i] - expected[i]) <= 1e-5 * (1 + Math.abs(expected[i])), `${label}[${i}]: ${actual[i]} vs ${expected[i]}`);
+      }
+    };
+    for (const layer of layerMap) {
+      const ours = foundation.finalAffineLayers.get(layer);
+      const theirs = reference[String(layer)];
+      close(ours.basis, theirs.basis, `L${layer} basis`);
+      close(ours.mean, theirs.mean, `L${layer} mean`);
+      close(ours.nodeCoordinates, [theirs.coord], `L${layer} pole`);
+      close([ours.mahalanobisShare], [theirs.share], `L${layer} share`);
+      assert.equal(ours.nodeCount, 1);
+    }
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+  assert.throws(
+    () => monopolarFoundation({
+      identity: {},
+      captureRetained: false,
+      layers: new Map([[0, { rows: 1, columns: D, values: fitted.whiteners.get(0).mean.slice() }]]),
+    }, fitted.whiteners),
+    /indistinguishable from the neutral baseline/,
+  );
+  // A one-node core concept (6.0's deceptive) authors and validates as a monopolar archive.
+  const deceptive = await readCoreManifoldSource(
+    resolve(repositoryRoot, "browser-runtime/release-inputs/core-manifolds/deceptive"),
+    repositoryRoot,
+  );
+  const { browserFittedFlatDiscoverPack: buildFlat } = await vite.ssrLoadModule("/src/hosted/artifacts/fittedAuthoring.ts");
+  const { validateDrowseArchive: validateArchive } = await vite.ssrLoadModule("/src/hosted/artifacts/drowseArchive.ts");
+  const monopolarArchive = await buildFlat({
+    manifold: deceptive,
+    closure: { source: deceptive.source, tags: deceptive.tags, template: null },
+    modelId: "fixture/model",
+    producerVersion: "browser-test",
+    identity: {
+      runtimeIdentitySha256: "1".repeat(64), contextBindingSha256: "2".repeat(64), modelSourceFingerprint: null,
+      captureSha256: "3".repeat(64), captureVersion: 3, captureRenderSha256: "4".repeat(64),
+      baselinePromptsSha256: "5".repeat(64), fitPolicyVersion: 1,
+    },
+    topology: foundation.topology,
+    consensusGram: foundation.consensusGram,
+    nodeCoordinates: foundation.anchoredNodeCoordinates,
+    evaluatedLayers: foundation.layers,
+    layers: foundation.finalAffineLayers,
+  });
+  const monopolar = await validateArchive(monopolarArchive);
+  assert.deepEqual(monopolar.primaryIdentity, ["default", "deceptive"]);
+  assert.equal(monopolar.fittedArtifacts.length, 1);
   const { browserFittedFlatDiscoverPack } = await vite.ssrLoadModule(
     "/src/hosted/artifacts/fittedAuthoring.ts",
   );
@@ -230,5 +330,34 @@ assert.match(validatorSource, /structuredHookProfile: lock\.structuredHookProfil
 assert.match(validatorSource, /id: `\$\{modelId\}-\$\{lock\.quantization\}`/);
 assert.match(validatorSource, /readRuntimeLock\(runtimeLockPath\)/);
 assert.doesNotMatch(validatorSource, /structuredHookProfile: "standard-v1"/);
+
+// drowse 6.0's default concepts, as core sources: the checked-in copies equal the pinned drowse's
+// bundled corpora, and every one reads as a core source (three of them one-node).
+const { coreConceptSources, DEFAULT_PROBE_CATEGORIES } = await import("./sync-core-concepts.mjs");
+const sessionSource = await readFile(resolve(repositoryRoot, "drowse/drowse/session/session.py"), "utf8");
+assert.deepEqual(
+  [...sessionSource.match(/PROBE_CATEGORIES = \[([^\]]*)\]/u)[1].matchAll(/"([a-z]+)"/gu)].map((match) => match[1]),
+  [...DEFAULT_PROBE_CATEGORIES],
+  "the core concepts follow drowse's default probe categories",
+);
+const concepts = await coreConceptSources();
+assert.equal(Object.keys(concepts).length, 17);
+for (const [name, files] of Object.entries(concepts)) {
+  const directory = resolve(repositoryRoot, "browser-runtime/release-inputs/core-manifolds", name);
+  for (const [path, text] of Object.entries(files)) {
+    assert.equal(await readFile(resolve(directory, path), "utf8"), text, `${name}/${path} is drowse's (sync-core-concepts.mjs)`);
+  }
+  const concept = await readCoreManifoldSource(directory, repositoryRoot);
+  assert.equal(`${concept.namespace}/${concept.name}`, `default/${name}`);
+}
+for (const name of ["deceptive", "refusing", "manipulative"]) {
+  assert.equal(JSON.parse(concepts[name]["manifold.json"]).nodes.length, 1, `${name} is 6.0's one-node concept`);
+}
+const sources = (await import("node:fs/promises")).readdir;
+assert.deepEqual(
+  (await sources(resolve(repositoryRoot, "browser-runtime/release-inputs/core-manifolds"))).sort(),
+  [...Object.keys(concepts), "welcoming.detached"].sort(),
+  "the release inputs hold the default concepts and the hosted starter only",
+);
 
 console.log("Hosted whitener release-tool checks passed");

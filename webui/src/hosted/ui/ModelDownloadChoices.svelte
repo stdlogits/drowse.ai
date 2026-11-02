@@ -38,6 +38,9 @@
   function toolChips(model: HostedModelOption): string[] {
     return [
       ...(model.firstRunPacks.some((pack) => pack.kind === "jlens") ? ["Word insights (R lens)"] : []),
+      // 6.0's slens and units kinds, which the shared shell type does not name yet.
+      ...(model.firstRunPacks.some((pack) => (pack.kind as string) === "slens") ? ["Early-layer reads (S lens)"] : []),
+      ...(model.firstRunPacks.some((pack) => (pack.kind as string) === "units") ? ["Neurons and heads (units)"] : []),
       ...(model.firstRunPacks.some((pack) => pack.kind === "sae") ? ["Feature insights (SAE)"] : []),
     ];
   }
