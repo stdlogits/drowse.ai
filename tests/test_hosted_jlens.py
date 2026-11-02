@@ -18,6 +18,7 @@ from fit_hosted_jlens import (
     fit_capture,
     residual_parity,
     token_rows_sha256,
+    transport_primal,
 )
 from mlc_q4_torch import MlcLinear, MlcRMSNorm, replace_linears, replace_rms_norms
 
@@ -280,4 +281,52 @@ def test_residual_parity_reads_every_block_output() -> None:
     rows = _rows()[:1]
     captured = _captured(model, rows)
     with pytest.raises(ValueError, match="wrong residual shape"):
-        residual_parity(model, spec, rows, lambda _index: captured[0][:2])
+        residual_parity(spec, rows, lambda _index: captured[0][:2], kind="R", skip_first=16)
+
+
+def test_residual_parity_measures_transports_own_primal() -> None:
+    from drowse.model.blocks import verify_model_spec
+
+    model = _mlc_shaped_model()
+    dense_linears(model)
+    spec = verify_model_spec(model)
+    rows = _rows()
+    reference = []
+    for row in rows:
+        primal = torch.stack(transport_primal(spec, row, kind="R", skip_first=16))
+        last = torch.zeros(spec.n_layers, 1, spec.d_model)
+        reference.append(torch.cat((primal, last), dim=1).numpy())
+    parity = residual_parity(spec, rows, reference.__getitem__, kind="R", skip_first=16)
+    assert parity == {0: 0.0, 1: 0.0, 2: 0.0}
+
+
+def test_parity_refuses_a_non_finite_primal() -> None:
+    from drowse.model.blocks import verify_model_spec
+
+    model = _mlc_shaped_model()
+    dense_linears(model)
+    spec = verify_model_spec(model)
+    rows = _rows()
+    captured = _captured(model, rows)
+    with torch.no_grad():
+        model.model.layers[1].mlp.down_proj.weight[0, 0] = float("nan")
+    with pytest.raises(ValueError, match="not finite at layer 1"):
+        fit_capture(
+            model, spec, rows, captured.__getitem__,
+            kind="R", source_layers=[0, 1], dim_batch=16, seq_len=32, skip_first=16,
+            max_residual_error=0.01,
+        )
+
+
+def test_parity_refuses_a_non_finite_capture() -> None:
+    from drowse.model.blocks import verify_model_spec
+
+    model = _mlc_shaped_model()
+    dense_linears(model)
+    spec = verify_model_spec(model)
+    rows = _rows()
+    captured = _captured(model, rows)
+    captured[0] = captured[0].copy()
+    captured[0][2, 3, 4] = np.nan
+    with pytest.raises(ValueError, match="row 0 has a non-finite residual"):
+        residual_parity(spec, rows, captured.__getitem__, kind="R", skip_first=16)

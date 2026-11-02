@@ -15,10 +15,12 @@ derivative).  The data path is now:
 - the fit runs on the dequantized MLC tensor cache (the same weights the
   browser runs), as plain ``nn.Linear`` projections so the block description
   reads real weights, over the captured token rows;
-- the captured residuals are the parity gate: the dequantized model's block
-  outputs must reproduce the browser's at every primal position, per layer,
-  within ``max_residual_error`` (relative Frobenius error, the bound
-  ``validate_mlc_q4_parity.py`` holds captures to), or the fit refuses.
+- the captured residuals are the parity gate: transport's own primal (the
+  block outputs it linearizes at, in its own arithmetic) must reproduce the
+  browser's at every primal position, per layer, within
+  ``max_residual_error`` (relative Frobenius error, the bound
+  ``validate_mlc_q4_parity.py`` holds captures to), or the fit refuses.  A
+  non-finite primal or error refuses too.
 
 The pack is lens format v7 at the ``out`` site, written by ``save_lens_at``.
 """
@@ -45,8 +47,9 @@ from mlc_q4_torch import MlcLinear, build_transformers_model
 from drowse.base.integrity import hash_file
 from drowse.lens.fit import LensFit, fit_lens
 from drowse.lens.jlens import DEFAULT_DIM_BATCH, SKIP_FIRST_POSITIONS, resolve_word_token
+from drowse.lens import transport
 from drowse.lens.store import LensProvenance, save_lens_at
-from drowse.model.blocks import ModelSpec, verify_model_spec
+from drowse.model.blocks import ModelSpec, rotary_tables, verify_model_spec
 
 #: The output-family kinds a hosted pack may hold: the RelP R lens (drowse's
 #: default) and the standard J lens.
@@ -197,13 +200,16 @@ def fit_capture(
     """
     if not (max_residual_error > 0 and np.isfinite(max_residual_error)):
         raise ValueError("max_residual_error must be finite and positive")
-    parity = residual_parity(model, spec, input_id_rows, reference)
-    worst = max(parity, key=parity.__getitem__)
-    if parity[worst] > max_residual_error:
-        raise ValueError(
-            f"the dequantized model does not reproduce the browser residuals: layer {worst} "
-            f"relative error {parity[worst]:.6g} exceeds {max_residual_error:.6g}"
-        )
+    parity = residual_parity(
+        spec, input_id_rows, reference, kind=kind, skip_first=skip_first,
+    )
+    for layer, value in parity.items():
+        # ``not <=`` so a NaN error refuses too.
+        if not value <= max_residual_error:
+            raise ValueError(
+                f"the dequantized model does not reproduce the browser residuals: layer {layer} "
+                f"relative error {value:.6g} exceeds {max_residual_error:.6g}"
+            )
     fitted = fit_lens(
         model,
         None,
@@ -225,50 +231,92 @@ def fit_capture(
 
 @torch.no_grad()
 def residual_parity(
-    model: Any,
     spec: ModelSpec,
     input_id_rows: Sequence[Sequence[int]],
     reference: Callable[[int], np.ndarray],
+    *,
+    kind: str,
+    skip_first: int,
 ) -> dict[int, float]:
-    """Each layer's ``‖h_model − h_browser‖ / ‖h_browser‖`` over every row.
+    """Each layer's ``‖h_transport − h_browser‖ / ‖h_browser‖`` over every row.
 
-    Compared at the positions transport's primal keeps (all but the last
-    token, which no read position attends to).
+    ``h_transport`` is the primal transport linearizes at
+    (:func:`transport_primal`), compared at the positions it keeps (all but
+    the last token).  Raises ``ValueError`` when a primal output, a captured
+    residual or an error is not finite.
     """
-    outputs: dict[int, torch.Tensor] = {}
-
-    def keep(layer: int) -> Callable[..., None]:
-        def hook(_module: torch.nn.Module, _inputs: Any, output: Any) -> None:
-            value = output[0] if isinstance(output, tuple) else output
-            outputs[layer] = value[0].detach().to(device="cpu", dtype=torch.float32)
-
-        return hook
-
-    device = spec.embed.weight.device
     error = torch.zeros(spec.n_layers, dtype=torch.float64)
     scale = torch.zeros(spec.n_layers, dtype=torch.float64)
-    handles = [block.module.register_forward_hook(keep(block.layer)) for block in spec.blocks]
-    try:
-        for index, row in enumerate(input_id_rows):
-            outputs.clear()
-            ids = torch.tensor([list(row)], dtype=torch.long, device=device)
-            model(ids, use_cache=False, logits_to_keep=1)
-            captured = torch.from_numpy(np.asarray(reference(index), dtype=np.float32))
-            if captured.shape != (spec.n_layers, len(row), spec.d_model):
-                raise ValueError(f"lens capture row {index} has the wrong residual shape")
-            kept = len(row) - 1
-            for layer in range(spec.n_layers):
-                actual = outputs[layer][:kept].double()
-                expected = captured[layer, :kept].double()
-                error[layer] += (actual - expected).square().sum()
-                scale[layer] += expected.square().sum()
-    finally:
-        for handle in handles:
-            handle.remove()
-    return {
+    for index, row in enumerate(input_id_rows):
+        captured = torch.from_numpy(np.asarray(reference(index), dtype=np.float32))
+        if captured.shape != (spec.n_layers, len(row), spec.d_model):
+            raise ValueError(f"lens capture row {index} has the wrong residual shape")
+        if not torch.isfinite(captured).all():
+            raise ValueError(f"lens capture row {index} has a non-finite residual")
+        kept = len(row) - 1
+        primal = transport_primal(spec, row, kind=kind, skip_first=skip_first)
+        for layer, output in enumerate(primal):
+            actual = output.to(device="cpu", dtype=torch.float64)
+            if not torch.isfinite(actual).all():
+                raise ValueError(
+                    f"transport's primal is not finite at layer {layer} of lens capture row {index}"
+                )
+            expected = captured[layer, :kept].double()
+            error[layer] += (actual - expected).square().sum()
+            scale[layer] += expected.square().sum()
+    parity = {
         layer: float((error[layer] / scale[layer].clamp_min(1e-24)).sqrt())
         for layer in range(spec.n_layers)
     }
+    for layer, value in parity.items():
+        if not np.isfinite(value):
+            raise ValueError(f"layer {layer} residual error is not finite")
+    return parity
+
+
+@torch.no_grad()
+def transport_primal(
+    spec: ModelSpec, row: Sequence[int], *, kind: str, skip_first: int,
+) -> list[torch.Tensor]:
+    """Every block's output on ``row[:-1]``, as transport's primal computes it.
+
+    This is the driver of :func:`drowse.lens.transport.linearize` with no maps
+    kept: the same embedding, model dtype, fp32 work dtype, key padding,
+    rotary tables and ``_block_primal``.  The parity gate reads it so it
+    certifies the trajectory the estimator linearizes at, not the Transformers
+    forward (which rounds differently in fp16).  It mirrors the pinned drowse;
+    a bump that changes ``linearize`` must change it too.
+    """
+    if len(row) < 2:
+        raise ValueError("a lens capture row needs at least two tokens")
+    rules = transport.rules_for(kind)
+    embed = spec.embed
+    device = embed.weight.device
+    work = torch.promote_types(embed.weight.dtype, torch.float32)
+    tokens = torch.tensor(list(row)[:-1], dtype=torch.long, device=device)
+    T = int(tokens.numel())
+    Tp = -(-T // transport._KEY_ALIGN) * transport._KEY_ALIGN
+    positions = torch.arange(T, device=device)
+    query = positions[:, None]
+    key = torch.arange(Tp, device=device)[None, :]
+    causal = (key <= query) & (key < T)
+    tables: dict[str | None, tuple[torch.Tensor, torch.Tensor]] = {}
+    h = embed(tokens)
+    outputs = []
+    for index, block in enumerate(spec.blocks):
+        if block.layer != index:
+            raise ValueError("the model description's blocks are not in layer order")
+        rope_key = block.attn.rope_table
+        if rope_key not in tables:
+            tables[rope_key] = rotary_tables(spec, block, positions)
+        cos, sin = tables[rope_key]
+        h, _ = transport._block_primal(
+            block, h, cos.to(work), sin.to(work), causal,
+            S=skip_first, T=T, Tp=Tp, work=work, true=rules == "standard", rules=rules,
+            keep=False,
+        )
+        outputs.append(h)
+    return outputs
 
 
 def dense_linears(module: torch.nn.Module) -> None:
