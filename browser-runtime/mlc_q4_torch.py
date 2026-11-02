@@ -473,6 +473,8 @@ def build_transformers_model(directory: Path, device: str = "cpu") -> torch.nn.M
         LlamaForCausalLM,
         Qwen3Config,
         Qwen3ForCausalLM,
+        Qwen3_5ForCausalLM,
+        Qwen3_5TextConfig,
     )
 
     state, config = transformers_state_dict(directory)
@@ -507,7 +509,34 @@ def build_transformers_model(directory: Path, device: str = "cpu") -> torch.nn.M
             attention_bias=bool(config["attention_bias"]),
         )
         model_type = Qwen3ForCausalLM
-    else:
+    elif config["architecture"] == "qwen3_5":
+        # MLC's Qwen35Config defaults where the converted config omits a field. Text positions
+        # are one-dimensional, so the multimodal RoPE's three sections coincide: plain partial
+        # RoPE, as MLC compiles it. Norms: the tensor cache holds MLC's `1 + w` (the loader adds
+        # the offset; the gated linear-attention norm has none), which MlcRMSNorm applies as is.
+        interval = int(config.get("full_attention_interval", 4))
+        model_config = Qwen3_5TextConfig(
+            **{**common, "tie_word_embeddings": bool(config["tie_word_embeddings"])},
+            max_position_embeddings=int(config["context_window_size"]),
+            attention_bias=bool(config.get("attention_bias", False)),
+            hidden_act=str(config.get("hidden_act", "silu")),
+            linear_conv_kernel_dim=int(config.get("linear_conv_kernel_dim", 4)),
+            linear_key_head_dim=int(config.get("linear_key_head_dim", 128)),
+            linear_value_head_dim=int(config.get("linear_value_head_dim", 128)),
+            linear_num_key_heads=int(config.get("linear_num_key_heads", 16)),
+            linear_num_value_heads=int(config.get("linear_num_value_heads", 16)),
+            layer_types=[
+                "full_attention" if (layer + 1) % interval == 0 else "linear_attention"
+                for layer in range(common["num_hidden_layers"])
+            ],
+            rope_parameters={
+                "rope_type": "default",
+                "rope_theta": float(config.get("rope_theta", 10_000_000)),
+                "partial_rotary_factor": float(config.get("partial_rotary_factor", 0.25)),
+            },
+        )
+        model_type = Qwen3_5ForCausalLM
+    elif config["architecture"] == "gemma3_text":
         kwargs = config.get("kwargs")
         if not isinstance(kwargs, dict):
             kwargs = {}
@@ -536,6 +565,8 @@ def build_transformers_model(directory: Path, device: str = "cpu") -> torch.nn.M
             },
         )
         model_type = Gemma3ForCausalLM
+    else:
+        raise ValueError(f"no Transformers reference for MLC architecture {config['architecture']!r}")
     model_config._attn_implementation = "eager"
     with torch.device("meta"):
         model = model_type(model_config)
