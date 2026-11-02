@@ -10,9 +10,9 @@ from safetensors.torch import load as load_safetensors
 
 
 LENS_REVISION = "0731326edff4ae730ffc5356fe1a4728c748b3a6"
+# Provider J lenses serve only the base models drowse cannot fit (LayerNorm, fused qkv):
+# Gemma 3 1B PT's R and S lenses are native fits (README.md, "Lens, units and core packs").
 LENSES = [
-    ("google/gemma-3-1b-pt", "gemma-3-1b", "gemma-3-1b-pt", 1152,
-     66363652, "39f61074bfdb7c896b5027612a21e9648ca348d6516f0fbdbca6e5690c8b1ab1"),
     ("openai-community/gpt2", "gpt2-small", "gpt2", 768,
      12980477, "d1800a1335ada089ef2e1ec0e4bd4d5bd61e6011eacc31f8618fdb3d10aae762"),
     ("EleutherAI/pythia-70m-deduped", "pythia-70m-deduped", "pythia-70m-deduped", 512,
@@ -35,15 +35,15 @@ def main():
         with urllib.request.urlopen(f"{prefix}/config.yaml", timeout=30) as response:
             config = response.read(32768).decode()
         if f'hf_model_name: "{model}"' not in config:
-            raise ValueError(f"J-lens configuration does not name {model}")
+            raise ValueError(f"provider R lens configuration does not name {model}")
         payload = download(f"{prefix}/{stem}_jacobian_lens.pt", size, digest)
         checkpoint = torch.load(io.BytesIO(payload), map_location="cpu", weights_only=True)
         matrices = checkpoint["J"]
         if not isinstance(matrices, dict) or not matrices:
-            raise ValueError("Missing J-lens matrices")
+            raise ValueError("Missing provider R lens matrices")
         for layer, matrix in matrices.items():
             if matrix.shape != (hidden, hidden) or not torch.isfinite(matrix).all():
-                raise ValueError(f"Invalid J-lens matrix: {model}, layer {layer}")
+                raise ValueError(f"Invalid provider R lens matrix: {model}, layer {layer}")
         print(json.dumps({
             "model": model, "check": "pinned_jlens_tensor_integrity",
             "layers": sorted(map(int, matrices)), "hidden_size": hidden,

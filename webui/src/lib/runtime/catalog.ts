@@ -14,9 +14,11 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import {
   EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
+  isBlockSitesProfile,
   resolveStructuredHookProfile,
   structuredHookMemoryRequirements,
   WEB_LLM_RUNTIME_MIN_STORAGE_BUFFERS_PER_SHADER_STAGE,
+  type BlockSpec,
 } from "../../hosted/runtime/structuredHookProfile";
 
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -67,6 +69,20 @@ export interface CatalogRuntimeLockModel {
   convertedRepository: string;
   convertedRevision: string;
   contextProfiles: readonly number[];
+  /** The block spec a `standard-v4` library's descriptor is attested against (B1 §8.2). */
+  blockSpec: BlockSpec | null;
+  /** What a `standard-v4-residual` library's unit members answer (native's 422 text). */
+  unitRefusal: string | null;
+}
+
+/** The lock's block sites for a catalog variant (the load request's `blockSpec` and
+ *  `unitRefusal`): the entry whose runtime identity it carries, or nothing locked. */
+export function lockedBlockSites(
+  locks: readonly CatalogRuntimeLockModel[],
+  variant: Pick<ModelVariant, "runtimeIdentity">,
+): { blockSpec: BlockSpec | null; unitRefusal: string | null } {
+  const lock = locks.find((candidate) => sameRuntimeIdentity(candidate.runtimeIdentity, variant.runtimeIdentity));
+  return { blockSpec: lock?.blockSpec ?? null, unitRefusal: lock?.unitRefusal ?? null };
 }
 
 export class CatalogValidationError extends Error {
@@ -283,6 +299,16 @@ function validateRuntimeLockBindings(
           `Catalog variant ${variant.id} is not present in the embedded browser runtime lock`,
         );
       }
+      // A v5 library attests its block spec (unit sites) or answers its unit members with the
+      // lock's refusal (residual), so the lock entry must record the one its profile needs.
+      const profile = resolveStructuredHookProfile(variant.structuredHookProfile);
+      const unitSites = isBlockSitesProfile(profile) && profile.unitSites === 1;
+      if (unitSites ? lock.blockSpec === null : !lock.unitRefusal) {
+        throw new CatalogValidationError(
+          "CATALOG_RUNTIME_IDENTITY_UNLOCKED",
+          `The embedded browser runtime lock does not record variant ${variant.id}'s ${unitSites ? "block spec" : "unit refusal"}`,
+        );
+      }
       if (model.sourceUrl !== `https://huggingface.co/${lock.runtimeIdentity.sourceModel}`) {
         throw new CatalogValidationError(
           "CATALOG_SOURCE_PROVENANCE_MISMATCH",
@@ -435,10 +461,15 @@ function validateVariant(value: unknown, index: number): ModelVariant {
   if (item.tier !== "fastest" && item.tier !== "balanced" && item.tier !== "quality") {
     throw invalid(`${path}.tier is invalid`);
   }
+  // This runtime loads hook ABI block-sites-v5 libraries only: standard-v4 (unit sites) or
+  // standard-v4-residual.
   let structuredHookProfile;
   try {
     structuredHookProfile = resolveStructuredHookProfile(item.structuredHookProfile);
   } catch {
+    throw invalid(`${path}.structuredHookProfile is not allow-listed`);
+  }
+  if (!isBlockSitesProfile(structuredHookProfile)) {
     throw invalid(`${path}.structuredHookProfile is not allow-listed`);
   }
   const thinkingProfile = validateThinkingProfile(item.thinkingProfile, `${path}.thinkingProfile`);
@@ -561,16 +592,15 @@ function validateVariant(value: unknown, index: number): ModelVariant {
         `${WEB_LLM_RUNTIME_MIN_STORAGE_BUFFERS_PER_SHADER_STAGE} for the WebLLM runtime`,
     );
   }
-  if (structuredHookProfile.id === "standard-v3") {
-    for (const [name, minimum] of Object.entries(
-      EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
-    )) {
-      if (!Object.hasOwn(limits, name) || limits[name] < minimum) {
-        throw invalid(
-          `${path}.requirements.limits.${name} must explicitly declare at least ${minimum} ` +
-            "for standard-v3 exact GPU readout",
-        );
-      }
+  // Every v5 library runs the exact GPU readout (exact-readout-v2).
+  for (const [name, minimum] of Object.entries(
+    EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
+  )) {
+    if (!Object.hasOwn(limits, name) || limits[name] < minimum) {
+      throw invalid(
+        `${path}.requirements.limits.${name} must explicitly declare at least ${minimum} ` +
+          "for the exact GPU readout",
+      );
     }
   }
   const files = array(item.files, `${path}.files`).map(validateFile);
@@ -659,16 +689,25 @@ function validateVariant(value: unknown, index: number): ModelVariant {
     }
   }
   for (const profile of contextProfiles) {
-    const compatible = packs.filter((pack) =>
-      pack.kind === "sae" &&
-      pack.compatibleContextBindingSha256.includes(profile.bindingSha256)
+    // One SAE, one S lens and one units pack per context; R packs may be several (the active
+    // one is chosen in the Lens room). A units pack reads through the R and S lenses it binds.
+    const compatible = (kind: CatalogInstrumentPack["kind"]) => packs.filter((pack) =>
+      pack.kind === kind && pack.compatibleContextBindingSha256.includes(profile.bindingSha256)
     );
-    if (compatible.length > 1) {
-      throw invalid(
-        `${path} context ${profile.contextTokens} has multiple compatible sae packs: ${
-          compatible.map((pack) => pack.id).join(", ")
-        }`,
-      );
+    for (const kind of ["sae", "slens", "units"] as const) {
+      if (compatible(kind).length > 1) {
+        throw invalid(
+          `${path} context ${profile.contextTokens} has multiple compatible ${kind} packs: ${
+            compatible(kind).map((pack) => pack.id).join(", ")
+          }`,
+        );
+      }
+    }
+    if (
+      compatible("units").length === 1 &&
+      (compatible("slens").length !== 1 || compatible("jlens").length === 0)
+    ) {
+      throw invalid(`${path} context ${profile.contextTokens} has a units pack without its R and S lens packs`);
     }
   }
   return {
@@ -853,7 +892,7 @@ function validatePack(value: unknown, index: number): CatalogInstrumentPack {
     path,
   );
   identifier(item.id, `${path}.id`);
-  if (item.kind !== "core" && item.kind !== "jlens" && item.kind !== "sae") {
+  if (!["core", "jlens", "slens", "units", "sae"].includes(item.kind as string)) {
     throw invalid(`${path}.kind is invalid`);
   }
   text(item.displayName, `${path}.displayName`);

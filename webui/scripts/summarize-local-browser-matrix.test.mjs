@@ -5,14 +5,20 @@ import {
   parseArguments,
   summarizeLocalBrowserMatrix,
 } from "./summarize-local-browser-matrix.mjs";
-import { REQUIRED_BROWSER_FULL_RUNTIME_CHECKS } from "./browser-full-runtime-contract.mjs";
+import { requiredBrowserFullRuntimeChecks } from "./browser-full-runtime-contract.mjs";
 import { lockedRuntimeIdentitySha256 } from "./check-runtime-lock.mjs";
 
 const repositoryRoot = resolve(import.meta.dirname, "../..");
+// The repository lock with its library-bound fields filled (W4 fills the real ones).
 const runtimeLock = JSON.parse(await readFile(
   resolve(repositoryRoot, "browser-runtime/runtime-lock.json"),
   "utf8",
 ));
+for (const [index, model] of runtimeLock.models.entries()) {
+  model.convertedRevision ??= String(index + 1).repeat(40);
+  model.manifestSha256 ??= "a".repeat(64);
+  model.librarySha256 ??= "b".repeat(64);
+}
 const benchmarkLock = {
   requiredMatrix: {
     modelIds: ["gemma3-270m-instruct", "qwen3-1.7b"],
@@ -44,6 +50,12 @@ assert.throws(
   () => summarizeLocalBrowserMatrix([unsafe], runtimeLock, benchmarkLock),
   /non-release E2E measurement/,
 );
+const residualProfile = structuredClone(first);
+residualProfile.structuredHookProfile = "standard-v4-residual";
+assert.throws(
+  () => summarizeLocalBrowserMatrix([residualProfile], runtimeLock, benchmarkLock),
+  /profile differs from the runtime lock/,
+);
 const networked = structuredClone(first);
 networked.environment.browserAudit.externalRequests.push("https://example.com/");
 assert.throws(
@@ -59,10 +71,11 @@ function report(modelId, contextTokens) {
     $schema: "drowse-real-browser-e2e-measurement-v1",
     schemaVersion: 1,
     evidenceType: "realBrowserEndToEnd",
-    toolVersion: "drowse-real-browser-e2e-v4",
+    toolVersion: "drowse-real-browser-e2e-v5",
     producedAt: "2026-08-30T00:00:00.000Z",
     passed: true,
     releaseEvidence: false,
+    structuredHookProfile: model.structuredHookProfile,
     environment: {
       modelId,
       contextTokens,
@@ -79,7 +92,7 @@ function report(modelId, contextTokens) {
         "webGpuErrors", "offlineServerRequests", "deviceLosses",
       ].map((name) => [name, []])),
     },
-    checks: Object.fromEntries(REQUIRED_BROWSER_FULL_RUNTIME_CHECKS.map((name) => [
+    checks: Object.fromEntries(requiredBrowserFullRuntimeChecks(model.structuredHookProfile).map((name) => [
       name,
       {
         passed: true,

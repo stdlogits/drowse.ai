@@ -25,8 +25,8 @@ try {
     server.ssrLoadModule("/src/hosted/runtime/steeringExpression.ts"),
     server.ssrLoadModule("/src/hosted/runtime/browserInstrumentPacks.ts"),
   ]);
-  const profile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE;
-  const geometryProfile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V2;
+  const profile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4;
+  const geometryProfile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4;
 
   const multi = hooks.compileStructuredHookProgram(
     fixture.multiCurve.hiddenSize,

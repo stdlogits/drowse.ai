@@ -49,7 +49,7 @@ export default defineConfig({
     },
     {
       name: "webkit-macos",
-      testMatch: /(desktop-browser-compat|storage-persistence|theme-default|contrast-audit\.ios-layout|public-header|saved-chat-menu|contact|mobile-sheet|workbench-rooms)\.spec\.ts/,
+      testMatch: /(desktop-browser-compat|storage-persistence|theme-default|contrast-audit\.ios-layout|public-header|saved-chat-menu|contact|mobile-sheet|workbench-rooms|units|lenses)\.spec\.ts/,
       use: {
         ...devices["Desktop Safari"],
       },

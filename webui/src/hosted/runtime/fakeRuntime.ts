@@ -32,9 +32,13 @@ import type {
   WSServerMessage,
   WSSubmitRequest,
 } from "../../../../drowse/webui/src/lib/types";
-import { DROWSE_HOOK_ABI, type RankOneHookProgramBuffers } from "./rankOneHookProgram";
+import { STANDARD_STRUCTURED_HOOK_PROFILE_V4 } from "./structuredHookProfile";
+import {
+  compileStructuredHookProgram,
+  type StructuredHookProgramBuffers,
+} from "./structuredHookProgram";
 import { BrowserLoomRuntime, type BrowserGenerationPort } from "./browserLoom";
-import { unavailableRuntimeMethod } from "./operationPolicy";
+import { createFixtureUnitsService } from "./units/fixtureUnits";
 import { aggregateEnvelope, MEASUREMENTS_VERSION, roundReading } from "./measurementRows";
 import {
   finishReasonFor,
@@ -58,6 +62,8 @@ export interface FakeRuntimeOptions {
   tokenDelayMs?: number;
   instrumentPacks?: readonly FakeInstrumentPack[];
   contextBindingSha256?: string;
+  /** Serve the units members as a residual library does: each answers this refusal (422). */
+  unitRefusal?: string;
 }
 
 export class DeterministicFakeRuntime implements RuntimeClient {
@@ -99,6 +105,7 @@ export class DeterministicFakeRuntime implements RuntimeClient {
       (text, index, scope) => this.fixtureMeasurements(text, index, scope),
     );
     this.contextBindingSha256 = options.contextBindingSha256 ?? "fixture-context-binding";
+    this.unitRefusal = options.unitRefusal ?? null;
     this.configureInstrumentPacks(options.instrumentPacks ?? []);
 
     this.sessions = {
@@ -263,15 +270,15 @@ export class DeterministicFakeRuntime implements RuntimeClient {
       saeFeaturesMetadata: async (ids: number[]) => ({
         features: Object.fromEntries(ids.map((id) => [String(id), featureMetadata(id)])),
       }),
-      // Routed "unavailable" (operationPolicy): refused here, and withheld
-      // from the UI by `offeredRuntimeClient`.
-      tokenAnatomy: async () => { throw fakeMethodUnavailable("tokenAnatomy"); },
-      unitActivity: async () => { throw fakeMethodUnavailable("unitActivity"); },
-      unitRead: async () => { throw fakeMethodUnavailable("unitRead"); },
-      unitTop: async () => { throw fakeMethodUnavailable("unitTop"); },
-      unitFind: async () => { throw fakeMethodUnavailable("unitFind"); },
-      unitCatalog: async () => { throw fakeMethodUnavailable("unitCatalog"); },
-      unitLabels: async () => { throw fakeMethodUnavailable("unitLabels"); },
+      // The units members run the real host ports over the tiny fixture model on the CPU
+      // reference backend (units/fixtureUnits.ts): drowse-shaped, deterministic answers.
+      tokenAnatomy: async (...args: unknown[]) => this.units().request("tokenAnatomy", args) as never,
+      unitActivity: async (...args: unknown[]) => this.units().request("unitActivity", args) as never,
+      unitRead: async (...args: unknown[]) => this.units().request("unitRead", args) as never,
+      unitTop: async (...args: unknown[]) => this.units().request("unitTop", args) as never,
+      unitFind: async (...args: unknown[]) => this.units().request("unitFind", args) as never,
+      unitCatalog: async (...args: unknown[]) => this.units().request("unitCatalog", args) as never,
+      unitLabels: async (...args: unknown[]) => this.units().request("unitLabels", args) as never,
     } satisfies RuntimeInstrumentsService;
     this.events = new FakeEventChannel(
       (request, emit) => this.generate(request, emit),
@@ -554,6 +561,14 @@ export class DeterministicFakeRuntime implements RuntimeClient {
       );
     }
     return sourcedFamily(family);
+  }
+
+  private unitsService: ReturnType<typeof createFixtureUnitsService> | null = null;
+  private readonly unitRefusal: string | null;
+
+  private units(): ReturnType<typeof createFixtureUnitsService> {
+    this.unitsService ??= createFixtureUnitsService(this.session.model_id, () => this.loom, this.unitRefusal);
+    return this.unitsService;
   }
 
   private tokenReadout(family: InstrumentFamily): MeasurementsEnvelopeJSON {
@@ -1295,20 +1310,9 @@ function idlePreparation(): PreparationStatusJSON {
   };
 }
 
-function fixtureHookProgram(): RankOneHookProgramBuffers {
-  return {
-    hookAbi: DROWSE_HOOK_ABI,
-    hiddenSize: 1,
-    layerCount: 1,
-    enabled: new Uint32Array([1]),
-    basis: new Float32Array([1]),
-    neutral: new Float32Array([0]),
-    target: new Float32Array([0]),
-    along: new Float32Array([0]),
-    collapse: new Float32Array([0]),
-    probeBasis: new Float32Array([1]),
-    probeNeutral: new Float32Array([0]),
-  };
+/** An empty one-layer drowse-structured-v4 program: the fake engine never runs it. */
+function fixtureHookProgram(): StructuredHookProgramBuffers {
+  return compileStructuredHookProgram(1, [{}], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
 }
 
 function generationPromptTokens(plan: WebLlmGenerationPlan): number {
@@ -1386,14 +1390,10 @@ function sourcedFamily(family: Exclude<InstrumentFamily, "geometry">): SourcedFa
 function fakeUnitsUnavailable(): Error & { code: string } {
   return fakeError(
     "INSTRUMENT_FAMILY_UNAVAILABLE",
-    "The browser runtime does not read neurons and heads yet",
+    "units have no source lifecycle or preparations in the browser runtime (neurons and heads are the model's own parts; their statistics ride the neutral cache)",
   );
 }
 
-function fakeMethodUnavailable(method: string): Error & { code: string } {
-  const failure = unavailableRuntimeMethod({ service: "instruments", method });
-  return fakeError(failure.code, failure.message);
-}
 
 function fakeFittingUnavailable(): Error & { code: string } {
   return fakeError(

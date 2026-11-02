@@ -3,6 +3,7 @@ import type {
   ModelThinkingProfile,
   StructuredHookProfileId,
 } from "../../../../drowse/webui/src/lib/runtime/contracts";
+import { validateBlockSpec, type BlockSpec } from "./structuredHookProfile";
 
 export type BrowserRuntimeReleaseStatus = "feasibility-required" | "verified";
 
@@ -27,6 +28,12 @@ export const BROWSER_RUNTIME_LOCK = Object.freeze({
     contextProfiles: model.contextProfiles,
     structuredHookProfile: model.structuredHookProfile as StructuredHookProfileId,
     thinkingProfile: model.thinkingProfile as ModelThinkingProfile | null,
+    // Hook ABI v5 (lock schema 2): the block constants a `standard-v4` library's descriptor
+    // attests, or the refusal a `standard-v4-residual` library's unit calls answer (B1 §8.2).
+    blockSpec: "blockSpec" in model && model.blockSpec != null
+      ? validateBlockSpec(model.blockSpec) as BlockSpec
+      : null,
+    unitRefusal: "unitRefusal" in model && typeof model.unitRefusal === "string" ? model.unitRefusal : null,
   })),
 });
 

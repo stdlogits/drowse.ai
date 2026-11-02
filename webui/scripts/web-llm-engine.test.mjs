@@ -37,8 +37,14 @@ try {
   } = await server.ssrLoadModule(
     "/src/hosted/runtime/webLlmActivationCapture.ts",
   );
-  const { resolveStructuredHookProfile, structuredGeometryPayloadLayout } =
-    await server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts");
+  const {
+    STANDARD_STRUCTURED_HOOK_PROFILE_V4,
+    STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL,
+    expectedHookProfileDescriptor,
+  } = await server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts");
+  const { hookProfileDescriptorModel } = await server.ssrLoadModule(
+    "/src/hosted/runtime/webLlmEngine.ts",
+  );
   const revision = "a".repeat(40);
   const sha = "b".repeat(64);
   const base = `https://huggingface.co/a9lim/drowse-web-fixture/resolve/${revision}/`;
@@ -90,12 +96,15 @@ try {
     },
     requestDevice() {},
   };
+  // A hook ABI v5 library on the residual profile (no unit sites): every v5 library carries the
+  // exact readout, so its variant declares the exact-readout WebGPU limits.
   const variant = {
     id: "fixture-q4",
-    structuredHookProfile: "standard-v1",
+    structuredHookProfile: "standard-v4-residual",
     thinkingProfile: null,
+    contextProfiles: [{ contextTokens: 2048 }],
     runtimeIdentity: {
-      hookAbi: "post-block-residual-v4",
+      hookAbi: "block-sites-v5",
       sourceModel: "HuggingFaceTB/SmolLM2-360M-Instruct",
       hiddenSize: 2,
       layerMap: [0, 1],
@@ -105,75 +114,24 @@ try {
       limits: {
         maxStorageBufferBindingSize: 134_217_728,
         maxStorageBuffersPerShaderStage: 10,
-      },
-    },
-  };
-  const exactReadoutVariant = (overrides = {}) => ({
-    ...variant,
-    structuredHookProfile: "standard-v3",
-    requirements: {
-      ...variant.requirements,
-      limits: {
-        ...variant.requirements.limits,
         maxComputeWorkgroupSizeX: 256,
         maxComputeInvocationsPerWorkgroup: 256,
       },
     },
-    ...overrides,
-  });
-  const compiledProfile = (overrides = {}) => ({
-    schemaVersion: 2,
-    id: "standard-v1",
-    hookAbi: "post-block-residual-v4",
-    format: "drowse-structured-v2",
-    layerCount: 2,
-    hiddenSize: 2,
-    maxAffineGroups: 4,
-    maxRank: 8,
-    maxProbes: 8,
-    maxCurves: 4,
-    maxCurveNodes: 32,
-    maxIntrinsicDim: 4,
-    maxEmbedDim: 8,
-    maxGeometryProbes: 0,
-    maxWhitenerRank: 0,
-    maxGeometryCandidates: 0,
-    geometryOutputStride: 0,
-    geometryFootRestarts: 0,
-    geometryFootIterations: 0,
-    geometryWarmRestarts: 0,
-    geometryWarmIterations: 0,
-    curveParameterStride: 671,
-    maxComputeWorkgroupStorageSize: 32 * 1024,
-    requiredMaxStorageBuffersPerShaderStage: 8,
-    geometryKernelStorageBindings: 0,
-    geometryHeaderStride: 0,
-    geometryPayloadElements: 0,
-    ...overrides,
-  });
-  const exactCompiledProfile = (overrides = {}) => compiledProfile({
-    schemaVersion: 3,
-    id: "standard-v3",
-    format: "drowse-structured-v3",
-    maxGeometryProbes: 8,
-    maxWhitenerRank: 96,
-    maxGeometryCandidates: 33,
-    geometryOutputStride: 41,
-    geometryFootRestarts: 3,
-    geometryFootIterations: 12,
-    geometryWarmRestarts: 2,
-    geometryWarmIterations: 4,
-    geometryKernelStorageBindings: 8,
-    geometryHeaderStride: 7,
-    geometryPayloadElements: structuredGeometryPayloadLayout(
-      resolveStructuredHookProfile("standard-v3"),
-      2,
-      2,
-    ).elements,
-    exactReadoutAbiVersion: 1,
-    exactReadoutAbi: "exact-readout-v1",
-    readoutTopK: 8,
-    maxSaeFeaturesPerChunk: 16_384,
+  };
+  const variantWith = (overrides = {}) => ({ ...structuredClone(variant), ...overrides });
+  // The bridge's schema-4 record for `variant` (B1 §3.5): the residual descriptor the adapter
+  // attests element by element.
+  const compiledProfile = (overrides = {}, forVariant = variant) => ({
+    schemaVersion: 4,
+    id: "standard-v4-residual",
+    hookAbi: "block-sites-v5",
+    format: "drowse-structured-v4",
+    unitSites: 0,
+    descriptor: Array.from(expectedHookProfileDescriptor(
+      STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL,
+      hookProfileDescriptorModel({ variant: forVariant }),
+    )),
     ...overrides,
   });
   const loadRequest = (overrides = {}) => ({
@@ -189,7 +147,7 @@ try {
 
   class FixtureEngine {
     static instances = [];
-    static structuredHooks = false;
+    static structuredHooks = true;
     unloaded = 0;
     interrupted = 0;
     hookProgram = null;
@@ -198,7 +156,6 @@ try {
     decodedTokenCalls = [];
     jlensDictionarySets = 0;
     jlensDictionaryClears = 0;
-    hooks = true;
     capture = true;
     constructor(config) {
       this.config = config;
@@ -235,14 +192,16 @@ try {
       await Promise.resolve();
       return String.fromCodePoint(...tokenIds);
     }
-    async supportsDrowseRankOneHooks() { return this.hooks; }
     async supportsDrowseStructuredHooks() {
       return this.constructor.structuredHooks;
     }
     async supportsDrowseResidualCapture() { return this.capture; }
-    async supportsDrowseRankOneResidualCaptureV1() { return this.capture; }
-    async prepareDrowseCaptureRows(rows) {
-      return rows.map((_row, index) => ({ inputIds: [index, 9], position: 1 }));
+    async prepareDrowseCaptureRows(rows, specialTokenIds) {
+      (this.captureRowCalls ??= []).push({ rows: structuredClone(rows), specialTokenIds: [...specialTokenIds] });
+      // A row ending in an empty assistant turn renders its separator (4) after the header.
+      return rows.map((row, index) => (row.messages.at(-1).content === ""
+        ? { inputIds: [index, 9, 4], position: 1 }
+        : { inputIds: [index, 9], position: 1 }));
     }
     async captureDrowseResiduals(inputIds, positions) {
       if (positions.length > 1) {
@@ -265,17 +224,14 @@ try {
         values: Float32Array.from([inputIds[0], 1, inputIds[0] + 2, 3]),
       };
     }
-    async captureDrowseRankOneResidualsV1(inputIds, positions) {
-      const capture = await this.captureDrowseResiduals(inputIds, positions);
-      return {
-        abiVersion: 1,
-        ...capture,
-        measurements: Float32Array.from([0.125, -0.25]),
-      };
+    async setDrowseStructuredProgram(program) {
+      this.structuredProgram = program;
+      this.hookProgram = program;
     }
-    async setDrowseRankOneProgram(program) { this.hookProgram = program; }
-    async setDrowseStructuredProgram(program) { this.structuredProgram = program; }
-    async clearDrowseRankOneProgram() { this.hookProgram = null; }
+    async clearDrowseProgram() {
+      this.structuredProgram = null;
+      this.hookProgram = null;
+    }
     async setDrowseJlensDictionary(dictionary) {
       this.jlensDictionarySets += 1;
       if (this.failNextJlensDictionarySet) {
@@ -318,7 +274,7 @@ try {
     variant,
   }), null);
   const runtime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "post-block-residual-v4",
+    DROWSE_HOOK_ABI: "block-sites-v5",
     MLCEngine: FixtureEngine,
   });
   const loadProgress = [];
@@ -361,14 +317,40 @@ try {
   assert.deepEqual(await runtime.tokenizeText(" lead"), [32, 108, 101, 97, 100]);
   assert.equal(runtime.vocabularySize(), 16);
   assert.equal(await runtime.decodeTokens([115, 117, 98]), "sub");
+  assert.deepEqual(await runtime.tokenTexts([115, 117, 115]), ["s", "u", "s"]);
+  // The ids a plan prefills: a raw prompt's own ids (this chat model has no completion prefix);
+  // a chat prompt through WebLLM's capture renderer, the reply header an empty assistant turn
+  // whose separator the renderer cuts (`position`).
+  assert.deepEqual(await runtime.renderPromptTokenIds({ input: { kind: "raw", prompt: "hi" } }), [104, 105]);
+  assert.deepEqual(await runtime.renderPromptTokenIds({
+    input: { kind: "chat", messages: [{ role: "system", content: "S" }, { role: "user", content: "u", name: "Ann" }] },
+    thinking: null,
+    generationRoleName: "Bot",
+  }), [0, 9]);
+  assert.deepEqual(runtime.requireEngine().captureRowCalls.at(-1), {
+    rows: [{
+      system: "S",
+      messages: [{ role: "user", content: "u", roleName: "Ann" }, { role: "assistant", content: "", roleName: "Bot" }],
+    }],
+    specialTokenIds: [],
+  });
+  await runtime.renderPromptTokenIds({ input: { kind: "chat", messages: [{ role: "user", content: "u" }] } });
+  assert.equal(runtime.requireEngine().captureRowCalls.at(-1).rows[0].system, "", "the template's own system message");
+  await assert.rejects(
+    runtime.renderPromptTokenIds({ input: { kind: "chat", messages: [{ role: "assistant", content: "a" }] }, generationSeat: "user" }),
+    { code: "TOKEN_REPLAY_UNAVAILABLE", status: 409 },
+  );
+  await assert.rejects(
+    runtime.renderPromptTokenIds({ input: { kind: "chat", messages: [{ role: "user", content: "u" }, { role: "system", content: "late" }] } }),
+    { code: "TOKEN_REPLAY_UNAVAILABLE" },
+  );
   assert.deepEqual(runtime.hookCapabilities(), {
-    rank_one: true,
     multi_term: true,
     projection: true,
     ablation: true,
     curved_manifold: false,
-    phase_trigger: false,
-    probe_gate: false,
+    phase_trigger: true,
+    probe_gate: true,
     sae: false,
     jlens: false,
     slens: false,
@@ -408,20 +390,11 @@ try {
   assert.equal(appConfig.model_list[0].model_lib, `${base}model-lib.wasm`);
   assert.equal(appConfig.model_list[0].overrides.context_window_size, 2048);
   assert.deepEqual(appConfig.model_list[0].required_features, ["shader-f16"]);
-  const hookProgram = {
-    hookAbi: "post-block-residual-v4",
-    hiddenSize: 1,
-    layerCount: 1,
-    enabled: Uint32Array.of(1),
-    basis: Float32Array.of(1),
-    neutral: Float32Array.of(0),
-    target: Float32Array.of(1),
-    along: Float32Array.of(0.5),
-    collapse: Float32Array.of(1),
-    probeBasis: Float32Array.of(1),
-    probeNeutral: Float32Array.of(0),
-  };
-  await runtime.installRankOneHookProgram(hookProgram);
+  const hookProgram = compileStructuredHookProgram(2, [{
+    affineGroups: [{ active: true, basis: [[1, 0]], neutral: [0, 0], target: [1], along: 0.5, kappa: [0] }],
+    probes: [{ kind: "linear", direction: [1, 0], bias: 0 }],
+  }, {}], STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL);
+  await runtime.installHookProgram(hookProgram);
   assert.equal(engine.hookProgram, hookProgram);
   const measurements = await runtime.readMeasurements();
   assert.deepEqual([...measurements], [0.25, -0.5]);
@@ -454,22 +427,6 @@ try {
   );
   assert.deepEqual(multiCapture.positions, [0, 2]);
   assert.deepEqual([...multiCapture.values], [0, 1, 2, 3, 10, 11, 12, 13]);
-  const rankOneCapture = await runtime.capturePreparedRankOnePositionsV1(
-    { inputIds: [0, 4, 9], position: 2 },
-    [0, 2],
-    hookProgram,
-  );
-  assert.equal(rankOneCapture.abiVersion, 1);
-  assert.deepEqual(rankOneCapture.positions, [0, 2]);
-  assert.deepEqual(
-    [...rankOneCapture.values],
-    [0, 1, 2, 3, 10, 11, 12, 13],
-  );
-  assert.deepEqual([...rankOneCapture.measurements], [0.125, -0.25]);
-  assert.notEqual(
-    rankOneCapture.measurements,
-    (await engine.captureDrowseRankOneResidualsV1([0, 4, 9], [0, 2])).measurements,
-  );
   await assert.rejects(
     runtime.capturePreparedPositions({ inputIds: [0, 4, 9], position: 2 }, [2, 2]),
     (error) => error.code === "INVALID_CAPTURE_POSITIONS",
@@ -551,7 +508,7 @@ try {
   });
 
   const appleMobileRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "post-block-residual-v4",
+    DROWSE_HOOK_ABI: "block-sites-v5",
     MLCEngine: FixtureEngine,
   });
   await appleMobileRuntime.load(loadRequest({
@@ -584,7 +541,7 @@ try {
     }
   }
   const retryableUnloadRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "post-block-residual-v4",
+    DROWSE_HOOK_ABI: "block-sites-v5",
     MLCEngine: RetryableUnloadEngine,
   });
   await retryableUnloadRuntime.load(loadRequest());
@@ -604,7 +561,7 @@ try {
   );
 
   class FailedLoadCleanupEngine extends FixtureEngine {
-    hooks = false;
+    async supportsDrowseStructuredHooks() { return false; }
     unloadAttempts = 0;
     failUnload = true;
     async unload() {
@@ -614,14 +571,14 @@ try {
     }
   }
   const failedLoadCleanupRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "post-block-residual-v4",
+    DROWSE_HOOK_ABI: "block-sites-v5",
     MLCEngine: FailedLoadCleanupEngine,
   });
   await assert.rejects(
     failedLoadCleanupRuntime.load(loadRequest()),
     (error) => {
       assert.equal(error.code, "RUNTIME_CLEANUP_FAILED");
-      assert.match(error.message, /required Drowse post-block hooks/);
+      assert.match(error.message, /structured Drowse hooks/);
       assert.match(error.message, /fixture failed-load cleanup failed/);
       return true;
     },
@@ -636,71 +593,31 @@ try {
     (error) => error.code === "MODEL_NOT_LOADED",
   );
 
-  FixtureEngine.structuredHooks = true;
   await runtime.load(loadRequest());
   assert.deepEqual(runtime.generationPerformance(), {
     prefillTokensPerSecond: null,
     decodeTokensPerSecond: null,
   });
-  const structuredV2Program = {
-    hookAbi: "post-block-residual-v4",
-    format: "drowse-structured-v2",
-    affineActive: Uint32Array.of(1),
-    curveRank: Uint32Array.of(0),
-  };
-  await runtime.installHookProgram(structuredV2Program);
-  assert.equal(FixtureEngine.instances.at(-1).structuredProgram, structuredV2Program);
+  await runtime.installHookProgram(hookProgram);
+  assert.equal(FixtureEngine.instances.at(-1).structuredProgram, hookProgram);
+  for (const format of ["drowse-structured-v2", "drowse-structured-v3"]) {
+    await assert.rejects(
+      runtime.installHookProgram({ ...hookProgram, format }),
+      (error) => error.code === "HOOK_FORMAT_MISMATCH",
+    );
+  }
+  await assert.rejects(
+    runtime.installHookProgram({ ...hookProgram, hookAbi: "post-block-residual-v4" }),
+    (error) => error.code === "HOOK_ABI_MISMATCH",
+  );
+  // A program of any other format (the deleted rank-one buffers) is refused.
   await assert.rejects(
     runtime.installHookProgram({
-      ...structuredV2Program,
-      format: "drowse-structured-v3",
+      hookAbi: "block-sites-v5", hiddenSize: 2, layerCount: 2, enabled: Uint32Array.of(1, 0),
     }),
     (error) => error.code === "HOOK_FORMAT_MISMATCH",
   );
   await runtime.unload();
-
-  class V3FixtureEngine extends FixtureEngine {
-    async getDrowseStructuredHookProfile() {
-      return compiledProfile({
-        id: "standard-v2",
-        format: "drowse-structured-v3",
-        maxGeometryProbes: 8,
-        maxWhitenerRank: 96,
-        maxGeometryCandidates: 33,
-        geometryOutputStride: 41,
-        geometryFootRestarts: 3,
-        geometryFootIterations: 12,
-        geometryWarmRestarts: 2,
-        geometryWarmIterations: 4,
-        geometryKernelStorageBindings: 8,
-        geometryHeaderStride: 7,
-        geometryPayloadElements: structuredGeometryPayloadLayout(
-          resolveStructuredHookProfile("standard-v2"),
-          2,
-          2,
-        ).elements,
-      });
-    }
-  }
-  const v3Runtime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "post-block-residual-v4",
-    MLCEngine: V3FixtureEngine,
-  });
-  await v3Runtime.load(loadRequest({
-    variant: { ...variant, structuredHookProfile: "standard-v2" },
-  }));
-  const structuredV3Program = {
-    ...structuredV2Program,
-    format: "drowse-structured-v3",
-  };
-  await v3Runtime.installHookProgram(structuredV3Program);
-  assert.equal(V3FixtureEngine.instances.at(-1).structuredProgram, structuredV3Program);
-  await assert.rejects(
-    v3Runtime.installHookProgram(structuredV2Program),
-    (error) => error.code === "HOOK_FORMAT_MISMATCH",
-  );
-  await v3Runtime.unload();
-  FixtureEngine.structuredHooks = false;
 
   const thinkingProfile = {
     start: "<think>",
@@ -830,7 +747,7 @@ try {
     }
   }
   const lostDuringInit = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "post-block-residual-v4",
+    DROWSE_HOOK_ABI: "block-sites-v5",
     MLCEngine: LostDuringInitEngine,
   });
   await assert.rejects(lostDuringInit.load(loadRequest({
@@ -847,25 +764,68 @@ try {
     (error) => error.code === "HOOK_ABI_MISMATCH",
   );
 
-  class MismatchedProfileEngine extends FixtureEngine {
-    async getDrowseStructuredHookProfile() {
-      return compiledProfile({ maxRank: 16 });
+  // Schema-4 attestation: any descriptor element, the profile id or the unit-site flag that
+  // differs from the lock fails the load (and unloads the engine); a variant on a pre-v5 profile
+  // is refused before attestation.
+  const changedDescriptor = compiledProfile().descriptor;
+  changedDescriptor[5] += 1;
+  for (const [record, code] of [
+    [compiledProfile({ descriptor: changedDescriptor }), "HOOK_ABI_MISMATCH"],
+    [compiledProfile({ id: "standard-v4" }), "HOOK_ABI_MISMATCH"],
+    [compiledProfile({ unitSites: 1 }), "HOOK_ABI_MISMATCH"],
+    [compiledProfile({ schemaVersion: 3 }), "HOOK_ABI_MISMATCH"],
+  ]) {
+    class MismatchedProfileEngine extends FixtureEngine {
+      async getDrowseStructuredHookProfile() { return record; }
     }
+    const mismatchedProfile = new DrowseWebLlmRuntime({
+      DROWSE_HOOK_ABI: "block-sites-v5",
+      MLCEngine: MismatchedProfileEngine,
+    });
+    await assert.rejects(mismatchedProfile.load(loadRequest()), (error) => error.code === code);
+    assert.equal(MismatchedProfileEngine.instances.at(-1).unloaded, 1);
   }
-  const mismatchedProfile = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "post-block-residual-v4",
-    MLCEngine: MismatchedProfileEngine,
-  });
   await assert.rejects(
-    mismatchedProfile.load(loadRequest()),
+    new DrowseWebLlmRuntime({ DROWSE_HOOK_ABI: "block-sites-v5", MLCEngine: FixtureEngine })
+      .load(loadRequest({ variant: { ...variant, structuredHookProfile: "standard-v3" } })),
     (error) => error.code === "STRUCTURED_HOOK_PROFILE_MISMATCH",
   );
-  assert.equal(MismatchedProfileEngine.instances.at(-1).unloaded, 1);
+
+  // A standard-v4 library attested against the lock's block spec: unit sites, so the hook
+  // capabilities offer `units` and `slens` (a residual library offers neither).
+  const blockSpec = {
+    dFF: 4, nHeads: 2, nKvHeads: 1, headDim: 2, sandwich: false, normOffset: 0, activation: "silu",
+    embedScale: 1, rmsEps: 1e-6, qkNorm: true, attnScaling: 0.5, attnLogitSoftcap: null,
+    finalLogitSoftcap: null, ropeTheta: 10000, ropeLocalTheta: null, ropeGlobalScale: 1,
+    ropeInGraph: true, slidingWindow: null, slidingPattern: null,
+  };
+  const unitsVariant = variantWith({ structuredHookProfile: "standard-v4" });
+  class UnitSitesEngine extends FixtureEngine {
+    async getDrowseStructuredHookProfile() {
+      return {
+        schemaVersion: 4,
+        id: "standard-v4",
+        hookAbi: "block-sites-v5",
+        format: "drowse-structured-v4",
+        unitSites: 1,
+        descriptor: Array.from(expectedHookProfileDescriptor(
+          STANDARD_STRUCTURED_HOOK_PROFILE_V4,
+          hookProfileDescriptorModel({ variant: unitsVariant, blockSpec }),
+        )),
+      };
+    }
+  }
+  const unitSites = new DrowseWebLlmRuntime({ DROWSE_HOOK_ABI: "block-sites-v5", MLCEngine: UnitSitesEngine });
+  await unitSites.load(loadRequest({ variant: unitsVariant, blockSpec }));
+  assert.equal(unitSites.blockSitesCapabilities().blockSpec.dFF, 4);
+  assert.equal(unitSites.hookCapabilities().units, true);
+  assert.equal(unitSites.hookCapabilities().slens, true);
+  await unitSites.unload();
 
   class MissingProfileEngine extends FixtureEngine {}
   MissingProfileEngine.prototype.getDrowseStructuredHookProfile = undefined;
   const missingProfile = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "post-block-residual-v4",
+    DROWSE_HOOK_ABI: "block-sites-v5",
     MLCEngine: MissingProfileEngine,
   });
   await assert.rejects(
@@ -892,12 +852,12 @@ try {
     "maxComputeWorkgroupSizeX",
     "maxComputeInvocationsPerWorkgroup",
   ]) {
-    const missingRequirements = exactReadoutVariant().requirements;
+    const missingRequirements = variantWith().requirements;
     delete missingRequirements.limits[name];
     const engineCount = FixtureEngine.instances.length;
     await assert.rejects(
       runtime.load(loadRequest({
-        variant: exactReadoutVariant({ requirements: missingRequirements }),
+        variant: variantWith({ requirements: missingRequirements }),
         artifacts: [],
       })),
       (error) => error.code === "EXACT_READOUT_WEBGPU_REQUIREMENTS_INVALID",
@@ -908,18 +868,18 @@ try {
       "exact-readout requirements must fail before artifact preparation and engine creation",
     );
 
-    const lowRequirements = exactReadoutVariant().requirements;
+    const lowRequirements = variantWith().requirements;
     lowRequirements.limits[name] = 255;
     await assert.rejects(
       runtime.load(loadRequest({
-        variant: exactReadoutVariant({ requirements: lowRequirements }),
+        variant: variantWith({ requirements: lowRequirements }),
       })),
       (error) => error.code === "EXACT_READOUT_WEBGPU_REQUIREMENTS_INVALID",
     );
 
     await assert.rejects(
       runtime.load(loadRequest({
-        variant: exactReadoutVariant(),
+        variant: variantWith(),
         adapter: {
           ...adapter,
           limits: { ...adapter.limits, [name]: 255 },
@@ -958,7 +918,7 @@ try {
     capture = false;
   }
   const missingCapture = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "post-block-residual-v4",
+    DROWSE_HOOK_ABI: "block-sites-v5",
     MLCEngine: MissingCaptureEngine,
   });
   await assert.rejects(
@@ -987,7 +947,7 @@ try {
     }
   }
   const loadingRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "post-block-residual-v4",
+    DROWSE_HOOK_ABI: "block-sites-v5",
     MLCEngine: InterruptibleLoadEngine,
   });
   const midLoadAbort = new AbortController();
@@ -1008,14 +968,14 @@ try {
       checkingHooksEngine = this;
       this.hookCheckSettled = new Promise((resolve) => { this.resolveHookCheck = resolve; });
     }
-    async supportsDrowseRankOneHooks() { return this.hookCheckSettled; }
+    async supportsDrowseStructuredHooks() { return this.hookCheckSettled; }
     async unload() {
       await super.unload();
       this.resolveHookCheck(true);
     }
   }
   const hookCheckRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "post-block-residual-v4",
+    DROWSE_HOOK_ABI: "block-sites-v5",
     MLCEngine: InterruptibleHookCheckEngine,
   });
   const hookCheckAbort = new AbortController();
@@ -1033,7 +993,7 @@ try {
   );
 
   class StructuredFixtureEngine extends FixtureEngine {
-    async getDrowseStructuredHookProfile() { return exactCompiledProfile(); }
+    async getDrowseStructuredHookProfile() { return compiledProfile(); }
     async supportsDrowseStructuredHooks() { return true; }
     async supportsDrowseCurvedHooks() { return true; }
     async setDrowseStructuredProgram(program) { this.hookProgram = program; }
@@ -1064,51 +1024,36 @@ try {
     }
   }
   class MissingStructuredPackEngine extends FixtureEngine {
-    async getDrowseStructuredHookProfile() { return exactCompiledProfile(); }
+    async getDrowseStructuredHookProfile() { return compiledProfile(); }
   }
   class MissingBundleEngine extends StructuredFixtureEngine {
     readDrowseMeasurementBundle = undefined;
   }
   const missingBundleRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "post-block-residual-v4",
+    DROWSE_HOOK_ABI: "block-sites-v5",
     MLCEngine: MissingBundleEngine,
   });
   await assert.rejects(
-    missingBundleRuntime.load(loadRequest({ variant: exactReadoutVariant() })),
+    missingBundleRuntime.load(loadRequest({ variant: variantWith() })),
     (error) => error.code === "BUNDLED_MEASUREMENT_READBACK_UNAVAILABLE",
   );
   const missingStructuredPackRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "post-block-residual-v4",
+    DROWSE_HOOK_ABI: "block-sites-v5",
     MLCEngine: MissingStructuredPackEngine,
   });
   await assert.rejects(
     missingStructuredPackRuntime.load(loadRequest({
-      variant: exactReadoutVariant(),
+      variant: variantWith(),
       optionalPacks: [{ pack: { kind: "sae" }, artifacts: [] }],
     })),
-    (error) => error.code === "STRUCTURED_HOOKS_UNAVAILABLE",
-  );
-  class MismatchedExactProfileEngine extends StructuredFixtureEngine {
-    async getDrowseStructuredHookProfile() {
-      return exactCompiledProfile({ maxSaeFeaturesPerChunk: 8192 });
-    }
-  }
-  const mismatchedExactProfileRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "post-block-residual-v4",
-    MLCEngine: MismatchedExactProfileEngine,
-  });
-  await assert.rejects(
-    mismatchedExactProfileRuntime.load(loadRequest({
-      variant: exactReadoutVariant(),
-    })),
-    (error) => error.code === "STRUCTURED_HOOK_PROFILE_MISMATCH",
+    (error) => error.code === "EXACT_SAE_READOUT_UNAVAILABLE",
   );
   const instrumentRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "post-block-residual-v4",
+    DROWSE_HOOK_ABI: "block-sites-v5",
     MLCEngine: StructuredFixtureEngine,
   });
   await instrumentRuntime.load(loadRequest({
-    variant: exactReadoutVariant(),
+    variant: variantWith(),
     optionalPacks: [
       { pack: { kind: "sae" }, artifacts: [] },
       { pack: { kind: "jlens" }, artifacts: [] },
@@ -1116,42 +1061,7 @@ try {
   }));
   const instrumentEngine = instrumentRuntime.requireEngine();
 
-  class LegacyReadoutFixtureEngine extends StructuredFixtureEngine {
-    async getDrowseStructuredHookProfile() {
-      return compiledProfile({
-        id: "standard-v2",
-        format: "drowse-structured-v3",
-        maxGeometryProbes: 8,
-        maxWhitenerRank: 96,
-        maxGeometryCandidates: 33,
-        geometryOutputStride: 41,
-        geometryFootRestarts: 3,
-        geometryFootIterations: 12,
-        geometryWarmRestarts: 2,
-        geometryWarmIterations: 4,
-        geometryKernelStorageBindings: 8,
-        geometryHeaderStride: 7,
-        geometryPayloadElements: structuredGeometryPayloadLayout(
-          resolveStructuredHookProfile("standard-v2"),
-          2,
-          2,
-        ).elements,
-      });
-    }
-  }
-  const legacyReadoutRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "post-block-residual-v4",
-    MLCEngine: LegacyReadoutFixtureEngine,
-  });
-  await assert.rejects(
-    legacyReadoutRuntime.load(loadRequest({
-      variant: { ...variant, structuredHookProfile: "standard-v2" },
-      optionalPacks: [{ pack: { kind: "jlens" }, artifacts: [] }],
-    })),
-    (error) => error.code === "EXACT_READOUT_ABI_MISMATCH",
-  );
   assert.deepEqual(instrumentRuntime.hookCapabilities(), {
-    rank_one: true,
     multi_term: true,
     projection: true,
     ablation: true,
@@ -1206,7 +1116,7 @@ try {
   const noFullSaeProgram = compileStructuredHookProgram(
     2,
     [{}, {}],
-    resolveStructuredHookProfile("standard-v3"),
+    STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL,
   );
   noFullSaeProgram.measurementSchema = {
     layerMap: [0, 1],
@@ -1221,7 +1131,7 @@ try {
   const fullSaeProgram = compileStructuredHookProgram(
     2,
     [{}, {}],
-    resolveStructuredHookProfile("standard-v3"),
+    STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL,
   );
   fullSaeProgram.measurementSchema = {
     ...noFullSaeProgram.measurementSchema,
@@ -1239,7 +1149,7 @@ try {
   assert.equal(instrumentEngine.saeDictionarySets, 1);
   await instrumentRuntime.installHookProgram(fullSaeProgram);
   assert.equal(instrumentEngine.saeDictionarySets, 2);
-  assert.equal(instrumentEngine.saeDictionary.hookAbi, "post-block-residual-v4");
+  assert.equal(instrumentEngine.saeDictionary.hookAbi, "block-sites-v5");
   await instrumentRuntime.installHookProgram(noFullSaeProgram);
   assert.equal(instrumentEngine.saeDictionaryClears, 0);
   assert.notEqual(instrumentEngine.saeDictionary, null);
@@ -1351,7 +1261,7 @@ try {
   const aggregateProgram = compileStructuredHookProgram(2, [
     { probes: [{ kind: "sae", direction: [1, 0], bias: 0 }] },
     {},
-  ], resolveStructuredHookProfile("standard-v3"));
+  ], STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL);
   aggregateProgram.measurementSchema = {
     layerMap: [0, 1],
     modelLayerCount: 2,
@@ -1439,17 +1349,13 @@ try {
     { length: productionLayerCount },
     (_, index) => index,
   );
+  const productionVariant = variantWith({
+    runtimeIdentity: { ...variant.runtimeIdentity, layerMap: productionLayerMap },
+  });
   class ProductionJlensFixtureEngine extends StructuredFixtureEngine {
     events = [];
     async getDrowseStructuredHookProfile() {
-      return exactCompiledProfile({
-        layerCount: productionLayerCount,
-        geometryPayloadElements: structuredGeometryPayloadLayout(
-          resolveStructuredHookProfile("standard-v3"),
-          productionLayerCount,
-          2,
-        ).elements,
-      });
+      return compiledProfile({}, productionVariant);
     }
     async setDrowseJlensDictionary(dictionary) {
       this.events.push(`dictionary:${dictionary.layerIndices.length}`);
@@ -1462,17 +1368,10 @@ try {
     }
   }
   const productionJlensRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "post-block-residual-v4",
+    DROWSE_HOOK_ABI: "block-sites-v5",
     MLCEngine: ProductionJlensFixtureEngine,
   });
-  await productionJlensRuntime.load(loadRequest({
-    variant: exactReadoutVariant({
-      runtimeIdentity: {
-        ...variant.runtimeIdentity,
-        layerMap: productionLayerMap,
-      },
-    }),
-  }));
+  await productionJlensRuntime.load(loadRequest({ variant: productionVariant }));
   const productionJlensBinding = "f".repeat(64);
   await productionJlensRuntime.setJlensDictionary({
     bindingId: productionJlensBinding,
@@ -1492,7 +1391,7 @@ try {
         bias: 0,
       })),
     })),
-    resolveStructuredHookProfile("standard-v3"),
+    STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL,
     {
       bindingId: productionJlensBinding,
       layerIndices: Int32Array.from(productionLayerMap),
@@ -1511,11 +1410,11 @@ try {
   await productionJlensRuntime.unload();
 
   const warmSaeRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "post-block-residual-v4",
+    DROWSE_HOOK_ABI: "block-sites-v5",
     MLCEngine: StructuredFixtureEngine,
   });
   await warmSaeRuntime.load(loadRequest({
-    variant: exactReadoutVariant(),
+    variant: variantWith(),
     optionalPacks: [{ pack: { kind: "sae" }, artifacts: [] }],
   }));
   await warmSaeRuntime.setSaeDictionary({

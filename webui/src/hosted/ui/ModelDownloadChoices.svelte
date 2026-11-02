@@ -38,6 +38,8 @@
   function toolChips(model: HostedModelOption): string[] {
     return [
       ...(model.firstRunPacks.some((pack) => pack.kind === "jlens") ? ["Word insights (R lens)"] : []),
+      ...(model.firstRunPacks.some((pack) => pack.kind === "slens") ? ["Early-layer reads (S lens)"] : []),
+      ...(model.firstRunPacks.some((pack) => pack.kind === "units") ? ["Neurons and heads (units)"] : []),
       ...(model.firstRunPacks.some((pack) => pack.kind === "sae") ? ["Feature insights (SAE)"] : []),
     ];
   }

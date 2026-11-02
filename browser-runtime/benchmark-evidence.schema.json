@@ -27,11 +27,10 @@
       "required": ["modelIds", "contextTokens", "platforms", "browsers"],
       "properties": {
         "modelIds": {
+          "description": "The runtime lock's model ids (record-hosted-evidence.mjs fills them from the lock).",
           "type": "array",
-          "minItems": 3,
-          "items": {
-            "enum": ["smollm2-360m-instruct", "gemma3-270m-instruct", "qwen3-1.7b"]
-          },
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
           "uniqueItems": true
         },
         "contextTokens": {

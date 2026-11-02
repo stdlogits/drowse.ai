@@ -257,6 +257,8 @@
 
   const toolChips = (model: HostedModelOption) => [
     ...(model.firstRunPacks.some((pack) => pack.kind === "jlens") ? ["Word insights (R lens)"] : []),
+    ...(model.firstRunPacks.some((pack) => pack.kind === "slens") ? ["Early-layer reads (S lens)"] : []),
+    ...(model.firstRunPacks.some((pack) => pack.kind === "units") ? ["Neurons and heads (units)"] : []),
     ...(model.firstRunPacks.some((pack) => pack.kind === "sae") ? ["Feature insights (SAE)"] : []),
   ];
 
@@ -281,14 +283,31 @@
   const packTitle = (pack: HostedModelOption["firstRunPacks"][number]) =>
     pack.kind === "jlens"
       ? "Word insights"
-      : /gemma scope/i.test(pack.name)
-        ? "Gemma Scope features"
-        : "Feature explorer";
+      : pack.kind === "slens"
+        ? "Early-layer reads"
+        : pack.kind === "units"
+          ? "Neurons and heads"
+          : /gemma scope/i.test(pack.name)
+            ? "Gemma Scope features"
+            : "Feature explorer";
+
+  const packTag = (pack: HostedModelOption["firstRunPacks"][number]) =>
+    pack.kind === "jlens"
+      ? "optional readout"
+      : pack.kind === "slens"
+        ? "S lens"
+        : pack.kind === "units"
+          ? "units"
+          : "optional SAE";
 
   const packDescription = (pack: HostedModelOption["firstRunPacks"][number]) =>
     pack.kind === "jlens"
       ? `${pack.name}. Read word predictions across layers. This lens is already fitted; your browser doesn't train it.`
-      : `${pack.name}. Inspect and steer learned features. This SAE is already trained; your browser doesn't train it.`;
+      : pack.kind === "slens"
+        ? `${pack.name}. Read early layers as input tokens. Already fitted; each layer downloads the first time it is read.`
+        : pack.kind === "units"
+          ? `${pack.name}. Read, rank and ablate neurons and heads. Already computed; each layer's statistics download the first time they are read.`
+          : `${pack.name}. Inspect and steer learned features. This SAE is already trained; your browser doesn't train it.`;
   const appleStorageHelp =
     "Adding Drowse to your iPhone or iPad Home Screen can help it keep data. Back up your chats first. Existing chats and models won't transfer to the Home Screen app.";
   const macDesktop = /Macintosh|Mac OS X/i.test(navigator.userAgent) ||
@@ -846,7 +865,7 @@
                       onchange={(event) => setPackSelected(pack.id, event.currentTarget.checked)}
                     />
                     <div>
-                      <strong>{pack.kind === "jlens" ? selectedOption.modelType === "base" ? pack.name : "Alternative R lens" : packTitle(pack)} <span>({pack.kind === "jlens" ? "optional readout" : "optional SAE"})</span></strong>
+                      <strong>{pack.kind === "jlens" ? selectedOption.modelType === "base" ? pack.name : "Alternative R lens" : packTitle(pack)} <span>({packTag(pack)})</span></strong>
                       <p>{packDescription(pack)}</p>
                     </div>
                     <span><MorphText text={pack.installed ? "Already downloaded" : formatBytes(pack.bytes)} /></span>

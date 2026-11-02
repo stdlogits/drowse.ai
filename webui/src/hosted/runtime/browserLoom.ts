@@ -1,3 +1,4 @@
+import type { UnitsNodeReplay, UnitsNodeReplayPort } from "./units/unitsService";
 import type { RuntimeProgressEvent, RuntimeServiceRequest } from "../../../../drowse/webui/src/lib/runtime/contracts";
 import {
   clampOutputTokenCount,
@@ -25,7 +26,6 @@ import type {
   WSSubmitRequest,
   WSTreeMutatedEvent,
 } from "../../../../drowse/webui/src/lib/types";
-import type { RankOneHookProgramBuffers } from "./rankOneHookProgram";
 import type { StructuredHookProgramBuffers } from "./structuredHookProgram";
 import type {
   BrowserInstrumentRuntime,
@@ -78,8 +78,6 @@ function holdsTokens(node: LoomNodeJSON): boolean {
     node.text !== "" || (node.thinking_text ?? "") !== "";
 }
 
-type BrowserHookProgram = RankOneHookProgramBuffers | StructuredHookProgramBuffers;
-
 interface GenerationReservation {
   anchorId: string;
   rootId: string | null;
@@ -100,6 +98,11 @@ export interface BrowserGenerationPort {
   runtimeCapabilities?(): WebLlmRuntimeCapabilities;
   tokenizeText?(text: string): Promise<number[]>;
   decodeTokens?(tokenIds: readonly number[]): Promise<string>;
+  /** The token ids the engine prefills for a generation plan's input (its chat template, roles
+   *  and thinking state), so a node replays on the block-sites backend exactly as it ran. */
+  renderPromptTokenIds?(
+    plan: Pick<WebLlmGenerationPlan, "input" | "thinking" | "generationSeat" | "generationRoleName">,
+  ): Promise<number[]>;
 }
 
 export interface BrowserLoomOptions {
@@ -112,7 +115,7 @@ export interface BrowserLoomOptions {
   compileSteering?: (
     expression: string,
     probeRequests?: readonly ProbeRequest[],
-  ) => Promise<BrowserHookProgram> | BrowserHookProgram;
+  ) => Promise<StructuredHookProgramBuffers> | StructuredHookProgramBuffers;
   steeringDelta?: (parent: string | null, child: string | null) => string;
   /** The installed manifolds bare atoms resolve against (the compiler's), for the `inverted`
    *  regen; without them nothing resolves, as with an empty registry. */
@@ -502,8 +505,9 @@ export class BrowserLoomRuntime {
         };
       }
       validateWebLlmGenerationSettings(siblingSampling, effectiveThinking);
+      // The node keeps the canonical steering its envelopes bind (native's recipe steering).
       const nodeRecipe = recipe(
-        effectiveSteering,
+        boundSteering(hookProgram, effectiveSteering) ?? null,
         siblingSampling,
         effectiveThinking,
         this.session.probes,
@@ -613,9 +617,10 @@ export class BrowserLoomRuntime {
           thinking: effectiveThinking,
           generationSeat: rawCompletion ? null : role,
           generationRoleName: rawCompletion ? null : generationHeaderRoleLabel,
-          steeringExpression: effectiveSteering,
+          steeringExpression: boundSteering(hookProgram, effectiveSteering),
           position_spans: settings.positionSpans,
           hookProgram,
+          liveInstruments: this.instruments?.liveInstruments() ?? null,
           maxOutputTokens: this.maxOutputTokens,
           ...(fork === null ? {} : { measurementStartRawIndex: prefix!.length }),
           ...(fork !== null
@@ -1309,9 +1314,10 @@ export class BrowserLoomRuntime {
         thinking: settings.thinking,
         generationSeat: this.session.is_base_model || request.options.raw ? null : node.role as ChatRole,
         generationRoleName: this.session.is_base_model || request.options.raw ? null : node.role_label,
-        steeringExpression: settings.steering,
+        steeringExpression: boundSteering(hookProgram, settings.steering),
         position_spans: settings.positionSpans,
         hookProgram,
+        liveInstruments: this.instruments?.liveInstruments() ?? null,
         maxOutputTokens: this.maxOutputTokens,
         replay: { forcedPrefixTokenIds: forcedPrefix },
         measurementTargetRawIndex: request.rawIndex,
@@ -1482,9 +1488,10 @@ export class BrowserLoomRuntime {
       thinking: settings.thinking,
       generationSeat: this.session.is_base_model ? null : node.role as ChatRole,
       generationRoleName: this.session.is_base_model ? null : node.role_label,
-      steeringExpression: settings.steering,
+      steeringExpression: boundSteering(hookProgram, settings.steering),
       position_spans: settings.positionSpans,
       hookProgram,
+      liveInstruments: this.instruments?.liveInstruments() ?? null,
       maxOutputTokens: this.maxOutputTokens,
       replay: { forcedPrefixTokenIds: forcedPrefix, scoreTokenIds },
       onRawToken: (token) => {
@@ -1523,6 +1530,64 @@ export class BrowserLoomRuntime {
     return node;
   }
 
+  /** The units members' node replays (B5), or null when the engine cannot render a prompt to
+   *  token ids or the session has no steering compiler. */
+  unitsNodeReplay(): UnitsNodeReplayPort | null {
+    if (!this.generation.renderPromptTokenIds || !this.compileSteering) return null;
+    return { nodeForward: (nodeId, rawIndex, options) => this.unitsNodeForward(nodeId, rawIndex, options) };
+  }
+
+  private async unitsNodeForward(
+    nodeId: string,
+    rawIndex: number | null,
+    options: { steered: boolean; raw: boolean; label: string; produced: boolean },
+  ): Promise<UnitsNodeReplay> {
+    return this.withReplayLock(async () => {
+      const authored = this.requireNode(nodeId);
+      if (authored.recipe === null && (authored.role === "user" || authored.role === "assistant")) {
+        // Native `NodeReplayer.forward` replays an authored turn's captured prompt tokens
+        // (`resolve_prompt_anchor`). The browser measures no prompts, so its authored turns hold
+        // no capture, and drowse refuses such a turn in these words.
+        throw Object.assign(
+          new Error(`${options.label}: '${authored.id}' is an authored turn no generation has measured yet, so it has no prompt tokens to replay`),
+          { code: "INVALID_NODE_OPERATION", status: 400, recoverable: false },
+        );
+      }
+      const node = this.replayableNode(nodeId);
+      const raw = node.raw_token_ids!;
+      const anchor = rawIndex ?? raw.length - 1;
+      if (!(Number.isSafeInteger(anchor) && anchor >= 0 && anchor < raw.length)) {
+        throw loomError("INVALID_NODE_OPERATION", `Raw token index ${anchor} is outside node ${node.id}`);
+      }
+      const settings = replaySettings(this.session, node, anchor + 1, options.steered, this.maxOutputTokens);
+      const program = settings.steering
+        ? await this.compileRequiredSteering(settings.steering)
+        : null;
+      const raw_ = this.session.is_base_model || options.raw;
+      const promptIds = await this.generation.renderPromptTokenIds!({
+        input: generationInput({ type: "generate", input: null, raw: raw_ }, this.tree, node.parent_id!, settings.systemPrompt),
+        thinking: settings.thinking,
+        generationSeat: raw_ ? null : node.role as ChatRole,
+        generationRoleName: raw_ ? null : node.role_label,
+      });
+      const ids = Int32Array.from([...promptIds, ...raw.slice(0, anchor)]);
+      return {
+        forward: {
+          ids,
+          promptLength: promptIds.length,
+          rawIds: Int32Array.from(raw),
+          rawIndex: anchor,
+          spans: [{ firstRow: 0, stopRow: raw.length, at: promptIds.length - 1 }],
+          // Position-targeted steering replays with its recorded spans (B1 §2.3, §3.1).
+          positionSpans: program === null ? null : settings.positionSpans ?? null,
+        },
+        program,
+        steering: boundSteering(program, settings.steering) ?? null,
+        canThink: settings.thinking === true,
+      };
+    });
+  }
+
   private async withReplayLock<T>(operation: () => Promise<T>): Promise<T> {
     if (this.generating) {
       throw loomError("GENERATION_BUSY", "The browser model is already generating or replaying");
@@ -1538,7 +1603,7 @@ export class BrowserLoomRuntime {
   private compileRequiredSteering(
     expression: string,
     probeRequests?: readonly ProbeRequest[],
-  ): Promise<BrowserHookProgram> {
+  ): Promise<StructuredHookProgramBuffers> {
     if (!this.compileSteering) {
       throw loomError(
         "STEERING_COMPILER_UNAVAILABLE",
@@ -1551,7 +1616,7 @@ export class BrowserLoomRuntime {
   private async preflightGenerationSteering(
     expression: string,
     probeRequests?: readonly ProbeRequest[],
-  ): Promise<BrowserHookProgram> {
+  ): Promise<StructuredHookProgramBuffers> {
     const program = await this.compileRequiredSteering(expression, probeRequests);
     const activeRole = activeAssistantRole(program);
     if (activeRole !== null && !this.session.role_substitution_supported) {
@@ -2474,7 +2539,7 @@ function roleLabel(role: ChatRole, sampling: WSSampling | null | undefined): str
   return sampling?.assistant_role?.trim() || null;
 }
 
-function activeAssistantRole(program: BrowserHookProgram | null): string | null {
+function activeAssistantRole(program: StructuredHookProgramBuffers | null): string | null {
   const role = program?.activeRole;
   return typeof role === "string" ? role.trim() || null : null;
 }
@@ -3473,4 +3538,14 @@ function loomError(code: string, message: string): Error & {
   recoverable: boolean;
 } {
   return Object.assign(new Error(message), { code, status: 409, recoverable: true });
+}
+
+/** The steering a generation's envelopes bind (native's recipe steering): the compiled
+ *  expression's canonical text (`formatSteering`), so `a @when:x > 0.2` binds as `a@when:x>0.2`. */
+function boundSteering(
+  program: StructuredHookProgramBuffers | null,
+  expression: string | null | undefined,
+): string | null | undefined {
+  if (!expression) return expression;
+  return (program as (StructuredHookProgramBuffers & { steeringExpression?: string }) | null)?.steeringExpression || expression;
 }

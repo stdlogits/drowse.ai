@@ -14,8 +14,11 @@ import type {
 } from "../../../../drowse/webui/src/lib/types";
 import type { BrowserFeasibilityCorePackCompiler } from "./browserCorePack";
 import type { BrowserJlensRuntimeResolver } from "./browserInstrumentPacks";
-import { BROWSER_EXACT_READOUT_TOP_K_CAPACITY } from "./webLlmGeneration";
+import { BROWSER_EXACT_READOUT_TOP_K_CAPACITY, type WebLlmLiveInstruments } from "./webLlmGeneration";
 import { loadSaeDescription } from "../../../../drowse/webui/src/lib/saeDescriptions";
+import { UnsupportedBlockError } from "./modelBackend";
+import { isUnitsServiceMethod, type BrowserUnitsService, type UnitsPackSource } from "./units/unitsService";
+import { compilerUnitsPackSource } from "./units/packSource";
 
 type TokenLookup = (
   nodeId: string,
@@ -37,6 +40,9 @@ type TokenReplay = (
 export class BrowserInstrumentRuntime {
   private readonly preparation = new Map<string, PreparationStatusJSON>();
   private tokenReplay: TokenReplay | null = null;
+  private units: BrowserUnitsService | null = null;
+  /** Per-token unit readings (native `UnitsInstrument` live, on by default). */
+  private unitsLive = true;
 
   constructor(
     private compiler: BrowserFeasibilityCorePackCompiler,
@@ -63,13 +69,16 @@ export class BrowserInstrumentRuntime {
     const probes = this.compiler.listProbes();
     const lensWords = probes
       .filter((probe): probe is Extract<ProbeInfo, { family: "lens" }> =>
-        probe.family === "lens"
+        probe.family === "lens" && probe.namespace === "jlens"
       )
       .map((probe) => probe.word);
     if (lensWords.length > 0 && this.jlensResolver !== null) {
       await compiler.prepareJlensWords(lensWords, this.jlensResolver);
     }
-    for (const probe of probes) compiler.attachProbe(probeRefreshRequest(probe));
+    for (const probe of probes) {
+      if (probe.family === "lens" && probe.namespace === "slens") await compiler.prepareUnitProbe(`slens/${probe.word}`);
+      compiler.attachProbe(probeRefreshRequest(probe));
+    }
     compiler.setInstrumentLive("geometry", live.geometry);
     compiler.setInstrumentLive("lens", live.lens, live.lensLayers ?? undefined);
     compiler.setInstrumentLive("sae", live.sae);
@@ -78,6 +87,41 @@ export class BrowserInstrumentRuntime {
 
   configureTokenReplay(replay: TokenReplay | null): void {
     this.tokenReplay = replay;
+  }
+
+  /** The units members (`tokenAnatomy`, `unitActivity`, `unitRead`, `unitTop`, `unitFind`,
+   *  `unitCatalog`, `unitLabels`) over the loaded library's block sites, and the compiler's unit
+   *  source (`neuron/`, `head/` and `slens/` atoms, unit probes and gates) from the same service;
+   *  without a service every member answers native's 422 for a library that has none. */
+  async configureUnits(service: BrowserUnitsService | null): Promise<void> {
+    this.units = service;
+    this.compiler.setUnitSource(service === null ? null : await service.programSource());
+  }
+
+  /** The units members' packs over the session's compiler (the current one, as a manifold
+   *  refresh replaces it): core statistics and whitener, the lens packs, the units pack. */
+  unitsPackSource(modelId: string, signal: AbortSignal): UnitsPackSource {
+    return compilerUnitsPackSource(() => this.compiler, modelId, signal);
+  }
+
+  /** `find`'s selector: its instrument atoms prepared on the device, then its per-layer
+   *  directions (`compiler.selectorDirections`). */
+  async selectorDirections(selector: string): Promise<ReadonlyMap<number, Float32Array>> {
+    if (this.jlensResolver !== null) await this.compiler.prepareJlensSelectors(selector, this.jlensResolver);
+    await this.compiler.prepareUnitSelectors(selector);
+    return this.compiler.selectorDirections(selector);
+  }
+
+  /** A pack change under a configured service (the R source): its resident reads go, the
+   *  compiler takes a unit source over the new packs, and the attached `slens/` probes are
+   *  prepared again over it (their directions and identity, which their probe hash reads). */
+  private async resetUnits(): Promise<void> {
+    if (this.units === null) return;
+    await this.units.reset();
+    this.compiler.setUnitSource(await this.units.programSource());
+    for (const probe of this.compiler.listProbes()) {
+      if (probe.family === "lens" && probe.namespace === "slens") await this.compiler.prepareUnitProbe(`slens/${probe.word}`);
+    }
   }
 
   hasLiveReadout(): boolean {
@@ -99,10 +143,43 @@ export class BrowserInstrumentRuntime {
     return this.compiler.probeHashes();
   }
 
+  /** Whether the generation loop fills the units channel (B4): a configured service and the
+   *  family live. */
+  unitsLiveEnabled(): boolean {
+    return this.units !== null && this.unitsLive;
+  }
+
+  /** What a generation's units channel and `slens/` reads take (B1 §2.2, §5.1): the attached
+   *  unit probes, whether the units and lens families are live, and the S read over a
+   *  forward's `[L, d]` capture through the units service. Null without a service (a program
+   *  then has neither unit taps nor `slens/` probes). */
+  liveInstruments(): WebLlmLiveInstruments | null {
+    const units = this.units;
+    if (units === null) return null;
+    return {
+      unitProbes: new Set(this.compiler.listProbes().flatMap((probe) =>
+        probe.family === "units" ? [probe.name] : []
+      )),
+      unitsLive: this.unitsLiveEnabled(),
+      lensLive: this.compiler.instrumentLiveState().lens,
+      slensReads: (hidden, probes) => units.slensReads(hidden, probes),
+    };
+  }
+
   blocks(): InstrumentFamilyBlock[] {
     const descriptor = this.compiler.instrumentDescriptor();
     const live = this.compiler.instrumentLiveState();
     const probes = this.compiler.listProbes();
+    // Native `family_block("units")` once the model load configured the units service: no
+    // source (the model's own parts); no preparations (the browser fetches no unit catalogs);
+    // no token readout (the units channel rides generation and the anatomy replay).
+    const units: InstrumentFamilyBlock[] = this.units === null ? [] : [{
+      family: "units",
+      live: { enabled: this.unitsLive },
+      source: null,
+      probes: probes.filter((probe) => probe.family === "units").map((probe) => probe.name),
+      capabilities: { sources: false, preparations: [], token_readout: false, source_switch: false },
+    }];
     return [
       {
         family: "geometry",
@@ -147,6 +224,7 @@ export class BrowserInstrumentRuntime {
           source_switch: false,
         },
       },
+      ...units,
     ];
   }
 
@@ -170,6 +248,14 @@ export class BrowserInstrumentRuntime {
     if (method === "validateLensToken") return this.validateLensToken(args);
     if (method === "validateSaeFeature") return this.validateSaeFeature(args);
     if (method === "saeFeaturesMetadata") return this.saeFeaturesMetadata(args);
+    if (isUnitsServiceMethod(method)) {
+      if (this.units === null) {
+        return Promise.reject(new UnsupportedBlockError("the loaded model library predates hook ABI block-sites-v5"));
+      }
+      return this.units.request(method, args, {
+        lensProbes: this.compiler.listProbes().filter((probe) => probe.family === "lens"),
+      });
+    }
     throw instrumentError(
       "BROWSER_SERVICE_UNAVAILABLE",
       `Browser runtime service instruments.${method} is not implemented`,
@@ -234,6 +320,7 @@ export class BrowserInstrumentRuntime {
         this.jlensResolver,
       );
     }
+    if (selector?.startsWith("slens/")) await this.compiler.prepareUnitProbe(selector);
     return this.compiler.attachProbe(request);
   }
 
@@ -252,6 +339,19 @@ export class BrowserInstrumentRuntime {
   }
 
   private setLive(args: unknown[]): unknown {
+    if (args[0] === "units" && this.units !== null) {
+      // Native `UnitsInstrument.set_live`: all or nothing, no extras.
+      const body = record(args[1], "instrument live settings");
+      if (typeof body.enabled !== "boolean") {
+        throw instrumentError("INVALID_INSTRUMENT_REQUEST", "Instrument live state must be a boolean");
+      }
+      const extras = Object.keys(body).filter((key) => key !== "enabled");
+      if (extras.length > 0) {
+        throw instrumentError("INVALID_INSTRUMENT_REQUEST", `units live does not accept ${extras.sort().join(", ")}`);
+      }
+      this.unitsLive = body.enabled;
+      return { enabled: this.unitsLive };
+    }
     const family = instrumentFamily(args[0]);
     const body = record(args[1], "instrument live settings");
     if (typeof body.enabled !== "boolean") {
@@ -338,6 +438,7 @@ export class BrowserInstrumentRuntime {
         throw error;
       }
     }
+    if (previousSource !== source) await this.resetUnits();
     const descriptor = this.compiler.instrumentDescriptor().jlens!;
     this.compiler.setInstrumentLive("lens", true);
     return { source, live_layers: [...descriptor.layers] };
@@ -356,11 +457,11 @@ export class BrowserInstrumentRuntime {
           displayName: descriptor.displayName,
           active: true,
           summary: {
+            family: "R" as const,
             kind: descriptor.kind,
             coverage: {
-              layers: descriptor.layers,
+              sites: { out: { layers: descriptor.layers, splitHalf: descriptor.splitHalf } },
               nPrompts: descriptor.nPrompts,
-              splitHalf: descriptor.splitHalf,
             },
           },
         }];
@@ -612,7 +713,7 @@ function probeRefreshRequest(probe: ProbeInfo): ProbeRequest {
     return { selector: probe.manifold, name: probe.name, top_n: probe.top_n };
   }
   if (probe.family === "lens") {
-    return { selector: `jlens/${probe.word}`, name: probe.name };
+    return { selector: `${probe.namespace}/${probe.word}`, name: probe.name };
   }
   if (probe.family === "units") return { selector: probe.unit, name: probe.name };
   return { selector: `sae/${probe.feature_id}`, name: probe.name };
@@ -825,31 +926,36 @@ function tokenReadoutOptions(value: unknown): TokenReadoutOptions {
   return input as TokenReadoutOptions;
 }
 
-/** A hosted lens pack's row in 6.0's shape (`lens/sources.py::list_lens_sources`): a hosted lens
- *  pack selects into the R slot and the browser reads its `out` site only, so `family` is R,
- *  `sites` is `["out"]` and `layers`/`split_half` key that site. A pack whose manifest does not
- *  pass the loader's checks keeps native's coverage-free row (`sites: []`), with its kind when
- *  the manifest still names one (`LensSourceSummary`). */
+/** A hosted lens pack's row in 6.0's shape (`lens/sources.py::list_lens_sources`): an R pack
+ *  (`jlens`) or the S pack (`slens`), with the sites it holds (`out`, and `mid` for a 6.0 pack)
+ *  and `layers`/`split_half` keyed by site. A pack whose manifest does not pass the loader's
+ *  checks keeps native's coverage-free row (`sites: []`), with its kind when the manifest still
+ *  names one (`LensSourceSummary`). */
 function lensSourceRow(
   source: ReturnType<BrowserFeasibilityCorePackCompiler["jlensSources"]>[number],
 ): InstrumentSourceJSON {
   const summary = source.summary;
   const coverage = summary?.coverage ?? null;
+  const sites = coverage === null
+    ? []
+    : (["out", "mid"] as const).filter((site) => coverage.sites[site] !== undefined);
+  const splitHalf = Object.fromEntries(sites.flatMap((site) => {
+    const values = coverage!.sites[site]!.splitHalf;
+    return values === null || Object.keys(values).length === 0 ? [] : [[site, splitHalfByLayer(values)]];
+  }));
   return {
     source: source.source,
     kind: "catalog",
     name: source.displayName,
     ...(summary === null ? {} : { lens: summary.kind }),
-    family: "R",
-    sites: coverage === null ? [] : ["out"],
+    family: summary?.family ?? "R",
+    sites: [...sites],
     ...(coverage === null
       ? {}
       : {
-          layers: { out: [...coverage.layers] },
+          layers: Object.fromEntries(sites.map((site) => [site, [...coverage.sites[site]!.layers]])),
           n_prompts: coverage.nPrompts,
-          ...(coverage.splitHalf === null || Object.keys(coverage.splitHalf).length === 0
-            ? {}
-            : { split_half: { out: splitHalfByLayer(coverage.splitHalf) } }),
+          ...(Object.keys(splitHalf).length === 0 ? {} : { split_half: splitHalf }),
         }),
     active: source.active,
     provider: "catalog",
@@ -865,10 +971,12 @@ function splitHalfByLayer(values: Readonly<Record<string, number>>): Record<stri
 
 function instrumentFamily(value: unknown): "geometry" | "lens" | "sae" {
   if (value === "units") {
-    // In the contract (`InstrumentFamily`); neurons and heads are not read here yet.
+    // In the contract (`InstrumentFamily`); its live state is `setLive`'s once the units service
+    // is configured, and it has no sources or preparations here (native: the model's own parts;
+    // the browser fetches no unit catalogs).
     throw instrumentError(
       "INSTRUMENT_FAMILY_UNAVAILABLE",
-      "The browser runtime does not read neurons and heads yet",
+      "units have no source lifecycle or preparations in the browser runtime (neurons and heads are the model's own parts; their statistics ride the neutral cache)",
     );
   }
   if (value !== "geometry" && value !== "lens" && value !== "sae") {

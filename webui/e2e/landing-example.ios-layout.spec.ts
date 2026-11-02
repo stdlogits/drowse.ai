@@ -323,7 +323,7 @@ test("the example announces a committed setting after a key press or a pointer d
   await slider.focus();
   await slider.press("End");
   await expect(live).toHaveText(`More welcoming, strength 0.15. Reply: ${recording.runs[6].text.trim()}`);
-  // drowse's Slider runs the drag itself and fires no change event; the drag's end still announces.
+  // drowse's Slider fires change at the end of a drag that moved it: quiet while dragging, then one announcement.
   const box = (await slider.boundingBox())!;
   await page.mouse.move(box.x + box.width - 2, box.y + box.height / 2);
   await page.mouse.down();

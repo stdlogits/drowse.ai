@@ -27,6 +27,10 @@ import {
   type DrowseWebLlmModule,
 } from "../src/hosted/runtime/webLlmEngine";
 import type { StructuredHookProgramBuffers } from "../src/hosted/runtime/structuredHookProgram";
+import {
+  BLOCK_SITES_EXACT_READOUT_ABI,
+  type BlockSpec,
+} from "../src/hosted/runtime/structuredHookProfile";
 import { validatePairedSteeringControls } from "./browser-full-runtime-contract.mjs";
 
 type FileEntry = CatalogFile;
@@ -36,6 +40,9 @@ interface RunRequest {
   modelId: string;
   runtimeIdentity: RuntimeIdentity;
   structuredHookProfile: ModelVariant["structuredHookProfile"];
+  /** The runtime lock's block spec (standard-v4) and unit refusal (standard-v4-residual). */
+  blockSpec: BlockSpec | null;
+  unitRefusal: string | null;
   thinkingProfile: ModelVariant["thinkingProfile"];
   quantization: "q4f16_1" | "q4f32_1" | "q0f32";
   requiredFeatures: GPUFeatureName[];
@@ -68,7 +75,6 @@ type CheckName =
 const REQUIRED_STORAGE_BUFFERS_PER_SHADER_STAGE = 10;
 const REQUIRED_MAX_COMPUTE_WORKGROUP_SIZE_X = 256;
 const REQUIRED_MAX_COMPUTE_INVOCATIONS_PER_WORKGROUP = 256;
-const REQUIRED_STRUCTURED_HOOK_PROFILE = "standard-v3";
 const nativeFetch = globalThis.fetch.bind(globalThis);
 let offline = false;
 const offlineNetworkAttempts: string[] = [];
@@ -110,9 +116,12 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
     name: "browser_e2e_curve",
   } as const;
   try {
-    if (event.data.structuredHookProfile !== REQUIRED_STRUCTURED_HOOK_PROFILE) {
+    if (
+      event.data.structuredHookProfile !== "standard-v4" &&
+      event.data.structuredHookProfile !== "standard-v4-residual"
+    ) {
       throw new Error(
-        `real-browser instruments require ${REQUIRED_STRUCTURED_HOOK_PROFILE} exact-readout-v1`,
+        `real-browser instruments require a v5 library (standard-v4 or standard-v4-residual, ${BLOCK_SITES_EXACT_READOUT_ABI})`,
       );
     }
     const webLlmUrl = "/webllm.js";
@@ -244,6 +253,8 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
       variant,
       requiredCorePack,
       contextTokens: event.data.contextTokens,
+      blockSpec: event.data.blockSpec,
+      unitRefusal: event.data.unitRefusal,
       adapter: await checker.adapterForLoad(),
       artifacts: [...modelArtifacts, ...coreArtifacts],
       optionalPacks,
@@ -311,7 +322,6 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
         runtimeIdentitySha256: fingerprint,
         layers: event.data.runtimeIdentity.layerMap.length,
         hiddenSize: event.data.runtimeIdentity.hiddenSize,
-        rankOne: hooks.rank_one,
         multiTerm: hooks.multi_term,
         curved: hooks.curved_manifold,
         sae: hooks.sae,

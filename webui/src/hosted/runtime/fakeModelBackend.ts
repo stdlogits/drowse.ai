@@ -9,14 +9,25 @@ import type {
   WSSubmitRequest,
 } from "../../../../drowse/webui/src/lib/types";
 import { DeterministicFakeRuntime } from "./fakeRuntime";
-import type {
-  BrowserModelBackend,
-  BrowserModelLoadRequest,
-  BrowserModelLoadResult,
+import {
+  rejectingBlockSitesBackend,
+  UnsupportedBlockError,
+  type BrowserBlockSitesBackend,
+  type BrowserModelBackend,
+  type BrowserModelLoadRequest,
+  type BrowserModelLoadResult,
 } from "./modelBackend";
+
+/** The fixture model has no block description: every hook ABI v5 member answers as drowse 6.0
+ *  answers a unit or anatomy call on such a model (`UnsupportedBlockError`, 422). */
+export const FIXTURE_UNIT_REFUSAL =
+  "the deterministic fixture model has no transformer blocks to describe";
 
 export class DeterministicBrowserModelBackend implements BrowserModelBackend {
   private runtime: DeterministicFakeRuntime | null = null;
+  private readonly fixtureBlockSites = rejectingBlockSitesBackend(
+    () => new UnsupportedBlockError(FIXTURE_UNIT_REFUSAL),
+  );
 
   constructor(
     private readonly tokenDelayMs = 0,
@@ -79,6 +90,10 @@ export class DeterministicBrowserModelBackend implements BrowserModelBackend {
 
   async stop(): Promise<void> {
     await this.runtime?.stopGeneration();
+  }
+
+  blockSites(): BrowserBlockSitesBackend {
+    return this.fixtureBlockSites;
   }
 
   private requireRuntime(): DeterministicFakeRuntime {

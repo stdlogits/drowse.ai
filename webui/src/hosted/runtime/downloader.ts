@@ -28,6 +28,7 @@ import {
   CONTENT_OBJECT_LOCK_PREFIX,
 } from "./contentStore";
 import { HOSTED_DESTRUCTIVE_LOCK } from "./ownership";
+import { packFileResidency, packInstallCovers, packInstallFiles } from "./optionalPackCompatibility";
 import { randomUuid } from "./randomId";
 
 const DEFAULT_CHUNK_BYTES = 256 * 1024;
@@ -47,6 +48,8 @@ export type ArtifactDownloadErrorCode =
   | "REQUIRED_CORE_PACK_INVALID"
   | "OPTIONAL_PACK_NOT_FOUND"
   | "OPTIONAL_PACK_INVALID"
+  | "OPTIONAL_PACK_FILE_NOT_FOUND"
+  | "OPTIONAL_PACK_NOT_INSTALLED"
   | "DOWNLOAD_BUSY"
   | "DOWNLOAD_CANCELLED"
   | "DOWNLOAD_QUOTA_INSUFFICIENT"
@@ -105,6 +108,9 @@ interface ArtifactManifestSelection {
   packId?: string;
   partialOwner: PartialContentOwner;
   validPartialOwners: ValidPartialOwner[];
+  /** Add the files to the install record as it stands when committing, rather than replace it
+   *  (an on-demand layer joining its pack while other layers may be joining too). */
+  mergeInstall?: true;
 }
 
 export interface DownloadManifestSelection extends ArtifactManifestSelection {
@@ -342,12 +348,16 @@ export function selectOptionalPackManifest(
       false,
     );
   }
+  // A lens or units pack installs its manifests, model-wide statistics and the live readout's
+  // layers; every other layer file is fetched on the first read that needs it
+  // (`selectOptionalPackFile`).
+  const files = packInstallFiles(pack, variant);
   return {
     variant,
     pack,
     packId: pack.id,
-    files: pack.files,
-    totalBytes: pack.bytes,
+    files,
+    totalBytes: sumBytes(files),
     installId: pack.id,
     installKind: "pack",
     partialOwner: {
@@ -357,6 +367,38 @@ export function selectOptionalPackManifest(
     },
     validPartialOwners: validPartialOwnersForCatalog(catalog),
   };
+}
+
+/** One on-demand layer file of an installed pack, as a selection that also names every file the
+ *  install already holds, so the install record grows by that file and nothing else. */
+export function selectOptionalPackFile(
+  catalog: VerifiedCatalog,
+  modelVariantId: string,
+  packId: string,
+  path: string,
+  installedHashes: readonly string[],
+): OptionalPackDownloadManifestSelection {
+  const selection = selectOptionalPackManifest(catalog, modelVariantId, packId);
+  const file = selection.pack.files.find((candidate) => candidate.path === path);
+  if (file === undefined || packFileResidency(selection.pack, selection.variant, path) !== "on_demand") {
+    throw downloadError(
+      "OPTIONAL_PACK_FILE_NOT_FOUND",
+      `${path} is not a layer file of instrument pack ${packId}`,
+      404,
+      false,
+    );
+  }
+  if (!packInstallCovers(selection.pack, selection.variant, installedHashes)) {
+    throw downloadError(
+      "OPTIONAL_PACK_NOT_INSTALLED",
+      `Install ${selection.pack.displayName} before reading its layers`,
+      409,
+      true,
+    );
+  }
+  // The record grows by this file, merged into the record as it stands at commit (another tab's
+  // fetch may have added a layer since `installedHashes` was read).
+  return { ...selection, files: [file], totalBytes: file.bytes, mergeInstall: true };
 }
 
 export class VerifiedArtifactDownloader {
@@ -447,6 +489,20 @@ export class VerifiedArtifactDownloader {
     options: ArtifactDownloadOptions,
   ): Promise<ArtifactDownloadResult> {
     const selection = selectOptionalPackManifest(catalog, modelVariantId, packId);
+    return this.downloadSelection(selection, options);
+  }
+
+  /** Fetch one on-demand layer file of an installed pack into its install (a read's first use
+   *  of that layer). `installedHashes` is the install record's current closure. */
+  async downloadPackFile(
+    catalog: VerifiedCatalog,
+    modelVariantId: string,
+    packId: string,
+    path: string,
+    installedHashes: readonly string[],
+    options: ArtifactDownloadOptions,
+  ): Promise<ArtifactDownloadResult> {
+    const selection = selectOptionalPackFile(catalog, modelVariantId, packId, path, installedHashes);
     return this.downloadSelection(selection, options);
   }
 
@@ -694,6 +750,7 @@ export class VerifiedArtifactDownloader {
             installedAt,
           }, {
             selectAsCurrentModel: selection.installKind === "model",
+            mergeObjectHashes: selection.mergeInstall === true,
           });
         } catch (error) {
           throw downloadError(

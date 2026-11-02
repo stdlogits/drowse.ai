@@ -1,67 +1,29 @@
 #!/usr/bin/env python3
 
 import argparse
-import hashlib
 import json
 import os
 import subprocess
 import sys
-import types
 from pathlib import Path
 
 import numpy as np
 
-MLC_BASE_COMMIT = "9fa644f54b04983adea4d0168f49fc6af4a893ba"
-TVM_COMMIT = "68ba2b31c2a6d202fcd44e5780ef10ce08721dd5"
-TVM_FFI_COMMIT = "12dbf053b3d9ba4ebd9da3123b1aeca79cf74229"
-RESULT_DIGESTS = {
-    "python/mlc_llm/interface/convert_weight.py": "dffc4af8487f54087bc27f9a35f959df318a70c4c33326b65d4a6d9f6479a1b5",
-    "python/mlc_llm/interface/compile.py": "435876d96e9ba6fbc3f02dd6f5ed858df559ebded169ce91c5cdd8151e610d32",
-    "python/mlc_llm/op/moe_misc.py": "4141be404d6d31b1ee152ef495fd5bdfc75b16af968ad01e07c3d1d26637ef92",
-    "python/mlc_llm/model/llama/llama_model.py": "2a34402c81074ce0a773f9a73dc95aea20a7a0533b2561708d32ceeb72aec7dc",
-    "python/mlc_llm/model/qwen3/qwen3_model.py": "0621190a80fc12ec58ca3fd5d439411135815c4f4f6596a5a0d258475b5c7291",
-    "python/mlc_llm/model/gemma3/gemma3_model.py": "fd219c4779b1a7497fa533b264d5c77a973c5a1f46f41ed29923c312d6220f18",
-    "python/mlc_llm/model/drowse_hooks.py": "4fadef9db1c875c81ca9cde76dfdbc477a3755f4d982ba9d097ccc730f6778b1",
-}
-REQUIRED_FUNCTIONS = {
-    "drowse_hook_profile",
-    "drowse_prefill",
-    "drowse_decode",
-    "drowse_batch_prefill",
-    "drowse_batch_decode",
-    "drowse_capture_prefill",
-    "drowse_capture_decode",
-    "drowse_capture_batch_prefill",
-    "drowse_capture_batch_decode",
-    "drowse_rank_one_capture_prefill_v1",
-    "drowse_rank_one_capture_decode_v1",
-    "drowse_rank_one_capture_batch_prefill_v1",
-    "drowse_rank_one_capture_batch_decode_v1",
-    "drowse_structured_batch_prefill",
-    "drowse_structured_batch_decode",
-    "drowse_geometry_batch_prefill",
-    "drowse_geometry_batch_decode",
-    "drowse_curved_batch_prefill",
-    "drowse_curved_batch_decode",
-    "drowse_jlens_probabilities",
-    "drowse_jlens_readout_accumulate",
-    "drowse_jlens_readout_topk",
-    "drowse_jlens_directions",
-    "drowse_sae_readout_accumulate",
-    "drowse_sae_jump_relu_readout_accumulate",
-}
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from overlay_checks import (  # noqa: E402
+    REQUIRED_FUNCTIONS,
+    bootstrap_mlc_package,
+    ensure_import_roots,
+    require_llvm,
+    verify_sources,
+)
 
 
 def main() -> None:
     args = parse_args()
     mlc_repository = args.mlc_repository.resolve(strict=True)
     tvm_repository = args.tvm_repository.resolve(strict=True)
-    fixture_path = args.fixture.resolve(strict=True)
-    require_commit(mlc_repository, MLC_BASE_COMMIT, "MLC-LLM")
-    require_commit(tvm_repository, TVM_COMMIT, "TVM")
-    require_commit(tvm_repository / "3rdparty/tvm-ffi", TVM_FFI_COMMIT, "TVM-FFI")
-    verify_result_files(mlc_repository)
-    verify_portable_topk_source(mlc_repository)
+    verify_sources(mlc_repository, tvm_repository)
     verify_exact_parallel_topk_cpu_golden()
     ensure_import_roots(mlc_repository, tvm_repository)
     os.environ.setdefault("SKIP_LOADING_MLCLLM_SO", "1")
@@ -72,7 +34,7 @@ def main() -> None:
         from tvm.relax.frontend import nn
         from tvm.relax.frontend.nn import op, spec
         from tvm.runtime import tensor as tvm_tensor
-        bootstrap_mlc_package(mlc_repository)
+        bootstrap_mlc_package(mlc_repository, "verification")
         from mlc_llm import op as op_ext
         from mlc_llm.model.gemma3.gemma3_model import (
             Gemma3Config,
@@ -85,7 +47,6 @@ def main() -> None:
             accumulate_jlens_readout,
             accumulate_sae_jump_relu_readout,
             accumulate_sae_readout,
-            apply_rank_one_hook,
             apply_structured_affine_hook,
             apply_structured_curved_hook,
             capture_residual_positions,
@@ -97,8 +58,12 @@ def main() -> None:
         )
     except (ImportError, OSError) as error:
         raise SystemExit(f"exact MLC/TVM toolchain is unavailable: {error}") from error
-    if tvm.target.codegen.llvm_version_major() != 18:
-        raise SystemExit("TVM compiler must be built against LLVM 18")
+    require_llvm(tvm)
+
+    if args.units_fixtures is not None:
+        verify_units_fixtures(args, tvm, relax, nn, op)
+        sys.stdout.flush()
+        os._exit(0)
 
     if args.export_only is not None:
         model, label = create_tiny_model(
@@ -139,83 +104,7 @@ def main() -> None:
         tvm_tensor,
         structured_hook_profile_descriptor,
     )
-    fixture = json.loads(fixture_path.read_text())
-    if fixture.get("hookAbi") != "post-block-residual-v4" or fixture.get("hiddenSize") != 4:
-        raise SystemExit("unexpected rank-one hook fixture identity")
-
-    class HookModule(nn.Module):
-        def forward(
-            self,
-            residual,
-            enabled,
-            basis,
-            neutral,
-            target,
-            along,
-            collapse,
-            probe_basis,
-            probe_neutral,
-        ):
-            return apply_rank_one_hook(
-                residual,
-                0,
-                enabled,
-                basis,
-                neutral,
-                target,
-                along,
-                collapse,
-                probe_basis,
-                probe_neutral,
-            )
-
-    hidden_size = fixture["hiddenSize"]
-    module, _, _ = HookModule().export_tvm(
-        spec={
-            "forward": {
-                "residual": spec.Tensor([1, 1, hidden_size], "float32"),
-                "enabled": spec.Tensor([1], "uint32"),
-                "basis": spec.Tensor([1, hidden_size], "float32"),
-                "neutral": spec.Tensor([1, hidden_size], "float32"),
-                "target": spec.Tensor([1], "float32"),
-                "along": spec.Tensor([1], "float32"),
-                "collapse": spec.Tensor([1], "float32"),
-                "probe_basis": spec.Tensor([1, hidden_size], "float32"),
-                "probe_neutral": spec.Tensor([1, hidden_size], "float32"),
-            }
-        },
-        allow_extern=True,
-    )
-    executable = relax.build(module, target=tvm.target.Target("c"))
-    vm = relax.VirtualMachine(executable, tvm.cpu())
-
-    for case in fixture["cases"]:
-        arrays = [
-            np.asarray(case["residual"], dtype="float32").reshape(1, 1, hidden_size),
-            np.asarray([1], dtype="uint32"),
-            np.asarray(case["basis"], dtype="float32").reshape(1, hidden_size),
-            np.asarray(case["neutral"], dtype="float32").reshape(1, hidden_size),
-            np.asarray([case["target"]], dtype="float32"),
-            np.asarray([case["along"]], dtype="float32"),
-            np.asarray([case["collapse"]], dtype="float32"),
-            np.asarray(case["probeBasis"], dtype="float32").reshape(1, hidden_size),
-            np.asarray(case["probeNeutral"], dtype="float32").reshape(1, hidden_size),
-        ]
-        result, probe = vm["forward"](*(tvm_tensor(value, device=tvm.cpu()) for value in arrays))
-        np.testing.assert_allclose(
-            result.numpy().reshape(hidden_size),
-            np.asarray(case["expectedResidual"], dtype="float32"),
-            rtol=1e-6,
-            atol=1e-7,
-            err_msg=f"{case['name']} residual",
-        )
-        np.testing.assert_allclose(
-            probe.numpy().reshape(-1),
-            np.asarray([case["expectedProbe"]], dtype="float32"),
-            rtol=1e-6,
-            atol=1e-7,
-            err_msg=f"{case['name']} probe",
-        )
+    hidden_size = 4
 
     class CaptureModule(nn.Module):
         def forward(self, residual, positions):
@@ -267,7 +156,7 @@ def main() -> None:
     )
     verify_isolated_readout_goldens(args)
     print(
-        "exact-source MLC rank-one, structured, packed geometry, "
+        "exact-source MLC capture, structured, packed geometry, "
         "multidimensional/periodic/sphere curved, exact J-lens/SAE top-8, "
         "capture, and compiled C/LLVM golden checks passed"
     )
@@ -605,7 +494,9 @@ def verify_exact_readout_profile(
 ) -> None:
     class ProfileModule(nn.Module):
         def forward(self):
-            return structured_hook_profile_descriptor(2, 4)
+            return structured_hook_profile_descriptor(
+                2, 4, block=None, context_tokens=16, prefill_chunk_size=16
+            )
 
     module, _, _ = ProfileModule().export_tvm(
         spec={"forward": {"$": {"param_mode": "none", "effect_mode": "none"}}},
@@ -615,10 +506,11 @@ def verify_exact_readout_profile(
         relax.build(module, target=tvm.target.Target("c")), tvm.cpu()
     )
     descriptor = vm["forward"]().numpy()
-    if descriptor.shape != (31,):
-        raise SystemExit("Drowse exact-readout profile descriptor has the wrong length")
-    np.testing.assert_array_equal(descriptor[:7], [0x53414B4C, 3, 3, 4, 3, 2, 4])
-    np.testing.assert_array_equal(descriptor[-3:], [1, 8, 16384])
+    if descriptor.shape != (67,):
+        raise SystemExit("Drowse hook profile descriptor (schema 4) has the wrong length")
+    np.testing.assert_array_equal(descriptor[:7], [0x53414B4C, 4, 4, 5, 4, 2, 4])
+    np.testing.assert_array_equal(descriptor[28:32], [2, 8, 16384, 0])
+    np.testing.assert_array_equal(descriptor[-4:], [256, 0, 8, 16])
 
 
 def verify_structured_hook_golden(
@@ -1404,6 +1296,53 @@ def create_tiny_model(
     )
 
 
+def verify_units_fixtures(args, tvm, relax, nn, op) -> None:
+    """Hook ABI v5 on the C TVM VM: the units goldens over build-units-fixtures.py models."""
+    import importlib.util
+    import types as pytypes
+
+    from mlc_llm import compiler_pass as _compiler_pass  # noqa: F401  (registers the pipeline)
+    from mlc_llm import op as op_ext
+    from mlc_llm.interface.compiler_flags import IPCAllReduceStrategyType
+    from mlc_llm.model import drowse_reads, drowse_units
+    from mlc_llm.model.drowse_hooks import structured_curve_program_spec
+    from mlc_llm.model.gemma3.gemma3_model import Gemma3Config, Gemma3ForCausalLM
+    from mlc_llm.model.qwen3.qwen3_model import Qwen3Config, Qwen3LMHeadModel
+    from mlc_llm.quantization import QUANTIZATION, make_quantization_functions
+
+    import units_goldens
+
+    compiler_path = Path(__file__).resolve().with_name("compile-tiny-webgpu.py")
+    compiler_spec = importlib.util.spec_from_file_location("drowse_compile_tiny", compiler_path)
+    compiler = importlib.util.module_from_spec(compiler_spec)
+    compiler_spec.loader.exec_module(compiler)
+    env = pytypes.SimpleNamespace(
+        tvm=tvm, relax=relax, nn=nn, op=op,
+        models={"qwen3": (Qwen3Config, Qwen3LMHeadModel),
+                "gemma3_text": (Gemma3Config, Gemma3ForCausalLM)},
+        QUANTIZATION=QUANTIZATION, make_quantization_functions=make_quantization_functions,
+        strip_gpu_thread_bindings=strip_gpu_thread_bindings,
+        prepare_parameters=compiler.prepare_parameters, create_metadata=compiler.create_metadata,
+        IPCAllReduceStrategyType=IPCAllReduceStrategyType,
+        structured_curve_program_spec=structured_curve_program_spec,
+        unit_program_spec=drowse_units.unit_program_spec,
+        unit_meta_layout=drowse_units.unit_meta_layout,
+        unit_coeff_layout=drowse_units.unit_coeff_layout,
+        UnitSites=drowse_units.UnitSites,
+        drowse_units=drowse_units,
+        drowse_reads=drowse_reads,
+        UNIT_MAX_GROUPS=drowse_units.UNIT_MAX_GROUPS,
+        UNIT_MAX_HEAD_TAPS=drowse_units.UNIT_MAX_HEAD_TAPS,
+    )
+    op_ext.enable(target=tvm.target.Target("llvm"), flashinfer=False, faster_transformer=False,
+                  cutlass=False)
+    results = units_goldens.verify(env, args.units_fixtures.resolve(strict=True),
+                                   args.goldens.resolve(strict=True))
+    print("units goldens (block-sites, unit-ablation, unit-probes, attention-patterns, "
+          "token-anatomy, unit-activity) passed on the C TVM VM: "
+          + json.dumps(results, sort_keys=True))
+
+
 def verify_isolated_model_exports(args) -> None:
     for architecture in ("qwen3", "llama", "gemma3_text"):
         subprocess.run(
@@ -1414,8 +1353,6 @@ def verify_isolated_model_exports(args) -> None:
                 str(args.mlc_repository),
                 "--tvm-repository",
                 str(args.tvm_repository),
-                "--fixture",
-                str(args.fixture),
                 "--export-only",
                 architecture,
             ],
@@ -1432,8 +1369,6 @@ def verify_isolated_readout_goldens(args) -> None:
             str(args.mlc_repository),
             "--tvm-repository",
             str(args.tvm_repository),
-            "--fixture",
-            str(args.fixture),
             "--readout-only",
         ],
         check=True,
@@ -1448,9 +1383,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--export-only", choices=["qwen3", "llama", "gemma3_text"])
     parser.add_argument("--readout-only", action="store_true")
     parser.add_argument(
-        "--fixture",
+        "--units-fixtures",
         type=Path,
-        default=repository_root / "drowse/tests/fixtures/browser/post-block-rank-one-v2.json",
+        help="directory of build-units-fixtures.py models (units-<arch>-<quantization>): check them "
+        "against the block-sites, unit-ablation and unit-probes goldens on the C TVM VM",
+    )
+    parser.add_argument(
+        "--goldens",
+        type=Path,
+        default=repository_root / "drowse/tests/fixtures/browser",
     )
     return parser.parse_args()
 
@@ -1546,63 +1487,6 @@ def strip_gpu_thread_bindings(module, tvm):
     return module
 
 
-def require_commit(repository: Path, expected: str, label: str) -> None:
-    actual = subprocess.check_output(
-        ["git", "-C", str(repository), "rev-parse", "HEAD"], text=True
-    ).strip()
-    if actual != expected:
-        raise SystemExit(f"{label} checkout must be exact commit {expected}, found {actual}")
-
-
-def verify_result_files(repository: Path) -> None:
-    for relative_path, expected in RESULT_DIGESTS.items():
-        path = repository / relative_path
-        actual = hashlib.sha256(path.read_bytes()).hexdigest()
-        if actual != expected:
-            raise SystemExit(f"MLC overlay result digest differs for {relative_path}")
-
-
-def verify_portable_topk_source(repository: Path) -> None:
-    moe_source = (repository / "python/mlc_llm/op/moe_misc.py").read_text(encoding="utf-8")
-    if (
-        moe_source.count("TX = 1024") < 2
-        or "T.buffer_store(local_top_k_index, -1, indices=[t])" not in moe_source
-        or "T.buffer_store(local_top_k_index, t, indices=[-1])" in moe_source
-    ):
-        raise SystemExit("generic MLC MoE top-k differs from upstream scheduling or safe initialization")
-    hooks_source = (
-        repository / "python/mlc_llm/model/drowse_hooks.py"
-    ).read_text(encoding="utf-8")
-    exact_source = hooks_source.split("def exact_readout_topk", 1)[-1].split(
-        "def structured_geometry_payload_layout", 1
-    )[0]
-    for fragment in (
-        "EXACT_READOUT_TOPK_BLOCK_SIZE = 256",
-        "candidate_count = T.ceildiv(column_count, EXACT_READOUT_TOPK_BLOCK_SIZE)",
-        '"drowse_exact_top8_tiles"',
-        '"drowse_exact_top8_merge"',
-        "_exact_readout_is_better",
-        "while candidate_count > 1:",
-        'for thread in T.thread_binding(0, 64, "threadIdx.x"):',
-        "T.And(",
-        "T.Or(",
-    ):
-        if fragment not in hooks_source:
-            raise SystemExit(f"Drowse exact tiled top-8 omits {fragment}")
-    if 'scope="shared"' not in exact_source or "tvm_storage_sync" not in exact_source:
-        raise SystemExit("Drowse exact tiled top-8 requires bounded cooperative reduction")
-    for relative_path in (
-        "python/mlc_llm/model/llama/llama_model.py",
-        "python/mlc_llm/model/qwen3/qwen3_model.py",
-    ):
-        model_source = (repository / relative_path).read_text(encoding="utf-8")
-        if (
-            model_source.count("exact_readout_topk") != 5
-            or "op_ext.moe_misc.gating_topk(" in model_source
-        ):
-            raise SystemExit(f"{relative_path} does not route every exact readout through Drowse top-8")
-
-
 def verify_exact_parallel_topk_cpu_golden() -> None:
     block_size = 256
     top_k = 8
@@ -1650,29 +1534,6 @@ def verify_exact_parallel_topk_cpu_golden() -> None:
         expected_indices = np.argsort(-row, kind="stable")[:top_k]
         np.testing.assert_array_equal(actual_indices, expected_indices)
         np.testing.assert_array_equal(actual_values, row[expected_indices])
-
-
-def ensure_import_roots(mlc_repository: Path, tvm_repository: Path) -> None:
-    expected = [(tvm_repository / "python").resolve(), (mlc_repository / "python").resolve()]
-    import_roots = {Path(path).resolve() for path in sys.path if path}
-    missing = [str(path) for path in expected if path not in import_roots]
-    if missing:
-        raise SystemExit(
-            "exact source roots are missing from PYTHONPATH: " + os.pathsep.join(missing)
-        )
-
-
-def bootstrap_mlc_package(mlc_repository: Path) -> None:
-    if "mlc_llm" in sys.modules:
-        raise SystemExit("mlc_llm was imported before the source-only verification bootstrap")
-    package = types.ModuleType("mlc_llm")
-    package.__path__ = [str(mlc_repository / "python/mlc_llm")]
-    package.__package__ = "mlc_llm"
-    sys.modules["mlc_llm"] = package
-    model_package = types.ModuleType("mlc_llm.model")
-    model_package.__path__ = [str(mlc_repository / "python/mlc_llm/model")]
-    model_package.__package__ = "mlc_llm.model"
-    sys.modules["mlc_llm.model"] = model_package
 
 
 def verify_model_exports(model, label: str, tvm):

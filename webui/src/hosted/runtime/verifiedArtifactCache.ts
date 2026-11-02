@@ -17,6 +17,36 @@ export interface VerifiedWebLlmArtifacts {
   isBaseModel: boolean;
   defaultUserRole: string | null;
   defaultAssistantRole: string | null;
+  promptRendering: WebLlmPromptRendering;
+}
+
+/** What the host needs to name the token ids WebLLM prefills for a generation's input
+ *  (`DrowseWebLlmRuntime.renderPromptTokenIds`), from the verified chat config. */
+export interface WebLlmPromptRendering {
+  /** The chat template's own system message (a request without one prefills it). */
+  readonly systemMessage: string;
+  /** Whether the reply header a generation appends renders exactly as an empty assistant turn
+   *  without its separator (equal content and empty role separators, the identity assistant
+   *  template): then the capture renderer names a chat prompt's ids. */
+  readonly replyHeaderIsEmptyTurn: boolean;
+  /** The ids a raw completion prefills before its prompt (`completion_prefix_token_ids`). */
+  readonly completionPrefixTokenIds: readonly number[];
+}
+
+function promptRenderingOf(config: Record<string, unknown>): WebLlmPromptRendering {
+  const conversation = isRecord(config.conv_template) ? config.conv_template : {};
+  // WebLLM's rule: a separator that is not a string (absent) renders as ": ".
+  const separator = (value: unknown) => (typeof value === "string" ? value : ": ");
+  const templates = isRecord(conversation.role_templates) ? conversation.role_templates : null;
+  const assistantTemplate = templates?.assistant;
+  const prefix = brandedConfigField(config, "completion_prefix_token_ids", "MLC_COMPLETION_PREFIX_INVALID");
+  return {
+    systemMessage: typeof conversation.system_message === "string" ? conversation.system_message : "",
+    replyHeaderIsEmptyTurn:
+      separator(conversation.role_content_sep) === separator(conversation.role_empty_sep) &&
+      (assistantTemplate === undefined || assistantTemplate === "{assistant_message}"),
+    completionPrefixTokenIds: Array.isArray(prefix) ? prefix.map(Number) : [],
+  };
 }
 
 export async function prepareVerifiedWebLlmArtifacts(
@@ -189,6 +219,7 @@ export async function prepareVerifiedWebLlmArtifacts(
     isBaseModel,
     defaultUserRole: defaultRoles.user,
     defaultAssistantRole: defaultRoles.assistant,
+    promptRendering: promptRenderingOf(config),
   };
 }
 

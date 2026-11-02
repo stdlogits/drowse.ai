@@ -161,8 +161,17 @@ export function aggregateEnvelope(
     out.geometry = structuredClone(source.geometry);
   }
   if (source.lens?.readings !== undefined && Object.keys(source.lens.readings).length > 0) {
+    // The binding names the families whose data the aggregate keeps: its readings' (the token's
+    // R readout stays behind), told apart by unit as native's `LENS_FAMILY_BY_UNIT` does.
+    const families = new Set<string>(Object.values(source.lens.readings).map((reading) =>
+      reading.unit === "mean_footprint_z" ? "S" : "R"
+    ));
     out.lens = {
-      binding: structuredClone(source.lens.binding),
+      binding: {
+        ...structuredClone(source.lens.binding),
+        sources: Object.fromEntries(Object.entries(source.lens.binding.sources)
+          .filter(([family]) => families.has(family))),
+      },
       readings: structuredClone(source.lens.readings),
     };
   }

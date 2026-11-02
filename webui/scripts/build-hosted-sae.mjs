@@ -122,10 +122,7 @@ if (options.releaseCorpus !== null) {
     releaseManifestPath,
     sourceManifestPath,
     licenseEvidencePath,
-    kind: "sae",
     corpusBytes,
-    runtimeLock,
-    modelLock: lock,
   });
 }
 const runtimeIdentity = {

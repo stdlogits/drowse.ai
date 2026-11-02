@@ -164,6 +164,13 @@ export function adaptObserverReports({
       nonce,
     };
   }
+  // The WebGPU units goldens run once per fixture library; their observations join into one.
+  if (
+    evidenceType === "webGpuGoldens" && reports.length > 1 &&
+    reports.every((report) => isDirectObservation(report, evidenceType))
+  ) {
+    return mergeLibraryObservations(reports, producer, nonce);
+  }
   if (observer !== "webui/scripts/browser-full-runtime.mjs") {
     throw new Error(
       `${evidenceType} observer capability is unavailable in ${observer}`,
@@ -185,9 +192,87 @@ export function adaptObserverReports({
   if (evidenceType === "physicalBrowserFitting") {
     return physicalFittingReceipt(reports, producer, nonce);
   }
+  if (evidenceType === "productionLibrary") {
+    if (reports.length !== 1) {
+      throw new Error("productionLibrary requires exactly one full-runtime report");
+    }
+    return productionLibraryReceipt(reports[0], producer, nonce);
+  }
   throw new Error(
-    `${evidenceType} observer capability is unavailable in browser-full-runtime-v4`,
+    `${evidenceType} observer capability is unavailable in browser-full-runtime-v5`,
   );
+}
+
+function mergeLibraryObservations(reports, producer, nonce) {
+  const [first] = reports;
+  const libraries = {};
+  for (const report of reports) {
+    const { libraries: own, ...rest } = report.results ?? {};
+    const { libraries: _first, ...shared } = first.results ?? {};
+    if (
+      report.fixturePath !== first.fixturePath ||
+      JSON.stringify(rest) !== JSON.stringify(shared) ||
+      !own || typeof own !== "object" || Object.keys(own).length !== 1
+    ) {
+      throw new Error("units golden observations must each report one library on one backend");
+    }
+    const [[key, value]] = Object.entries(own);
+    if (Object.hasOwn(libraries, key)) throw new Error(`units golden library ${key} was observed twice`);
+    libraries[key] = value;
+  }
+  const { libraries: _first, ...shared } = first.results;
+  return {
+    schemaVersion: 1,
+    evidenceType: first.evidenceType,
+    producerId: producer.id,
+    nonce,
+    producedAt: reports.map((report) => report.producedAt).sort().at(-1),
+    passed: true,
+    fixturePath: first.fixturePath,
+    results: { ...shared, libraries },
+  };
+}
+
+/** One production library through the physical harness: its descriptor attested at load against
+ *  the lock (the adapter refuses another), every check of its profile passed, at one context. */
+function productionLibraryReceipt(report, producer, nonce) {
+  const environment = report.environment;
+  if (environment.browserFlags !== "normal" || environment.adapterFallback !== "hardware") {
+    throw new Error("productionLibrary requires normal browser flags and a confirmed hardware adapter");
+  }
+  // The descriptor is attested against the lock the harness loaded with; only the repository's,
+  // which the record binds by identity, can stand for the release.
+  if (environment.runtimeLockSource !== "repository") {
+    throw new Error("productionLibrary requires a report made with the repository runtime lock");
+  }
+  const load = report.checks.load?.measurements ?? {};
+  if (
+    load.exactReadoutProfile !== report.structuredHookProfile ||
+    load.runtimeIdentitySha256 !== environment.runtimeIdentitySha256 ||
+    !SHA256.test(environment.runtimeIdentitySha256 ?? "") ||
+    typeof environment.modelId !== "string" ||
+    !Number.isSafeInteger(environment.contextTokens) ||
+    !SHA256.test(environment.observedArtifacts?.webLlmSha256 ?? "")
+  ) {
+    throw new Error("productionLibrary report does not bind its loaded profile, runtime identity and bridge");
+  }
+  return {
+    schemaVersion: 1,
+    evidenceType: "productionLibrary",
+    producerId: producer.id,
+    nonce,
+    producedAt: report.producedAt,
+    passed: true,
+    fixturePath: producer.fixturePath,
+    results: {
+      modelId: environment.modelId,
+      runtimeIdentitySha256: environment.runtimeIdentitySha256,
+      structuredHookProfile: report.structuredHookProfile,
+      contextTokens: environment.contextTokens,
+      webLlmSha256: environment.observedArtifacts.webLlmSha256,
+      checks: Object.keys(report.checks),
+    },
+  };
 }
 
 function benchmarkReceipt(report, producer, nonce) {
@@ -372,7 +457,8 @@ function validateFullRuntimeReport(report) {
     report.$schema !== "drowse-real-browser-e2e-measurement-v1" ||
     report.schemaVersion !== 1 ||
     report.evidenceType !== "realBrowserEndToEnd" ||
-    report.toolVersion !== "drowse-real-browser-e2e-v4" ||
+    report.toolVersion !== "drowse-real-browser-e2e-v5" ||
+    !["standard-v4", "standard-v4-residual"].includes(report.structuredHookProfile) ||
     report.passed !== true ||
     report.releaseEvidence !== false ||
     !report.environment ||

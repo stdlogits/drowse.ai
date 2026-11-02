@@ -37,7 +37,7 @@ async function installFixtureRpcProbe(page: Page): Promise<void> {
     const root = globalThis as typeof globalThis & {
       __drowseFixtureRpc?: {
         requests: Array<{ service: string; method: string; args: unknown[] }>;
-        failNextFamily: "lens" | "sae" | null;
+        failNextFamily: "lens" | "sae" | "anatomy" | null;
       };
     };
     root.__drowseFixtureRpc = { requests: [], failNextFamily: null };
@@ -58,7 +58,7 @@ async function installFixtureRpcProbe(page: Page): Promise<void> {
           : null;
         if (
           request?.command === "request" && payload?.service === "instruments" &&
-          payload.method === "tokenReadout" && Array.isArray(payload.args)
+          (payload.method === "tokenReadout" || payload.method === "tokenAnatomy") && Array.isArray(payload.args)
         ) {
           const state = root.__drowseFixtureRpc!;
           const recorded = structuredClone(payload) as {
@@ -67,7 +67,8 @@ async function installFixtureRpcProbe(page: Page): Promise<void> {
             args: unknown[];
           };
           state.requests.push(recorded);
-          const family = recorded.args[0];
+          // A readout names its family first; the anatomy is the lens side of a runtime that has it.
+          const family = recorded.method === "tokenAnatomy" ? "anatomy" : recorded.args[0];
           if (family === state.failNextFamily) {
             state.failNextFamily = null;
             queueMicrotask(() => {
@@ -737,6 +738,14 @@ test("a stale workbench module reloads once and preserves the installed model", 
   await expect(page).toHaveURL(`${devUrl}/app?fixture=1&reopen=1`);
   await expect(page.locator(".shell")).toBeVisible();
   expect(await fixtureInstallIds(page)).toContain("qwen3-1.7b-fixture");
+  // The recovery marker is gone from the entry the workbench counts as its own, so a room's Back
+  // stays in the workbench.
+  await selectRoom(page, "Lens");
+  await page.goBack();
+  await expect(page.locator("main h1")).toHaveText("Workbench");
+  await page.goForward();
+  await expect(page.locator("main h1")).toHaveText("Lens");
+  await expect(page.getByRole("heading", { name: "Your chats", exact: true })).toHaveCount(0);
 });
 
 test("a stale hosted bootstrap module reloads once instead of leaving a broken page", async ({ page }) => {
@@ -1092,13 +1101,14 @@ test("first run includes the R lens and SAE while additional model tools remain 
 });
 
 /** Opens a reply token and checks the Token view read it through the installed lens and SAE:
- *  each layer's reading, the across-layer chips and the fixture's features, with no error. */
+ *  its anatomy (each layer's reading, the token by depth) and the fixture's features, with no
+ *  error. Watched words show in the Inspector and on the token rows, as natively. */
 async function expectTokenReadings(page: Page, text: string): Promise<void> {
   const token = await inspectToken(page, text);
   const layers = token.getByRole("region", { name: "Layer by layer", exact: true });
   await expect(layers).toContainText("L0");
   await expect(layers).toContainText("L1");
-  await expect(token.getByRole("region", { name: "Across layers", exact: true })).toContainText(/fixture/);
+  await expect(token.getByRole("region", { name: "By depth", exact: true })).toBeVisible();
   const features = token.getByRole("region", { name: "Features", exact: true });
   const rows = features.getByRole("listitem");
   await expect(rows.filter({ hasText: "f7" })).toHaveCount(1);
@@ -1114,10 +1124,16 @@ test("installed lens and SAE packs are usable without preparation errors", async
   // Artifacts: the installed packs are in use, and the hosted build offers no fitting or training.
   await selectRoom(page, "Artifacts");
   const sections = page.getByRole("group", { name: "Artifacts sections", exact: true });
+  // The Lenses section is drowse's 2x2 (S and R at out and mid) without the local fit. Units comes
+  // first: the fixture model has unit sites.
+  await sections.getByRole("button", { name: "Lenses", exact: true }).click();
   const lenses = page.getByRole("region", { name: "Lenses", exact: true });
-  await expect(lenses.getByRole("button", { name: "Compatible data pack" })).toContainText("fixture-jlens");
-  await expect(lenses.getByRole("button", { name: "In use", exact: true })).toBeDisabled();
+  await expect(lenses).toContainText("R in use");
+  await expect(lenses.getByRole("button", { name: /^fixture-jlens 64 documents/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(lenses.getByRole("region", { name: "The four lenses", exact: true }).getByRole("img", { name: "Holds L0–L1", exact: true })).toBeVisible();
+  await expect(lenses.getByText("No compatible S lens pack is published for this model.", { exact: true })).toBeVisible();
   await expect(lenses.getByRole("button", { name: /^(confirm )?fit\b/i })).toHaveCount(0);
+  await expect(lenses).not.toContainText(/Fit locally|Lens fit progress/);
   await sections.getByRole("button", { name: "SAEs", exact: true }).click();
   const saes = page.getByRole("region", { name: "SAE", exact: true });
   await expect(saes.getByRole("button", { name: "Compatible data pack" })).toContainText("fixture-sae");
@@ -1266,36 +1282,36 @@ test("installed standard and R-lens packs swap live without fitting", async ({ p
     "qwen3-1.7b-fixture",
   ]);
   await selectRoom(page, "Artifacts");
+  await page.getByRole("group", { name: "Artifacts sections", exact: true })
+    .getByRole("button", { name: "Lenses", exact: true }).click();
+  // The R column's Sources: the pack in use is pressed; choosing another swaps it live.
   const lenses = page.getByRole("region", { name: "Lenses", exact: true });
-  const source = lenses.getByRole("button", { name: "Compatible data pack" });
-  await source.click();
-  await page.getByRole("option", { name: "fixture-rlens", exact: true }).click();
-  await lenses.getByRole("button", { name: "Use pack", exact: true }).click();
-  await expect(source).toContainText("fixture-rlens");
-  await expect(lenses.getByRole("button", { name: "In use", exact: true })).toBeDisabled();
+  const standard = lenses.getByRole("button", { name: /^fixture-jlens 64 documents/ });
+  const rLens = lenses.getByRole("button", { name: /^fixture-rlens 64 documents/ });
+  await expect(standard).toHaveAttribute("aria-pressed", "true");
+  await rLens.click();
+  await expect(rLens).toHaveAttribute("aria-pressed", "true");
+  await expect(standard).toHaveAttribute("aria-pressed", "false");
+  await expect(lenses.getByRole("region", { name: "The four lenses", exact: true })).toContainText(/fixture-rlens\s*64 documents out/);
   await expect(lenses.getByRole("button", { name: /^(confirm )?fit\b/i })).toHaveCount(0);
 
   await selectRoom(page, "Workbench");
   await sendMessage(page, "Use the active R-lens");
   const token = await inspectToken(page, "deterministic");
-  await expect(token.getByRole("region", { name: "Across layers", exact: true })).toBeVisible();
+  await expect(token.getByRole("region", { name: "Layer by layer", exact: true })).toBeVisible();
 });
 
 test("token replay routes the exact token request and exposes a recoverable failure", async ({ page }) => {
   await installFixtureRpcProbe(page);
   await openFixtureWorkbench(page);
-  // With the live readout off, a token's lens reading has to be replayed.
-  const readout = inspector(page).getByRole("region", { name: "Lens", exact: true })
-    .getByRole("switch", { name: "Lens readout", exact: true });
-  await readout.click();
-  await expect(readout).not.toBeChecked();
+  // The fixture model has unit sites, so a token's lens side replays as its anatomy.
   await sendMessage(page, "Create a replayable token");
   await page.evaluate(() => {
     const state = (globalThis as typeof globalThis & {
-      __drowseFixtureRpc: { requests: FixtureTokenReadoutRequest[]; failNextFamily: "lens" | "sae" | null };
+      __drowseFixtureRpc: { requests: FixtureTokenReadoutRequest[]; failNextFamily: "lens" | "sae" | "anatomy" | null };
     }).__drowseFixtureRpc;
     state.requests = [];
-    state.failNextFamily = "lens";
+    state.failNextFamily = "anatomy";
   });
   const expected = await page.evaluate(async (moduleUrl) => {
     const stores = await import(moduleUrl);
@@ -1308,22 +1324,21 @@ test("token replay routes the exact token request and exposes a recoverable fail
     return { nodeId: turn.nodeId, rawIndex: token.rawIndex };
   }, toastModuleUrl);
   const token = await inspectToken(page, "This");
-  await expect.poll(() => page.evaluate(() =>
+  const anatomyRequests = () => page.evaluate(() =>
     (globalThis as typeof globalThis & { __drowseFixtureRpc: { requests: FixtureTokenReadoutRequest[] } })
-      .__drowseFixtureRpc.requests.filter(request => request.args[0] === "lens").length,
-  )).toBeGreaterThan(0);
-  const request = (await page.evaluate(() =>
-    (globalThis as typeof globalThis & { __drowseFixtureRpc: { requests: FixtureTokenReadoutRequest[] } })
-      .__drowseFixtureRpc.requests,
-  )).find(candidate => candidate.args[0] === "lens")!;
+      .__drowseFixtureRpc.requests.filter(request => request.method === "tokenAnatomy"),
+  );
+  await expect.poll(async () => (await anatomyRequests()).length).toBeGreaterThan(0);
+  const request = (await anatomyRequests())[0];
   expect(request.service).toBe("instruments");
-  expect(request.method).toBe("tokenReadout");
-  expect(request.args.slice(0, 3)).toEqual(["lens", expected.nodeId, expected.rawIndex]);
-  await expect(token.getByRole("alert").first()).toBeVisible();
+  expect(request.args.slice(0, 2)).toEqual([expected.nodeId, expected.rawIndex]);
+  await expect(token.getByRole("region", { name: "Anatomy", exact: true }).getByRole("alert"))
+    .toHaveText("Fixture token replay failed. Reopen the model and try again.");
   // The failure is recoverable: the next token replays normally.
   await token.getByRole("button", { name: "Next token", exact: true }).click();
   await expect(token.getByRole("heading", { name: "is" })).toBeVisible();
-  await expect(token.getByRole("region", { name: "Across layers", exact: true })).toBeVisible();
+  await expect(token.getByRole("region", { name: "Layer by layer", exact: true })).toBeVisible();
+  await expect(token.getByRole("region", { name: "Anatomy", exact: true })).toHaveCount(0);
 });
 
 test("optional SAE packs cannot be deleted while steering or readings use them", async ({ page }) => {
@@ -1852,6 +1867,63 @@ test("the loom exposes every generated token as an exact branch point", async ({
   // The fork keeps every token before the branch point and replaces the one at it.
   expect(fork.forkRawTokenIds.slice(0, targetIndex)).toEqual(generated.rawTokenIds.slice(0, targetIndex));
   expect(fork.forkRawTokenIds[targetIndex]).not.toBe(generated.rawTokenIds[targetIndex]);
+});
+
+test("a token replaced from the Loom streams its new branch visibly on the Loom page", async ({ page }, testInfo) => {
+  // The worker fixture writes a token every two seconds here, slow enough to watch the branch grow.
+  test.setTimeout(120_000);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openFixtureWorkbench(page, "&fixtureSlow=1");
+  const prompt = "Watch this branch grow.";
+  await composer(page).fill(prompt);
+  await sendButton(page).click();
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse, { timeout: 45_000 });
+  await waitForReply(page);
+  const original = await page.evaluate(async ({ moduleUrl, prompt }) => {
+    const stores = await import(moduleUrl);
+    const user = [...stores.loomTree.nodes.values()].find((node: { text: string }) => node.text === prompt);
+    const id = (stores.loomTree.children_of.get(user.id) ?? [])[0];
+    return { userId: user.id, id, saved: JSON.stringify(stores.loomTree.nodes.get(id)) };
+  }, { moduleUrl: toastModuleUrl, prompt });
+
+  await openWorkspace(page, "Branches");
+  const loom = page.getByRole("region", { name: "Loom", exact: true });
+  await loom.locator(`[data-loom-node-id="${original.id}"] [data-loom-token-node]`).nth(2).click();
+  const act = inspector(page).getByRole("region", { name: "Token", exact: true })
+    .getByRole("region", { name: "Act on this token", exact: true });
+  await act.getByRole("button", { name: "Branch here", exact: true }).click();
+  await act.getByRole("textbox", { name: "Branch with", exact: true }).fill("Authored ");
+  await act.getByRole("button", { name: "Branch", exact: true }).click();
+
+  // The new reply grows in its own card on the Loom page, marked as being written, token by token.
+  const writing = loom.locator(".node.streaming");
+  await expect(writing).toHaveCount(1, { timeout: 20_000 });
+  await expect(writing.getByRole("status")).toHaveText("Writing…");
+  const card = loom.locator(".tree-node-wrap").filter({ has: page.locator(".node.streaming") });
+  const forkId = await card.getAttribute("data-loom-node-id");
+  expect(forkId).not.toBe(original.id);
+  await expect(card).toContainText("Authored", { timeout: 20_000 });
+  const tokensNow = await writing.locator("[data-loom-token-node]").count();
+  await expect.poll(() => writing.locator("[data-loom-token-node]").count(), { timeout: 20_000 }).toBeGreaterThan(tokensNow);
+  await card.screenshot({ path: testInfo.outputPath("replacement-streaming.png") });
+  await expect(loom.locator(".node.streaming")).toHaveCount(0, { timeout: 60_000 });
+  await expect(loom.getByRole("status").filter({ hasText: "Writing…" })).toHaveCount(0);
+  await waitForReply(page);
+
+  const final = await page.evaluate(async ({ moduleUrl, id, userId }) => {
+    const stores = await import(moduleUrl);
+    const node = stores.loomTree.nodes.get(stores.loomTree.active_node_id);
+    return {
+      original: JSON.stringify(stores.loomTree.nodes.get(id)),
+      id: node.id, parent: node.parent_id, text: node.text,
+      siblings: (stores.loomTree.children_of.get(userId) ?? []).length,
+    };
+  }, { moduleUrl: toastModuleUrl, id: original.id, userId: original.userId });
+  expect(final.original).toBe(original.saved);
+  expect(final.id).toBe(forkId);
+  expect(final.parent).toBe(original.userId);
+  expect(final.siblings).toBe(2);
+  expect(final.text).toContain("Authored ");
 });
 
 test("arbitrary role labels and structural role swaps survive generation", async ({ page }) => {

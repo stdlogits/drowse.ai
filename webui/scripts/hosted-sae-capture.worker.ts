@@ -1,4 +1,5 @@
 import { runtimeIdentitySha256 } from "../src/lib/runtime/catalog";
+import type { BlockSpec } from "../src/hosted/runtime/structuredHookProfile";
 import type { ModelVariant, RuntimeIdentity } from "../../drowse/webui/src/lib/runtime/contracts";
 import {
   DrowseWebLlmRuntime,
@@ -20,6 +21,9 @@ interface CaptureRequest {
   artifacts: ArtifactEntry[];
   runtimeIdentity: RuntimeIdentity;
   structuredHookProfile: ModelVariant["structuredHookProfile"];
+  /** The runtime lock's block spec (standard-v4) and unit refusal (standard-v4-residual). */
+  blockSpec: BlockSpec | null;
+  unitRefusal: string | null;
   thinkingProfile: ModelVariant["thinkingProfile"];
   quantization: "q4f16_1" | "q4f32_1";
   requiredFeatures: GPUFeatureName[];
@@ -82,6 +86,8 @@ self.onmessage = async (event: MessageEvent<CaptureRequest>) => {
         },
       },
       contextTokens: event.data.contextTokens,
+      blockSpec: event.data.blockSpec,
+      unitRefusal: event.data.unitRefusal,
       adapter,
       artifacts,
       optionalPacks: [],

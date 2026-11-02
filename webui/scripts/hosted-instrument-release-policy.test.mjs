@@ -19,33 +19,20 @@ const source = JSON.parse(await readFile(
   resolve(repositoryRoot, "browser-runtime/release-corpus/wikitext-103-raw-test.candidate.json"),
   "utf8",
 ));
-const lockedTokenizerClosure = [...runtimeLock.models]
-  .sort((left, right) => left.id.localeCompare(right.id))
-  .map((model) => ({
-    id: model.id,
-    sourceRepository: model.sourceRepository,
-    sourceRevision: model.sourceRevision,
-    tokenizerSha256: model.tokenizerSha256,
-    tokenizerConfigSha256: model.chatTemplateSha256,
-  }));
-assert.ok(source.tokenizers.length > 0);
-for (const tokenizer of source.tokenizers) {
-  assert.deepEqual(tokenizer, lockedTokenizerClosure.find(model => model.id === tokenizer.id));
-}
+// The release corpus feeds only the SAE builder (schema 2): no lens corpus, words or tokenizers.
 for (const manifestName of [
   "fineweb-sample-10bt-train.approved.json",
   "fineweb-sample-10bt-train.candidate.json",
+  "wikitext-103-raw-test.candidate.json",
 ]) {
   const manifest = JSON.parse(await readFile(
     resolve(repositoryRoot, "browser-runtime/release-corpus", manifestName),
     "utf8",
   ));
-  assert.ok(manifest.tokenizers.length > 0);
-  for (const tokenizer of manifest.tokenizers) {
-    assert.deepEqual(tokenizer, lockedTokenizerClosure.find(model => model.id === tokenizer.id));
-  }
+  assert.equal(manifest.schemaVersion, 2);
+  for (const retired of ["wordSeeds", "tokenizers"]) assert.equal(retired in manifest, false, `${manifestName} ${retired}`);
+  for (const retired of ["jlensDocuments", "minimumSharedWords"]) assert.equal(retired in manifest.selection, false);
 }
-source.tokenizers = lockedTokenizerClosure;
 source.selection.algorithm = "drowse-release-corpus-v1";
 source.status = "approved";
 source.blockers = [];
@@ -63,41 +50,20 @@ const licenseEvidenceBytes = Buffer.from("release-policy license evidence fixtur
 source.license.evidence.sha256 = sha256(licenseEvidenceBytes);
 source.license.evidence.bytes = licenseEvidenceBytes.byteLength;
 const updatedSourceBytes = Buffer.from(`${JSON.stringify(source, null, 2)}\n`);
-const seedWords = (await readFile(
-  resolve(repositoryRoot, "browser-runtime/release-corpus/jlens-word-seeds.txt"),
-  "utf8",
-)).trim().split("\n").slice(0, 80);
 const saeBytes = Buffer.from(JSON.stringify(
   Array.from({ length: source.selection.saeDocuments }, (_, index) => `sae document ${index}`),
 ));
-const jlensBytes = Buffer.from(JSON.stringify(
-  Array.from({ length: source.selection.jlensDocuments }, (_, index) => `jlens document ${index}`),
-));
-const wordBytes = Buffer.from(JSON.stringify(seedWords));
 const release = {
-  $schema: "https://polythetic.ai/schemas/release-corpus-v1.json",
-  schemaVersion: 1,
+  $schema: "https://polythetic.ai/schemas/release-corpus-v2.json",
+  schemaVersion: 2,
   algorithm: "drowse-release-corpus-v1",
   generatorSha256: sha256(generatorBytes),
   sourceManifestSha256: sha256(updatedSourceBytes),
   source: source.source,
   license: source.license,
-  wordSeeds: source.wordSeeds,
   selection: source.selection,
   outputs: {
     sae: output("sae-corpus.json", saeBytes, source.selection.saeDocuments),
-    jlens: output("jlens-corpus.json", jlensBytes, source.selection.jlensDocuments),
-    words: {
-      path: "jlens-words.json",
-      sha256: sha256(wordBytes),
-      bytes: wordBytes.byteLength,
-      count: seedWords.length,
-      candidateCount: 123,
-      tokenIds: Object.fromEntries(runtimeLock.models.map((model) => [
-        model.id,
-        seedWords.map((_, index) => index + 1),
-      ])),
-    },
   },
 };
 const releaseBytes = Buffer.from(`${JSON.stringify(release, null, 2)}\n`);
@@ -114,10 +80,7 @@ const inputClosure = await validateReleaseCorpusInputs({
   releaseManifestPath,
   sourceManifestPath,
   licenseEvidencePath: join(root, "license-evidence"),
-  kind: "sae",
   corpusBytes: saeBytes,
-  runtimeLock,
-  modelLock,
 });
 assert.deepEqual(inputClosure, {
   releaseBytes,
@@ -129,22 +92,16 @@ await assert.rejects(
     releaseManifestPath,
     sourceManifestPath,
     licenseEvidencePath: join(root, "license-evidence"),
-    kind: "jlens",
-    corpusBytes: jlensBytes,
-    wordsBytes: Buffer.from("[]"),
-    runtimeLock,
-    modelLock,
+    corpusBytes: Buffer.from("[]"),
   }),
-  /word bytes differ/,
+  /sae corpus bytes differ/,
 );
 
 const saeDirectory = join(root, "sae");
-const jlensDirectory = join(root, "jlens");
 await Promise.all([
   mkdir(join(saeDirectory, "packs/sae"), { recursive: true }),
-  mkdir(join(jlensDirectory, "packs/jlens"), { recursive: true }),
 ]);
-for (const directory of [join(saeDirectory, "packs/sae"), join(jlensDirectory, "packs/jlens")]) {
+for (const directory of [join(saeDirectory, "packs/sae")]) {
   await Promise.all([
     writeFile(join(directory, "release-corpus.json"), releaseBytes),
     writeFile(join(directory, "release-corpus-source.json"), updatedSourceBytes),
@@ -176,64 +133,151 @@ await assert.rejects(
   /release SAE requires/,
 );
 
-const jlensManifest = {
-  raw_corpus_sha256: release.outputs.jlens.sha256,
-  d_model: modelLock.hiddenSize,
-  model_layer_count: modelLock.layerMap.length,
-  format_version: 7,
-  sites: { out: { layers: modelLock.layerMap.slice(0, -1) } },
-  n_prompts: 100,
-  raw_prompt_count: 100,
-  usable_prompt_count: 100,
-  seq_len: 128,
+// Native R and S lenses: full depth at both sites, split-half at every layer, the pinned corpus.
+const nativeCorpus = JSON.parse(await readFile(
+  new URL("../../browser-runtime/release-corpus/native-lens-corpus.json", import.meta.url),
+  "utf8",
+));
+const depth = modelLock.layerMap.length;
+const every = (count) => Array.from({ length: count }, (_, layer) => layer);
+const site = (layers) => ({
+  layers,
+  split_half: Object.fromEntries(layers.map((layer) => [String(layer), 0.1])),
+});
+const nativeLens = (kind) => ({
+  format_version: 7, kind, dtype: "float32", checkpoint: false,
+  corpus_spec: nativeCorpus.corpusSpec, corpus_hash_kind: "token_ids_v1",
+  d_model: modelLock.hiddenSize, model_layer_count: depth,
+  estimator_policy: { direction: kind === "R" ? "output" : "input" },
+  sites: { out: site(every(kind === "R" ? depth - 1 : depth)), mid: site(every(depth)) },
+  n_prompts: 64, usable_prompt_count: 64, seq_len: 128,
+});
+// The release closure is the pinned corpus and its attribution review: none ships while the
+// checked-in review is pending (attributionApproval null), and an approved review passes.
+const approval = {
+  reviewStatus: "approved", reviewedBy: "a9lim", reviewedAt: "2026-11-02T00:00:00Z",
+  attribution: "FineWeb-Edu (HuggingFaceFW), ODC-By 1.0",
 };
-const vocabularyManifest = {
-  words: seedWords.map((word, row) => ({ word, row, token_id: row + 1 })),
-};
-assert.equal((await validateReleaseInstrumentPack({
-  directory: jlensDirectory,
-  kind: "jlens",
-  instrumentManifest: jlensManifest,
-  vocabularyManifest,
-  runtimeLock,
-  modelLock,
-})).words, 80);
-for (const change of [{ token_id: 999 }, { row: 1 }]) {
+const approvedCorpus = { ...nativeCorpus, attributionApproval: approval };
+// Each native pack carries the approved notice beside its record (build_hosted_packs.py).
+const attributionText = (corpus) => [
+  "# Corpus attribution", corpus.attributionApproval.attribution,
+  `- Dataset: ${corpus.dataset.url}`, `- License: ${corpus.dataset.license}`, `- Corpus: \`${corpus.corpusSpec}\``,
+].join("\n\n");
+for (const kind of ["jlens", "slens", "units"]) {
+  await mkdir(join(root, `native-${kind}`, "packs", kind), { recursive: true });
+  await writeFile(join(root, `native-${kind}`, "packs", kind, "ATTRIBUTION.md"), attributionText(approvedCorpus));
+}
+for (const kind of ["jlens", "slens", "units"]) {
   await assert.rejects(
     validateReleaseInstrumentPack({
-      directory: jlensDirectory,
-      kind: "jlens",
-      instrumentManifest: jlensManifest,
-      vocabularyManifest: { words: vocabularyManifest.words.map((word, index) =>
-        index === 0 ? { ...word, ...change } : word) },
-      runtimeLock,
-      modelLock,
+      directory: join(root, `native-${kind}`), kind,
+      instrumentManifest: nativeLens(kind === "slens" ? "S" : "R"),
+      vocabularyManifest: { words: [{ word: "yes", row: 0, token_id: 1 }] }, runtimeLock, modelLock,
+      ...(nativeCorpus.attributionApproval === null ? {} : { nativeLensCorpus: { ...nativeCorpus, attributionApproval: null } }),
     }),
-    /token.*closure/,
+    /attribution review is not approved/,
+    `${kind} waits for the corpus review`,
+  );
+}
+for (const [label, corpus] of [
+  ["a pending review", { ...approvedCorpus, attributionApproval: { ...approval, reviewStatus: "pending" } }],
+  ["no reviewer", { ...approvedCorpus, attributionApproval: { ...approval, reviewedBy: "" } }],
+  ["an unpinned dataset", { ...approvedCorpus, dataset: { ...nativeCorpus.dataset, revision: "main" } }],
+  ["a spec off the dataset", { ...approvedCorpus, corpusSpec: "hf:other/x@" + "0".repeat(40) + ";preprocess=1" }],
+]) {
+  await assert.rejects(
+    validateReleaseInstrumentPack({
+      directory: join(root, "native-jlens"), kind: "jlens", instrumentManifest: nativeLens("R"),
+      vocabularyManifest: { words: [{ word: "yes", row: 0, token_id: 1 }] }, runtimeLock, modelLock,
+      nativeLensCorpus: corpus,
+    }),
+    /native lens corpus/,
+    label,
+  );
+}
+assert.deepEqual(await validateReleaseInstrumentPack({
+  directory: join(root, "native-jlens"),
+  kind: "jlens",
+  instrumentManifest: nativeLens("R"),
+  vocabularyManifest: { words: [{ word: "yes", row: 0, token_id: 1 }] },
+  runtimeLock,
+  modelLock,
+  nativeLensCorpus: approvedCorpus,
+}), {
+  source: "native", family: "R", corpusSpec: nativeCorpus.corpusSpec, attributionApproval: approval,
+  prompts: 64, sequenceLength: 128, layers: { out: depth - 1, mid: depth }, words: 1,
+});
+assert.equal((await validateReleaseInstrumentPack({
+  directory: join(root, "native-slens"), kind: "slens", instrumentManifest: nativeLens("S"), runtimeLock, modelLock,
+  nativeLensCorpus: approvedCorpus,
+})).layers.out, depth);
+for (const [label, change] of [
+  ["an eight-layer pack", (manifest) => { manifest.sites.out = site([0, 1, 2, 3, 4, 5, 6, 7]); }],
+  ["no mid site", (manifest) => { delete manifest.sites.mid; }],
+  ["no split-half", (manifest) => { delete manifest.sites.mid.split_half; }],
+  ["another corpus", (manifest) => { manifest.corpus_spec = "hf:other"; }],
+  ["the S kind in an R pack", (manifest) => { manifest.kind = "S"; }],
+]) {
+  const manifest = nativeLens("R");
+  change(manifest);
+  await assert.rejects(
+    validateReleaseInstrumentPack({
+      directory: join(root, "native-jlens"), kind: "jlens", instrumentManifest: manifest,
+      vocabularyManifest: { words: [{ word: "yes", row: 0, token_id: 1 }] }, runtimeLock, modelLock,
+      nativeLensCorpus: approvedCorpus,
+    }),
+    /full-depth native lens/,
+    label,
   );
 }
 await assert.rejects(
   validateReleaseInstrumentPack({
-    directory: jlensDirectory,
-    kind: "jlens",
-    instrumentManifest: { ...jlensManifest, sites: { out: { layers: [0] } } },
-    vocabularyManifest,
-    runtimeLock,
-    modelLock,
+    directory: join(root, "native-jlens"), kind: "jlens",
+    instrumentManifest: { ...nativeLens("R"), n_prompts: 32, usable_prompt_count: 32 },
+    vocabularyManifest: { words: [{ word: "yes", row: 0, token_id: 1 }] }, runtimeLock, modelLock,
+    nativeLensCorpus: approvedCorpus,
   }),
-  /complete layer map/,
+  /at least 64 documents/,
+);
+// A pack without the notice, or with another one, does not ship.
+await writeFile(join(root, "native-slens", "packs", "slens", "ATTRIBUTION.md"), "FineWeb-Edu");
+await assert.rejects(
+  validateReleaseInstrumentPack({
+    directory: join(root, "native-slens"), kind: "slens", instrumentManifest: nativeLens("S"), runtimeLock, modelLock,
+    nativeLensCorpus: approvedCorpus,
+  }),
+  /ATTRIBUTION\.md does not carry the approved corpus attribution/,
 );
 await assert.rejects(
   validateReleaseInstrumentPack({
-    directory: jlensDirectory,
-    kind: "jlens",
-    instrumentManifest: { ...jlensManifest, format_version: 6 },
-    vocabularyManifest,
-    runtimeLock,
-    modelLock,
+    directory: join(root, "native-missing"), kind: "slens", instrumentManifest: nativeLens("S"), runtimeLock, modelLock,
+    nativeLensCorpus: approvedCorpus,
   }),
-  /complete layer map/,
+  /slens pack corpus attribution is missing/,
 );
+const unitsRecord = {
+  format: "drowse-units-pack-v1", model_layer_count: depth, d_model: modelLock.hiddenSize,
+  layers: Object.fromEntries(every(depth).map((layer) => [String(layer), {}])), null: { rank: 6 },
+  binding: {
+    r_lens_identity: "a".repeat(64), s_lens_identity: "b".repeat(64),
+    embedding_statistics_sha256: "c".repeat(64), neutral: { sha256: "d".repeat(64), rows_sha256: "e".repeat(64) },
+  },
+};
+assert.deepEqual(await validateReleaseInstrumentPack({
+  directory: join(root, "native-units"), kind: "units", instrumentManifest: unitsRecord, runtimeLock, modelLock,
+  nativeLensCorpus: approvedCorpus,
+}), { source: "native", layers: depth, nullRank: 6, attributionApproval: approval });
+for (const neutral of [{}, { sha256: "d".repeat(64) }]) {
+  await assert.rejects(
+    validateReleaseInstrumentPack({
+      directory: join(root, "native-units"), kind: "units",
+      instrumentManifest: { ...unitsRecord, binding: { ...unitsRecord.binding, neutral } }, runtimeLock, modelLock,
+      nativeLensCorpus: approvedCorpus,
+    }),
+    /bind its lenses/,
+  );
+}
 
 assert.deepEqual(await validateReleaseInstrumentPack({
   directory: join(root, "provider-sae"),
@@ -253,60 +297,72 @@ assert.deepEqual(await validateReleaseInstrumentPack({
   features: 16_384,
   activation: "jump_relu",
 });
+// A provider R lens is only for a model drowse cannot fit (GPT-2, Pythia); a Gemma 3 or Qwen 3
+// pack calling itself one would skip the native corpus and depth gates.
+const providerLock = runtimeLock.models.find((model) => model.id === "gpt2-base");
+const providerLens = (lock) => ({
+  d_model: lock.hiddenSize,
+  estimator_policy: { method: "provider_jacobian_lens" },
+  format_version: 7,
+  model_layer_count: lock.layerMap.length,
+  n_prompts: 278,
+  seq_len: 128,
+  sites: { out: { layers: selectHostedJlensLayers(lock.layerMap, lock.hiddenSize) } },
+});
 assert.deepEqual(await validateReleaseInstrumentPack({
   directory: join(root, "provider-jlens"),
   kind: "jlens",
-  instrumentManifest: {
-    d_model: modelLock.hiddenSize,
-    estimator_policy: { method: "provider_jacobian_lens" },
-    format_version: 7,
-    model_layer_count: modelLock.layerMap.length,
-    n_prompts: 278,
-    seq_len: 128,
-    sites: { out: { layers: selectHostedJlensLayers(modelLock.layerMap, modelLock.hiddenSize) } },
-  },
+  instrumentManifest: providerLens(providerLock),
   vocabularyManifest: { words: [{ word: "yes", row: 0, token_id: 1 }] },
   runtimeLock,
-  modelLock,
+  modelLock: providerLock,
 }), {
   source: "provider",
   prompts: 278,
   sequenceLength: 128,
-  layers: selectHostedJlensLayers(modelLock.layerMap, modelLock.hiddenSize).length,
+  layers: selectHostedJlensLayers(providerLock.layerMap, providerLock.hiddenSize).length,
   words: 1,
 });
-
-for (const scenario of [
-  "scoped", "missing-target", "unknown-model", "duplicate-model", "wrong-tokenizer",
-  "missing-token-model", "short-token-list", "negative-token", "duplicate-token", "fractional-token",
-]) {
-  const scopedSource = structuredClone(source);
-  scopedSource.tokenizers = source.tokenizers.filter(tokenizer => tokenizer.id === modelLock.id);
-  const scopedRelease = structuredClone(release);
-  scopedRelease.outputs.words.tokenIds = { [modelLock.id]: [...release.outputs.words.tokenIds[modelLock.id]] };
-  if (scenario === "missing-target") scopedSource.tokenizers = source.tokenizers.filter(tokenizer => tokenizer.id !== modelLock.id);
-  if (scenario === "unknown-model") scopedSource.tokenizers.push({ ...scopedSource.tokenizers[0], id: "unlocked-model" });
-  if (scenario === "duplicate-model") scopedSource.tokenizers.push({ ...scopedSource.tokenizers[0] });
-  if (scenario === "wrong-tokenizer") scopedSource.tokenizers[0].tokenizerSha256 = "0".repeat(64);
-  if (scenario === "missing-token-model") scopedRelease.outputs.words.tokenIds = {};
-  const tokenIds = scopedRelease.outputs.words.tokenIds[modelLock.id];
-  if (scenario === "short-token-list") tokenIds.pop();
-  if (scenario === "negative-token") tokenIds[0] = -1;
-  if (scenario === "duplicate-token") tokenIds[0] = tokenIds[1];
-  if (scenario === "fractional-token") tokenIds[0] = 0.5;
-  const sourceBytes = Buffer.from(JSON.stringify(scopedSource));
-  scopedRelease.sourceManifestSha256 = sha256(sourceBytes);
-  await writeFile(sourceManifestPath, sourceBytes);
-  await writeFile(releaseManifestPath, JSON.stringify(scopedRelease));
-  const validate = () => validateReleaseCorpusInputs({
-    releaseManifestPath, sourceManifestPath, licenseEvidencePath: join(root, "license-evidence"),
-    kind: "sae", corpusBytes: saeBytes, runtimeLock, modelLock,
-  });
-  if (scenario === "scoped") await validate();
-  else await assert.rejects(validate(), /token.*closure/);
+await assert.rejects(
+  validateReleaseInstrumentPack({
+    directory: join(root, "provider-jlens"), kind: "jlens",
+    instrumentManifest: { ...providerLens(modelLock), corpus_spec: nativeCorpus.corpusSpec },
+    vocabularyManifest: { words: [{ word: "yes", row: 0, token_id: 1 }] }, runtimeLock, modelLock,
+  }),
+  /native fit, not a provider lens/,
+  "a natively fitted model's R lens cannot pass as a provider's",
+);
+for (const kind of ["slens", "units"]) {
+  await assert.rejects(
+    validateReleaseInstrumentPack({
+      directory: join(root, `native-${kind}`), kind, instrumentManifest: nativeLens("S"),
+      runtimeLock, modelLock: providerLock, nativeLensCorpus: approvedCorpus,
+    }),
+    /drowse cannot fit it/,
+    `${kind} only for a natively fitted model`,
+  );
 }
 
-console.log("Hosted instrument release-policy checks passed: scoped model identities, exact word token IDs, malformed closures, and provider packs");
+// A release corpus that still names the retired lens outputs or words is refused.
+for (const [label, edit] of [
+  ["a lens output", (value) => { value.outputs.jlens = value.outputs.sae; }],
+  ["word seeds", (value) => { value.wordSeeds = {}; }],
+  ["schema 1", (value) => { value.schemaVersion = 1; }],
+]) {
+  const retired = structuredClone(release);
+  edit(retired);
+  await writeFile(releaseManifestPath, JSON.stringify(retired));
+  await assert.rejects(
+    validateReleaseCorpusInputs({
+      releaseManifestPath, sourceManifestPath, licenseEvidencePath: join(root, "license-evidence"),
+      corpusBytes: saeBytes,
+    }),
+    /release corpus (manifest has|manifest identity|outputs)/,
+    label,
+  );
+}
+
+console.log("Hosted instrument release-policy checks passed: the SAE release corpus, malformed closures, native full-depth lenses and units with their attribution, and provider packs");
 
 function output(path, bytes, documents) {
   return {

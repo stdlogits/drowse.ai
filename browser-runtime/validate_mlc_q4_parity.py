@@ -10,38 +10,27 @@ import numpy as np
 import torch
 
 from mlc_q4_torch import build_transformers_model
+from q4_unit_parity import (
+    UNIT_RESULT_KEYS,
+    has_unit_sites,
+    site_width,
+    split_sites,
+    unit_parity,
+    validate_units_member,
+)
 
 
-EVIDENCE_MODEL_IDS = {
-    "gemmaProductionQ4Parity": "gemma3-270m-instruct",
-    "smolProductionQ4Parity": "smollm2-360m-instruct",
-    "qwenProductionQ4Parity": "qwen3-1.7b",
+# The q4 libraries of the runtime lock: each one's parity record is `productionQ4Parity`, bound to
+# its model id (README.md, "Release evidence").
+PARITY_MODEL_IDS = {
+    "gemma3-1b-instruct",
+    "gemma3-1b-pt",
+    "gemma3-4b-instruct",
+    "qwen3-1.7b",
+    "qwen3-4b",
+    "qwen35-2b-base",
 }
-PARITY_MODEL_IDS = {*EVIDENCE_MODEL_IDS.values(), "gemma3-1b-instruct", "gemma3-4b-instruct", "qwen3-4b"}
-SMOL_NAMED_ROLE_INPUT_IDS = [
-    1,
-    9690,
-    198,
-    1425,
-    5453,
-    30,
-    2,
-    198,
-    1,
-    36014,
-    402,
-    198,
-    28120,
-    2,
-    198,
-    1,
-    8184,
-    403,
-    5274,
-    198,
-    2,
-    198,
-]
+EVIDENCE_TYPE = "productionQ4Parity"
 
 
 def validate(
@@ -49,17 +38,19 @@ def validate(
     capture_directory: Path,
     *,
     device: str = "auto",
-    require_smol_named_role: bool = False,
     maximum_capture_relative_error: float = 0.01,
     maximum_probe_relative_error: float = 0.01,
     maximum_probe_capture_relative_error: float = 1e-5,
     minimum_steering_direction_cosine: float = 0.99,
 ) -> dict[str, Any]:
-    metadata = load_capture_metadata(
-        capture_directory,
-        require_smol_named_role=require_smol_named_role,
-    )
+    metadata = load_capture_metadata(capture_directory)
     validate_capture_model_identity(model_directory, metadata)
+    architecture = model_architecture(model_directory)
+    if has_unit_sites(architecture) != ("units" in metadata):
+        raise ValueError(
+            "a units library's capture carries its block sites and static reads, a residual "
+            "library's none"
+        )
     for threshold in (maximum_capture_relative_error, maximum_probe_relative_error,
                       maximum_probe_capture_relative_error):
         if not finite_number(threshold) or threshold <= 0:
@@ -77,51 +68,44 @@ def validate(
         len(positions),
         hidden_size,
     )
-    browser_rank_one_control = load_residuals(
-        capture_directory / "rank-one-control-residuals.f32",
-        metadata["rank_one_control_residual_sha256"],
-        len(layers),
+    program = metadata["steering_program"]
+    directions = np.asarray(program["probeDirections"], dtype=np.float32)
+    # The browser probes read [position, layer, probe]; compare as [layer, position, probe].
+    browser_control = load_probes(
+        capture_directory / "control-probes.f32",
+        metadata["control_probe_sha256"],
         len(positions),
-        hidden_size,
-    )
-    browser_steered = load_residuals(
-        capture_directory / "steered-residuals.f32",
-        metadata["steered_residual_sha256"],
         len(layers),
+        len(directions),
+    ).transpose(1, 0, 2)
+    browser_steered = load_probes(
+        capture_directory / "steered-probes.f32",
+        metadata["steered_probe_sha256"],
         len(positions),
-        hidden_size,
-    )
+        len(layers),
+        len(directions),
+    ).transpose(1, 0, 2)
 
     selected_device = select_device(model_directory, device)
     model = build_transformers_model(model_directory, selected_device)
-    torch_baseline, _ = capture_torch_residuals(
+    torch_baseline = capture_torch_residuals(
         model,
         layers,
         positions,
         input_ids,
         selected_device,
     )
-    torch_steered, torch_probes = capture_torch_residuals(
+    torch_steered = capture_torch_residuals(
         model,
         layers,
         positions,
         input_ids,
         selected_device,
-        rank_one=metadata["rank_one_program"],
+        steering=program,
     )
 
     baseline_errors = relative_error_by_layer(torch_baseline, browser, layers)
-    rank_one_control_errors = relative_error_by_layer(
-        torch_baseline,
-        browser_rank_one_control,
-        layers,
-    )
-    steered_errors = relative_error_by_layer(torch_steered, browser_steered, layers)
-    max_capture_relative_error = max([
-        *baseline_errors.values(),
-        *rank_one_control_errors.values(),
-        *steered_errors.values(),
-    ])
+    max_capture_relative_error = max(baseline_errors.values())
     if max_capture_relative_error > maximum_capture_relative_error:
         raise ValueError(
             "dequantized MLC q4 capture parity failed: "
@@ -129,36 +113,35 @@ def validate(
             f"{maximum_capture_relative_error:.6g}"
         )
 
-    browser_probes = np.asarray(metadata["probe_measurements"], dtype=np.float32)
-    probe_position = len(input_ids) - 1
-    try:
-        probe_position_slot = positions.index(probe_position)
-    except ValueError as error:
-        raise ValueError("browser residual fixture must capture the final input position used by probes") from error
-    direction = np.zeros(hidden_size, dtype=np.float32)
-    program_direction = np.asarray(metadata["rank_one_program"]["direction"], dtype=np.float32)
-    direction[: len(program_direction)] = program_direction
-    probe_errors = probe_relative_error_by_layer(
-        torch_probes,
-        browser_probes,
-        torch_steered[:, probe_position_slot],
-        browser_steered[:, probe_position_slot],
-        direction,
+    control_errors = sketch_relative_error_by_layer(
+        browser_control,
+        torch_baseline @ directions.T,
+        torch_baseline,
+        directions,
+        layers,
+        browser,
+    )
+    steered_errors = sketch_relative_error_by_layer(
+        browser_steered,
+        torch_steered @ directions.T,
+        torch_steered,
+        directions,
         layers,
     )
-    max_probe_relative_error = max(probe_errors.values())
+    max_probe_relative_error = max([*control_errors.values(), *steered_errors.values()])
     if max_probe_relative_error > maximum_probe_relative_error:
         raise ValueError(
             "dequantized MLC q4 probe parity failed: "
             f"activation-normalized error {max_probe_relative_error:.6g} exceeds "
             f"{maximum_probe_relative_error:.6g}"
         )
-    browser_probe_capture_errors = probe_relative_error_by_layer(
-        browser_probes,
-        browser_steered[:, probe_position_slot] @ direction,
-        browser_steered[:, probe_position_slot],
-        browser_steered[:, probe_position_slot],
-        direction,
+    # The structured program's readback against the plain capture of the same library: the two
+    # forwards must agree before any hook acts.
+    browser_probe_capture_errors = sketch_relative_error_by_layer(
+        browser_control,
+        browser @ directions.T,
+        browser,
+        directions,
         layers,
     )
     max_browser_probe_capture_relative_error = max(browser_probe_capture_errors.values())
@@ -169,32 +152,28 @@ def validate(
             f"{max_browser_probe_capture_relative_error:.6g} exceeds "
             f"{maximum_probe_capture_relative_error:.6g}"
         )
-    probe_trace_relative_error = float(
-        np.linalg.norm(torch_probes - browser_probes)
-        / max(np.linalg.norm(browser_probes), np.linalg.norm(torch_probes), 1e-12)
-    )
 
-    enabled_layer = int(metadata["rank_one_program"]["enabledLayer"])
+    enabled_layer = int(program["enabledLayer"])
     try:
         enabled_slot = layers.index(enabled_layer)
     except ValueError as error:
-        raise ValueError("rank-one capture layer is absent from the layer map") from error
+        raise ValueError("the steering program's layer is absent from the layer map") from error
     max_pre_steering_absolute_delta = maximum_pre_steering_absolute_delta(
-        browser_rank_one_control,
+        browser_control,
         browser_steered,
         layers,
         enabled_layer,
     )
     if max_pre_steering_absolute_delta != 0:
         raise ValueError(
-            "dequantized MLC q4 rank-one program ordering failed: "
-            "steered residuals changed before the enabled layer "
+            "dequantized MLC q4 program ordering failed: "
+            "steered probes changed before the enabled layer "
             f"(maximum absolute delta {max_pre_steering_absolute_delta:.6g})"
         )
     steering_direction_cosine = steering_delta_cosine(
-        torch_baseline,
-        torch_steered,
-        browser_rank_one_control,
+        torch_baseline @ directions.T,
+        torch_steered @ directions.T,
+        browser_control,
         browser_steered,
         enabled_slot,
     )
@@ -219,28 +198,53 @@ def validate(
             f"dequantized MLC q4 greedy-token parity failed: browser={browser_greedy_ids}, torch={torch_greedy_ids}"
         )
 
+    # B1 §4.3 item 2 on a units library: act, z and mid, the static reads and unit activity.
+    units: dict[str, Any] = dict.fromkeys(UNIT_RESULT_KEYS)
+    if "units" in metadata:
+        member = validate_units_member(
+            metadata["units"], layers=layers, num_layers=len(model.model.layers),
+        )
+        browser_sites = split_sites(
+            load_residuals(
+                capture_directory / "sites.f32",
+                member["sites_sha256"],
+                len(layers),
+                len(positions),
+                site_width(member["block"], hidden_size),
+            ),
+            member["block"],
+            hidden_size,
+        )
+        units = unit_parity(
+            model, architecture, member, browser_sites, layers, positions, input_ids, selected_device,
+        )
+
     return {
         "modelId": metadata["model_id"],
         "runtimeIdentitySha256": metadata["runtime_identity_sha256"],
         "device": selected_device,
         "hookDisabledGreedyMatchesBaseline": True,
         "maxProbeRelativeError": max_probe_relative_error,
-        "probeTraceRelativeError": probe_trace_relative_error,
         "maxBrowserProbeCaptureRelativeError": (max_browser_probe_capture_relative_error),
         "maxCaptureRelativeError": max_capture_relative_error,
         "maxPreSteeringAbsoluteDelta": max_pre_steering_absolute_delta,
-        "rankOneProgramOrderingPreserved": True,
+        "programOrderingPreserved": True,
         "steeringDirectionCosine": steering_direction_cosine,
         "baselineRelativeErrorByLayer": baseline_errors,
-        "rankOneControlRelativeErrorByLayer": rank_one_control_errors,
-        "steeredRelativeErrorByLayer": steered_errors,
-        "probeRelativeErrorByLayer": probe_errors,
+        "controlProbeRelativeErrorByLayer": control_errors,
+        "steeredProbeRelativeErrorByLayer": steered_errors,
         "browserProbeCaptureRelativeErrorByLayer": browser_probe_capture_errors,
-        "browserProbeMeasurements": browser_probes.tolist(),
-        "torchProbeMeasurements": torch_probes.tolist(),
         "browserGreedyTokenIds": browser_greedy_ids,
         "torchGreedyTokenIds": torch_greedy_ids,
+        **units,
     }
+
+
+def model_architecture(model_directory: Path) -> str:
+    architecture = json.loads((model_directory / "mlc-chat-config.json").read_text()).get("model_type")
+    if not isinstance(architecture, str):
+        raise ValueError("converted model names no architecture")
+    return architecture
 
 
 def validate_capture_model_identity(model_directory: Path, metadata: dict) -> None:
@@ -267,23 +271,14 @@ def validate_capture_model_identity(model_directory: Path, metadata: dict) -> No
         "hiddenSize": manifest["hiddenSize"],
         "layerMap": manifest["layerMap"],
     }
-    abis = [manifest["runtimeAbi"]]
-    if manifest["runtimeAbi"] in {"drowse-web-runtime-v1", "saklas-web-runtime-v1", "polythetic-web-runtime-v1"}:
-        abis = [f"{brand}-web-runtime-v1" for brand in ("drowse", "saklas", "polythetic")]
-    fingerprints = {
-        hashlib.sha256(json.dumps({**identity, "runtimeAbi": abi}, sort_keys=True,
-                                 ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
-        for abi in abis
-    }
-    if metadata["runtime_identity_sha256"] not in fingerprints or metadata["layer_map"] != identity["layerMap"] or metadata["hidden_size"] != identity["hiddenSize"]:
+    fingerprint = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+    if metadata["runtime_identity_sha256"] != fingerprint or metadata["layer_map"] != identity["layerMap"] or metadata["hidden_size"] != identity["hiddenSize"]:
         raise ValueError("capture belongs to a different model artifact identity")
 
 
-def load_capture_metadata(
-    capture_directory: Path,
-    *,
-    require_smol_named_role: bool = False,
-) -> dict[str, Any]:
+def load_capture_metadata(capture_directory: Path) -> dict[str, Any]:
     metadata = json.loads((capture_directory / "capture.json").read_text())
     required = {
         "schema_version",
@@ -295,21 +290,20 @@ def load_capture_metadata(
         "input_ids",
         "positions",
         "residual_sha256",
-        "rank_one_control_residual_sha256",
-        "steered_residual_sha256",
-        "rank_one_program",
-        "probe_measurements",
+        "control_probe_sha256",
+        "steered_probe_sha256",
+        "steering_program",
         "greedy",
     }
-    allowed = required | {"named_role_capture", "runtime_lock"}
-    if set(metadata) - allowed or not required.issubset(metadata) or metadata["schema_version"] != 3:
+    allowed = required | {"named_role_capture", "runtime_lock", "units"}
+    if set(metadata) - allowed or not required.issubset(metadata) or metadata["schema_version"] != 5:
         raise ValueError("browser residual fixture has an invalid schema")
     if (
         metadata["model_id"] not in PARITY_MODEL_IDS
         or not valid_sha256(metadata["runtime_identity_sha256"])
         or not valid_sha256(metadata["residual_sha256"])
-        or not valid_sha256(metadata["rank_one_control_residual_sha256"])
-        or not valid_sha256(metadata["steered_residual_sha256"])
+        or not valid_sha256(metadata["control_probe_sha256"])
+        or not valid_sha256(metadata["steered_probe_sha256"])
         or not isinstance(metadata["produced_at"], str)
         or not metadata["produced_at"]
     ):
@@ -338,29 +332,24 @@ def load_capture_metadata(
         or hidden_size < 2
     ):
         raise ValueError("browser residual fixture dimensions are invalid")
-    program = metadata["rank_one_program"]
+    program = metadata["steering_program"]
     if (
         not isinstance(program, dict)
         or set(program)
-        != {
-            "abiVersion",
-            "enabledLayer",
-            "direction",
-            "target",
-            "along",
-            "collapse",
-        }
-        or program["abiVersion"] != 1
+        != {"format", "enabledLayer", "probeDirections", "target", "along", "kappa"}
+        or program["format"] != "drowse-structured-v4"
         or program["enabledLayer"] not in layers
-        or not isinstance(program["direction"], list)
-        or len(program["direction"]) != hidden_size
-        or not all(finite_number(value) for value in program["direction"])
-        or not all(finite_number(program[field]) for field in ("target", "along", "collapse"))
+        or not isinstance(program["probeDirections"], list)
+        or not 1 <= len(program["probeDirections"]) <= 8
+        or not all(
+            isinstance(direction, list)
+            and len(direction) == hidden_size
+            and all(finite_number(value) for value in direction)
+            for direction in program["probeDirections"]
+        )
+        or not all(finite_number(program[field]) for field in ("target", "along", "kappa"))
     ):
-        raise ValueError("browser residual fixture rank-one program is invalid")
-    probes = metadata["probe_measurements"]
-    if not isinstance(probes, list) or len(probes) != len(layers) or not all(finite_number(value) for value in probes):
-        raise ValueError("browser residual fixture probe measurements are invalid")
+        raise ValueError("browser residual fixture steering program is invalid")
     greedy = metadata["greedy"]
     if (
         not isinstance(greedy, dict)
@@ -384,14 +373,6 @@ def load_capture_metadata(
         or named_role["position"] >= len(named_role["input_ids"])
     ):
         raise ValueError("browser residual fixture named-role observation is invalid")
-    if (
-        metadata["model_id"] == "smollm2-360m-instruct"
-        and named_role is not None
-        and (named_role["input_ids"] != SMOL_NAMED_ROLE_INPUT_IDS or named_role["position"] != 19)
-    ):
-        raise ValueError("SmolLM2 named-role tokenization does not match the pinned Python row")
-    if require_smol_named_role and metadata["model_id"] == "smollm2-360m-instruct" and named_role is None:
-        raise ValueError("SmolLM2 release evidence requires the pinned named-role row")
     runtime_lock = metadata.get("runtime_lock")
     if runtime_lock is not None and (
         not isinstance(runtime_lock, dict)
@@ -411,16 +392,17 @@ def capture_torch_residuals(
     input_ids: list[int],
     device: str,
     *,
-    rank_one: dict[str, Any] | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
+    steering: dict[str, Any] | None = None,
+) -> np.ndarray:
+    """Each layer's residual after the block, ``[layers, positions, hidden]``; with ``steering``
+    the program's affine group acts after its layer's block: ``h += along·(target − kappa·(h·u))·u``,
+    ``u`` the first probe direction (the browser program's group, neutral 0)."""
     captured: dict[int, torch.Tensor] = {}
-    probes: dict[int, float] = {}
     handles = []
-    enabled_layer = None if rank_one is None else int(rank_one["enabledLayer"])
+    enabled_layer = None if steering is None else int(steering["enabledLayer"])
     direction = None
-    if rank_one is not None:
-        direction = torch.zeros(int(model.config.hidden_size), dtype=torch.float32, device=device)
-        direction[:] = torch.tensor(rank_one["direction"], dtype=torch.float32, device=device)
+    if steering is not None:
+        direction = torch.tensor(steering["probeDirections"][0], dtype=torch.float32, device=device)
 
     def capture_layer(layer: int):
         def hook(_module: torch.nn.Module, _args: tuple[object, ...], output: object) -> object:
@@ -431,13 +413,11 @@ def capture_torch_residuals(
             if layer == enabled_layer:
                 residual_f32 = residual.to(torch.float32)
                 coordinate = torch.matmul(residual_f32, direction)
-                delta = float(rank_one["along"]) * (
-                    float(rank_one["target"]) - float(rank_one["collapse"]) * coordinate
+                delta = float(steering["along"]) * (
+                    float(steering["target"]) - float(steering["kappa"]) * coordinate
                 )
                 steered = (residual_f32 + delta.unsqueeze(-1) * direction).to(residual.dtype)
             captured[layer] = steered.detach().cpu()
-            if direction is not None:
-                probes[layer] = float(torch.matmul(steered[0, -1].to(torch.float32), direction).item())
             if steered is residual:
                 return None
             if isinstance(output, tuple):
@@ -456,12 +436,7 @@ def capture_torch_residuals(
     finally:
         for handle in handles:
             handle.remove()
-    residuals = np.stack([captured[layer][0, positions].to(torch.float32).numpy() for layer in layers])
-    probe_values = np.asarray(
-        [probes[layer] for layer in layers] if direction is not None else [],
-        dtype=np.float32,
-    )
-    return residuals, probe_values
+    return np.stack([captured[layer][0, positions].to(torch.float32).numpy() for layer in layers])
 
 
 def greedy_token_ids(
@@ -518,28 +493,44 @@ def relative_error_by_layer(
     }
 
 
-def probe_relative_error_by_layer(
+def load_probes(
+    path: Path,
+    expected_sha256: str,
+    positions: int,
+    layers: int,
+    probes: int,
+) -> np.ndarray:
+    """A structured program's probe slots, ``[positions, layers, probes]`` little-endian fp32."""
+    if hash_file(path) != expected_sha256:
+        raise ValueError(f"browser probe capture digest does not match: {path.name}")
+    if path.stat().st_size != positions * layers * probes * 4:
+        raise ValueError(f"browser probe capture has the wrong size: {path.name}")
+    values = np.fromfile(path, dtype="<f4").reshape(positions, layers, probes)
+    if not np.isfinite(values).all():
+        raise ValueError(f"browser probe capture contains non-finite values: {path.name}")
+    return values
+
+
+def sketch_relative_error_by_layer(
     actual: np.ndarray,
     expected: np.ndarray,
-    actual_residuals: np.ndarray,
     expected_residuals: np.ndarray,
-    direction: np.ndarray,
+    directions: np.ndarray,
     layers: list[int],
+    actual_residuals: np.ndarray | None = None,
 ) -> dict[str, float]:
-    direction_norm = float(np.linalg.norm(direction))
-    if direction_norm <= 1e-12:
+    """Per layer, the largest probe difference over positions and probes, against the activation
+    scale: ``|a − e| / (max(‖h_e‖, ‖h_a‖)·‖d_k‖)`` (``[layers, positions, probes]`` probes,
+    ``[layers, positions, hidden]`` residuals). A near-zero projection stays well-defined."""
+    direction_norms = np.linalg.norm(directions, axis=-1)
+    if (direction_norms <= 1e-12).any():
         raise ValueError("probe direction has zero norm")
-    return {
-        str(layer): float(
-            abs(float(actual[index]) - float(expected[index]))
-            / max(
-                float(np.linalg.norm(actual_residuals[index])) * direction_norm,
-                float(np.linalg.norm(expected_residuals[index])) * direction_norm,
-                1e-12,
-            )
-        )
-        for index, layer in enumerate(layers)
-    }
+    norms = np.linalg.norm(expected_residuals, axis=-1)
+    if actual_residuals is not None:
+        norms = np.maximum(norms, np.linalg.norm(actual_residuals, axis=-1))
+    scale = np.maximum(norms[..., None] * direction_norms[None, None, :], 1e-12)
+    errors = np.abs(np.asarray(actual, dtype=np.float64) - np.asarray(expected, dtype=np.float64)) / scale
+    return {str(layer): float(errors[index].max()) for index, layer in enumerate(layers)}
 
 
 def maximum_pre_steering_absolute_delta(
@@ -580,7 +571,7 @@ def cosine(left: np.ndarray, right: np.ndarray) -> float:
     right = np.asarray(right, dtype=np.float64).reshape(-1)
     denominator = float(np.linalg.norm(left) * np.linalg.norm(right))
     if denominator <= 1e-12:
-        raise ValueError("rank-one steering produced no measurable residual delta")
+        raise ValueError("the steering program produced no measurable residual delta")
     return float(np.clip(np.dot(left, right) / denominator, -1.0, 1.0))
 
 
@@ -632,9 +623,10 @@ def release_evidence_receipt(
 ) -> dict[str, Any]:
     if metadata.get("runtime_lock", {}).get("source") != "repository":
         raise ValueError("release evidence requires the checked-in repository runtime lock")
-    expected_model = EVIDENCE_MODEL_IDS[evidence_type]
-    if result["modelId"] != expected_model:
-        raise ValueError(f"{evidence_type} requires {expected_model}, found {result['modelId']}")
+    if evidence_type != EVIDENCE_TYPE:
+        raise ValueError(f"q4 parity release evidence is {EVIDENCE_TYPE}, not {evidence_type}")
+    if result["modelId"] not in PARITY_MODEL_IDS or result["modelId"] != metadata["model_id"]:
+        raise ValueError(f"{EVIDENCE_TYPE} requires a q4 library of the lock, found {result['modelId']}")
     return {
         "schemaVersion": 1,
         "evidenceType": evidence_type,
@@ -648,6 +640,7 @@ def release_evidence_receipt(
             "maxProbeRelativeError": result["maxProbeRelativeError"],
             "maxCaptureRelativeError": result["maxCaptureRelativeError"],
             "steeringDirectionCosine": result["steeringDirectionCosine"],
+            **{key: result[key] for key in UNIT_RESULT_KEYS},
         },
     }
 
@@ -661,14 +654,13 @@ def main() -> None:
     parser.add_argument("--maximum-probe-relative-error", type=float, default=0.01)
     parser.add_argument("--maximum-probe-capture-relative-error", type=float, default=1e-5)
     parser.add_argument("--minimum-steering-direction-cosine", type=float, default=0.99)
-    parser.add_argument("--evidence-type", choices=sorted(EVIDENCE_MODEL_IDS))
+    parser.add_argument("--evidence-type", choices=[EVIDENCE_TYPE])
     parser.add_argument("--fixture-path")
     arguments = parser.parse_args()
     result = validate(
         arguments.model_directory,
         arguments.capture_directory,
         device=arguments.device,
-        require_smol_named_role=arguments.evidence_type == "smolProductionQ4Parity",
         maximum_capture_relative_error=arguments.maximum_capture_relative_error,
         maximum_probe_relative_error=arguments.maximum_probe_relative_error,
         maximum_probe_capture_relative_error=(arguments.maximum_probe_capture_relative_error),
@@ -677,10 +669,7 @@ def main() -> None:
     if (arguments.evidence_type is None) != (arguments.fixture_path is None):
         raise ValueError("--evidence-type and --fixture-path must be supplied together")
     if arguments.evidence_type is not None:
-        metadata = load_capture_metadata(
-            arguments.capture_directory,
-            require_smol_named_role=arguments.evidence_type == "smolProductionQ4Parity",
-        )
+        metadata = load_capture_metadata(arguments.capture_directory)
         result = release_evidence_receipt(
             result,
             metadata,

@@ -34,15 +34,12 @@ const defaultEvidenceRoot = resolve(browserRuntimeRoot, "evidence");
 const runtimeLockPath = resolve(browserRuntimeRoot, "runtime-lock.json");
 const runtimeLockCheckerPath = fileURLToPath(new URL("./check-runtime-lock.mjs", import.meta.url));
 const COMMIT = /^[0-9a-f]{40}$/;
+// Hook ABI v5's runtime evidence (browser-runtime/README.md, "Release evidence").
 const RUNTIME_EVIDENCE_TYPES = new Set([
-  "gemmaTinyFp32Parity",
-  "llamaTinyFp32Parity",
-  "qwenTinyFp32Parity",
-  "gemmaProductionQ4Parity",
-  "smolProductionQ4Parity",
-  "qwenProductionQ4Parity",
-  "gemmaLongPrefill",
-  "runtimeLifecycle",
+  "cVmGoldens",
+  "webGpuGoldens",
+  "productionLibrary",
+  "productionQ4Parity",
 ]);
 const AUTHORING_EVIDENCE_TYPES = new Set([
   "activationCapture",
@@ -158,7 +155,7 @@ export async function createGateEvidenceRecord({
   }
   if (
     typeof runtimeLock.runtimeAbi !== "string" ||
-    runtimeLock.hookAbi !== "post-block-residual-v4"
+    runtimeLock.hookAbi !== "block-sites-v5"
   ) {
     throw new Error("runtime lock ABI is invalid");
   }

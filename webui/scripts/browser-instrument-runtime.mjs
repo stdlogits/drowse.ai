@@ -421,14 +421,14 @@ function parseArguments(args) {
     result.jlensLayerLimit !== null &&
     (!Number.isSafeInteger(result.jlensLayerLimit) || result.jlensLayerLimit < 1)
   ) {
-    throw new Error("invalid J-lens layer limit");
+    throw new Error("invalid R lens layer limit");
   }
   if (!Number.isSafeInteger(result.saeFeature) || result.saeFeature < 0)
     throw new Error("invalid SAE feature");
   if (!Number.isSafeInteger(result.steeringParityTokens) || result.steeringParityTokens < 0 || result.steeringParityTokens > 128)
     throw new Error("invalid steering parity token count");
   if (result.steeringParityTokens > 0 && (result.modelId !== "gemma3-1b-instruct" || result.diagnosticFamily === "sae"))
-    throw new Error("the steering regression requires Gemma 3 1B and its J-lens");
+    throw new Error("the steering regression requires Gemma 3 1B and its R lens");
   if (
     !Number.isSafeInteger(result.stepTimeoutMs) ||
     result.stepTimeoutMs < 10_000
@@ -443,7 +443,7 @@ function parseArguments(args) {
     !result.jlensWord.trim() ||
     result.jlensWord.length > 128
   ) {
-    throw new Error("invalid J-lens word");
+    throw new Error("invalid R lens word");
   }
   return { ...result, jlensWord: result.jlensWord.trim() };
 }

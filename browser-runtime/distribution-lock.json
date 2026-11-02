@@ -1,10 +1,10 @@
 {
   "$schema": "./distribution-lock.schema.json",
   "schemaVersion": 1,
-  "status": "verified",
+  "status": "feasibility-required",
   "catalogUrl": "https://huggingface.co/stdlogits/drowse-web-catalog/resolve/main/catalog.json",
   "signatureUrl": "https://huggingface.co/stdlogits/drowse-web-catalog/resolve/main/catalog.sig.json",
-  "minimumAcceptedSequence": 10,
+  "minimumAcceptedSequence": 11,
   "publicKeys": [
     {
       "keyId": "drowse-2026-10-current",

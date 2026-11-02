@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -10,9 +10,9 @@ import {
 import { structuredHookProfile, thinkingProfile } from "./hosted-model-profiles.mjs";
 import { expectedBuildToolchain } from "./hosted-model-closure.mjs";
 
-assert.equal(structuredHookProfile("standard-v1"), "standard-v1");
-assert.equal(structuredHookProfile("standard-v2"), "standard-v2");
-assert.equal(structuredHookProfile("standard-v3"), "standard-v3");
+assert.equal(structuredHookProfile("standard-v4"), "standard-v4");
+assert.equal(structuredHookProfile("standard-v4-residual"), "standard-v4-residual");
+assert.throws(() => structuredHookProfile("standard-v3"), /not allow-listed/);
 assert.throws(() => structuredHookProfile("adapter-derived"), /not allow-listed/);
 assert.equal(thinkingProfile(null), null);
 const verifiedThinkingProfile = {
@@ -32,10 +32,15 @@ assert.deepEqual(parseArguments(["qwen3-0.6b", "./candidate"]), {
   modelId: "qwen3-0.6b",
   directory: join(process.cwd(), "candidate"),
   upload: false,
+  runtimeLock: null,
 });
 assert.equal(parseArguments(["qwen3-0.6b", "./candidate", "--upload"]).upload, true);
 assert.throws(() => parseArguments(["qwen3-0.6b"]), /usage/);
 assert.throws(() => parseArguments(["qwen3-0.6b", "./candidate", "--force"]), /usage/);
+assert.equal(
+  parseArguments(["qwen3-0.6b", "./candidate", "--runtime-lock", "candidate-lock.json"]).runtimeLock,
+  join(process.cwd(), "candidate-lock.json"),
+);
 
 const directory = await mkdtemp(join(tmpdir(), "drowse-publish-test-"));
 try {
@@ -98,9 +103,9 @@ try {
   }));
   const build = JSON.stringify({
     schemaVersion: 1,
-    runtimeAbi: "drowse-web-runtime-v1",
-    hookAbi: "post-block-residual-v4",
-    structuredHookProfile: "standard-v2",
+    runtimeAbi: "drowse-web-runtime-v2",
+    hookAbi: "block-sites-v5",
+    structuredHookProfile: "standard-v4",
     thinkingProfile: verifiedThinkingProfile,
     architecture: "qwen3",
     quantization: "q4f16_1",
@@ -136,9 +141,9 @@ try {
   }
   const manifest = {
     schemaVersion: 1,
-    runtimeAbi: "drowse-web-runtime-v1",
-    hookAbi: "post-block-residual-v4",
-    structuredHookProfile: "standard-v2",
+    runtimeAbi: "drowse-web-runtime-v2",
+    hookAbi: "block-sites-v5",
+    structuredHookProfile: "standard-v4",
     thinkingProfile: verifiedThinkingProfile,
     architecture: "qwen3",
     quantization: "q4f16_1",
@@ -219,36 +224,9 @@ try {
   await writeFile(join(directory, "drowse-build.json"), build);
   Object.assign(buildEntry, originalBuildEntry);
   await writeFile(join(directory, "hosted-artifacts.json"), JSON.stringify(manifest));
-  for (const brand of ["saklas", "polythetic"]) {
-    manifest.runtimeAbi = `${brand}-web-runtime-v1`;
-    const legacyBuild = JSON.stringify({ ...JSON.parse(build), runtimeAbi: manifest.runtimeAbi });
-    await rename(join(directory, "drowse-build.json"), join(directory, `${brand}-build.json`));
-    await writeFile(join(directory, `${brand}-build.json`), legacyBuild);
-    Object.assign(buildEntry, {
-      path: `${brand}-build.json`, bytes: Buffer.byteLength(legacyBuild),
-      sha256: createHash("sha256").update(legacyBuild).digest("hex"),
-    });
-    await writeFile(join(directory, "hosted-artifacts.json"), JSON.stringify(manifest));
-    await assert.rejects(() => validatePublishDirectory(directory, model, runtime), /ABI differs/);
-    assert.equal((await validatePublishDirectory(directory, model, runtime, { allowLegacyBranding: true })).files.length, 10);
-    await assert.rejects(
-      () => validatePublishDirectory(directory, model, { ...runtime, hookAbi: "wrong" }, { allowLegacyBranding: true }),
-      /ABI differs/,
-    );
-    await writeFile(join(directory, `${brand}-build.json`), `${legacyBuild} `);
-    await assert.rejects(
-      () => validatePublishDirectory(directory, model, runtime, { allowLegacyBranding: true }),
-      /size differs|digest differs/,
-    );
-    await rename(join(directory, `${brand}-build.json`), join(directory, "drowse-build.json"));
-    await writeFile(join(directory, "drowse-build.json"), build);
-    Object.assign(buildEntry, originalBuildEntry);
-  }
-  manifest.runtimeAbi = "unknown-web-runtime-v1";
+  manifest.runtimeAbi = "drowse-web-runtime-v1";
   await writeFile(join(directory, "hosted-artifacts.json"), JSON.stringify(manifest));
-  await assert.rejects(
-    () => validatePublishDirectory(directory, model, runtime, { allowLegacyBranding: true }), /ABI differs/,
-  );
+  await assert.rejects(() => validatePublishDirectory(directory, model, runtime), /ABI differs/);
   manifest.runtimeAbi = runtime.runtimeAbi;
   await writeFile(join(directory, "hosted-artifacts.json"), JSON.stringify(manifest));
   await writeFile(join(directory, "tokenizer.json"), "changed");

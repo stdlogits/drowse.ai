@@ -1,4 +1,5 @@
 import {
+  rejectingBlockSitesBackend,
   type BrowserModelLoadRequest,
   type BrowserModelBackend,
 } from "./modelBackend";
@@ -133,8 +134,19 @@ export function createLazyBrowserModelBackend(
       if (backend !== null) await backend.stop(reason);
       else if (pending !== null) await (await pending).stop(reason);
     },
+    blockSites() {
+      return backend?.blockSites() ?? notLoadedBlockSites;
+    },
   };
 }
+
+const notLoadedBlockSites = rejectingBlockSitesBackend(() =>
+  Object.assign(new Error("No browser model session is loaded"), {
+    code: "MODEL_NOT_LOADED",
+    status: 409,
+    recoverable: true,
+  }),
+);
 
 export function createDrowseBrowserModelBackend(
   module: DrowseWebLlmModule,
@@ -254,7 +266,10 @@ export function createDrowseBrowserModelBackend(
     },
     async compileSteering({ expression, loadRequest, probeRequests }) {
       const compiler = await compilerFor(loadRequest);
+      // What the synchronous compile reads off the device first: `jlens/` words, and through the
+      // unit source each `neuron/` push's write and each `slens/` atom (and probe) direction.
       await compiler.prepareJlensSelectors(expression, runtime);
+      await compiler.prepareUnitSelectors(expression);
       if (probeRequests !== undefined) {
         const words = probeRequests.flatMap((request) => {
           const selector = request.selector.trim();
@@ -263,6 +278,7 @@ export function createDrowseBrowserModelBackend(
             : [];
         });
         await compiler.prepareJlensWords(words, runtime);
+        for (const request of probeRequests) await compiler.prepareUnitProbe(request.selector);
       }
       return compiler.compileForGeneration(expression, probeRequests);
     },

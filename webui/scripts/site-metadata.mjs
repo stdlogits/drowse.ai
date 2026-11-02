@@ -7,9 +7,9 @@ export const siteAccent = "#6a4fe0";
 // Browser chrome follows the page surface, not the accent: Ledger's paper in each theme, as
 // theme-init.js and @stdlogits/ledger/tokens.css write it.
 export const themeColors = { dark: "#0b0d12", light: "#ffffff" };
-export const socialImagePath = "/social/drowse.jpg?v=shader-orb-workbench-jpeg";
-export const socialImageType = "image/jpeg";
-export const socialImageAlt = "Drowse in white with Interpretability Workbench underneath, beside a large glowing shader orb.";
+export const socialImagePath = "/social/drowse.png?v=ledger-card";
+export const socialImageType = "image/png";
+export const socialImageAlt = "The drowse mark and name, the steering term 0.4 calm, a reply whose words are tinted by how calm the model reads them, and one word's calm reading across the model's layers.";
 export const projectOwner = { "@type": "Person", name: "a9lim", url: "https://github.com/a9lim" };
 
 export function publicOrigin(value = "") {

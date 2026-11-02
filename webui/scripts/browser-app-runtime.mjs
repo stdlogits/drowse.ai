@@ -244,8 +244,8 @@ self.onmessage = async (event) => {
       } });
       return;
     }
-    const originalClear = loadedEngine.clearDrowseRankOneProgram.bind(loadedEngine);
-    loadedEngine.clearDrowseRankOneProgram = async (...args) => {
+    const originalClear = loadedEngine.clearDrowseProgram.bind(loadedEngine);
+    loadedEngine.clearDrowseProgram = async (...args) => {
       postMessage({ type: "trace", stage: "hook-clear-start" });
       const value = await originalClear(...args);
       postMessage({ type: "trace", stage: "hook-clear-done" });

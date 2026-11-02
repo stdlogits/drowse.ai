@@ -134,12 +134,38 @@ test("saved chats and token details stay contained on a portrait phone", async (
   await savedChatsAndToken(page);
 });
 
-test("saved chats and token details stay contained on a landscape phone", async ({ page, isMobile }) => {
-  // Product bug (lanes/A5.md, "phone landscape conversation"): on a touch phone at 667x375 the
-  // conversation log is 39px tall and its words paint under the Thread toggle, so none can be tapped.
-  test.fixme(isMobile, "the landscape phone conversation is 39px tall and covered; see lanes/A5.md");
+test("saved chats and token details stay contained on a landscape phone", async ({ page }) => {
   await page.setViewportSize({ width: 667, height: 375 });
   await savedChatsAndToken(page);
+});
+
+test("short screens take the phone layout, the log beside the dock from 480 px wide", async ({ page }) => {
+  // drowse PR 71: a phone is a screen up to 720 px wide or 520 px tall (a phone on its side, or a
+  // short desktop window). A short one puts the conversation log beside the dock from 480 px wide;
+  // narrower, it keeps one column with the dock under the log.
+  const geometry = () => page.evaluate(() => {
+    const box = (selector: string) => document.querySelector(selector)!.getBoundingClientRect().toJSON() as DOMRect;
+    return { phone: document.querySelector(".shell.phone") !== null, log: box(".chat .log"), dock: box(".chat .dock") };
+  });
+  await page.setViewportSize({ width: 667, height: 375 });
+  await openWorkbench(page);
+  await sendMessage(page, "A short screen.");
+  for (const viewport of [{ width: 480, height: 320 }, { width: 568, height: 320 }, ...landscapeViewports, { width: 1280, height: 500 }]) {
+    await page.setViewportSize(viewport);
+    await expect.poll(async () => (await geometry()).phone, `${viewport.width}x${viewport.height}`).toBe(true);
+    const { log, dock } = await geometry();
+    expect(dock.left, `${viewport.width}x${viewport.height}: the dock sits beside the log`).toBeGreaterThanOrEqual(log.right);
+    expect(log.height, `${viewport.width}x${viewport.height}: the log keeps room`).toBeGreaterThanOrEqual(140);
+    expect(log.bottom).toBeLessThanOrEqual(viewport.height + 1);
+    await expectConversationUsable(page);
+  }
+  await page.setViewportSize({ width: 320, height: 480 });
+  await expect.poll(async () => (await geometry()).phone).toBe(true);
+  const narrow = await geometry();
+  expect(narrow.dock.top, "320x480 keeps one column").toBeGreaterThanOrEqual(narrow.log.bottom - 1);
+  expect(narrow.log.height).toBeGreaterThanOrEqual(140);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await expect.poll(async () => (await geometry()).phone, "a tall desktop window is not a phone").toBe(false);
 });
 
 test("every Menu dialog stays operable at 320 px", async ({ page }) => {
@@ -165,9 +191,8 @@ test("every Menu dialog stays operable at 320 px", async ({ page }) => {
   await expectNoPageOverflow(page);
 });
 
-test("Weave keeps branch controls reachable on narrow phones and in landscape", async ({ page }) => {
-  // Same product bug as loom-camera (lanes/A5.md, "Loom map has no room on a phone").
-  test.fixme(true, "the phone Loom page gives its views almost no height; see lanes/A5.md");
+/** Weave three continuations from a long starting text at 390x844; returns the Weave view. */
+async function weaveThreeChoices(page: Page): Promise<Locator> {
   await page.setViewportSize({ width: 390, height: 844 });
   await openWorkbench(page);
   const weaveEntry = page.getByRole("complementary", { name: "Thread", exact: true }).getByRole("button", { name: "Weave", exact: true });
@@ -177,13 +202,27 @@ test("Weave keeps branch controls reachable on narrow phones and in landscape", 
   await weave.getByRole("textbox", { name: "Starting text" }).fill("Explore the possibilities. ".repeat(12));
   await weave.getByRole("button", { name: "Generate 3", exact: true }).click();
   await expect(weave.locator("[data-weave-choice]")).toHaveCount(3);
+  return weave;
+}
+
+test("Weave keeps branch controls reachable on narrow phones and in landscape", async ({ page }) => {
+  const weave = await weaveThreeChoices(page);
   for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
     await page.setViewportSize(viewport);
     await expectNoPageOverflow(page);
-    await expectNoHorizontalOverflow(weave);
     const choose = weave.locator("[data-weave-choice]").first().getByRole("button", { name: /^Cho/ });
     await choose.scrollIntoViewIfNeeded();
     await expectInsideVisualViewport(choose);
     await expectTarget(choose);
+  }
+});
+
+test("Weave scrolls only vertically on a phone", async ({ page }) => {
+  // In one column the .weave is the scroller, so its sections' 4 px focus gutter sits inside it
+  // (stdlogits/drowse#73); with the desktop margin, scrollIntoView shifted the content sideways.
+  const weave = await weaveThreeChoices(page);
+  for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
+    await page.setViewportSize(viewport);
+    await expectNoHorizontalOverflow(weave);
   }
 });

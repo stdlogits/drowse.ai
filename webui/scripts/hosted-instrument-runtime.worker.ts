@@ -14,6 +14,10 @@ import {
 } from "../src/hosted/runtime/webLlmEngine";
 import type { BrowserJlensGpuDictionary } from "../src/hosted/runtime/browserInstrumentPacks";
 import type { StructuredHookProgramBuffers } from "../src/hosted/runtime/structuredHookProgram";
+import {
+  BLOCK_SITES_EXACT_READOUT_ABI,
+  type BlockSpec,
+} from "../src/hosted/runtime/structuredHookProfile";
 
 interface FileEntry {
   path: string;
@@ -27,6 +31,9 @@ interface Request {
   modelId: string;
   runtimeIdentity: RuntimeIdentity;
   structuredHookProfile: ModelVariant["structuredHookProfile"];
+  /** The runtime lock's block spec (standard-v4) and unit refusal (standard-v4-residual). */
+  blockSpec: BlockSpec | null;
+  unitRefusal: string | null;
   thinkingProfile: ModelVariant["thinkingProfile"];
   quantization: "q4f16_1" | "q4f32_1" | "q0f32";
   requiredFeatures: GPUFeatureName[];
@@ -51,9 +58,12 @@ self.onmessage = async (event: MessageEvent<Request>) => {
   if (event.data?.type !== "run") return;
   let runtime: DrowseWebLlmRuntime | null = null;
   try {
-    if (event.data.structuredHookProfile !== "standard-v3") {
+    if (
+      event.data.structuredHookProfile !== "standard-v4" &&
+      event.data.structuredHookProfile !== "standard-v4-residual"
+    ) {
       throw new Error(
-        "physical precomputed instruments require standard-v3 exact-readout-v1",
+        `physical precomputed instruments require a v5 library (standard-v4 or standard-v4-residual, ${BLOCK_SITES_EXACT_READOUT_ABI})`,
       );
     }
     if (
@@ -161,6 +171,8 @@ self.onmessage = async (event: MessageEvent<Request>) => {
         files: coreArtifacts.map(({ manifest }) => manifest),
       },
       contextTokens: event.data.contextTokens,
+      blockSpec: event.data.blockSpec,
+      unitRefusal: event.data.unitRefusal,
       adapter,
       artifacts: [...modelArtifacts, ...coreArtifacts],
       optionalPacks,
@@ -601,7 +613,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
         contextTokens: event.data.contextTokens,
         steeringParity: steeringParity?.value ?? null,
         structuredHookProfile: event.data.structuredHookProfile,
-        exactReadoutAbi: "exact-readout-v1",
+        exactReadoutAbi: BLOCK_SITES_EXACT_READOUT_ABI,
         layers: event.data.runtimeIdentity.layerMap.length,
         diagnosticJlensLayerLimit: event.data.jlensLayerLimit,
         diagnosticFamily: event.data.diagnosticFamily,

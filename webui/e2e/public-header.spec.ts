@@ -24,9 +24,12 @@ for (const path of ["/", "/credits", "/app?layoutFixture=setup", "compact"]) {
       await page.setViewportSize({ width, height: 900 });
       await expect(brand).toBeVisible();
       await expect.poll(() => header.evaluate(h => {
-        const nav = h.querySelector("nav")!;
+        // The header can re-render mid-resize; a missing part is "not yet", polled again.
+        const nav = h.querySelector("nav");
+        const headerEnd = h.querySelector(".header-end");
+        if (!nav || !headerEnd) return false;
         const box = nav.getBoundingClientRect();
-        const end = h.querySelector(".header-end")!.getBoundingClientRect();
+        const end = headerEnd.getBoundingClientRect();
         // Public pages put their links on a row of their own on a phone; the app keeps one row.
         const separateRow = innerWidth <= 720 && !h.classList.contains("app");
         return h.scrollWidth <= h.clientWidth + 1 && nav.scrollWidth <= nav.clientWidth + 1

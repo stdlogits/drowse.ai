@@ -1,10 +1,27 @@
-const structuredHookProfiles = new Set(["standard-v1", "standard-v2", "standard-v3"]);
+import { structuredHookProfileForArchitecture } from "./overlay-vm-functions.mjs";
+
+// Hook ABI v5's two capacity profiles (HOOK_ABI.md §3): units on the dense gated architectures,
+// residual elsewhere. Which one an architecture attests is the overlay's own rule.
+const structuredHookProfiles = new Set(["standard-v4", "standard-v4-residual"]);
+
+export const HOOK_ABI = "block-sites-v5";
+export const RUNTIME_ABI = "drowse-web-runtime-v2";
+export const EXACT_READOUT_ABI = "exact-readout-v2";
 
 export function structuredHookProfile(value) {
   if (!structuredHookProfiles.has(value)) {
     throw new Error("structuredHookProfile is not allow-listed");
   }
   return value;
+}
+
+/** The profile a library of `architecture` must attest; throws when `value` is another. */
+export function architectureStructuredHookProfile(architecture, value) {
+  const expected = structuredHookProfileForArchitecture(architecture);
+  if (structuredHookProfile(value) !== expected) {
+    throw new Error(`${architecture} libraries attest ${expected}, not ${value}`);
+  }
+  return expected;
 }
 
 export function thinkingProfile(value) {
@@ -58,12 +75,34 @@ export function lockedModelExecutionProfiles(lock, manifest) {
   ) {
     throw new Error("hosted model artifacts do not match runtime-lock execution profile");
   }
+  const { blockSpec, unitRefusal } = lockedBlockSites(lock, lockedStructuredHookProfile);
   return {
     structuredHookProfile: lockedStructuredHookProfile,
     thinkingProfile: lockedThinkingProfile,
     quantization,
     requiredFeatures: quantization === "q4f16_1" ? ["shader-f16"] : [],
+    // What the runtime attests a v5 library's descriptor against (HOOK_ABI.md §6): the block
+    // spec of a standard-v4 library, the refusal text of a standard-v4-residual one.
+    blockSpec,
+    unitRefusal,
   };
+}
+
+function lockedBlockSites(lock, profile) {
+  const blockSpec = lock?.blockSpec ?? null;
+  const unitRefusal = lock?.unitRefusal ?? null;
+  const units = profile === "standard-v4";
+  const residual = profile === "standard-v4-residual";
+  if (
+    units !== (blockSpec !== null) || residual !== (unitRefusal !== null) ||
+    (blockSpec !== null && (typeof blockSpec !== "object" || Array.isArray(blockSpec))) ||
+    (unitRefusal !== null && (typeof unitRefusal !== "string" || unitRefusal.length === 0))
+  ) {
+    throw new Error(
+      "runtime-lock blockSpec and unitRefusal do not match the structured hook profile",
+    );
+  }
+  return { blockSpec, unitRefusal };
 }
 
 function lockedQuantization(value) {

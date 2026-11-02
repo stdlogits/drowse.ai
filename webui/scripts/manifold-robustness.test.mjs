@@ -5,7 +5,7 @@ import { createServer } from "vite";
 const server = await createServer({ root: fileURLToPath(new URL("..", import.meta.url)), configFile: false, appType: "custom", logLevel: "silent", server: { middlewareMode: true, watch: null } });
 try {
   const { compileStructuredHookProgram, initialStructuredHookState, runStructuredHookLayer, geometryCoordinateMean } = await server.ssrLoadModule("/src/hosted/runtime/structuredHookProgram.ts");
-  const { STANDARD_STRUCTURED_HOOK_PROFILE_V3: profile } = await server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts");
+  const { STANDARD_STRUCTURED_HOOK_PROFILE_V4: profile } = await server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts");
   const { measurementEnvelope, measurementGateScores } = await server.ssrLoadModule("/src/hosted/runtime/webLlmGeneration.ts");
   const points = [[1, 0], [0, 1], [-1, 0], [0, -1]];
   const curve = {

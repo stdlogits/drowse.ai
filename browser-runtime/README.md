@@ -4,39 +4,46 @@ The hosted application must not infer with stock WebLLM. Production loading is
 enabled only when `runtime-lock.json` has `status: "verified"` and the exact
 package, overlay, toolchain, model, and compiled-library closure is pinned.
 
-The runtime lock is `verified`. Exact converted-model revisions, compiled
-libraries, package archive, overlay closure, runtime ABI, hook ABI, tokenizer,
-and chat-template identities are bound by digest. The public signed catalog
+The runtime lock is hook ABI v5 (`runtime-lock.json` schema 2): `drowse-web-runtime-v2`,
+`block-sites-v5`, `exact-readout-v2`, each model's capacity profile by architecture
+(`standard-v4` for Gemma 3 and Qwen3, with the `blockSpec` its library's schema-4 descriptor
+attests; `standard-v4-residual` for GPT-2, Pythia and Qwen3.5 base, with the `unitRefusal` its
+unit calls answer), the WebLLM archive `0.2.84-drowse.46`, the fork manifest, compiler recipe
+and LLVM identities. It stays `feasibility-required` until every v5 library's converted revision,
+converted-manifest digest and library digest are filled (`prepare-hosted-candidate-lock.mjs`,
+below); `check-runtime-lock.mjs --release` lists what is still pending. Exact converted-model
+revisions, compiled libraries, package archive, overlay closure, runtime ABI, hook ABI,
+tokenizer, and chat-template identities are bound by digest. The public signed catalog
 contains only immutable packages that match those identities.
 
 The browser core-pack compiler produces the required neutral whitener and seed
-manifold pack for each release model. Its raw rank-one path shares Python
-goldens for Mahalanobis normalization, mean-normalized per-layer share, and
-uncapped affine gain. The structured path lowers independent
-push/ablation groups, prior-step gates, response phases, SAE and J-lens
-programs, box/custom/sphere curved manifolds, and exact v3 geometry reads.
+manifold pack for each release model. Every steering expression lowers to one
+drowse-structured-v4 program (native's `synthesize_subspace` lowering, which
+needs the neutral whitener); it shares Python goldens for Mahalanobis
+normalization, mean-normalized per-layer share, and uncapped affine gain, and
+lowers independent push/ablation groups, prior-step gates, response phases,
+SAE and R-lens programs, box/custom/sphere curved manifolds, in-block unit
+ablation, and exact geometry reads.
 Curved steering retains its separate safety cap. Every published pack passes the
 semantic validator and a physical WebGPU runtime check before catalog inclusion.
 
 The checked-in TypeScript parser accepts the full Python steering grammar. The
-current compiler supports rank-one and composed affine pushes, mixed or
+current compiler supports single and composed affine pushes, mixed or
 multiaxis mean-replacement ablation, Mahalanobis `~`/`|` projections,
 response/prompt/count/thinking phases, prior-step scalar gates, and up to four
 curved terms per layer. Curves may use bounded, unbounded, periodic, or spherical
 domains and may have up to four intrinsic dimensions. Curved steering can itself
-be phase-gated or controlled by a prior SAE, J-lens probability, scalar affine
-probe, or exact geometry channel from the preceding token. The `standard-v2`
-and `standard-v3` profiles emit `drowse-structured-v3`: in addition to four independently gated
-affine groups, rank eight, eight scalar probes, four curves, thirty-two nodes per
-curve, four intrinsic dimensions, and eight embedded dimensions, it reserves
-eight geometry probes, whitener rank 96, thirty-three candidates per probe, and
-a separate 41-float output record per layer and geometry probe. The older
-`standard-v1` profile continues to emit `drowse-structured-v2` and fails closed
-for multidimensional, curved, membership, and node-distance geometry reads.
-`standard-v3` additionally attests `exact-readout-v1`, a fixed top-eight
-full-vocabulary J-lens readout and chunked full-dictionary SAE readout. A
-`standard-v2` library remains valid for geometry but is rejected before loading
-a precomputed J-lens or SAE pack.
+be phase-gated or controlled by a prior SAE, R-lens probability, scalar affine
+probe, or exact geometry channel from the preceding token. Every hook ABI v5 library
+(`HOOK_ABI.md` is the contract) runs `drowse-structured-v4`: four independently gated affine
+groups, rank eight, eight scalar probes, four curves, thirty-two nodes per curve, four intrinsic
+dimensions and eight embedded dimensions, eight geometry probes, whitener rank 96,
+thirty-three candidates per probe, a 41-float output record per layer and geometry probe, and
+`exact-readout-v2` (lens reads at both sites, top-k ≤ 256, the S footprint, unit static-read
+primitives). A `standard-v4` library adds the in-block unit sites (neuron and head mean-ablation,
+unit taps, the replay for token anatomy, unit activity and attention patterns, static unit
+reads); a `standard-v4-residual` library attests their absence and answers unit calls with the
+lock's refusal.
 
 The v3 geometry path produces domain coordinates, subspace fraction,
 normalized off-surface residual, tube membership, and raw whitened distance to
@@ -49,7 +56,7 @@ log/parallel-transport/exp translation, and nearest-foot solve as the Python
 domain. These TypeScript and compiled-kernel contracts are implemented but do
 not by themselves constitute production-model or physical-device verification.
 
-Hosted browsers start optional live J-lens and SAE readouts off on every device.
+Hosted browsers start optional live R-lens and SAE readouts off on every device.
 Users enable them through the instrument Live controls. Explicit probes, steering
 gates, and token replay still request their required computations. Plain chat
 therefore avoids full-vocabulary and full-dictionary analysis on every token,
@@ -67,7 +74,7 @@ activation and carry the same label and unit. Packs without the sidecar retain
 the Python-compatible raw-activation/null-metadata behavior. Live discovery
 evaluates the complete installed encoder on the GPU in bounded feature chunks
 and reports the exact global top eight; it does not train or modify the SAE. A
-local J-lens v6 artifact provides its unchanged `J_l` shards. The worker uses
+local R-lens v7 artifact provides its unchanged per-layer shards. The worker uses
 the model's complete quantized or fp32 language head to compute an exact
 full-vocabulary softmax on the GPU, reports exact per-layer and layer-aggregated
 top-eight rows, and selects requested token probabilities for probes and gates.
@@ -75,18 +82,18 @@ Steering selectors are not limited to the pack's curated word
 list: before synchronous lowering, the worker resolves each requested word
 with the loaded tokenizer, requires the Python-compatible leading-space or bare
 form to round-trip as exactly one token, and derives `W_U[v] @ J_l` through the
-loaded GPU runtime in batches of at most eight token IDs. Partial J-lenses are
+loaded GPU runtime in batches of at most eight token IDs. Partial R lenses are
 passed in fitted source-layer order and partitioned into dynamic
 `[chunk, hidden, hidden]` inputs bounded by the smaller of the adapter's buffer
 and storage-binding limits. The runtime conservatively uses one matrix per
-chunk because larger dynamic J-lens batches are not stable across supported MLC
+chunk because larger dynamic R-lens batches are not stable across supported MLC
 WebGPU VMs. The worker uploads every validated fitted matrix exactly once when
 it installs the structured hook program and keeps the chunks GPU-resident for
 that program's lifetime. Each probability read or gate then makes one exact
 full-vocabulary call per chunk, combines all readbacks behind one device
 synchronization, and scatters the rows back to model-layer order.
 Program replacement, clearing, unload, device loss, and worker termination
-dispose the resident inputs. Loading a J-lens pack fails before generation if
+dispose the resident inputs. Loading an R-lens pack fails before generation if
 even one fp32 Jacobian cannot fit either adapter limit. Instrument artifacts are
 checked against the catalog closure, schema, tensor keys, fp32 shapes, layer
 map, and digests before lowering. During program installation the bridge
@@ -154,54 +161,109 @@ npm run provision:hosted:check
 npm run provision:hosted:create
 ```
 
+Weights do not depend on the hook ABI. A model whose conversion is already published moves to a
+new runtime ABI without reconverting: `forks/build-production-webgpu.py rebind --model PUBLISHED_DIR
+--model-id ID --architecture ARCH --quantization Q --output DIR` checks that the directory is the
+runtime lock's conversion (its `tensor-cache.json` is the lock's `manifestSha256`), copies every file
+its `drowse-build.json` lists, checked by SHA-256, and rewrites only that manifest; then
+`compile --model DIR`. The four instruct q4
+models (Gemma 3 1B and 4B, Qwen3 1.7B and 4B) ship this way: their published weights were adopted
+and precision-promoted (`CONVERSION-SOURCE.json`), and `convert --quantization q4f32_1` would
+produce different, bf16-stored scales and norms. Check a compiled library on the CPU with
+`forks/verify-production-library.py --model DIR [--parity --reference-python PYTHON]` (the PyTorch
+reference needs Transformers 5).
+
 After converting and compiling a model, assemble its exact runtime closure and
 validate it against `runtime-lock.json`:
 
 ```bash
 npm run assemble:hosted:model -- CONVERTED_DIR MODEL.wasm PUBLISH_DIR
-npm run build:hosted:whitener -- MODEL_ID PUBLISH_DIR MODEL.wasm WEBLLM.js CORE_DIR --manifold-source ../browser-runtime/release-inputs/core-manifolds/welcoming.detached
+DROWSE_HOME=FITS_HOME ../browser-runtime/build-hosted-packs.sh MODEL_ID   # R, S, units, core statistics
+npm run build:hosted:whitener -- MODEL_ID PUBLISH_DIR MODEL.wasm WEBLLM.js CORE_DIR \
+  $(for c in ../browser-runtime/release-inputs/core-manifolds/*; do printf -- '--manifold-source %s ' "$c"; done) \
+  --neutral-statistics PACKS/MODEL_ID/SHA16/core
 npm run validate:hosted:core-pack -- MODEL_ID CORE_DIR
 npm run build:hosted:sae -- MODEL_ID PUBLISH_DIR MODEL.wasm WEBLLM.js CORPUS.json SAE_DIR
-npm run build:hosted:jlens -- MODEL_ID PUBLISH_DIR MODEL.wasm WEBLLM.js CORPUS.json WORDS.json JLENS_DIR
 npm run capture:hosted:residuals -- MODEL_ID PUBLISH_DIR MODEL.wasm WEBLLM.js INPUT.json CAPTURE_DIR
 python3 ../browser-runtime/validate_mlc_q4_parity.py PUBLISH_DIR CAPTURE_DIR
 npm run assemble:hosted:pack -- PACK_DIR
-npm run validate:hosted:instrument-pack -- MODEL_ID sae|jlens PACK_DIR
+npm run validate:hosted:instrument-pack -- MODEL_ID sae|jlens|slens PACK_DIR
+npm run validate:hosted:instrument-pack -- MODEL_ID units UNITS_DIR --with JLENS_DIR --with SLENS_DIR
 npm run publish:hosted:model -- MODEL_ID PUBLISH_DIR
-npm run publish:hosted:pack -- MODEL_ID core|sae|jlens PACK_DIR
+npm run publish:hosted:pack -- MODEL_ID core|sae|jlens|slens|units PACK_DIR
 ```
 
-The production-q4 comparator reports probe error against the activation scale:
-for each layer it divides the absolute scalar-projection difference by the
-larger residual norm times the probe-direction norm. This keeps the 1% gate
-well-defined when a valid probe projection is near zero. It separately requires
-the browser probe readback to reproduce the projection of its own captured
-residual and reports the cancellation-sensitive whole-trace ratio as a
-diagnostic only. Schema-v3 captures also run a disabled and enabled program
-through the same rank-one VM function and reject any pre-enabled-layer delta.
+The production-q4 comparator checks the unsteered residuals of every layer and
+position against the dequantized Transformers model, then the steered read on
+hook ABI v5 (capture schema 4): one drowse-structured-v4 program with linear
+probes on a fixed orthonormal sketch at every layer (the first direction the
+push of a rank-1 affine group at the middle layer), measured at every captured
+position with and without the group (`measurePreparedPositions`). Probe error
+is reported against the activation scale: the absolute projection difference
+over the larger residual norm times the probe-direction norm, so the 1% gate
+stays well-defined when a projection is near zero. It separately requires the
+control probes to reproduce the projection of the plain capture, rejects any
+pre-enabled-layer delta between the control and steered probes, and compares
+the steering delta's direction in the sketch.
 
-Candidate libraries that do not yet match the checked-in production lock can be
-captured against an explicit engineering lock without editing repository state:
+`webui/scripts/browser-core-build.mjs` runs the core builder (the unchanged
+`hosted-whitener.worker.ts`), the plain and measured captures and the
+injection-arithmetic oracle on B4's tiny v5 fixture libraries:
+`node scripts/browser-core-build.mjs --webllm WEB_LLM.js --fixtures DIR
+--arch qwen3|gemma3 --quantization q0f32|q4f32_1 --work SCRATCH`.
+
+Capture schema 5 adds B1 §4.3's production measures for a units (`standard-v4`) library and
+refuses them for a residual one (`q4_unit_parity.py`). Its `capture.json` carries
+`units: {block: {d_ff, n_heads, head_dim}, sites_sha256, static_reads}`:
+
+- `sites.f32`, little-endian fp32 `[layers, positions, d_ff + H·hd + d]` at the capture's
+  `layer_map` and `positions`: `act` (the neuron site, down_proj's input), then `z` (the head
+  site, o_proj's input), then `mid` (`h + N_ao(attn_o)`), from the replay. Each site's per-layer
+  relative error against the dequantized model is at most 1%.
+- `static_reads`, 1 to 64 entries `{layer, neuron, ids, probabilities}`, at least one at every
+  captured layer: `vocabReadoutTopK(unitWeightRows("neuron_write", [unit]), 8)`, the softmax of
+  `W_U · N_f(s·γ_mo ⊙ W_down[:, n])` over the whole vocabulary. Python's fp64 top 8 must share at
+  least 7 ids, each shared probability within 1e-3 relative.
+- Unit activity, from the two sides' sites: the top 32 neurons by peak `|act|` and the top 32
+  heads by peak write norm `‖(γ_ao ⊙ W_O^h) z_h‖ · r_ao` (the tap value of B1 §2.2), ranked by
+  flat index on ties, each with Jaccard index at least 0.9. The ranking is unscaled (reading
+  scales come from the units pack and divide both sides alike).
+
+The repository lock carries every value a compile does not produce; each library-bound field
+stays null until a hook ABI v5 library fills it. `prepare-hosted-candidate-lock.mjs` fills one
+model from its assembled publish directory and chains models into one candidate lock:
 
 ```bash
-npm run prepare:hosted:candidate-lock -- MODEL_ID PUBLISH_DIR /tmp/candidate-runtime-lock.json
-npm run capture:hosted:residuals -- MODEL_ID PUBLISH_DIR MODEL.wasm WEBLLM.js INPUT.json CAPTURE_DIR \
-  --runtime-lock /tmp/candidate-runtime-lock.json
-npm run build:hosted:whitener -- MODEL_ID PUBLISH_DIR MODEL.wasm WEBLLM.js CORE_DIR \
-  --manifold-source ../browser-runtime/release-inputs/core-manifolds/welcoming.detached \
-  --runtime-lock /tmp/candidate-runtime-lock.json
-npm run validate:hosted:core-pack -- MODEL_ID CORE_DIR \
-  --runtime-lock /tmp/candidate-runtime-lock.json
+npm run prepare:hosted:candidate-lock -- MODEL_ID PUBLISH_DIR CANDIDATE_1.json
+npm run prepare:hosted:candidate-lock -- MODEL_ID PUBLISH_DIR CANDIDATE_2.json \
+  --base CANDIDATE_1.json [--converted-revision SHA]
+npm run prepare:hosted:candidate-lock -- --adopt CANDIDATE_9.json
 ```
 
-The preparation tool starts from the repository lock, validates the assembled
-model closure, and writes a new lock with only that model's library digest
-replaced. It refuses to overwrite an existing file. The capture records both the
-exact-byte and canonical status-free lock digests and marks the source as
-`override`. It revalidates the complete lock schema, model identity, build
-provenance, and every local artifact before Chrome starts. An override capture
-can be compared locally, but the parity validator refuses to turn it into a
-release-evidence receipt.
+It sets `librarySha256` (`model.wasm`) and `manifestSha256` (`tensor-cache.json`), and
+`convertedRevision` once the publisher returns it; it refreshes the toolchain's fork-manifest and
+compiler-recipe digests from the checked-in files; and it refuses a directory whose build ABIs,
+profile, architecture, shapes, context, tokenizer or chat template differ from the lock, whose
+library lacks its profile's VM functions (or, residual, exports a unit function), or whose
+`mlc-chat-config.json` would make the library attest another block spec than the lock's (the
+derivation mirrors the overlay's `_drowse_block_spec`). It refuses to overwrite an output.
+`--adopt` writes a complete candidate to `runtime-lock.json` as `verified`, with
+`runtime-lock-identity-v1.json` beside it. A candidate lock is also an engineering lock: the
+capture, whitener and core-pack tools take it with `--runtime-lock`:
+
+```bash
+npm run capture:hosted:residuals -- MODEL_ID PUBLISH_DIR MODEL.wasm WEBLLM.js INPUT.json CAPTURE_DIR \
+  --runtime-lock CANDIDATE.json
+npm run build:hosted:whitener -- MODEL_ID PUBLISH_DIR MODEL.wasm WEBLLM.js CORE_DIR \
+  $(for c in ../browser-runtime/release-inputs/core-manifolds/*; do printf -- '--manifold-source %s ' "$c"; done) \
+  --neutral-statistics PACKS/MODEL_ID/SHA16/core \
+  --runtime-lock CANDIDATE.json
+npm run validate:hosted:core-pack -- MODEL_ID CORE_DIR --runtime-lock CANDIDATE.json
+```
+
+A capture against a candidate records both the exact-byte and canonical status-free lock
+digests and marks the source as `override`; the parity validator refuses to turn an override
+capture into a release-evidence receipt.
 
 Instrument builders can optionally record a corpus closure produced by
 `prepare_hosted_release_corpus.py` for research bookkeeping:
@@ -212,12 +274,7 @@ npm run build:hosted:sae -- MODEL_ID PUBLISH_DIR MODEL.wasm WEBLLM.js \
   --release-corpus RELEASE_DIR/release-corpus.json \
   --release-corpus-source APPROVED-SOURCE.json \
   --release-license-evidence LICENSE-EVIDENCE
-npm run build:hosted:jlens -- MODEL_ID PUBLISH_DIR MODEL.wasm WEBLLM.js \
-  RELEASE_DIR/jlens-corpus.json RELEASE_DIR/jlens-words.json JLENS_DIR \
-  --release-corpus RELEASE_DIR/release-corpus.json \
-  --release-corpus-source APPROVED-SOURCE.json \
-  --release-license-evidence LICENSE-EVIDENCE
-npm run validate:hosted:instrument-pack -- MODEL_ID sae|jlens PACK_DIR --release
+npm run validate:hosted:instrument-pack -- MODEL_ID sae|jlens|slens PACK_DIR --release
 ```
 
 When supplied, the builders verify and copy those bookkeeping files. They are
@@ -237,32 +294,54 @@ Hugging Face commit, so it must be an explicit release action:
 
 ```bash
 npm run publish:hosted:model -- MODEL_ID PUBLISH_DIR --upload
-npm run publish:hosted:pack -- MODEL_ID core|sae|jlens PACK_DIR --upload
+npm run publish:hosted:pack -- MODEL_ID core|sae|jlens|slens|units PACK_DIR --upload
 ```
 
 Record the returned immutable revision as `convertedRevision`, generate the
 catalog artifact list from that revision, and rerun the distribution preflight.
 Model publication alone is insufficient: the matching required core pack,
 signed catalog, and distribution lock must also be published before production
-loading is enabled. Precomputed J-lens and SAE packs are optional model-specific
-capabilities and are listed only when a compatible release already exists.
+loading is enabled. Precomputed R-lens, S-lens, units and SAE packs are optional
+model-specific capabilities and are listed only when a compatible release already exists.
 
-The whitener builder is a physical WebGPU release tool. It renders the bundled
-96-row neutral corpus through the exact q4 browser runtime, captures the
-post-block residual from every compiled layer, fits the reduced Mahalanobis
-representation with the shipped Rust/WASM kernel, and writes separately bound
-2K and 4K `neutral-whitener` pairs. It refuses an existing output directory and
-checks the model manifest, runtime identity, layer map, transfer digest, and
-context bindings. The required `--manifold-source` must name a v10 PCA discover
-folder; the builder captures and fits its nodes through the same q4 runtime and
-produces the seed browser-fitted `.drowse` needed for first-run steering. The
-independent validator checks both context closures and the complete browser
-archive before the pack manifest is assembled.
+The whitener builder is a physical WebGPU release tool. It fits the reduced
+Mahalanobis representation with the shipped Rust/WASM kernel
+(`src/hosted/fitting/neutralWhitener.ts`) and writes separately bound 2K and 4K
+`neutral-whitener` pairs. For Gemma 3 and Qwen 3, which drowse fits natively,
+`--neutral-statistics` is required: it names `build_hosted_packs.py`'s `core/`
+(unit statistics and the `out` and `mid` means of drowse's neutral pass, and the pass's
+activation rows, `neutral-rows.safetensors`), and the whitener is fitted from those
+native rows, the ones drowse's own whitener and so the units pack's write norms are built
+from. The shipped `neutral-statistics.json` then names the rows and each context's
+whitener digest (`whitener`), and the units pack binds the rows' digest, so the browser
+refuses units over any other whitener. For GPT-2, Pythia and Qwen3.5 base, which have no
+native neutral pass, the builder renders the bundled 96-row neutral corpus through the
+exact q4 browser runtime and fits from those captures. It refuses an existing output
+directory and checks the model manifest, runtime identity, layer map, transfer digest,
+and context bindings. Each `--manifold-source` (repeat it, one per concept) names a v10
+PCA discover folder; the builder captures its nodes through the same q4 runtime and fits
+them as the in-app fit does (a one-node concept folds against the neutral mean,
+`fitting/monopolar.ts`, as drowse's `_fit_monopolar` does), producing one browser-fitted
+`.drowse` per concept and context, the core concepts first-run steering and the probe
+rack start from. The independent validator (`validate:hosted:core-pack`) checks every
+context closure, that each context carries exactly the core roster
+(`release-inputs/core-manifolds/`), that a natively fitted model carries the neutral
+statistics bound to every context's whitener, and every browser archive before the pack
+manifest is assembled; `--neutral-rows PACKS/MODEL_ID/SHA16/core/neutral-rows.safetensors`
+also refits the whitener from the rows and requires the pack's.
 
-The same checked-in `welcoming.detached` source is used for all three model
-builds. Its 48 response pairs are aligned to the canonical baseline prompts,
-carry machine-readable authorship and CC0-1.0 provenance, and contain no fitted
-model tensors. Each build produces a separate runtime-fingerprinted archive.
+The core concepts are drowse 6.0's default roster: every bundled concept tagged in a
+default probe category (epistemic, alignment, register, cultural; `session.py`
+`PROBE_CATEGORIES`), seventeen in all, among them the one-node `deceptive`,
+`refusing` and `manipulative`, which fold against the neutral mean.
+`webui/scripts/sync-core-concepts.mjs` copies them from the pinned submodule into
+`release-inputs/core-manifolds/` (rerun it after a pin bump; the release-tool tests
+fail while the copies drift). Beside them sits the hosted starter `welcoming.detached`
+(original text, CC0-1.0), which the recorded landing demo steers. Every source's
+responses are aligned to the canonical baseline prompts, carry machine-readable
+authorship and license provenance, and contain no fitted model tensors. Each build
+fits them in the browser runtime itself, so every archive is bound to that runtime's
+identity and context and to the whitener the same build writes.
 
 The SAE builder is offline developer release tooling and is never shipped as a
 hosted user feature. It renders a release
@@ -275,48 +354,84 @@ registry. `--feature-metadata FEATURES.json` adds the validated optional
 sidecar to that closure. Raw activation rows remain local and are removed after
 the validated pack is produced.
 
-The lens builder (`build:hosted:jlens`, then `fit_hosted_jlens.py`) is likewise
-offline developer release tooling and is never shipped as a hosted user feature.
-Its packs are native drowse 6.0 lenses of the R family, fitted by drowse's own
-`fit_lens`. The capture renders and tokenizes the release corpus in the exact q4
-browser runtime and keeps, per document, the token ids it rendered and every
-block's output residual. `fit_lens` is transport: it recomputes each document's
-primal from the model's `ModelSpec` and writes every block's map out by hand,
-with no autograd and no forward hooks, so a captured residual can no longer be
-the point it linearizes at. The fitter therefore loads the dequantized MLC
-tensor cache (the weights the browser runs) with its projections as plain
-`nn.Linear` layers on the same parameters, checks `verify_model_spec` (GPT-2,
-Pythia and other LayerNorm, fused-qkv or hybrid models are refused), and fits
-`fit_lens(kind=R|J, sites=("out",))` over the captured token rows (`--kind`,
-R by default as in drowse's CLI; `dim_batch` 256). The captured residuals are
-the parity gate: transport's own primal must reproduce the browser's block
-outputs at every primal position, per layer, within `--max-residual-error`
-(relative Frobenius error, 0.01 by default, the bound
-`validate_mlc_q4_parity.py` holds captures to), or the fit refuses, as it does
-on any non-finite value. Both sides run fp32 on the same dequantized weights, so
-the gap is accumulation order. The fitter writes the lens with `save_lens_at`
-(format v7, `out` site, `corpus_sha256` drowse's `token_ids_v1` digest of the
-token rows), reports each layer's parity error and the split-half difference in
-its JSON result, and adds exact dequantized language-head rows for a curated
-single-token seed vocabulary used by the UI and pack preflight. The production
-registry also resolves arbitrary compatible single-token selectors against the
-loaded model's language head; the curated rows are not a selector allowlist.
-The builder assembles the pack and reopens it through that registry. Lens
-fitting stays unavailable inside the hosted application itself. Neither builder
-is imported by the PWA or callable through its worker protocol: browser users
-can only download, validate, activate, read, probe, gate, and steer with
-compatible precomputed packs.
+## Lens, units and core packs
 
-Browser J-lens packs retain up to eight evenly spaced source layers from an
-existing provider lens, including the first and last available block. This
-preserves a depth-spanning readout while bounding download size, browser memory,
-and GPU uploads. The launch catalog does not fit J-lenses; it packages compatible
-precomputed provider artifacts and records the exact source-layer map.
+Hosted lenses are drowse's own fits. For each model with units (the six whose blocks
+drowse 6.0 describes: the four Gemma 3 and two Qwen3 models), drowse fits R and S at
+`out` and `mid` (`drowse lens fit`, `fit_lens`) over the pinned FineWeb-Edu corpus
+(`release-corpus/native-lens-corpus.json`: 64 documents of 128 tokens), counts the
+corpus's tokens (`lens counts`) and runs the neutral pass (`unit stats`), all in fp32 on
+the weights the browser runs: the dequantized q4 export, or for the q0f32 Gemma 3 270M
+its source checkpoint, bit for bit. The recipe and its runbook are in the parity
+handoff (`B2-fits.md`); lens fitting is never part of the hosted application.
 
-After building a model, core pack, and J-lens pack, the physical instrument
-harness loads all three through the same browser loaders, enables live J-lens
+`build_hosted_packs.py` turns one model's native artifacts into packs bound to one
+runtime identity, without refitting; `build-hosted-packs.sh MODEL_ID` runs it with the
+identity `webui/scripts/hosted-runtime-identity.mjs` reads from the runtime lock,
+assembles each pack, reads it back through the browser registry and records sizes
+(`hosted-pack-sizes.mjs`). Output goes to a staging directory,
+`~/.drowse-parity/packs/MODEL_ID/<runtime sha256 prefix>/`; nothing is published.
+W4's recompiled libraries change the runtime identity: rerun the script with the new
+lock. The costly part, the units contrast statistics, is cached by drowse in its home,
+so a rebind takes seconds.
+
+- **`jlens`** (the R family): every layer of R, `out` L0..n−2 (the last block's `out`
+  read is the logit lens) and `mid` L0..n−1, one shard per (site, layer)
+  (`<site>.layer-<L>.safetensors`, key `layer_<L>`), the native files byte for byte, so
+  each shard's digest is the native manifest's. The v7 manifest is drowse's with three
+  fields bound to the runtime: `model_fingerprint` (the runtime identity's digest),
+  `model_source_fingerprint` (its source revision) and `model_layer_count`. The pack's
+  `pack.json` keeps the native identities. The curated browser vocabulary rides along.
+- **`slens`** (the S family): every layer of S at both sites, and the S embedding
+  statistics (B1 §5.1): `mean_E`, `Σ_E` (`embedding-statistics.safetensors`), the token
+  mask as little-endian u32 words, bit `v & 31` of word `v >> 5` set when token `v` is
+  kept (`embedding-statistics.mask.u32`), and `embedding-statistics.json` with the mask's
+  description (`{source: "corpus", detail, kept}`), the counting tokenizer's
+  fingerprint and file digest (`tokenizer_sha256`, the runtime's: the browser refuses the
+  statistics under another tokenizer) and the embedding scale. They are exactly the
+  session's `TokenEmbeddings`.
+- **`units`**: per layer `reads.layer-<L>` (population scalars per lens and population,
+  head-norm derivatives, whitened write norms) and `contrast.layer-<L>` (the `[V]`
+  statistics only `hide_hubs` reads), both straight from
+  `UnitReader.population_artifacts(layer)`; the null basis model-wide; `units.json` binds
+  the runtime, the R and S packs (`lens_identity` of their manifests), the S statistics
+  and the neutral pass every statistic averages over, with the digest of its rows (the
+  write norms' whitener, and the core pack's, are built from them). `build_hosted_packs.py`
+  refuses a layer without `neurons.write_norms`. Rank-3 tensors are stored
+  `[prod(shape[:-1]), shape[-1]]` with their logical shapes recorded. On the ABI v5 tiny
+  fixture every shipped units tensor equals the `unit-artifacts` golden on both
+  architectures (`tests/test_hosted_packs.py`).
+- **core statistics**: `core/neutral-statistics.*` (unit statistics, `out` and `mid`
+  means, stacked over layers) and `core/neutral-rows.safetensors` (the neutral pass's
+  rows, a build input that does not ship), added to the core pack by the whitener
+  builder above, which fits the core whitener from the rows.
+
+**Full depth.** Every layer of R and S at both sites ships, so unit reads, the anatomy
+and every head read reach every layer as natively; the eight-layer cap is gone. A lens or
+units pack installs its manifests, model-wide statistics and the live readout's R:out
+layers (up to eight, evenly spaced over the blocks before the last, within 448 MiB:
+`lensReadoutLayers`, the readout's rule since the first lens packs), so the readout runs
+offline after an install as before. Every other layer file is fetched the first time a
+read needs it, verified against the signed catalog closure and added to the pack's
+install (`packFileResidency`, `VerifiedArtifactDownloader.downloadPackFile`, the
+worker's `fetchFile`); the registry keeps recently read layers decoded
+(`BrowserInstrumentRegistry.lensMatrix`, `embeddingStatistics`, `unitsLayer`).
+
+| model | R pack (installs) | S pack (installs) | units | core statistics |
+|---|---|---|---|---|
+| gemma3-270m-instruct | 55.0 MiB (12.8) | 57.9 MiB (1.6) | 230 MiB (0.1) | 0.6 MiB |
+| gemma3-1b-instruct, gemma3-1b-pt | 259 MiB (41.1) | 268 MiB (5.1) | 339 MiB (0.1) | 2.4 MiB |
+| qwen3-1.7b | 881 MiB (129) | 912 MiB (16) | 240 MiB (0.2) | 2.6 MiB |
+
+One lens layer is `d² · 4` bytes (1.6, 5.1, 16 and 25 MiB for d = 640, 1152, 2048, 2560); a
+units layer is about 11.4 MiB of contrast statistics on Gemma's 262k vocabulary (6 MiB on
+Qwen's 152k) plus its reads. The 4B models' rows follow their fits (the parity handoff's
+`lanes/B6.md`).
+
+After building a model, core pack, and R-lens pack, the physical instrument
+harness loads all three through the same browser loaders, enables live R-lens
 probabilities, transfers the complete per-layer Jacobian program once into
-bounded GPU-resident chunks, and generates with a J-lens steering term without
+bounded GPU-resident chunks, and generates with an R-lens steering term without
 making an external request:
 
 ```bash
@@ -343,8 +458,8 @@ The command rehashes every local manifest object before opening Chrome, requires
 a confirmed hardware adapter with at least 10 storage buffers per shader stage,
 then measures ordinary generation, selective
 post-block capture, exact forced-token replay and compact cross-token scoring,
-an alternate-token fork, flat steering gated independently by geometry, J-lens
-probability, and SAE activation signals, J-lens and SAE steering/readout,
+an alternate-token fork, flat steering gated independently by geometry, R-lens
+probability, and SAE activation signals, R-lens and SAE steering/readout,
 a small spectral fit backed by the OPFS activation spool, nearest-node role
 selection and named-role generation, curved steering,
 streamed stop, unload/reload, and a final reload from reopened OPFS files while
@@ -391,9 +506,8 @@ TVM gitlink was last updated. Those passes explicitly depend on Apache TVM
 gitlink. The overlay manifest records the exact TVM base, upstream WebGPU
 backport, TVM-FFI, Emscripten, and LLVM identities.
 
-The optional exact-source MLC check requires that pinned source-built TVM
-compiler. It fails when the toolchain is unavailable instead of reporting a
-skipped gate:
+The exact-source C TVM VM check requires that pinned source-built TVM compiler. It fails when
+the toolchain is unavailable instead of reporting a skipped gate:
 
 ```bash
 TVM_DEVICE_BACKEND_AUTOLOAD=0 \
@@ -402,101 +516,24 @@ SKIP_LOADING_MLCLLM_SO=1 \
 PYTHONPATH=/path/to/tvm/python:/path/to/mlc-llm/python \
   /path/to/venv/bin/python browser-runtime/forks/verify-mlc-hook.py \
     --mlc-repository /path/to/mlc-llm \
-    --tvm-repository /path/to/tvm
+    --tvm-repository /path/to/tvm [--units-fixtures FIXTURES]
 ```
 
-That check proves the exact Qwen3, Llama, and Gemma 3 graph exports contain the four
-steering and four selective-capture entry points and executes the shared
-rank-one and fp32 capture goldens through a compiled C TVM VM. It does not
-prove WebGPU, q4, lifecycle, long-prefill, or physical-device feasibility.
+Without `--units-fixtures` it checks the Qwen3, Llama and Gemma 3 graph exports and runs the
+structured, geometry, curved and exact-readout goldens through a compiled C TVM VM. With it, it
+runs drowse's units, replay and read goldens (`drowse/tests/fixtures/browser/*`) over the four
+fixture libraries `forks/build-units-fixtures.py` makes from drowse's checkpoints (Qwen3 and
+Gemma 3 at q0f32 and q4f32_1). `webui/scripts/browser-units-goldens.mjs` runs the same goldens
+through the vendored WebLLM bridge on WebGPU. Neither proves a production library, q4 parity or
+a physical device; those are the per-library records below.
 
-For the WebGPU compile gate, first source exact Emscripten 3.1.56 and rebuild
-both support runtimes against the pinned TVM checkout:
-
-```bash
-export TVM_SOURCE_DIR=/path/to/tvm
-make -C /path/to/mlc-llm/web clean
-make -C /path/to/tvm/web clean
-(cd /path/to/mlc-llm && ./web/prep_emcc_deps.sh)
-```
-
-Then compile each architecture fixture with the LLVM-18-enabled TVM compiler:
-
-```bash
-TVM_DEVICE_BACKEND_AUTOLOAD=0 \
-TVM_LIBRARY_PATH=/path/to/tvm-build/lib \
-PYTHONPATH=/path/to/tvm/python:/path/to/mlc-llm/python \
-  /path/to/venv/bin/python browser-runtime/forks/compile-tiny-webgpu.py \
-    --mlc-repository /path/to/mlc-llm --tvm-repository /path/to/tvm \
-    --architecture qwen3 --output /tmp/drowse-tiny-qwen3.wasm
-```
-
-Repeat with `--architecture llama` and `--architecture gemma3_text` for the
-architecture regression fixtures. The compiler requires a new output path,
-validates the resulting WebAssembly with the matching Emscripten Binaryen tool,
-and verifies that every rank-one, structured, curved, capture, and J-lens VM
-function remains in the library. The three launch models use `q4f16_1`; pass
-`--context-window-size 4096` for the long-prefill Qwen3 fixture.
-
-Create the matching deterministic tensor cache with the same architecture,
-quantization, and context arguments. The fixture uses nonzero embeddings and
-unit normalization weights so the browser gate exercises an actual rank-one
-residual change; q4 caches use valid offset-packed int4 values and scales:
-
-```bash
-TVM_DEVICE_BACKEND_AUTOLOAD=0 \
-TVM_LIBRARY_PATH=/path/to/tvm-build/lib \
-PYTHONPATH=/path/to/tvm/python:/path/to/mlc-llm/python \
-  /path/to/venv/bin/python browser-runtime/forks/create-tiny-webgpu-model.py \
-    --mlc-repository /path/to/mlc-llm --tvm-repository /path/to/tvm \
-    --architecture qwen3 --quantization q4f16_1 \
-    --output /tmp/drowse-tiny-qwen3-model
-```
-
-After building the WebLLM overlay, run the compiled library through a dedicated
-browser worker:
-
-```bash
-node webui/scripts/browser-runtime-feasibility.mjs \
-  --webllm /path/to/web-llm/lib/index.js \
-  --model /tmp/drowse-tiny-qwen3-model \
-  --library /tmp/drowse-tiny-qwen3.wasm \
-  --architecture qwen3 --quantization q4f16_1 --reloads 3
-```
-
-Pass `--browser-channel chrome` or `--browser-channel msedge` to run the same
-gate against an installed production browser instead of Playwright's bundled
-Chromium.
-
-The harness fails on uncaptured WebGPU errors and checks ordinary generation,
-rank-one and structured affine injection, SAE probes, live gates, simultaneous
-curves, multidimensional and periodic curves, full-vocabulary J-lens
-probabilities, hook clearing, streamed stop, repeated load/unload, and worker
-termination. For the shape-cache regression, compile the Qwen3 q4f16 fixture
-at a 4096-token context and run separate
-`--prompt-tokens 2048` and `--prompt-tokens 4095` cases. That result belongs to
-the Qwen long-prefill regression; Qwen3-1.7B and Qwen3-4B also have independent
-tiny-fp32 and production-q4 parity coverage.
-
-Pass `--verified-artifacts` to preload each fixture object exactly once and
-provide it to the fork through a caller-owned, read-only artifact cache. This
-exercises configuration, tokenizer, model-library, and tensor-shard loading
-without allowing WebLLM to create a second browser cache. The harness rejects
-any missing object, any unexpected URL, or a repeated network fetch. This mode
-uses a worker-side configured `MLCEngine`; caller-owned caches are deliberately
-not sent through structured-clone worker messages.
-
-Add `--selected-adapter --reloads 1` to prove that the production device is
-requested from the exact adapter supplied by Drowse. WebGPU adapters are
-single-use for device creation in current Chromium, so the hosted capability
-gate destroys its calibration device, then acquires a fresh adapter and rejects
-it unless the hardware status, identity, features, and bucketed limits match the
-checked adapter. Repeated load/unload testing likewise requests a fresh adapter
-per load.
-
-These deterministic tiny checks prove fp32 and q4 browser execution only. They
-do not satisfy production-model numeric parity, Android, device-loss, or the
-physical release matrix.
+For the WebGPU compile gate, source exact Emscripten 3.1.56, rebuild both support runtimes
+against the pinned TVM checkout (`make -C mlc-llm/web`, `TVM_HOME=… make -C tvm/web`), and
+compile each architecture fixture with `forks/compile-tiny-webgpu.py --architecture
+qwen3|llama|gemma3_text` (or `--model-config` for a units fixture). The compiler requires a new
+output path, validates the WebAssembly with the matching Binaryen tool, and requires the v5
+export set for its architecture (`overlay_checks.py`: `REQUIRED_FUNCTIONS`, plus
+`UNIT_FUNCTIONS` on Qwen3 and Gemma 3, none on Llama) and the shader checks.
 
 Production-size compilation must also exercise a launch model with its real
 layer count. A two-layer fixture cannot detect per-stage WebGPU binding growth.
@@ -519,40 +556,80 @@ origins. It embeds the current and next Ed25519 public keys, the minimum catalog
 sequence, and the exact Hugging Face artifact redirect origin exercised by the
 full distribution preflight. Its verified state authorizes catalog downloads.
 
-`runtime-feasibility-evidence.json`, `authoring-evidence.json`, and
-`benchmark-evidence.json` remain optional engineering records. They are useful
-for regression tracking and support-policy decisions, but their status,
-producer registrations, source ancestry, and matrix completeness do not enable
-or block downloads, generation, fitting, or a release build.
+## Release evidence
 
-The current launch catalog contains Gemma 3 270M, Qwen3-1.7B, and Qwen3-4B. Each release model
-must include an already-released compatible J-lens, selected automatically in
-the first-run flow. The UI advertises only context profiles physically exercised for each
-model. Authoring-evidence ledgers and a fixed 48-cell benchmark matrix are not
-download gates, but each published model still requires a real-browser load,
-generation, steering, unload, and offline-reload pass. Models that list an
-existing J-lens or SAE pack also require the matching browser instrument pass.
+What a hook ABI v5 release records, per library and per pack. Records are made by
+`record-hosted-evidence.mjs` from a clean checkout at the tested revision, through the
+registered producers (`release-evidence-producers.mjs`), each record bound to its producer's
+source closure, its checked-in config (`browser-runtime/evidence-configs/`) and the runtime lock
+identity, and kept under `browser-runtime/evidence/`. A submodule bump is executable source, so
+records made against another drowse pin do not carry.
+
+Runtime evidence (`runtime-evidence.json`, `runtime-evidence.schema.json` schema 4):
+
+| record | what it shows | observer | per |
+|---|---|---|---|
+| `cVmGoldens` | every units, replay and read golden (block sites, unit ablation incl. `mixed`, unit probes, attention patterns, token anatomy, unit activity, unit/lens/S reads, unit artifacts, neuron push) within its file's tolerance, plus the structured, geometry and readout goldens, on the C TVM VM | `browser-runtime/record-cvm-goldens.py` (runs `verify-mlc-hook.py` twice with the exact toolchain) | the four fixture libraries, one record |
+| `webGpuGoldens` | the same goldens through the vendored bridge on WebGPU (the record's bridge digest must be the lock archive's `package/lib/index.js`, so run it with `--webllm node_modules/@drowse/web-llm/lib/index.js`), and each library's schema-4 descriptor attested by the adapter (`attestCompiledStructuredHookProfile`, unit sites 1); each fixture library and model is recorded by digest | `webui/scripts/browser-units-goldens.mjs --report`, one argument set per library | the four fixture libraries, one record |
+| `productionLibrary` | the production library loaded by the physical harness: its descriptor attested at load against the lock's profile and block spec (a mismatch refuses the load), then every check of its profile, including `units` (an ablation that moves the next-token distribution, finite taps, one anatomy replay, one static read, the S readout) on `standard-v4` or `unit_refusal` (each unit call answers the lock's `unitRefusal`, no unit function exported) on `standard-v4-residual`, at an advertised context | `webui/scripts/browser-full-runtime.mjs` | each lock model (`libraries.<id>.productionLibrary`) |
+| `productionQ4Parity` | q4 against the source weights (B1 §4.3 item 2): hook-disabled greedy parity, probe and capture error ≤ 1%, steering direction cosine ≥ 0.99; on a `standard-v4` library also `act`, `z` and `mid` ≤ 1% per layer, neuron-write static reads ≤ 1e-3 relative with top-8 overlap ≥ 7/8, and top-32 unit activity Jaccard ≥ 0.9 (null on a residual library) | `capture-hosted-residuals.mjs` (capture schema 5) then `validate_mlc_q4_parity.py` | each q4f32_1 model (`libraries.<id>.productionQ4Parity`) |
+
+Offline, before any record: `assemble-hosted-model.mjs` requires each library's VM function
+surface (present and, for a residual library, absent) from the overlay's own lists, and
+`prepare-hosted-candidate-lock.mjs` checks its block spec against its converted configuration.
+
+Per pack, the release gate is the validator under the release policy, which publishing and
+catalog admission both run (`--release` for `jlens`, `slens`, `units`): native R and S lenses at
+full depth on both sites with split halves over the pinned corpus, a units pack covering every
+layer and binding its R and S lenses, S statistics and the core pack's neutral pass, and the
+corpus attribution in every one of them; the core validator requires the 17+1 core concepts and,
+on Gemma 3 and Qwen3, the neutral statistics bound to every context's whitener. The physical
+instrument record (`instrumentIntegration`, `authoring-evidence.json`) loads a model's core,
+lens and SAE packs through the browser loaders.
+
+`authoring-evidence.json` and `benchmark-evidence.json` keep their gates. None of these ledgers
+enables or blocks downloads, generation, fitting or a release build by itself; the release
+transaction below names what does.
+
+The catalog for this release lists the nine v5 libraries. A `standard-v4` model carries its R, S
+and units packs at every advertised context (the catalog builder refuses one without them), a
+residual model none; the first run selects them by default. The UI advertises only context
+profiles physically exercised for each model.
 
 ## Release transaction
 
-1. Exercise the advertised context profiles for all three launch models.
-2. Publish each model's immutable converted files, required core pack, and an
-   already-released exact-model J-lens that passes the browser pack validator.
-   Add compatible precomputed SAE packs when available; never fit either
-   instrument as part of the browser release process.
-3. Fill the model revision and artifact SHA-256 fields in `runtime-lock.json`
-   and set its status to `verified`.
-4. Generate and sign the catalog, fill the exact Hugging Face redirect origins,
-   and set `distribution-lock.json` to `verified`.
-5. Run the release checker and distribution preflight:
+1. Compile the nine libraries with the v5 overlay (`compiler/README.md`), assemble each
+   (`assemble:hosted:model`), and run the C VM and WebGPU goldens on the four fixture libraries
+   (`record-cvm-goldens.py`, `browser-units-goldens.mjs --report`) as checks. Nothing is recorded
+   yet: every record in the ledger carries the one revision and runtime lock identity it was made
+   at, and both change when the lock is adopted in step 3.
+2. Fill a candidate lock from the assembled directories (`prepare:hosted:candidate-lock`, one
+   model at a time with `--base`), rebind the packs to each new runtime identity
+   (`RUNTIME_LOCK=CANDIDATE.json build-hosted-packs.sh MODEL_ID`) and build each core pack
+   against the candidate. Engineering runs (captures, the physical harness) take the candidate
+   with `--runtime-lock`; their reports are marked `override` and are not release evidence.
+3. Publish each model's converted files and core pack (`publish:hosted:model`,
+   `publish:hosted:pack ... core`, each with `--runtime-lock CANDIDATE.json`), then its R, S and
+   units packs and any SAE pack (the publisher runs the release policy); fill each `convertedRevision` (`--converted-revision`;
+   a later recompile clears it) and adopt the candidate (`--adopt`), which writes
+   `runtime-lock.json` as `verified` and its identity fixture. Commit it.
+4. At that commit, record every runtime record: `cVmGoldens` and `webGpuGoldens` (re-run
+   through their producers), each library's `productionLibrary` and, for q4,
+   `productionQ4Parity`, all against the repository lock (the producers refuse an override-lock
+   report or capture), then the ledger. The attestation verifier refuses a ledger whose records
+   name different revisions, so a record made before the adopting commit cannot be reused; any
+   later commit, a submodule bump included, means recording them all again.
+5. Generate and sign the catalog (sequence 11 for this release), fill the exact Hugging Face
+   redirect origins, set `distribution-lock.json`'s minimum sequence and status to `verified`.
+6. Run the release checker and distribution preflight:
 
    ```bash
    node webui/scripts/check-runtime-lock.mjs --release
    node webui/scripts/preflight-hosted-distribution.mjs
    ```
 
-Parity, authoring, lifecycle, and cross-platform runs remain ordinary regression
-tests and local reports; they are not part of the release transaction.
+Authoring, lifecycle and cross-platform runs remain ordinary regression tests and local
+reports; they are not part of the release transaction.
 
 `runtimeIdentitySha256` is SHA-256 over canonical, recursively key-sorted JSON
 for the runtime identity record. A context binding is the same digest over
@@ -571,6 +648,7 @@ before it advances the sequence. A rotation that cannot sign with the outgoing
 key replaces both keys in the lock and passes the lock the published catalog was
 signed under: `--previous-lock OLD_DISTRIBUTION_LOCK`. Builds with the old lock
 reject the new catalog, so deploy the new build right after publishing.
+
 ## Cloudflare Pages deployment
 
 Cloudflare credentials, Pages project creation, Access policy, DNS, deployment,

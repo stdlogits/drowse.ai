@@ -16,6 +16,8 @@ import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createServer } from "vite";
+import { structuredHookProfile as structuredHookProfileId } from "./hosted-model-profiles.mjs";
+import { RELEASE_POLICY_KINDS } from "./hosted-instrument-release-policy.mjs";
 import { validatePublishDirectory } from "./publish-hosted-model.mjs";
 
 const runtimeLockUrl = new URL("../../browser-runtime/runtime-lock.json", import.meta.url);
@@ -141,6 +143,11 @@ async function prepareModel(entry, runtimeLock, specDirectory, semanticValidator
     throw new Error(`${lock.id} has no required core pack`);
   }
   const packs = [];
+  // A units pack validates through the R and S lens packs it binds, so they load beside it.
+  const lensDirectories = entry.packs
+    .filter((pack) => pack?.kind === "jlens" || pack?.kind === "slens")
+    .map((pack) => resolvePortable(specDirectory, pack.directory, `${lock.id} pack directory`));
+  const coreDirectory = entry.packs.find((pack) => pack?.kind === "core");
   for (const pack of entry.packs) {
     packs.push(await preparePack(
       pack,
@@ -149,6 +156,10 @@ async function prepareModel(entry, runtimeLock, specDirectory, semanticValidator
       runtimeIdentitySha256,
       contextProfiles,
       semanticValidator,
+      pack?.kind === "units" ? lensDirectories : [],
+      pack?.kind === "units" && coreDirectory !== undefined
+        ? resolvePortable(specDirectory, coreDirectory.directory, `${lock.id} core pack directory`)
+        : null,
     ));
   }
   const requiredCore = packs.filter((pack) => pack.kind === "core" && pack.required);
@@ -156,20 +167,36 @@ async function prepareModel(entry, runtimeLock, specDirectory, semanticValidator
     throw new Error(`${lock.id} must have exactly one required core pack`);
   }
   if (entry.modelType !== "base" && !packs.some((pack) => pack.kind === "jlens")) {
-    throw new Error(`${lock.id} must include an existing compatible J-lens pack`);
+    throw new Error(`${lock.id} must include an existing compatible R-lens pack`);
   }
   if (entry.modelType !== undefined && !["chat", "base"].includes(entry.modelType)) {
     throw new Error(`${lock.id} modelType must be chat or base`);
   }
   for (const profile of contextProfiles) {
-    const sae = packs.filter((pack) =>
-      pack.kind === "sae" &&
-      pack.compatibleContextBindingSha256.includes(profile.bindingSha256)
+    const compatible = (kind) => packs.filter((pack) =>
+      pack.kind === kind && pack.compatibleContextBindingSha256.includes(profile.bindingSha256)
     );
-    if (sae.length > 1) {
-      throw new Error(
-        `${lock.id} context ${profile.contextTokens} has multiple compatible SAE packs`,
-      );
+    for (const [kind, label] of [["sae", "SAE"], ["slens", "S-lens"], ["units", "units"]]) {
+      if (compatible(kind).length > 1) {
+        throw new Error(
+          `${lock.id} context ${profile.contextTokens} has multiple compatible ${label} packs`,
+        );
+      }
+    }
+    if (compatible("units").length === 1 && (compatible("slens").length !== 1 || compatible("jlens").length === 0)) {
+      throw new Error(`${lock.id} context ${profile.contextTokens} has a units pack without its R and S lens packs`);
+    }
+    // Hook ABI v5 parity: a units library ships the units, the token anatomy and the S lens, so
+    // its R, S and units packs are in the release at every context; a residual library refuses
+    // unit reads (the lock's unitRefusal) and has no native S lens or units.
+    if (lock.structuredHookProfile === "standard-v4") {
+      for (const [kind, label] of [["jlens", "R-lens"], ["slens", "S-lens"], ["units", "units"]]) {
+        if (compatible(kind).length === 0) {
+          throw new Error(`${lock.id} context ${profile.contextTokens} has no ${label} pack (standard-v4 ships units and both lenses)`);
+        }
+      }
+    } else if (compatible("slens").length > 0 || compatible("units").length > 0) {
+      throw new Error(`${lock.id} is ${lock.structuredHookProfile} and cannot list S-lens or units packs`);
     }
   }
   return {
@@ -234,12 +261,14 @@ async function preparePack(
   runtimeIdentitySha256,
   contextProfiles,
   semanticValidator,
+  companions = [],
+  coreStatistics = null,
 ) {
   exactKeys(entry, [
     "id", "kind", "displayName", "license", "directory", "sourceRepository",
     "sourceRevision", "required", "compatibleContextTokens",
   ], `${lock.id} pack`);
-  if (!["core", "jlens", "sae"].includes(entry.kind)) {
+  if (!["core", "jlens", "slens", "units", "sae"].includes(entry.kind)) {
     throw new Error(`${lock.id} pack kind is invalid`);
   }
   if (typeof entry.required !== "boolean" || (entry.kind === "core") !== entry.required) {
@@ -259,7 +288,7 @@ async function preparePack(
   }
   const directory = resolvePortable(specDirectory, entry.directory, `${lock.id} pack directory`);
   const manifest = await validatePackDirectory(directory);
-  await semanticValidator(lock.id, entry.kind, directory);
+  await semanticValidator(lock.id, entry.kind, directory, undefined, companions, coreStatistics);
   const baseUrl = `https://huggingface.co/${entry.sourceRepository}/resolve/${entry.sourceRevision}/`;
   const files = manifest.files.map((file) => catalogFile(
     { ...file, role: entry.kind === "core" ? "core_pack" : "instrument" },
@@ -287,10 +316,17 @@ async function preparePack(
   };
 }
 
-export async function validatePackSemantics(modelId, kind, directory, runner = exec) {
+export async function validatePackSemantics(
+  modelId, kind, directory, runner = exec, companions = [], coreStatistics = null,
+) {
   const args = kind === "core"
     ? [fileURLToPath(coreValidatorUrl), modelId, directory]
-    : [fileURLToPath(instrumentValidatorUrl), modelId, kind, directory];
+    : [
+        fileURLToPath(instrumentValidatorUrl), modelId, kind, directory,
+        ...(RELEASE_POLICY_KINDS.includes(kind) ? ["--release"] : []),
+        ...companions.flatMap((companion) => ["--with", companion]),
+        ...(coreStatistics === null ? [] : ["--core-statistics", coreStatistics]),
+      ];
   try {
     await runner(process.execPath, args, { encoding: "utf8" });
   } catch (error) {
@@ -374,20 +410,20 @@ export function prepareRequirements(value, modelId, structuredHookProfile) {
   if (!value.limits || typeof value.limits !== "object" || Array.isArray(value.limits)) {
     throw new Error(`${modelId} required limits are invalid`);
   }
-  if (structuredHookProfile === "standard-v3") {
-    for (const [name, minimum] of Object.entries(
-      EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
-    )) {
-      if (
-        !Object.hasOwn(value.limits, name) ||
-        !Number.isSafeInteger(value.limits[name]) ||
-        value.limits[name] < minimum
-      ) {
-        throw new Error(
-          `${modelId} ${name} must explicitly declare at least ${minimum} ` +
-            "for standard-v3 exact GPU readout",
-        );
-      }
+  // Every hook ABI v5 library, units or residual, exports exact-readout-v2's top-k kernels.
+  structuredHookProfileId(structuredHookProfile);
+  for (const [name, minimum] of Object.entries(
+    EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
+  )) {
+    if (
+      !Object.hasOwn(value.limits, name) ||
+      !Number.isSafeInteger(value.limits[name]) ||
+      value.limits[name] < minimum
+    ) {
+      throw new Error(
+        `${modelId} ${name} must explicitly declare at least ${minimum} ` +
+          `for ${structuredHookProfile} exact GPU readout`,
+      );
     }
   }
   return { features: [...value.features], limits: { ...value.limits } };

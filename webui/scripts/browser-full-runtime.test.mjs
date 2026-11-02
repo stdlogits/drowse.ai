@@ -5,7 +5,7 @@ import test from "node:test";
 import { createServer } from "vite";
 import {
   BROWSER_FULL_RUNTIME_TOOL_VERSION,
-  REQUIRED_BROWSER_FULL_RUNTIME_CHECKS,
+  requiredBrowserFullRuntimeChecks,
   createBrowserFullRuntimeReport,
   isBrowserFullRuntimeWebGpuError,
   parseBrowserFullRuntimeArguments,
@@ -227,28 +227,12 @@ test("requires a model closure that exactly matches the selected runtime lock", 
   }
 });
 
-test("accepts only the production loader's exact legacy runtime aliases", () => {
-  for (const runtimeAbi of ["saklas-web-runtime-v1", "polythetic-web-runtime-v1"]) {
+test("a closure names exactly the lock's runtime ABI", () => {
+  for (const runtimeAbi of ["drowse-web-runtime-v1", "saklas-web-runtime-v1", "polythetic-web-runtime-v1"]) {
     const fixture = modelClosure();
-    fixture.runtimeLock.runtimeAbi = "drowse-web-runtime-v1";
-    fixture.manifest.runtimeAbi = runtimeAbi;
-    const original = structuredClone(fixture);
-    assert.doesNotThrow(() => validateBrowserFullRuntimeModelClosure(fixture));
-    assert.deepEqual(fixture, original);
-
-    fixture.files.find(file => file.role === "model_library").sha256 = "f".repeat(64);
-    assert.throws(() => validateBrowserFullRuntimeModelClosure(fixture), /model_library/);
-  }
-  for (const runtimeAbi of ["saklas-web-runtime-v2", "other-web-runtime-v1"]) {
-    const fixture = modelClosure();
-    fixture.runtimeLock.runtimeAbi = "drowse-web-runtime-v1";
     fixture.manifest.runtimeAbi = runtimeAbi;
     assert.throws(() => validateBrowserFullRuntimeModelClosure(fixture), /runtime ABI/);
   }
-  const future = modelClosure();
-  future.runtimeLock.runtimeAbi = "drowse-web-runtime-v2";
-  future.manifest.runtimeAbi = "saklas-web-runtime-v1";
-  assert.throws(() => validateBrowserFullRuntimeModelClosure(future), /runtime ABI/);
 });
 
 test("recognizes uncaptured WebGPU and device-loss console failures", () => {
@@ -421,15 +405,26 @@ test("cross-verifies only exact artifact EOF aborts after server and OPFS proof"
 
 test("accepts only one measured pass for every required check in order", () => {
   const events = transcript();
-  const checks = validateBrowserFullRuntimeTranscript(events);
-  assert.deepEqual(Object.keys(checks), REQUIRED_BROWSER_FULL_RUNTIME_CHECKS);
+  const checks = validateBrowserFullRuntimeTranscript(events, "standard-v4");
+  assert.deepEqual(Object.keys(checks), requiredBrowserFullRuntimeChecks("standard-v4"));
   assert.ok(Object.values(checks).every((check) => check.passed === true));
+  // A units library runs the units check; a residual one the refusal check; no other profile.
+  assert.equal(requiredBrowserFullRuntimeChecks("standard-v4").includes("units"), true);
+  assert.equal(requiredBrowserFullRuntimeChecks("standard-v4-residual").includes("unit_refusal"), true);
+  assert.equal(requiredBrowserFullRuntimeChecks("standard-v4-residual").includes("units"), false);
+  assert.throws(() => requiredBrowserFullRuntimeChecks("standard-v3"), /predates hook ABI v5/);
+  assert.throws(
+    () => validateBrowserFullRuntimeTranscript(events, "standard-v4-residual"),
+    /unit_refusal did not start in the required order/,
+  );
 
   const report = createBrowserFullRuntimeReport({
     events,
+    structuredHookProfile: "standard-v4",
     environment: { browser: "Chrome", version: "140.0.0.0" },
     producedAt: new Date("2026-08-29T12:00:00.000Z"),
   });
+  assert.equal(report.structuredHookProfile, "standard-v4");
   assert.equal(report.toolVersion, BROWSER_FULL_RUNTIME_TOOL_VERSION);
   assert.equal(report.passed, true);
   assert.equal(report.releaseEvidence, false);
@@ -441,34 +436,34 @@ test("fails closed on skipped, reordered, unmeasured, duplicate, or extra checks
   const missing = transcript();
   missing.splice(5, 1);
   assert.throws(
-    () => validateBrowserFullRuntimeTranscript(missing),
+    () => validateBrowserFullRuntimeTranscript(missing, "standard-v4"),
     /did not produce a measured pass/,
   );
 
   const reordered = transcript();
   [reordered[2], reordered[4]] = [reordered[4], reordered[2]];
   assert.throws(
-    () => validateBrowserFullRuntimeTranscript(reordered),
+    () => validateBrowserFullRuntimeTranscript(reordered, "standard-v4"),
     /required order/,
   );
 
   const unmeasured = transcript();
   unmeasured[1] = { ...unmeasured[1], measurements: {} };
   assert.throws(
-    () => validateBrowserFullRuntimeTranscript(unmeasured),
+    () => validateBrowserFullRuntimeTranscript(unmeasured, "standard-v4"),
     /has no measurements/,
   );
 
   const nonfinite = transcript();
   nonfinite[1] = { ...nonfinite[1], measurements: { observed: Number.NaN } };
   assert.throws(
-    () => validateBrowserFullRuntimeTranscript(nonfinite),
+    () => validateBrowserFullRuntimeTranscript(nonfinite, "standard-v4"),
     /non-finite/,
   );
 
   const extra = [...transcript(), { type: "check_started", check: "invented" }];
   assert.throws(
-    () => validateBrowserFullRuntimeTranscript(extra),
+    () => validateBrowserFullRuntimeTranscript(extra, "standard-v4"),
     /extra events/,
   );
 });
@@ -524,23 +519,8 @@ test("streams physical check progress before the terminal report", async () => {
   );
 });
 
-test("the feasibility harness accepts every launch architecture", async () => {
-  const source = await readFile(
-    resolve(import.meta.dirname, "browser-runtime-feasibility.mjs"),
-    "utf8",
-  );
-  assert.match(
-    source,
-    /\["qwen3", "llama", "gemma3_text"\]\.includes\(result\.architecture\)/u,
-  );
-  assert.match(
-    source,
-    /--architecture must be qwen3, llama, or gemma3_text/u,
-  );
-});
-
 function transcript() {
-  return REQUIRED_BROWSER_FULL_RUNTIME_CHECKS.flatMap((check, index) => [
+  return requiredBrowserFullRuntimeChecks("standard-v4").flatMap((check, index) => [
     { type: "check_started", check },
     { type: "check_passed", check, measurements: { observed: index + 1 } },
   ]);

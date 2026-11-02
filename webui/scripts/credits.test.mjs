@@ -42,6 +42,13 @@ try {
   for (const source of ["arxiv.org/abs/2310.01405", "github.com/vgel/repeng", "arxiv.org/abs/2502.02716", "arxiv.org/abs/2605.05115", "arxiv.org/abs/2601.10387", "transformer-circuits.pub/2026/workspace"]) {
     assert.ok(credits.includes(source), `research lineage links ${source}`);
   }
+  // The hosted lenses' corpus is credited as its approved attribution names it.
+  const corpus = JSON.parse(await readFile("../browser-runtime/release-corpus/native-lens-corpus.json", "utf8"));
+  assert.equal(corpus.attributionApproval?.reviewStatus, "approved");
+  for (const required of ["FineWeb-Edu", corpus.dataset.url, "ODC-By 1.0", "Lozhkov, Ben Allal, von Werra and Wolf, 2024", "Common Crawl's Terms of Use"]) {
+    assert.ok(credits.includes(required), `Credits attributes the lens corpus: ${required}`);
+  }
+  assert.equal(corpus.dataset.license, "ODC-By-1.0");
   assert.match(credits, /Gemma is provided under and subject to the Gemma Terms of Use found at ai\.google\.dev\/gemma\/terms\./, "Gemma attribution notice is shown");
   // Torph ships inside Ledger's MorphText, so its notice stays; no icon set or monospace face ships.
   for (const file of ["/LICENSE-Wix-Madefor.txt", "/LICENSE-Torph.txt"]) {

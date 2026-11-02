@@ -455,7 +455,7 @@ try {
     },
     ...browserResult.events,
   ];
-  validateBrowserFullRuntimeTranscript(events);
+  validateBrowserFullRuntimeTranscript(events, executionProfiles.structuredHookProfile);
   const artifactRequestAudit = validateBrowserArtifactAudit({
     origin,
     expectedSets: Object.fromEntries(
@@ -496,6 +496,7 @@ try {
   }
   const report = createBrowserFullRuntimeReport({
     events,
+    structuredHookProfile: executionProfiles.structuredHookProfile,
     environment: {
       ...browserResult.environment,
       browserChannel: options.browserChannel,

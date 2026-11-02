@@ -4,11 +4,15 @@ import { BrowserActivationSpool } from "../src/hosted/fitting/activationSpool";
 import { BrowserCapabilityChecker } from "../src/hosted/runtime/capabilities";
 import type { BrowserModelArtifact, BrowserModelLoadRequest } from "../src/hosted/runtime/modelBackend";
 import { DrowseWebLlmRuntime, type DrowseWebLlmModule } from "../src/hosted/runtime/webLlmEngine";
+import type { BlockSpec } from "../src/hosted/runtime/structuredHookProfile";
 import type { WebLlmGeneratedToken } from "../src/hosted/runtime/webLlmGeneration";
 
 self.onmessage = async ({ data }: MessageEvent<{
   modelId: string;
   identity: RuntimeIdentity;
+  structuredHookProfile: ModelVariant["structuredHookProfile"];
+  blockSpec: BlockSpec | null;
+  unitRefusal: string | null;
   modelFiles: CatalogFile[];
   seeds: number[];
 }>) => {
@@ -27,7 +31,7 @@ self.onmessage = async ({ data }: MessageEvent<{
     const request = {
       model: { id: data.modelId },
       variant: {
-        id: `${data.modelId}-recording`, structuredHookProfile: "standard-v3", thinkingProfile: null,
+        id: `${data.modelId}-recording`, structuredHookProfile: data.structuredHookProfile, thinkingProfile: null,
         runtimeIdentity: data.identity, runtimeIdentitySha256: fingerprint,
         contextProfiles: [2048, 4096].map(contextTokens => ({ contextTokens, bindingSha256: contextBindingSha256(fingerprint, contextTokens) })),
         requirements: { features: [], limits: {
@@ -35,7 +39,8 @@ self.onmessage = async ({ data }: MessageEvent<{
           maxComputeWorkgroupSizeX: 256, maxComputeInvocationsPerWorkgroup: 256, maxStorageBuffersPerShaderStage: 10,
         } },
       } as ModelVariant,
-      contextTokens, adapter: await checker.adapterForLoad(), artifacts: modelArtifacts,
+      contextTokens, blockSpec: data.blockSpec, unitRefusal: data.unitRefusal,
+      adapter: await checker.adapterForLoad(), artifacts: modelArtifacts,
       optionalPacks: [], activationSpool: new BrowserActivationSpool(), signal: new AbortController().signal,
       onDeviceLost(failure: { message: string }) { throw new Error(failure.message); },
     } as BrowserModelLoadRequest;

@@ -23,7 +23,12 @@ import {
 } from "../src/lib/runtime/eta";
 import { measuredDecodeTokensPerSecond } from "../src/lib/runtime/recommendation";
 import { formatBytes } from "../src/lib/format/bytes";
-import { optionalPackHardwareBlock } from "../src/hosted/runtime/optionalPackCompatibility";
+import {
+  optionalPackHardwareBlock,
+  packInstallFiles,
+} from "../src/hosted/runtime/optionalPackCompatibility";
+
+type FirstRunPack = HostedModelOption["firstRunPacks"][number];
 import { hostedNetworkIsOffline } from "../src/hosted/runtime/networkState";
 import { userFacingError } from "../../drowse/webui/src/lib/runtime/userFacingError";
 
@@ -548,6 +553,16 @@ export function createShellController(
           candidate.id === pack.id ? { ...candidate, selected: false } : candidate
         );
       }
+      const withCompanions = withUnitsCompanions(nextPacks, pack, selected);
+      if (withCompanions !== nextPacks) {
+        // The lenses a units pack brings join the budget the units pack was checked against.
+        const chosen = variant.packs.filter((candidate) =>
+          withCompanions.some((next) => next.id === candidate.id && next.selected));
+        const [first, ...rest] = chosen;
+        const block = first === undefined ? null : optionalPackHardwareBlock(first, variant, checkedCapabilities, rest);
+        if (block !== null) throw new Error(block.message);
+      }
+      nextPacks = withCompanions;
       const nextModel = finalizeModelSetup({ ...model, firstRunPacks: nextPacks });
       // Another model's paused or failed download keeps its state and kept files.
       const ownsDownloadState = snapshot.download.modelVariantId === undefined ||
@@ -1042,7 +1057,7 @@ function modelFromRecommendation(
   const modelDownloadBytes = variant.downloadBytes + variant.requiredCorePackBytes;
   const compatiblePacks = context === null
     ? []
-    : variant.packs.filter((pack) =>
+    : variant.packs.filter((pack): pack is CatalogInstrumentPack & { kind: FirstRunPack["kind"] } =>
         !pack.required && pack.kind !== "core" &&
         pack.compatibleContextBindingSha256.includes(context.bindingSha256)
       );
@@ -1107,9 +1122,10 @@ function modelFromRecommendation(
     if (selected) selectedPackManifests.push(pack);
     return [{
       id: pack.id,
-      kind: pack.kind as "jlens" | "sae",
+      kind: pack.kind,
       name: pack.displayName,
-      bytes: pack.bytes,
+      // What installs now: a lens or units pack's other layers are fetched as reads need them.
+      bytes: packInstallFiles(pack, variant).reduce((total, file) => total + file.bytes, 0),
       requiredForSetup,
       selected,
       installed,
@@ -1231,6 +1247,34 @@ function modelFamily(name: string): string {
 function isPreviewDesktopRuntime(capabilities: RuntimeCapabilities): boolean {
   return capabilities.signals.runtimeClass === "desktop-webkit" ||
     capabilities.signals.runtimeClass === "desktop-gecko";
+}
+
+/** A units pack reads through the R and S lenses it binds: choosing units chooses an S and an R
+ *  pack when none of that kind is chosen or installed (a base model does not choose its R pack
+ *  by default), and dropping the last of either drops units. Installed packs stay as they are. */
+function withUnitsCompanions(
+  packs: HostedModelOption["firstRunPacks"],
+  changed: FirstRunPack,
+  selected: boolean,
+): HostedModelOption["firstRunPacks"] {
+  const { kind } = changed;
+  const companions: FirstRunPack["kind"][] = ["slens", "jlens"];
+  const chosen = (candidates: HostedModelOption["firstRunPacks"], lens: FirstRunPack["kind"]) =>
+    candidates.some((candidate) => candidate.kind === lens && (candidate.selected || candidate.installed));
+  if (selected && kind === "units") {
+    let next = packs;
+    for (const lens of companions) {
+      if (chosen(next, lens)) continue;
+      const index = next.findIndex((candidate) => candidate.kind === lens);
+      if (index >= 0) next = next.map((candidate, at) => at === index ? { ...candidate, selected: true } : candidate);
+    }
+    return next;
+  }
+  if (!selected && companions.includes(kind) && !chosen(packs, kind)) {
+    return packs.map((candidate) =>
+      candidate.kind === "units" && !candidate.installed ? { ...candidate, selected: false } : candidate);
+  }
+  return packs;
 }
 
 function refreshModelInstallState(
