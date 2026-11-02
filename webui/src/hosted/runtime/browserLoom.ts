@@ -27,7 +27,12 @@ import type {
   BrowserInstrumentRuntime,
   BrowserTokenReplayRequest,
 } from "./browserInstrumentRuntime";
-import { parseSteeringExpression } from "./steeringExpression";
+import {
+  formatSteering,
+  parseSteering,
+  parseSteeringExpression,
+  steeringParts,
+} from "./steeringExpression";
 import { validateHostedLoomTree } from "../../../../drowse/webui/src/lib/sessionPersistence";
 import { filterBrowserTree } from "./browserTreeFilter";
 import {
@@ -787,10 +792,23 @@ export class BrowserLoomRuntime {
       return clone(this.session);
     }
     if (method === "validateSteering") {
-      const expression = args[0];
-      if (typeof expression !== "string") {
+      // `POST .../steering/validate`: parse, resolve and dry-compile, then answer in-band. A
+      // model operation in flight answers busy (drowse's EngineBusyError, 409) instead of a
+      // verdict; the dashboard asks again rather than showing it.
+      const raw = args[0];
+      if (typeof raw !== "string") {
         throw loomError("INVALID_STEERING", "Steering expression must be a string");
       }
+      if (this.generating) {
+        throw loomError("ENGINE_BUSY", "a model operation is in flight; retry shortly");
+      }
+      const expression = raw.trim();
+      type Compiled = {
+        steeringExpression?: string;
+        steeringParts?: import("../../../../drowse/webui/src/lib/types").SteeringPartJSON[];
+        steeringTerms?: import("../../../../drowse/webui/src/lib/types").SteeringTermLayersJSON[];
+        steeringDepth?: number;
+      };
       try {
         const options = validateSteeringOptions(args[2]);
         if (options.tree !== undefined) {
@@ -803,16 +821,37 @@ export class BrowserLoomRuntime {
           }
         }
         const probeRequests = options.probeRequests;
-        const parsed = expression.trim() ? parseSteeringExpression(expression) : null;
-        if (expression.trim() || probeRequests !== undefined) {
-          await this.preflightGenerationSteering(expression, probeRequests);
+        if (!expression) {
+          if (probeRequests !== undefined) {
+            await this.preflightGenerationSteering("", probeRequests);
+          }
+          return { valid: true, expression: "", error: null };
         }
+        parseSteeringExpression(expression);
+        const compiled = await this.preflightGenerationSteering(expression, probeRequests) as Compiled;
+        const parsed = compiled.steeringExpression === undefined || compiled.steeringParts === undefined
+          ? parseSteering(expression)
+          : null;
         return {
           valid: true,
-          expression: parsed === null ? "" : formatParsedSteering(parsed),
+          expression: compiled.steeringExpression ?? formatSteering(parsed!),
           error: null,
+          ...(compiled.steeringTerms !== undefined && compiled.steeringDepth !== undefined
+            ? {
+                n_layers: compiled.steeringDepth,
+                terms: compiled.steeringTerms.map((term) => ({
+                  key: term.key,
+                  fitted: [...term.fitted],
+                  share: [...term.share],
+                  layers: [...term.layers],
+                })),
+              }
+            : {}),
+          parts: compiled.steeringParts ?? steeringParts(parsed!),
         };
       } catch (error) {
+        const code = (error as { code?: unknown } | null)?.code;
+        if (code === "ENGINE_BUSY" || code === "GENERATION_BUSY") throw error;
         return {
           valid: false,
           expression,

@@ -37,6 +37,7 @@ import type {
   ProbeInfo,
   ProbeRequest,
   ProfileListResponse,
+  SteeringPartJSON,
   VectorInfo,
 } from "../../../../drowse/webui/src/lib/types";
 import {
@@ -69,10 +70,12 @@ import {
   canonicalConceptName,
   foldSteering,
   formatLayerClause,
+  formatSteering,
   parseSteering,
   parseSteeringExpression,
   RESERVED_NAMESPACES,
   selectTermLayers,
+  steeringParts,
   type LayerScope,
   type SteeringAtom,
   type SteeringManifoldEntry,
@@ -154,8 +157,11 @@ export interface BrowserSteeringTermLayers {
   layers: number[];
 }
 
-/** A compiled program, with where each of its terms acts and the model's depth. */
+/** A compiled program, with what steering validation answers about its expression: the
+ *  canonical text, each term's fields, where each acts and the model's depth. */
 export type BrowserCompiledSteering = BrowserHookProgramBuffers & {
+  steeringExpression?: string;
+  steeringParts?: SteeringPartJSON[];
   steeringTerms?: readonly BrowserSteeringTermLayers[];
   steeringDepth?: number;
 };
@@ -896,7 +902,9 @@ export class BrowserFeasibilityCorePackCompiler {
   private compileCurrent(expression: string): BrowserCompiledSteering {
     // The grammar's own fold first, so a malformed or ambiguous expression is refused exactly as
     // drowse refuses it, before the compiler's narrower refusals.
-    if (expression.trim()) parseSteering(expression, { manifolds: this.steeringManifolds() });
+    const ir = expression.trim()
+      ? parseSteering(expression, { manifolds: this.steeringManifolds() })
+      : { terms: [] };
     const parsed = expression.trim()
       ? parseSteeringExpression(expression)
       : { terms: [] };
@@ -919,6 +927,8 @@ export class BrowserFeasibilityCorePackCompiler {
       program = this.compileComposedPurePush(resolved);
     }
     program.activeRole = activeRole;
+    program.steeringExpression = formatSteering(ir);
+    program.steeringParts = steeringParts(ir);
     program.steeringTerms = placements;
     program.steeringDepth = this.layerMap.length;
     return program;
@@ -2369,9 +2379,10 @@ export class BrowserFeasibilityCorePackCompiler {
         );
       }
     }
+    const clause = formatLayerClause(term.layers === "all" ? null : term.layers);
     return onto === null
-      ? `${term.ablation ? "!" : ""}${formatAtom(base)}`
-      : `${formatAtom(base)}${term.selector.projection}${formatAtom(onto)}`;
+      ? `${term.ablation ? "!" : ""}${formatAtom(base)}${clause}`
+      : `${formatAtom(base)}${term.selector.projection}${formatAtom(onto)}${clause}`;
   }
 
   private resolveTerm(term: SteeringExpressionTerm): ResolvedCoreTerm {

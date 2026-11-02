@@ -181,6 +181,77 @@ try {
     /selects the workspace band \(layers 5-9\) but is fitted at layers 0-1/,
   );
 
+  // sessions.validateSteering answers as `POST .../steering/validate` does.
+  const { BrowserLoomRuntime } = await server.ssrLoadModule("/src/hosted/runtime/browserLoom.ts");
+  // drowse's tree golden, with the hosted tree's inline token fields.
+  const loomTree = await fixture("loom_tree_v2.json");
+  Object.assign(loomTree, { model_id: "fixture/model", session_id: "default" });
+  for (const node of Object.values(loomTree.nodes)) {
+    Object.assign(node, { prompt_capture: null, raw_token_ids: null, thinking_tokens: null, tokens: null });
+  }
+  const loomSession = {
+    id: "default", model_id: "fixture/model", created: 1, config: { max_tokens: 64 },
+    role_substitution_supported: true,
+  };
+  const compiles = [];
+  const runtime = new BrowserLoomRuntime({
+    session: loomSession,
+    generation: {},
+    initialTree: loomTree,
+    compileSteering(expression) {
+      compiles.push(expression);
+      if (expression.includes("{9}")) {
+        throw Object.assign(new Error(
+          "steering term 'x{9}' selects layer(s) 9 it is not fitted at; fitted layers: 0-3",
+        ), { code: "STEERING_COMPOSITION", status: 422 });
+      }
+      if (expression.startsWith("plain")) return { hookAbi: "fixture" };
+      const parsed = parseSteering(expression, {
+        manifolds: [{ namespace: "default", name: "personas", fitMode: "pca", labels: ["pirate", "robot"] }],
+      });
+      return {
+        hookAbi: "fixture",
+        steeringExpression: formatSteering(parsed),
+        steeringParts: steeringParts(parsed),
+        steeringTerms: parsed.terms.map((term) => ({
+          key: term.key, fitted: [0, 1, 2, 3], share: [0.5, 1, 1.5, 1], layers: [1, 2],
+        })),
+        steeringDepth: 4,
+      };
+    },
+  });
+  const validate = (expression) => runtime.request({
+    service: "sessions", method: "validateSteering", args: [expression],
+  });
+  const resolved = await validate("  0.5 pirate{1-2}  ");
+  assert.deepStrictEqual(resolved, {
+    valid: true,
+    expression: "0.5 default/personas%pirate{1-2}",
+    error: null,
+    n_layers: 4,
+    terms: [{ key: "default/personas%pirate{1-2}", fitted: [0, 1, 2, 3], share: [0.5, 1, 1.5, 1], layers: [1, 2] }],
+    parts: steeringParts(parseSteering("0.5 default/personas%pirate{1-2}")),
+  });
+  assert.equal(compiles.at(-1), "0.5 pirate{1-2}", "the stripped expression is compiled");
+  const plain = await validate("plain + 0.2 x");
+  assert.equal(plain.valid, true);
+  assert.equal(plain.expression, "0.5 plain + 0.2 x");
+  assert.equal(plain.n_layers, undefined, "a program without placements leaves the strip out");
+  assert.deepEqual(plain.parts.map((part) => part.target), ["plain", "x"]);
+  assert.deepStrictEqual(await validate("   "), { valid: true, expression: "", error: null });
+  const syntax = await validate("honest +");
+  assert.equal(syntax.valid, false);
+  assert.equal(syntax.expression, "honest +");
+  const unfitted = await validate("x{9}");
+  assert.deepStrictEqual(unfitted, {
+    valid: false,
+    expression: "x{9}",
+    error: "steering term 'x{9}' selects layer(s) 9 it is not fitted at; fitted layers: 0-3",
+  });
+  runtime.generating = true;
+  await assert.rejects(validate("0.5 x"), (error) => error.code === "ENGINE_BUSY" && error.status === 409);
+  runtime.generating = false;
+
   console.log(
     `Steering grammar checks passed (${ir.accepted.length + ir.rejected.length} IR, ` +
       `${chips.cases.length + chips.readOnly.length} chip, ` +
