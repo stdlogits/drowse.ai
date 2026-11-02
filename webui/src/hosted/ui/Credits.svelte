@@ -59,7 +59,8 @@
     { name: "Difference-of-means extraction", by: "Im and Li, 2025", href: "https://arxiv.org/abs/2502.02716", note: "Two-pole extraction follows this method." },
     { name: "Manifold steering", by: "Goodfire", href: "https://arxiv.org/abs/2605.05115", note: "Manifold steering follows this work." },
     { name: "The Assistant Axis", by: "Anthropic", href: "https://arxiv.org/abs/2601.10387", note: "The personas source is derived from its framing." },
-    { name: "Verbalizable workspace", by: "Gurnee et al., 2026", href: "https://transformer-circuits.pub/2026/workspace/index.html", note: "J-LENS support implements this method." },
+    { name: "Verbalizable workspace", by: "Gurnee et al., 2026", href: "https://transformer-circuits.pub/2026/workspace/index.html", note: "The R and S lenses implement this method." },
+    { name: "Neuron Lens", by: "Standard Logits", href: "https://neuron-lens.com", note: "Neuron and head reads follow its definitions." },
   ];
   const interpretability: Credit[] = [
     { name: "SAELens", by: "SAELens contributors", href: "https://github.com/jbloomAus/SAELens", note: "Loads published sparse autoencoders in the Python edition." },

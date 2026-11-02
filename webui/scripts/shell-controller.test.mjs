@@ -1068,7 +1068,7 @@ try {
     shell.dispose();
   });
 
-  test("a model with no released J-lens is blocked before download", async () => {
+  test("a model with no released R lens is blocked before download", async () => {
     const document = catalogFixture();
     const variant = document.models[0].variants[0];
     removeFixtureJlens(variant);
@@ -1078,7 +1078,7 @@ try {
 
     const option = shell.current().models[0];
     assert.equal(option.fit, "blocked");
-    assert.match(option.setupIssue, /no compatible precomputed J-lens/u);
+    assert.match(option.setupIssue, /no compatible precomputed R lens/u);
     assert.equal(option.toolNotice, undefined);
     assert.deepEqual(option.firstRunPacks, []);
 
@@ -1518,7 +1518,7 @@ try {
     );
   });
 
-  test("a J-lens that exceeds GPU limits is omitted without blocking the model", async () => {
+  test("an R lens that exceeds GPU limits is omitted without blocking the model", async () => {
     const document = catalogFixture();
     const variant = document.models[0].variants[0];
     removeFixtureJlens(variant);
@@ -1585,7 +1585,7 @@ try {
       ["fixture-sae-supported"],
     );
     assert.equal(shell.current().models[0].fit, "blocked");
-    assert.match(shell.current().models[0].setupIssue, /cannot safely load the J-lens required/u);
+    assert.match(shell.current().models[0].setupIssue, /cannot safely load the R lens this model needs/u);
     assert.equal(shell.current().models[0].toolNotice, undefined);
     await assert.rejects(() => shell.download(variant.id));
     assert.equal(fixture.calls.includes(`download:${variant.id}`), false);
@@ -1692,7 +1692,7 @@ try {
     ]);
   });
 
-  test("an installed model requires its released J-lens before opening", async () => {
+  test("an installed model requires its released R lens before opening", async () => {
     const document = catalogFixture();
     const variant = document.models[0].variants[0];
     variant.packs.push({
@@ -1730,7 +1730,7 @@ try {
     assert.equal(shell.current().models[0].remainingDownloadBytes, 100);
     assert.throws(
       () => shell.setOptionalPackSelected(variant.id, "smollm2-jlens", false),
-      /J-lens is required/u,
+      /R lens is required/u,
     );
     assert.equal(shell.current().models[0].setupComplete, false);
     assert.throws(() => shell.setOptionalPackSelected(variant.id, "fixture-sae", false), /SAE is required/);

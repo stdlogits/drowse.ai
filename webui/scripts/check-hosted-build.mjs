@@ -156,10 +156,11 @@ assert.ok(precacheUrls.includes("app") && !precacheUrls.includes("app-shell.html
 const precacheBytes = (await Promise.all(precacheUrls.map(url => stat(resolve(root, precacheFile(url)))))).reduce((sum, file) => sum + file.size, 0);
 assert.ok(precacheBytes < 2.2 * 1024 * 1024, `service worker precache grew to ${precacheBytes} bytes`);
 assert.doesNotMatch(serviceWorker, /url:"assets\/[^"]+",revision:"/, "content-hashed assets must not carry a revision");
-for (const cache of ["drowse-hosted-on-demand-assets-v1", "drowse-hosted-landing-shader-v1", "drowse-hosted-on-demand-wasm-v2", "drowse-hosted-sae-descriptions-v1"]) {
+for (const cache of ["drowse-hosted-on-demand-assets-v1", "drowse-hosted-on-demand-wasm-v2", "drowse-hosted-sae-descriptions-v1"]) {
   assert.match(serviceWorker, new RegExp(`cacheName:"${cache}",(?:matchOptions:\\{[^}]*\\},)?plugins:\\[new [A-Za-z_$][\\w$]*\\.ExpirationPlugin\\(`), `${cache} must be bounded`);
 }
 assert.doesNotMatch(serviceWorker, /the-uncertain-loom/);
+assert.doesNotMatch(serviceWorker, /landing-shader|ethereal-orb|\.mp4"/, "the landing is static: no shader, video or orb artwork");
 assert.doesNotMatch(serviceWorker, /drowse-hosted-tab-icons|icons\\\/tab-/, "the tab-icon cache left with tab identity");
 const bundledWorkers = (await readdir(resolve(root, "assets"))).filter(name => /^fitting\.worker-.*\.js$/.test(name));
 for (const name of bundledWorkers) {
@@ -214,9 +215,8 @@ assert.ok(
 );
 assert.doesNotMatch(headers, /connect-src[^;]*https:\/\/\*/);
 assert.match(headers, /\/assets\/\*[\s\S]*Cache-Control: public, max-age=31536000, immutable/);
-for (const path of ["/video/*", "/icons/*", "/images/*"]) {
-  assert.ok(headers.includes(`${path}\n  Cache-Control: public, max-age=86400, stale-while-revalidate=604800`), `${path} must revalidate`);
-}
+assert.ok(headers.includes("/icons/*\n  Cache-Control: public, max-age=86400, stale-while-revalidate=604800"), "/icons/* must revalidate");
+assert.doesNotMatch(headers, /^\/(?:video|images)\/\*/m, "no rules for the landing's retired video and artwork");
 assert.ok(headers.includes("/social/*\n  ! Cross-Origin-Resource-Policy\n  Cross-Origin-Resource-Policy: cross-origin"), "share images must be embeddable by other sites");
 const thirdPartyLicenses = await readFile(resolve(root, "third-party-licenses.txt"), "utf8");
 for (const name of ["@drowse/web-llm", "svelte", "workbox-core"]) {
@@ -261,10 +261,7 @@ assert.ok(assets.some((name) => name.endsWith(".css")), "hosted build is missing
 const runtimeWorkers = assets.filter((name) => /^browser\.worker-[A-Za-z0-9_-]+\.js$/u.test(name));
 const webLlmChunks = assets.filter((name) => /^drowse-web-llm-[A-Za-z0-9_-]+\.js$/u.test(name));
 const landingChunks = assets.filter((name) => /^LandingRoot-[A-Za-z0-9_-]+\.js$/u.test(name));
-const shaderChunks = assets.filter((name) => /^heroShaderRuntime-[A-Za-z0-9_-]+\.js$/u.test(name));
-assert.equal(shaderChunks.length, 1, "hosted build must contain the landing renderer");
-assert.ok(serviceWorker.includes(`url:"assets/${shaderChunks[0]}"`), "landing renderer must work offline");
-assert.ok(serviceWorker.includes('url:"images/ethereal-orb.jpg"'), "landing artwork must work offline");
+assert.ok(!assets.some((name) => /^(?:heroShaderRuntime|typescript)-/u.test(name)), "the landing ships no shader renderer");
 assert.equal(runtimeWorkers.length, 1, "hosted build must contain one browser runtime worker");
 assert.equal(webLlmChunks.length, 1, "hosted build must split the WebLLM engine from onboarding");
 assert.equal(landingChunks.length, 1, "hosted build must split the landing route from the app");

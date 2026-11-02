@@ -36,7 +36,7 @@ export function discoveryMetadata(origin, { version } = {}) {
         author: projectOwner, publisher: projectOwner,
         image: `${origin}${socialImagePath}`, isAccessibleForFree: true,
         license: `${origin}/LICENSE`, sameAs: [sourceRepository],
-        featureList: ["Local language model inference", "Activation steering", "Token prediction inspection", "Trait monitoring", "Branching experiments", "Compatible SAE and Jacobian lens packs"] },
+        featureList: ["Local language model inference", "Activation steering", "Token prediction inspection", "Trait monitoring", "Branching experiments", "R and S lens readouts", "Neuron and head reads and steering", "Compatible SAE packs"] },
     ],
   };
   return `<link rel="canonical" href="${origin}/" />\n<meta property="og:url" content="${origin}/" />\n${jsonLd(schema)}`;

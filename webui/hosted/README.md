@@ -76,9 +76,10 @@ For local Pages verification, build with a public origin, serve the output with
 `wrangler pages dev`, and append `--preview` to the verification command.
 The dated findings and indexing follow-up are in `docs/GEO-AUDIT-REPORT.md`.
 
-The hosted application consumes compatible precomputed SAE and J-lens packs
-on the GPU for steering, probes, gates, live readout, and token replay. It does
-not train SAEs or fit J-lenses. Those authoring workflows remain available only
-through the Python runtime; the browser worker rejects either request even if a
-client constructs one manually. Browser manifold and template fitting is a
-separate supported workflow and does not modify an installed SAE or J-lens.
+The hosted application consumes compatible precomputed SAE and lens packs (the
+R and S lenses, fitted with drowse's `fit_lens`) on the GPU for steering, probes,
+gates, live readout, and token replay. It does not train SAEs or fit lenses.
+Those authoring workflows remain available only through the Python runtime; the
+browser worker rejects either request even if a client constructs one manually.
+Browser manifold and template fitting is a separate supported workflow and does
+not modify an installed SAE or lens.

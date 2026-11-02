@@ -1,13 +1,38 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { Icon, tips } from "@stdlogits/ledger";
+  import { Icon, MorphText, Token, glide, tips } from "@stdlogits/ledger";
   import CapabilityDemo from "./CapabilityDemo.svelte";
-  import HeroShader from "./HeroShader.svelte";
   import SiteHeader from "./SiteHeader.svelte";
   import PageFooter from "./PageFooter.svelte";
   import { siteTitle, sourceRepository } from "../../../scripts/site-metadata.mjs";
 
-  let plainBackground = $state(false);
+  // The hero's reading: one real prediction from the recorded example below (src/hosted/data/
+  // neighbor-example.json: Gemma 3 4B in the browser runtime, steered toward welcoming at 0.10,
+  // token 22 of its reply). The five likeliest next tokens after "We'd love for you to feel", and
+  // the one it wrote. The title's slot holds the written one, or whichever row is pointed at or
+  // chosen. scripts/landing-models.test.mjs checks every number against the recording.
+  type Next = { token: string; p: number; wrote?: true };
+  const heroModel = "Gemma 3 4B";
+  const heroSteering = "steered toward welcoming, 0.10";
+  const heroContext = "We’d love for you to feel";
+  const heroNext: Next[] = [
+    { token: " more", p: 0.4544 },
+    { token: " welcome", p: 0.2118 },
+    { token: " at", p: 0.2046, wrote: true },
+    { token: " settled", p: 0.0919 },
+    { token: " like", p: 0.0357 },
+  ];
+  const heroMax = Math.max(...heroNext.map((next) => next.p));
+  const percent = (p: number) => `${(p * 100).toFixed(1)}%`;
+  const written = heroNext.find((next) => next.wrote)!;
+  let chosen = $state.raw(written);
+  let pointed = $state.raw<Next | null>(null);
+  const shown = $derived(pointed ?? chosen);
+  function leave(event: FocusEvent) {
+    const into = event.relatedTarget;
+    if (!(into instanceof Node) || !(event.currentTarget as HTMLElement).contains(into)) pointed = null;
+  }
+
   // The prerendered page states the requirement; the probe only replaces it with a result.
   let webGpu = $state<"unknown" | "available" | "unavailable">("unknown");
 
@@ -51,17 +76,10 @@
 
   onMount(() => {
     document.title = siteTitle;
-    const contrast = matchMedia("(prefers-contrast: more), (forced-colors: active)");
-    const updateContrast = () => { plainBackground = contrast.matches; };
-    updateContrast();
-    contrast.addEventListener("change", updateContrast);
     let active = true;
     void probeWebGpu().then((result) => { if (active) webGpu = result; });
     requestAnimationFrame(restoreHash);
-    return () => {
-      active = false;
-      contrast.removeEventListener("change", updateContrast);
-    };
+    return () => { active = false; };
   });
 
   const requirement = $derived(
@@ -74,12 +92,12 @@
 
   const capabilities = [
     {
-      title: "Inspect the prediction",
-      body: "See which words the model could have chosen at each step. Add word insights (an R lens) to read predictions across layers, or feature insights (SAE) to inspect learned features.",
+      title: "Read every token",
+      body: "See which words the model could have chosen at each step, with each token's probe and feature readings. The R and S lenses show what every layer is about to say and what it has read.",
     },
     {
-      title: "Change an influence",
-      body: "An influence nudges the model's internal activity toward a concept, word, or feature while it writes. Strength sets how hard it pushes. The model's weights never change.",
+      title: "Add an influence",
+      body: "An influence nudges the model's internal activity toward a concept, word, or feature while it writes, or pushes a single neuron or silences a neuron or head. Strength sets how hard it pushes. The model's weights never change.",
     },
     {
       title: "Compare what changes",
@@ -140,7 +158,9 @@
   const glossary = [
     { term: "Influence", definition: "A change Drowse adds to the model's internal activity while it writes, pulling replies toward or away from a concept. Also called steering." },
     { term: "Strength (α)", definition: "How hard an influence pushes. 0 leaves the model unsteered; negative values push the other way." },
-    { term: "Word insights (R lens)", definition: "A lens that shows which words each layer is leaning toward, before the model makes its final prediction." },
+    { term: "Word insights (R lens)", definition: "A lens that shows which words each layer is leaning toward saying, before the model makes its final prediction." },
+    { term: "S lens", definition: "A lens that shows which words each layer looks like it has read. It is the faithful read early in the model, the R lens late." },
+    { term: "Neurons and heads", definition: "The model's own units. On Gemma 3 and Qwen3 models you can see which ones pushed a token, read what one writes, and push a neuron or silence either." },
     { term: "Feature insights (SAE)", definition: "A sparse autoencoder splits the model's activity into features: learned patterns that often match a recognizable idea." },
     { term: "Loom", definition: "A tree of continuations. Branch from any token, try another path, and compare the results." },
     { term: "Base model", definition: "A model trained only to continue text, without chat tuning. It predicts what comes next instead of following requests." },
@@ -181,7 +201,19 @@
         <p class="trust-line">Open source. Inference and saved work stay on your device. <a href="/privacy">What leaves your device <span aria-hidden="true">→</span></a></p>
         <p class="audience">For researchers, students, educators, and anyone curious about how language models work.</p>
       </div>
-      <div class="hero-art">{#if !plainBackground}<HeroShader motionControl />{/if}</div>
+      <figure class="reading rise" style:--i={1} aria-labelledby="reading-title">
+        <figcaption id="reading-title"><span>{heroModel}</span><span>{heroSteering}</span></figcaption>
+        <p class="said">{heroContext} <span class="slot" data-tip-title={shown.token.trim()} data-tip={`${percent(shown.p)}${shown.wrote ? ", the token it wrote" : ""}`} data-tip-sub={heroModel}><MorphText text={shown.token.trim()} numbers={false} /></span></p>
+        <div class="next" role="group" aria-label={`What ${heroModel} expected after “${heroContext}”. Choose one to put it in the sentence.`} use:glide onpointerleave={() => (pointed = null)} onfocusout={leave}>
+          {#each heroNext as next, i (next.token)}
+            <button type="button" class="row" aria-pressed={next === chosen} style:--i={i} onclick={() => (chosen = next)} onpointerenter={() => (pointed = next)} onfocus={() => (pointed = next)}>
+              <Token token={next.token} {i} />
+              <span class="bar" aria-hidden="true"><i style:--w={next.p / heroMax}></i></span>
+              <span class="pct">{next.wrote ? "wrote · " : ""}<b>{percent(next.p)}</b></span>
+            </button>
+          {/each}
+        </div>
+      </figure>
     </section>
 
     <section class="capabilities" id="what-you-can-do" aria-labelledby="capabilities-title">
@@ -266,8 +298,8 @@
     <section class="guide closing" id="python" aria-labelledby="python-title">
       <div class="python-band">
         <h2 id="python-title">Need more models?</h2>
-        <p>Drowse Local runs supported Hugging Face models with Python, fits your own lenses, trains SAEs, and serves OpenAI- and Ollama-compatible APIs.</p>
-        <a class="text-link" href={pythonInstall}>Install from source <span aria-hidden="true">↗</span></a>
+        <p>The Python edition runs supported Hugging Face models, fits your own lenses, trains SAEs, and serves OpenAI- and Ollama-compatible APIs.</p>
+        <a class="text-link" href={pythonInstall}>Install with pip <span aria-hidden="true">↗</span></a>
       </div>
       <div class="closing-action">
         <a class="primary-action" href="/app">Open Drowse</a>
@@ -280,8 +312,8 @@
 </div>
 
 <style>
-  /* The landing in Ledger: paper, the hero's copy beside its orb, then the parts of the page as
-     captions over rows of wash. */
+  /* The landing in Ledger: paper, the hero's copy beside one recorded reading, then the parts of
+     the page as captions over rows of wash. */
   .skip-link { position: fixed; z-index: 60; top: var(--s2); inset-inline-start: var(--s2); padding: var(--s2) var(--s4); border-radius: var(--r-pill); background: var(--ink); color: var(--paper); font: var(--type-control); translate: 0 calc(-100% - var(--s4)); transition: translate var(--fast) var(--ease); }
   .skip-link:focus { translate: 0 0; }
   .landing-shell { display: flex; flex-direction: column; min-height: 100svh; overflow-x: clip; }
@@ -289,9 +321,9 @@
   main:focus { outline: none; }
   a { transition: color var(--fast) var(--ease), background-color var(--fast) var(--ease), opacity var(--fast) var(--ease), scale var(--fast) var(--ease), text-decoration-color var(--fast) var(--ease); }
 
-  .hero { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr); align-items: center; gap: var(--s7); min-height: min(640px, calc(100svh - 160px)); }
+  .hero { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr); align-items: center; gap: var(--s7); padding-block: var(--s6) var(--s4); }
   .hero-copy { display: grid; justify-items: start; gap: var(--s5); }
-  h1 { color: var(--ink); font: var(--type-title); font-size: clamp(48px, 7vw, 80px); letter-spacing: -0.04em; }
+  h1 { color: var(--ink); font: var(--type-title); letter-spacing: -0.04em; overflow-wrap: anywhere; }
   .lede { max-width: 34ch; color: var(--ink2); font: var(--type-lead); }
   .hero-action-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3) var(--s4); }
   .primary-action { display: inline-flex; align-items: center; height: 44px; padding: 0 var(--s5); border-radius: var(--r-pill); background: var(--ink); color: var(--paper); font: var(--type-control); white-space: nowrap; }
@@ -299,7 +331,26 @@
   .requirement { max-width: 36ch; color: var(--ink3); font: var(--type-meta); }
   .trust-line, .audience { max-width: 52ch; color: var(--ink3); font: var(--type-small); }
   .trust-line a, .text-link, .faq a { color: var(--ink2); text-decoration: underline; text-decoration-color: var(--wash2); text-decoration-thickness: 2px; text-underline-offset: 4px; }
-  .hero-art { position: relative; aspect-ratio: 1; width: 100%; max-height: 560px; }
+  /* The reading: the model's own prediction, so the last layer's place on the depth ramp. */
+  .reading { --tint: var(--late); display: grid; gap: var(--s4); min-width: 0; margin: 0; }
+  figcaption { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s3); color: var(--ink3); font: var(--type-meta); }
+  figcaption span:first-child { color: var(--ink2); }
+  .said { color: var(--ink); font: var(--type-lead); text-wrap: pretty; }
+  /* The slot: the token the list is about, marked as a unit's firing is, grown by its own shadow. */
+  .slot { --mark: color-mix(in oklch, var(--tint) 22%, transparent); border-radius: var(--r-col); background: var(--mark); box-shadow: 0 0 0 2px var(--mark); cursor: help; }
+  /* The rows share one grid (subgrid), so every bar has the same track and the numbers size the
+     last column. */
+  .next { --glide-bg: var(--wash); --glide-radius: var(--r-box); display: grid; grid-template-columns: minmax(0, 120px) minmax(0, 1fr) auto; gap: 2px var(--s4); margin-inline: calc(var(--s3) * -1); }
+  .row { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; width: 100%; padding: var(--s2) var(--s3); border: 0; border-radius: var(--r-box); background: transparent; color: var(--ink); font: var(--type-small); text-align: start; cursor: pointer; transition: background-color var(--fast) var(--ease), scale var(--fast) var(--ease); }
+  .row:active { scale: 0.99; }
+  .row > :global(.tok) { justify-self: start; }
+  .row[aria-pressed="true"] > :global(.tok) { background: var(--wash2); }
+  /* Flat bars in the accent on a wash, as wide as each token's probability against the likeliest. */
+  .bar { position: relative; height: 4px; border-radius: 2px; background: var(--wash); }
+  .bar i { position: absolute; inset: 0 auto 0 0; width: max(2px, calc(var(--w) * 100%)); border-radius: 2px; background: var(--tint); transform-origin: left; animation: fill var(--glide) var(--ease) backwards; animation-delay: calc(80ms + var(--i, 0) * 24ms); }
+  @keyframes fill { from { transform: scaleX(0); } }
+  .pct { color: var(--ink3); font: var(--type-meta); font-variant-numeric: tabular-nums; text-align: end; white-space: nowrap; }
+  .pct b { color: var(--ink); font-weight: 600; }
 
   h2 { color: var(--ink); font: var(--type-heading); letter-spacing: -0.02em; }
   h3 { color: var(--ink); font: var(--type-label); }
@@ -349,12 +400,14 @@
     .primary-action:hover { opacity: 0.86; }
     .trust-line a:hover, .text-link:hover, .faq a:hover { color: var(--ink); text-decoration-color: var(--ink3); }
     .model-row:hover { background: var(--wash2); }
+    .row:not([aria-pressed="true"]):hover { background: color-mix(in oklch, var(--wash) 60%, transparent); }
+    .row:hover > :global(.tok) { background: var(--wash2); }
     summary:hover { background: var(--wash2); }
   }
   @media (max-width: 900px) {
     main { gap: var(--s8); }
-    .hero { grid-template-columns: minmax(0, 1fr); min-height: 0; }
-    .hero-art { max-width: 420px; justify-self: center; }
+    .hero { grid-template-columns: minmax(0, 1fr); padding-block: 0; }
+    .reading { max-width: 560px; }
     .capabilities ol, .model-groups { grid-template-columns: minmax(0, 1fr); }
     .closing { grid-template-columns: minmax(0, 1fr); }
   }
@@ -362,5 +415,12 @@
     main { padding-top: var(--s4); }
     .demo-panel { padding: var(--s4); }
   }
-  @media (forced-colors: active) { .primary-action { border: 1px solid ButtonText; } }
+  @media (max-width: 520px) { .next { grid-template-columns: max-content minmax(0, 1fr) auto; column-gap: var(--s3); } }
+  @media (prefers-reduced-motion: reduce) { .bar i { animation: none; } }
+  @media (forced-colors: active) {
+    .primary-action { border: 1px solid ButtonText; }
+    .slot { outline: 2px solid Highlight; box-shadow: none; }
+    .bar i { forced-color-adjust: none; background: Highlight; }
+    .row[aria-pressed="true"] { outline: 1px solid Highlight; }
+  }
 </style>
