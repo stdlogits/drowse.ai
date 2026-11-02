@@ -447,7 +447,7 @@
             {@const downloading = busy === `install-pack:${pack.id}`}
             <li data-pack-id={pack.id}>
               <div class="pack-details">
-                <strong>{pack.id === requiredJlens?.id ? "Word insights · included" : pack.kind === "jlens" ? "Alternative R-lens" : "Feature explorer"}</strong>
+                <strong>{pack.id === requiredJlens?.id ? "Word insights · included" : pack.kind === "jlens" ? "Alternative R lens" : "Feature explorer"}</strong>
                 <span>{pack.displayName} · {formatBytes(pack.bytes)}</span>
               </div>
               {#if pack.id === requiredJlens?.id}
@@ -534,14 +534,14 @@
         <section class="subsection">
           <h3>Downloaded additions</h3>
           {#if deletablePackIds.length === 0}
-            <p class="empty">No additional feature or R-lens packs are downloaded.</p>
+            <p class="empty">No additional feature or R lens packs are downloaded.</p>
           {:else}
             <ul class="models">
               {#each deletablePackIds as packId}
                 {@const catalogPack = catalogPacks.find((pack) => pack.id === packId)}
                 <li data-pack-id={packId}>
                   <span class="installed-pack-details">
-                    <strong>{catalogPack?.kind === "jlens" ? "Alternative R-lens" : catalogPack?.kind === "sae" ? "Feature explorer" : "Response controls"}</strong>
+                    <strong>{catalogPack?.kind === "jlens" ? "Alternative R lens" : catalogPack?.kind === "sae" ? "Feature explorer" : "Response controls"}</strong>
                     <code>{catalogPack?.displayName ?? packId}</code>
                   </span>
                   {#if confirmPackDelete === packId}

@@ -256,7 +256,7 @@
       : formatBytes(model.remainingDownloadBytes);
 
   const toolChips = (model: HostedModelOption) => [
-    ...(model.firstRunPacks.some((pack) => pack.kind === "jlens") ? ["Word insights (J-lens)"] : []),
+    ...(model.firstRunPacks.some((pack) => pack.kind === "jlens") ? ["Word insights (R lens)"] : []),
     ...(model.firstRunPacks.some((pack) => pack.kind === "sae") ? ["Feature insights (SAE)"] : []),
   ];
 
@@ -824,7 +824,7 @@
               <div class="tool-option required-tool" class:tool-installed={pack.installed}>
                 <span class="tool-check" aria-hidden="true"><Icon name="check" /></span>
                 <div>
-                  <strong>{pack.kind === "jlens" ? "Word insights" : "Feature insights"} <span>({pack.kind === "jlens" ? "J-lens" : "SAE"})</span></strong>
+                  <strong>{pack.kind === "jlens" ? "Word insights" : "Feature insights"} <span>({pack.kind === "jlens" ? "R lens" : "SAE"})</span></strong>
                   <p>{pack.kind === "jlens" ? `${pack.name}. Read word predictions across layers and steer toward a word.` : packDescription(pack)}</p>
                 </div>
                 <span><MorphText text={pack.installed ? "Included · already downloaded" : `Included · ${formatBytes(pack.bytes)}`} /></span>
@@ -846,7 +846,7 @@
                       onchange={(event) => setPackSelected(pack.id, event.currentTarget.checked)}
                     />
                     <div>
-                      <strong>{pack.kind === "jlens" ? selectedOption.modelType === "base" ? pack.name : "Alternative R-lens" : packTitle(pack)} <span>({pack.kind === "jlens" ? "optional readout" : "optional SAE"})</span></strong>
+                      <strong>{pack.kind === "jlens" ? selectedOption.modelType === "base" ? pack.name : "Alternative R lens" : packTitle(pack)} <span>({pack.kind === "jlens" ? "optional readout" : "optional SAE"})</span></strong>
                       <p>{packDescription(pack)}</p>
                     </div>
                     <span><MorphText text={pack.installed ? "Already downloaded" : formatBytes(pack.bytes)} /></span>

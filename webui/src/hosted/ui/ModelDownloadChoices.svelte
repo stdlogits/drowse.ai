@@ -37,7 +37,7 @@
 
   function toolChips(model: HostedModelOption): string[] {
     return [
-      ...(model.firstRunPacks.some((pack) => pack.kind === "jlens") ? ["Word insights (J-lens)"] : []),
+      ...(model.firstRunPacks.some((pack) => pack.kind === "jlens") ? ["Word insights (R lens)"] : []),
       ...(model.firstRunPacks.some((pack) => pack.kind === "sae") ? ["Feature insights (SAE)"] : []),
     ];
   }
