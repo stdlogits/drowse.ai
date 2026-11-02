@@ -389,6 +389,12 @@ function computingBridge(log) {
         }
         return [{ shape: [w], data: outMean }, { shape: [w], data: outM2 }];
       }
+      case "drowse_vocab_logits": {
+        // Row r peaks (10) at the id its first element names, 0 elsewhere.
+        const n = x.shape[0];
+        return { shape: [n, 259], data: Float32Array.from({ length: n * 259 }, (_, i) =>
+          i % 259 === x.data[Math.floor(i / 259) * 64] ? 10 : 0) };
+      }
       case "drowse_footprint_scores":
         return { shape: [x.shape[0], 259], data: Float32Array.from({ length: x.shape[0] * 259 }, (_, i) =>
           i % 259 < 3 ? 5 - (i % 259) : LOWEST) };
@@ -479,6 +485,29 @@ async function staticReads(backendModule, modelBackend, programs, capabilities, 
   assert.deepEqual([...footprint.ids.data.subarray(0, 5)], [0, 1, 2, 3, 4]);
   assert.deepEqual([...footprint.z.data.subarray(0, 4)], [5, 4, 3, -Infinity]);
   await assert.rejects(live.footprintTopK(f32(new Float32Array(64), [1, 64]), 257, stats), RangeError);
+  // A long full-vocabulary read runs in calls of at most VOCAB_READ_ROWS rows, so each call's
+  // [rows, V] output stays within the library's binding; the rows come back joined in order.
+  const chunkRows = modelBackend.VOCAB_READ_ROWS;
+  const many = 2 * chunkRows + 22;
+  const planted = Float32Array.from({ length: many * 64 }, (_, i) => (i % 64 === 0 ? (i / 64) % 259 : 0));
+  const before = log.length;
+  const readout = await live.vocabReadoutTopK(f32(planted, [many, 64]), 2);
+  const calls = log.slice(before);
+  assert.deepEqual(calls.map((call) => call.steps[0].args[0].tensor.shape[0]), [chunkRows, chunkRows, 22]);
+  assert.deepEqual(readout.ids.shape, [many, 2]);
+  assert.deepEqual(readout.logSumExp.shape, [many]);
+  for (const row of [0, chunkRows - 1, chunkRows, many - 1]) {
+    assert.equal(readout.ids.data[row * 2], row % 259, `row ${row} keeps its own readout`);
+    assert.equal(readout.logits.data[row * 2], 10);
+  }
+  const picked = await live.vocabTokenLogits(
+    f32(planted, [many, 64]),
+    modelBackend.i32Tensor(Int32Array.from({ length: many }, (_, row) => row % 259), [many, 1]),
+  );
+  assert.ok(picked.logits.data.every((value) => value === 10), "each chunk picks its own rows' ids");
+  const footprints = await live.footprintTopK(f32(new Float32Array(many * 64), [many, 64]), 3, stats);
+  assert.deepEqual(footprints.ids.shape, [many, 3]);
+  assert.equal(log.length - before, 9);
   const directions = await live.footprintDirections([lens, lens], Int32Array.of(3, 4), stats);
   assert.deepEqual(directions.shape, [2, 2, 64]);
   assert.deepEqual(log.at(-1).steps.map((step) => step.fn),

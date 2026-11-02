@@ -10,9 +10,10 @@ import {
   prepareRequirements,
   validatePackDirectory,
   validatePackSemantics,
-  validateWeightBufferRequirements,
+  largestWeightTensorBytes,
 } from "./build-hosted-catalog.mjs";
 import { expectedBuildToolchain } from "./hosted-model-closure.mjs";
+import { FIXTURE_BLOCK_SPEC } from "./catalog-fixture.mjs";
 
 assert.deepEqual(parseArguments(["release.json", "catalog.json"]), {
   specPath: join(process.cwd(), "release.json"),
@@ -21,15 +22,9 @@ assert.deepEqual(parseArguments(["release.json", "catalog.json"]), {
 assert.throws(() => parseArguments(["release.json"]), /usage/);
 assert.throws(() => parseArguments(["release.json", "catalog.json", "--force"]), /usage/);
 const q0Cache = { records: [{ records: [{ dtype: "float32", shape: [262144, 640], format: "raw" }] }] };
-const q0Limits = { limits: { maxBufferSize: 671088640, maxStorageBufferBindingSize: 671088640 } };
-assert.equal(validateWeightBufferRequirements(q0Limits, q0Cache, "q0 fixture"), 671088640);
-for (const name of ["maxBufferSize", "maxStorageBufferBindingSize"]) {
-  assert.throws(() => validateWeightBufferRequirements(
-    { limits: { ...q0Limits.limits, [name]: 134217728 } }, q0Cache, "q0 fixture",
-  ), new RegExp(`${name} must declare at least 671088640`));
-}
+assert.equal(largestWeightTensorBytes(q0Cache, "q0 fixture"), 671088640);
 q0Cache.records[0].records[0].format = "f32-to-bf16";
-assert.equal(validateWeightBufferRequirements(q0Limits, q0Cache, "encoded f32 fixture"), 671088640);
+assert.equal(largestWeightTensorBytes(q0Cache, "encoded f32 fixture"), 671088640);
 for (const cache of [
   { records: [] },
   { records: [{}] },
@@ -37,7 +32,7 @@ for (const cache of [
   { records: [{ records: [{ dtype: "unknown", shape: [1] }] }] },
   { records: [{ records: [{ dtype: "float32", shape: [Number.MAX_SAFE_INTEGER, 2] }] }] },
 ]) {
-  assert.throws(() => validateWeightBufferRequirements(q0Limits, cache, "invalid fixture"), /weight tensor/);
+  assert.throws(() => largestWeightTensorBytes(cache, "invalid fixture"), /weight tensor/);
 }
 const semanticCommands = [];
 const semanticRunner = async (...args) => semanticCommands.push(args);
@@ -76,6 +71,7 @@ try {
   const configContents = JSON.stringify({
     model_type: "qwen3",
     quantization: "q4f16_1",
+    vocab_size: 259,
     context_window_size: 4096,
     prefill_chunk_size: 2048,
     model_config: {
@@ -189,6 +185,7 @@ try {
     contextProfiles: [2048, 4096],
     prefillChunkSize: 2048,
     structuredHookProfile: "standard-v4",
+    blockSpec: { ...FIXTURE_BLOCK_SPEC },
     thinkingProfile,
   };
   await writeFile(join(modelDirectory, "hosted-artifacts.json"), JSON.stringify({
@@ -239,8 +236,6 @@ try {
       requirements: {
         features: ["shader-f16"],
         limits: {
-          maxBufferSize: 134_217_728,
-          maxStorageBufferBindingSize: 134_217_728,
           maxStorageBuffersPerShaderStage: 10,
           maxComputeWorkgroupStorageSize: 32_768,
           maxComputeWorkgroupSizeX: 256,
@@ -309,12 +304,20 @@ try {
   const semanticCalls = [];
   const validateSemantics = async (...args) => semanticCalls.push(args);
   const catalog = await prepareCatalog(spec, runtimeLock, root, validateSemantics);
-  const undersizedWeightBuffer = structuredClone(spec);
-  undersizedWeightBuffer.models[0].requirements.limits.maxStorageBufferBindingSize = 2;
-  await assert.rejects(
-    () => prepareCatalog(undersizedWeightBuffer, runtimeLock, root, validateSemantics),
-    /maxStorageBufferBindingSize must declare at least 4 bytes/,
-  );
+  // The buffer limits are derived from the library, not declared: here the fixture's pattern_keys
+  // at its 4096-token context (16 slots × 1 KV head × 4096 × 2 floats = 512 KiB) outgrow the
+  // one-float weight, a 64-row vocabulary read (64 × 259 × 4) and the chunk's gate/up activation.
+  const derived = catalog.models[0].variants[0].requirements.limits;
+  assert.equal(derived.maxStorageBufferBindingSize, 16 * 4096 * 2 * 4);
+  assert.equal(derived.maxBufferSize, derived.maxStorageBufferBindingSize);
+  for (const name of ["maxBufferSize", "maxStorageBufferBindingSize"]) {
+    const declared = structuredClone(spec);
+    declared.models[0].requirements.limits[name] = 1 << 30;
+    await assert.rejects(
+      () => prepareCatalog(declared, runtimeLock, root, validateSemantics),
+      new RegExp(`${name} is derived from its library`),
+    );
+  }
   const catalogFiles = catalog.models[0].variants[0].files;
   assert.equal(catalog.models[0].variants[0].downloadBytes, sum(catalogFiles));
   assert.deepEqual(

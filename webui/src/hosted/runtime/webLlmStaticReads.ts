@@ -24,6 +24,7 @@ import {
   type LensFamily,
   type LensSite,
   type UnitWeightRowsKind,
+  VOCAB_READ_ROWS,
 } from "./modelBackend";
 
 /** The device's stand-in for −∞ (WGSL has no infinity literal): masked footprint ids and padded
@@ -93,6 +94,37 @@ export function webLlmStaticReads(
   };
   const f32 = (o: { data: HostArray; shape: number[] }, shape?: readonly number[]) =>
     f32Tensor(o.data as Float32Array, shape ?? o.shape);
+  /** `read` over `rows` in calls of at most `VOCAB_READ_ROWS` rows (each call's `[rows, V]`
+   *  device output stays within the library's binding), its row-major outputs joined by row. */
+  const inRowChunks = async <T extends Record<string, F32Tensor | I32Tensor>>(
+    rows: F32Tensor,
+    read: (chunk: F32Tensor, first: number) => Promise<T>,
+  ): Promise<T> => {
+    const [n, width] = rows.shape;
+    if (n <= VOCAB_READ_ROWS) return read(rows, 0);
+    const parts: T[] = [];
+    for (let first = 0; first < n; first += VOCAB_READ_ROWS) {
+      const last = Math.min(n, first + VOCAB_READ_ROWS);
+      parts.push(await read(f32Tensor(rows.data.slice(first * width, last * width), [last - first, width]), first));
+    }
+    const joined: Record<string, F32Tensor | I32Tensor> = {};
+    for (const name of Object.keys(parts[0])) {
+      const head = parts[0][name];
+      const shape = [n, ...head.shape.slice(1)];
+      if (head.dtype === "i32") {
+        const data = new Int32Array(parts.reduce((sum, part) => sum + part[name].data.length, 0));
+        let at = 0;
+        for (const part of parts) { data.set(part[name].data as Int32Array, at); at += part[name].data.length; }
+        joined[name] = i32Tensor(data, shape);
+      } else {
+        const data = new Float32Array(parts.reduce((sum, part) => sum + part[name].data.length, 0));
+        let at = 0;
+        for (const part of parts) { data.set(part[name].data as Float32Array, at); at += part[name].data.length; }
+        joined[name] = f32Tensor(data, shape);
+      }
+    }
+    return joined as T;
+  };
 
   const ids1 = (ids: Int32Array, label: string): Int32Array => {
     if (!(ids instanceof Int32Array) || ids.length < 1) {
@@ -224,35 +256,41 @@ export function webLlmStaticReads(
   members.vocabReadoutTopK = async (rows: F32Tensor, k: number) => {
     finiteF32(rows, "Readout rows", [null, d]);
     checkK(k, topK, V);
-    const n = rows.shape[0];
-    const out = await run([
-      { fn: "drowse_vocab_logits", args: [host(rows.data, [n, d])], out: "logits" },
-      { fn: "drowse_log_sum_exp", args: [{ ref: "logits" }], out: "lse" },
-      topkSteps("logits", n, k),
-    ], ["values", "ids", "lse"]);
-    return {
-      ids: i32Tensor(out.ids.data as Int32Array, [n, k]),
-      logits: f32(out.values, [n, k]),
-      logSumExp: f32(out.lse, [n]),
-    };
+    return inRowChunks(rows, async (chunk) => {
+      const n = chunk.shape[0];
+      const out = await run([
+        { fn: "drowse_vocab_logits", args: [host(chunk.data, [n, d])], out: "logits" },
+        { fn: "drowse_log_sum_exp", args: [{ ref: "logits" }], out: "lse" },
+        topkSteps("logits", n, k),
+      ], ["values", "ids", "lse"]);
+      return {
+        ids: i32Tensor(out.ids.data as Int32Array, [n, k]),
+        logits: f32(out.values, [n, k]),
+        logSumExp: f32(out.lse, [n]),
+      };
+    });
   };
 
   members.vocabTokenLogits = async (rows: F32Tensor, ids: I32Tensor) => {
     finiteF32(rows, "Readout rows", [null, d]);
-    const n = rows.shape[0];
-    requireTensorShape(ids, "i32", [n, null], "Token ids");
+    requireTensorShape(ids, "i32", [rows.shape[0], null], "Token ids");
     ids1(ids.data, "Token ids");
-    const out = await run([
-      { fn: "drowse_vocab_logits", args: [host(rows.data, [n, d])], out: "logits" },
-      { fn: "drowse_log_sum_exp", args: [{ ref: "logits" }], out: "lse" },
-    ], ["logits", "lse"]);
-    const logits = out.logits.data as Float32Array;
     const width = ids.shape[1];
-    const picked = new Float32Array(n * width);
-    for (let row = 0; row < n; row += 1) {
-      for (let j = 0; j < width; j += 1) picked[row * width + j] = logits[row * V + ids.data[row * width + j]];
-    }
-    return { logits: f32Tensor(picked, [n, width]), logSumExp: f32(out.lse, [n]) };
+    return inRowChunks(rows, async (chunk, first) => {
+      const n = chunk.shape[0];
+      const out = await run([
+        { fn: "drowse_vocab_logits", args: [host(chunk.data, [n, d])], out: "logits" },
+        { fn: "drowse_log_sum_exp", args: [{ ref: "logits" }], out: "lse" },
+      ], ["logits", "lse"]);
+      const logits = out.logits.data as Float32Array;
+      const picked = new Float32Array(n * width);
+      for (let row = 0; row < n; row += 1) {
+        for (let j = 0; j < width; j += 1) {
+          picked[row * width + j] = logits[row * V + ids.data[(first + row) * width + j]];
+        }
+      }
+      return { logits: f32Tensor(picked, [n, width]), logSumExp: f32(out.lse, [n]) };
+    });
   };
 
   members.vocabLogitMoments = async (
@@ -260,19 +298,22 @@ export function webLlmStaticReads(
     statistics?: BlockSitesResident<"embedding_statistics">,
   ): Promise<F32Tensor> => {
     finiteF32(rows, "Readout rows", [null, d]);
-    const n = rows.shape[0];
     const mask: WebLlmReadArg = statistics === undefined
       ? host(new Uint32Array(1), [1])
       : { resident: statisticsId(statistics), index: 2 };
-    const out = await run([
-      { fn: "drowse_vocab_logits", args: [host(rows.data, [n, d])], out: "logits" },
-      {
-        fn: "drowse_logit_moments",
-        args: [{ ref: "logits" }, mask, host(new Int32Array([statistics === undefined ? 0 : 1]), [1])],
-        out: "moments",
-      },
-    ], ["moments"]);
-    return f32(out.moments, [n, 2]);
+    const { moments } = await inRowChunks(rows, async (chunk) => {
+      const n = chunk.shape[0];
+      const out = await run([
+        { fn: "drowse_vocab_logits", args: [host(chunk.data, [n, d])], out: "logits" },
+        {
+          fn: "drowse_logit_moments",
+          args: [{ ref: "logits" }, mask, host(new Int32Array([statistics === undefined ? 0 : 1]), [1])],
+          out: "moments",
+        },
+      ], ["moments"]);
+      return { moments: f32(out.moments, [n, 2]) };
+    });
+    return moments;
   };
 
   members.footprintTopK = async (
@@ -282,20 +323,22 @@ export function webLlmStaticReads(
   ) => {
     finiteF32(u, "Covectors", [null, d]);
     checkK(k, topK, V);
-    const n = u.shape[0];
     const id = statisticsId(statistics);
-    const out = await run([
-      {
-        fn: "drowse_footprint_scores",
-        args: [host(u.data, [n, d]), { resident: id, index: 0 }, { resident: id, index: 1 }, { resident: id, index: 2 }],
-        out: "scores",
-      },
-      topkSteps("scores", n, k),
-    ], ["values", "ids"]);
-    return {
-      ids: i32Tensor(out.ids.data as Int32Array, [n, k]),
-      z: f32Tensor(fromDevice(out.values.data as Float32Array), [n, k]),
-    };
+    return inRowChunks(u, async (chunk) => {
+      const n = chunk.shape[0];
+      const out = await run([
+        {
+          fn: "drowse_footprint_scores",
+          args: [host(chunk.data, [n, d]), { resident: id, index: 0 }, { resident: id, index: 1 }, { resident: id, index: 2 }],
+          out: "scores",
+        },
+        topkSteps("scores", n, k),
+      ], ["values", "ids"]);
+      return {
+        ids: i32Tensor(out.ids.data as Int32Array, [n, k]),
+        z: f32Tensor(fromDevice(out.values.data as Float32Array), [n, k]),
+      };
+    });
   };
 
   members.slensProbes = async (request: {

@@ -12,6 +12,7 @@ import type {
 } from "../../../../drowse/webui/src/lib/runtime/contracts";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
+import { blockSitesBindingBytes } from "../../hosted/runtime/modelBackend";
 import {
   EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
   resolveStructuredHookProfile,
@@ -314,6 +315,26 @@ function validateRuntimeLockBindings(
           "CATALOG_RUNTIME_IDENTITY_UNLOCKED",
           `The embedded browser runtime lock does not record variant ${variant.id}'s ${unitSites ? "block spec" : "unit refusal"}`,
         );
+      }
+      // The bridge asks the device for exactly the variant's binding, so it must cover the units
+      // machinery at the lock's largest context (HOOK_ABI.md §10); the catalog builder derives the
+      // rest (weights, vocabulary reads) from the files.
+      if (unitSites) {
+        const binding = blockSitesBindingBytes(profile, {
+          layerCount: lock.runtimeIdentity.layerMap.length,
+          hiddenSize: lock.runtimeIdentity.hiddenSize,
+          contextTokens: Math.max(...lock.contextProfiles),
+          prefillChunkSize: lock.prefillChunkSize,
+          blockSpec: lock.blockSpec!,
+        });
+        for (const name of ["maxBufferSize", "maxStorageBufferBindingSize"] as const) {
+          if ((variant.requirements.limits[name] ?? 0) < binding) {
+            throw new CatalogValidationError(
+              "CATALOG_SCHEMA_INVALID",
+              `Catalog variant ${variant.id} declares ${name} below its library's ${binding}-byte binding`,
+            );
+          }
+        }
       }
       if (model.sourceUrl !== `https://huggingface.co/${lock.runtimeIdentity.sourceModel}`) {
         throw new CatalogValidationError(

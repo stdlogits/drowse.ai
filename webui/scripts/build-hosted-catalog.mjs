@@ -61,8 +61,23 @@ export async function prepareCatalog(
     throw new Error("release spec must contain models");
   }
   const models = [];
-  for (const entry of spec.models) {
-    models.push(await prepareModel(entry, runtimeLock, specDirectory, semanticValidator));
+  const server = await createServer({
+    root: webuiRoot,
+    configFile: false,
+    appType: "custom",
+    logLevel: "silent",
+    server: { middlewareMode: true, watch: null },
+  });
+  try {
+    const runtime = {
+      ...await server.ssrLoadModule("/src/hosted/runtime/modelBackend.ts"),
+      ...await server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts"),
+    };
+    for (const entry of spec.models) {
+      models.push(await prepareModel(entry, runtimeLock, specDirectory, semanticValidator, runtime));
+    }
+  } finally {
+    await server.close();
   }
   if (new Set(models.map((model) => model.id)).size !== models.length) {
     throw new Error("release spec repeats a model id");
@@ -78,7 +93,7 @@ export async function prepareCatalog(
   return document;
 }
 
-async function prepareModel(entry, runtimeLock, specDirectory, semanticValidator) {
+async function prepareModel(entry, runtimeLock, specDirectory, semanticValidator, runtime) {
   exactKeys(entry, [
     "id", "variantId", "tier", "displayName", "description", "license",
     "languages", "modelDirectory", "contextProfiles", "requirements", "packs",
@@ -114,12 +129,28 @@ async function prepareModel(entry, runtimeLock, specDirectory, semanticValidator
     lock.id,
     modelManifest.structuredHookProfile,
   );
+  // The library's binding is derived, not declared (HOOK_ABI.md §10): its largest weight tensor,
+  // its units machinery at the largest context, a vocabulary read and a lens layer. The bridge asks
+  // the device for exactly this, so admission (adapter limits ≥ these) implies the model loads.
   const weightManifest = modelManifest.files.find((file) => file.role === "converted_manifest");
-  validateWeightBufferRequirements(
-    requirements,
-    JSON.parse(await readFile(resolve(modelDirectory, weightManifest.path), "utf8")),
-    lock.id,
+  const chatConfig = JSON.parse(await readFile(resolve(modelDirectory, "mlc-chat-config.json"), "utf8"));
+  const bindingBytes = runtime.libraryBindingBytes(
+    runtime.resolveStructuredHookProfile(lock.structuredHookProfile),
+    {
+      layerCount: lock.layerMap.length,
+      hiddenSize: lock.hiddenSize,
+      vocabSize: chatConfig.vocab_size,
+      contextTokens: Math.max(...lock.contextProfiles),
+      prefillChunkSize: lock.prefillChunkSize,
+      blockSpec: lock.blockSpec ?? null,
+      largestWeightBytes: largestWeightTensorBytes(
+        JSON.parse(await readFile(resolve(modelDirectory, weightManifest.path), "utf8")),
+        lock.id,
+      ),
+    },
   );
+  requirements.limits.maxBufferSize = bindingBytes;
+  requirements.limits.maxStorageBufferBindingSize = bindingBytes;
   const baseUrl = `https://huggingface.co/${lock.convertedRepository}/resolve/${lock.convertedRevision}/`;
   const hostedManifestPath = resolve(modelDirectory, "hosted-artifacts.json");
   const hostedManifestInfo = await lstat(hostedManifestPath);
@@ -410,6 +441,12 @@ export function prepareRequirements(value, modelId, structuredHookProfile) {
   if (!value.limits || typeof value.limits !== "object" || Array.isArray(value.limits)) {
     throw new Error(`${modelId} required limits are invalid`);
   }
+  // The buffer limits are the library's derived binding (`libraryBindingBytes`), never declared.
+  for (const name of ["maxBufferSize", "maxStorageBufferBindingSize"]) {
+    if (Object.hasOwn(value.limits, name)) {
+      throw new Error(`${modelId} ${name} is derived from its library and cannot be declared`);
+    }
+  }
   // Every hook ABI v5 library, units or residual, exports exact-readout-v2's top-k kernels.
   structuredHookProfileId(structuredHookProfile);
   for (const [name, minimum] of Object.entries(
@@ -430,12 +467,14 @@ export function prepareRequirements(value, modelId, structuredHookProfile) {
 }
 
 
-export function validateWeightBufferRequirements(requirements, cache, modelId) {
+/** The bytes of the converted model's largest weight tensor (as the GPU holds it: `float32` for
+ *  a bf16-encoded record), the floor of its binding. */
+export function largestWeightTensorBytes(cache, modelId) {
   if (!Array.isArray(cache.records) || cache.records.length === 0) {
     throw new Error(`${modelId} has no weight tensor records`);
   }
   const dtypeBytes = { float16: 2, float32: 4, int32: 4, uint32: 4 };
-  let minimum = 0;
+  let largest = 0;
   for (const shard of cache.records) {
     if (!Array.isArray(shard.records) || shard.records.length === 0) {
       throw new Error(`${modelId} has no weight tensor records`);
@@ -449,15 +488,10 @@ export function validateWeightBufferRequirements(requirements, cache, modelId) {
       if (!Number.isSafeInteger(bytes)) {
         throw new Error(`${modelId} weight tensor size exceeds safe buffer arithmetic`);
       }
-      minimum = Math.max(minimum, bytes);
+      largest = Math.max(largest, bytes);
     }
   }
-  for (const name of ["maxBufferSize", "maxStorageBufferBindingSize"]) {
-    if (!Number.isSafeInteger(requirements.limits[name]) || requirements.limits[name] < minimum) {
-      throw new Error(`${modelId} ${name} must declare at least ${minimum} bytes for its largest weight tensor`);
-    }
-  }
-  return minimum;
+  return largest;
 }
 
 async function validateDocument(document) {

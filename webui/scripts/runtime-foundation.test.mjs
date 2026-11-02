@@ -2933,6 +2933,17 @@ try {
       catalog.lockedLibraryContract([], lockedVariant),
       { blockSpec: null, unitRefusal: null, prefillChunkSize: null },
     );
+    // The variant's declared binding must cover its units machinery at the lock's largest context:
+    // eight 256-wide KV heads make pattern_keys (16 × 8 × 2048 × 256 floats, 256 MiB) outgrow it.
+    await rejectsCode(
+      () => catalog.verifyCatalog(signed.exactBytes, signed.signature, verifier, {
+        ...policy,
+        runtimeLockModels: policy.runtimeLockModels.map((model) => model.blockSpec === null ? model : ({
+          ...model, blockSpec: { ...model.blockSpec, nHeads: 8, nKvHeads: 8, headDim: 256 },
+        })),
+      }),
+      "CATALOG_SCHEMA_INVALID",
+    );
     await rejectsCode(
       () => catalog.verifyCatalog(signed.exactBytes, signed.signature, verifier, {
         ...policy,

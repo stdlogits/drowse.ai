@@ -210,6 +210,27 @@ try {
   assert.equal(gemma270m.tapGrams * 4 / MiB, 4);
   assert.ok(gemma270m.unitMeta * 4 + gemma270m.unitCoeff * 4 < 100 * 1024, "unit tables stay under 100 KiB");
 
+  // ------------------------------------------------- the library's binding (HOOK_ABI.md §10) ---
+  // The units machinery's largest buffer: pattern_keys whole at the largest context (qwen3-4b,
+  // 4096 tokens: 256 MiB), else the head grams or a chunk's [prefill, 2·d_ff] gate/up activation.
+  const qwen4bModel = { layerCount: 36, hiddenSize: 2560, contextTokens: 4096, prefillChunkSize: 2048, blockSpec: spec };
+  assert.equal(backend.blockSitesBindingBytes(v4, qwen4bModel), 256 * MiB);
+  assert.equal(backend.blockSitesBindingBytes(v4, { ...qwen4bModel, contextTokens: 2048 }), 152 * MiB,
+    "at 2048 tokens the chunk's gate/up (2048 × 2 × 9728) outgrows pattern_keys (128 MiB)");
+  // The catalog's binding: the largest of that, the largest weight, a 64-row vocabulary read and a
+  // resident lens layer. gemma3-4b's q4 embedding (320 MiB) wins; qwen3-4b's pattern_keys win.
+  const library = (overrides) => backend.libraryBindingBytes(v4, {
+    ...qwen4bModel, vocabSize: 151_936, largestWeightBytes: 194_478_080, ...overrides,
+  });
+  assert.equal(library({}), 256 * MiB);
+  assert.equal(library({ vocabSize: 262_208, largestWeightBytes: 335_626_240 }), 335_626_240);
+  const pythia = { layerCount: 6, hiddenSize: 512, contextTokens: 2048, prefillChunkSize: 1024, blockSpec: null, vocabSize: 50_304 };
+  assert.equal(backend.libraryBindingBytes(residual, { ...pythia, largestWeightBytes: 103_022_592 }), 103_022_592);
+  assert.equal(backend.libraryBindingBytes(residual, { ...pythia, largestWeightBytes: 1 }), backend.VOCAB_READ_ROWS * 50_304 * 4,
+    "a tiny library still binds a vocabulary read's rows");
+  assert.throws(() => backend.libraryBindingBytes(v4, { ...pythia, largestWeightBytes: 1 }), /block spec/);
+  assert.throws(() => library({ largestWeightBytes: 0 }), /largestWeightBytes/);
+
   console.log("block-sites backend seam: surfaces, errors, tensors and replay layouts pass");
 } finally {
   await server.close();
