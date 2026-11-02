@@ -357,9 +357,11 @@ export class BrowserInstrumentRuntime {
           active: true,
           summary: {
             kind: descriptor.kind,
-            layers: descriptor.layers,
-            nPrompts: descriptor.nPrompts,
-            splitHalf: descriptor.splitHalf,
+            coverage: {
+              layers: descriptor.layers,
+              nPrompts: descriptor.nPrompts,
+              splitHalf: descriptor.splitHalf,
+            },
           },
         }];
   }
@@ -823,29 +825,31 @@ function tokenReadoutOptions(value: unknown): TokenReadoutOptions {
   return input as TokenReadoutOptions;
 }
 
-/** A hosted lens pack's row in 6.0's shape (`lens/sources.py::list_lens_sources`): every hosted
- *  pack is of the R family and the browser reads its `out` site only, so `sites` is `["out"]`
- *  and `layers`/`split_half` key that site. A pack whose manifest does not pass the loader's
- *  checks keeps native's coverage-free row (`sites: []`). */
+/** A hosted lens pack's row in 6.0's shape (`lens/sources.py::list_lens_sources`): a hosted lens
+ *  pack selects into the R slot and the browser reads its `out` site only, so `family` is R,
+ *  `sites` is `["out"]` and `layers`/`split_half` key that site. A pack whose manifest does not
+ *  pass the loader's checks keeps native's coverage-free row (`sites: []`), with its kind when
+ *  the manifest still names one (`LensSourceSummary`). */
 function lensSourceRow(
   source: ReturnType<BrowserFeasibilityCorePackCompiler["jlensSources"]>[number],
 ): InstrumentSourceJSON {
   const summary = source.summary;
+  const coverage = summary?.coverage ?? null;
   return {
     source: source.source,
     kind: "catalog",
     name: source.displayName,
     ...(summary === null ? {} : { lens: summary.kind }),
     family: "R",
-    sites: summary === null ? [] : ["out"],
-    ...(summary === null
+    sites: coverage === null ? [] : ["out"],
+    ...(coverage === null
       ? {}
       : {
-          layers: { out: [...summary.layers] },
-          n_prompts: summary.nPrompts,
-          ...(summary.splitHalf === null || Object.keys(summary.splitHalf).length === 0
+          layers: { out: [...coverage.layers] },
+          n_prompts: coverage.nPrompts,
+          ...(coverage.splitHalf === null || Object.keys(coverage.splitHalf).length === 0
             ? {}
-            : { split_half: { out: splitHalfByLayer(summary.splitHalf) } }),
+            : { split_half: { out: splitHalfByLayer(coverage.splitHalf) } }),
         }),
     active: source.active,
     provider: "catalog",

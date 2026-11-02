@@ -172,13 +172,16 @@ interface BrowserJlens {
   resolvedBytes: number;
 }
 
-/** An installed lens pack as its source row describes it: kind, `out` layers, documents and the
- *  fit's split-half difference per layer (when recorded). */
+/** An installed lens pack as its source row describes it: its kind, and its coverage (`out`
+ *  layers, documents and the fit's split-half difference per layer, when recorded) once the
+ *  manifest also passes the loader's site checks. */
 export interface LensSourceSummary {
   readonly kind: "J" | "R";
-  readonly layers: readonly number[];
-  readonly nPrompts: number;
-  readonly splitHalf: Readonly<Record<string, number>> | null;
+  readonly coverage: {
+    readonly layers: readonly number[];
+    readonly nPrompts: number;
+    readonly splitHalf: Readonly<Record<string, number>> | null;
+  } | null;
 }
 
 export class BrowserInstrumentRegistry {
@@ -1061,19 +1064,26 @@ function browserLensSite(
 function lensSummaryOf(jlens: BrowserJlens): LensSourceSummary {
   return {
     kind: jlens.kind,
-    layers: [...jlens.layerMap],
-    nPrompts: jlens.nPrompts,
-    splitHalf: jlens.splitHalf === null ? null : { ...jlens.splitHalf },
+    coverage: {
+      layers: [...jlens.layerMap],
+      nPrompts: jlens.nPrompts,
+      splitHalf: jlens.splitHalf === null ? null : { ...jlens.splitHalf },
+    },
   };
 }
 
 /** What a lens source row says about an installed pack (6.0's `InstrumentSourceJSON` fields),
- *  read from its manifest alone under the loader's checks; `null` when the manifest does not
- *  pass them, as native's row for a manifest that no longer validates carries no coverage. */
+ *  read from its manifest alone under the loader's checks. Native's row for a manifest that no
+ *  longer validates keeps its kind (from the local name) and drops its coverage; here the kind
+ *  is known once the pack's files verify and its manifest names an R-family kind (J or R), so a
+ *  manifest that fails only the site checks keeps it (`coverage: null`). `null` when even the
+ *  kind cannot be read: a hosted lens pack selects into the R slot, so a K or S manifest names
+ *  no kind it could serve. */
 async function lensSourceSummary(
   pack: BrowserInstrumentPackArtifacts,
   request: BrowserModelLoadRequest,
 ): Promise<LensSourceSummary | null> {
+  let kind: "J" | "R" | null = null;
   try {
     assertArtifactClosure(pack);
     const manifestArtifact = uniqueArtifact(pack.artifacts, (artifact) =>
@@ -1082,17 +1092,21 @@ async function lensSourceSummary(
       manifestArtifact,
       await textArtifact(manifestArtifact, request.signal),
     );
+    if (manifest.kind !== "J" && manifest.kind !== "R") return null;
+    kind = manifest.kind;
     const site = browserLensSite(manifest, request);
     return {
-      kind: manifest.kind as "J" | "R",
-      layers: [...site.layers],
-      nPrompts: manifest.n_prompts as number,
-      splitHalf: site.splitHalf === null ? null : { ...site.splitHalf },
+      kind,
+      coverage: {
+        layers: [...site.layers],
+        nPrompts: manifest.n_prompts as number,
+        splitHalf: site.splitHalf === null ? null : { ...site.splitHalf },
+      },
     };
   } catch {
     // An unreadable inactive pack must not fail the model load; selecting it refuses loudly.
     request.signal.throwIfAborted();
-    return null;
+    return kind === null ? null : { kind, coverage: null };
   }
 }
 

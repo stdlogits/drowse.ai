@@ -2131,6 +2131,12 @@ try {
       [instrumentFile("packs/klens/manifest.json", jsonBytes({ format_version: 7, kind: "K" }))],
       request.variant.runtimeIdentitySha256,
     ));
+    request.optionalPacks.push(instrumentPack(
+      "fixture-r-sideless",
+      "jlens",
+      [instrumentFile("packs/rsideless/manifest.json", jsonBytes({ format_version: 7, kind: "R" }))],
+      request.variant.runtimeIdentitySha256,
+    ));
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const runtime = new BrowserInstrumentRuntime(compiler, {});
     const { sources } = runtime.request({
@@ -2141,16 +2147,23 @@ try {
     assert.deepEqual(sources.map((row) => [row.source, row.active, row.sites]), [
       ["fixture-jlens", true, ["out"]],
       ["fixture-k-lens", false, []],
+      ["fixture-r-sideless", false, []],
     ]);
-    // Native's row for a manifest that no longer validates: its family and no coverage.
-    assert.deepEqual(sources[1], {
-      source: "fixture-k-lens",
+    // Native's row for a manifest that no longer validates: its kind, family and no coverage.
+    // A hosted lens pack selects into the R slot, so a K manifest names no kind it could serve.
+    const brokenRow = {
       kind: "catalog",
-      name: "fixture-k-lens",
       family: "R",
       sites: [],
       active: false,
       provider: "catalog",
+    };
+    assert.deepEqual(sources[1], {
+      ...brokenRow, source: "fixture-k-lens", name: "fixture-k-lens",
+    });
+    // An R manifest that fails only the site checks keeps its kind.
+    assert.deepEqual(sources[2], {
+      ...brokenRow, source: "fixture-r-sideless", name: "fixture-r-sideless", lens: "R",
     });
     await assert.rejects(
       () => compiler.activateJlensSource("fixture-k-lens"),
