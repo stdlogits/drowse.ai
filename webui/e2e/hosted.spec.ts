@@ -664,7 +664,7 @@ test("landing page routes into the hosted app", async ({ page }) => {
   await expect(requirement).toHaveText(await requirement.getAttribute("data-webgpu") === "available"
     ? "WebGPU is available in this browser. Drowse checks your device's memory next."
     : "This browser can't run Drowse yet. Try a current version of Chrome, Edge or Safari 26 or later on a computer with a graphics processor.");
-  await expect(page.getByRole("button", { name: "Pause background animation", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Pause background animation", exact: true })).toHaveCount(0);
   await page.getByRole("main").getByRole("link", { name: "Open Drowse", exact: true }).first().click();
   await expect(page).toHaveURL(/\/app$/);
   expect(pageErrors).toEqual([]);
@@ -1020,14 +1020,14 @@ test("bottom conversation action clears the active path without deleting its bra
   await expect(page.locator(".tree-node-wrap").filter({ hasText: "Keep this branch available" })).toBeVisible();
 });
 
-test("first run includes J-lens and SAE while additional model tools remain manageable", async ({ page }) => {
+test("first run includes the R lens and SAE while additional model tools remain manageable", async ({ page }) => {
   await page.goto(`${devUrl}/app?fixture=1`);
   await expect(page.getByRole("heading", { name: "Choose your first model" })).toBeVisible();
   await chooseFixtureModel(page);
   const toolPicker = page.locator(".tool-picker");
   const includedSae = toolPicker.locator(".required-tool", { hasText: "Feature insights" });
   const includedJlens = toolPicker.locator(".required-tool", { hasText: "Word insights" });
-  await expect(includedJlens).toContainText("J-lens");
+  await expect(includedJlens).toContainText("R lens");
   await expect(includedJlens.locator('input[type="checkbox"]')).toHaveCount(0);
   await expect(includedSae).toContainText("SAE");
   await expect(includedSae.locator('input[type="checkbox"]')).toHaveCount(0);

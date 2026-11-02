@@ -180,7 +180,7 @@ test("landing explains the workbench and separates chat and base model uses", as
   const features = page.locator(".capabilities");
   await expect(features.getByRole("heading", { level: 2 })).toHaveText("Test what shapes a reply.");
   await expect(features.locator("li")).toHaveCount(3);
-  await expect(features).toContainText("predictions across layers");
+  await expect(features).toContainText("The R and S lenses");
   const models = page.locator(".models");
   await expect(models).not.toContainText("Best quality");
   await expect(models).not.toContainText("Larger");
