@@ -1,4 +1,4 @@
-import { setAppearance } from "./workbench-navigation";
+import { setAppearance, settle } from "./workbench-navigation";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
@@ -157,14 +157,13 @@ test("both model groups list every choice and fit narrow layouts in both themes"
 });
 
 test("model choices pass axe in both themes", async ({ page }) => {
-  // Product bug (lanes/A5.md, "model chooser contrast"): a card's size and status line (--ink3)
-  // on its --wash2 face measure 3.73:1 in the dark theme.
-  test.fixme(true, "chooser meta text fails AA contrast in dark; see lanes/A5.md");
   await home(page);
   for (const theme of ["light", "dark"]) {
     await setAppearance(page, theme);
+    await settle(page);
     expect((await new AxeBuilder({ page }).include(".new-chat-panel").analyze()).violations).toEqual([]);
     await action(page, 1).click();
+    await settle(page);
     expect((await new AxeBuilder({ page }).include(".new-chat-panel").analyze()).violations).toEqual([]);
     await page.keyboard.press("Escape");
   }

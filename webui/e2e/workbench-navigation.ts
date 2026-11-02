@@ -93,6 +93,15 @@ export async function inspectToken(page: Page, text: string): Promise<Locator> {
   return token;
 }
 
+/** Waits for running animations and transitions to finish (Ledger fades surfaces in even under
+ *  reduced motion), so a contrast check reads the settled colours, not a mid-fade blend. */
+export async function settle(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => undefined)));
+  });
+}
+
 /** Sets an explicit light or dark theme through Ledger's ThemeButton, which steps auto, the
  *  system's opposite, then its own look (theme-default.spec covers that order). Where no button
  *  is on screen (a phone's workbench keeps it in the header menu) the dev server's theme module
