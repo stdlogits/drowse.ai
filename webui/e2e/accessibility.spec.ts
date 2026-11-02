@@ -117,9 +117,8 @@ test("a populated saved-chat library meets automated WCAG checks", async ({ page
 });
 
 test("closing a tool dialog returns focus to the control that opened it", async ({ page }) => {
-  // Product bug (lanes/A5.md, "dialog focus return"): App.svelte's dialog moves focus in but not
-  // back; after Escape, focus is on <body>.
-  test.fixme(true, "the tool dialog does not restore focus on close; see lanes/A5.md");
+  // drowse PR 71: focus goes back to the opener while it is still a tab stop, else to Menu. A Menu
+  // item is gone once its dialog opens, so Menu takes it.
   await openFixtureWorkbench(page);
   await openMenuItem(page, "Feedback");
   await expect(toolDialog(page, "Feedback")).toBeVisible();
