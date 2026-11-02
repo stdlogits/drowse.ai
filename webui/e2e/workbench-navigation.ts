@@ -98,7 +98,13 @@ export async function inspectToken(page: Page, text: string): Promise<Locator> {
 export async function settle(page: Page): Promise<void> {
   await page.evaluate(async () => {
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    await Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => undefined)));
+    // A looping animation never finishes; wait only for the ones with an end.
+    const finite = document.getAnimations().filter(animation =>
+      Number.isFinite(Number(animation.effect?.getComputedTiming().endTime)));
+    await Promise.race([
+      Promise.all(finite.map(animation => animation.finished.catch(() => undefined))),
+      new Promise(resolve => setTimeout(resolve, 3_000)),
+    ]);
   });
 }
 

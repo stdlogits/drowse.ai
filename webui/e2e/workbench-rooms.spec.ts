@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
-import { composer, openFixtureWorkbench, selectRoom } from "./workbench-navigation";
+import {
+  composer, devUrl, openFixtureWorkbench, openMenuItem, selectRoom, sendMessage, toolDialog,
+} from "./workbench-navigation";
 
 // drowse 6.0's rooms under the hosted shell: the header's tabs (the Menu on a phone), the model
 // pill, and the address bar (rooms are hash routes, #/lens).
@@ -31,6 +33,43 @@ test("a phone reaches every room from the Menu", async ({ page }) => {
   await expect(page.getByRole("navigation", { name: "Rooms", exact: true })).toHaveCount(0);
   for (const room of ["Lens", "Artifacts", "Workbench"]) await selectRoom(page, room);
   await expect(composer(page)).toBeVisible();
+});
+
+test("a tool dialog has one close action and also closes from the scrim and Escape", async ({ page }) => {
+  await openFixtureWorkbench(page);
+  const help = toolDialog(page, "Help and shortcuts");
+  await openMenuItem(page, "Help and shortcuts");
+  await expect(help).toBeVisible();
+  const close = help.getByRole("button", { name: /^Close/ });
+  await expect(close).toHaveCount(1);
+  await close.click();
+  await expect(help).toHaveCount(0);
+  await openMenuItem(page, "Help and shortcuts");
+  await expect(help).toBeVisible();
+  await page.mouse.click(4, 400);
+  await expect(help).toHaveCount(0);
+  await openMenuItem(page, "Help and shortcuts");
+  await expect(help).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(help).toHaveCount(0);
+});
+
+test("the landing, chooser and workbench mirror without clipping in RTL", async ({ page }) => {
+  const rtl = () => page.evaluate(() => document.documentElement.setAttribute("dir", "rtl"));
+  const contained = () => expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(devUrl);
+    await rtl();
+    await contained();
+  }
+  await openFixtureWorkbench(page);
+  await rtl();
+  const tabs = page.getByRole("navigation", { name: "Rooms", exact: true }).getByRole("button");
+  const xs = await tabs.evaluateAll(buttons => buttons.map(button => button.getBoundingClientRect().x));
+  expect(xs[0]).toBeGreaterThan(xs[1]);
+  await sendMessage(page, "Mirror this message");
+  await contained();
 });
 
 test("Back and Forward move between rooms without leaving the workbench", async ({ page }) => {

@@ -132,6 +132,29 @@ test("saved chats and token details stay contained on a phone", async ({ page })
   }
 });
 
+test("every Menu dialog stays operable at 320 px", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  await openWorkbench(page);
+  await sendMessage(page, "A narrow conversation.");
+  for (const [item, label] of [
+    ["Save chat", "Save chat"], ["Saved chats", "Saved chats"], ["Download chat", "Download chat"],
+    ["Transcript", "Transcript"], ["System prompt", "System prompt"], ["Sampling", "Sampling settings"],
+    ["Help and shortcuts", "Help and shortcuts"], ["Feedback", "Feedback"],
+  ]) {
+    await openMenuItem(page, item);
+    const dialog = toolDialog(page, label);
+    await expect(dialog, item).toBeVisible();
+    await expectInsideVisualViewport(dialog);
+    await expectNoHorizontalOverflow(dialog);
+    const close = dialog.getByRole("button", { name: /^Close/ }).first();
+    await expectInsideVisualViewport(close);
+    await expectTarget(close);
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+  }
+  await expectNoPageOverflow(page);
+});
+
 test("Weave keeps branch controls reachable on narrow phones and in landscape", async ({ page }) => {
   // Same product bug as loom-camera (lanes/A5.md, "Loom map has no room on a phone").
   test.fixme(true, "the phone Loom page gives its views almost no height; see lanes/A5.md");

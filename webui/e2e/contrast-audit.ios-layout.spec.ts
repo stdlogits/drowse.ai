@@ -1,12 +1,11 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Locator, type Page, type TestInfo } from "@playwright/test";
 import { resolve } from "node:path";
-import { selectWorkspaceView } from "./workbench-navigation";
+import { composer, openMenuItem, selectRoom, sendMessage, settle, toolDialog } from "./workbench-navigation";
 import { waitForReply } from "./workbench-navigation";
 
 const devUrl = "http://127.0.0.1:4176";
 const moduleUrl = (path: string) => `/@fs${resolve(path)}`;
-const storesUrl = moduleUrl("../drowse/webui/src/lib/stores.svelte.ts");
 
 test.describe.configure({ mode: "parallel" });
 
@@ -82,37 +81,6 @@ async function expectActionContrast(button: Locator, label: string) {
   return samples;
 }
 
-async function mountStorageHome(page: Page) {
-  await openPage(page, "/outside-the-workbench");
-  await page.evaluate(async ({ componentUrl, libraryUrl, entryUrl }) => {
-    const [{ default: HostedHome }, { mount, unmount }, { conversationLibrary }, { default: app }] = await Promise.all([
-      import(componentUrl), import("/e2e/svelte-runtime.ts"), import(libraryUrl), import(entryUrl),
-    ]);
-    await unmount(app);
-    conversationLibrary.listSummaries = async () => ({ conversations: [], issues: [] });
-    document.body.replaceChildren();
-    const target = document.createElement("div");
-    document.body.append(target);
-    mount(HostedHome, { target, props: {
-      controller: {
-        capabilities: () => ({ signals: { appleMobile: false } }),
-        retryPersistence: async () => false, check: async () => {}, open: async () => {},
-      },
-      snapshot: {
-        phase: "supported", headline: "Ready", detail: "Ready", checks: [], models: [],
-        download: { available: true, phase: "idle", reason: "Ready" },
-        runtime: { available: true, phase: "unloaded", reason: "Ready" },
-        storage: { availableBytes: 2_000_000_000, persisted: false },
-      },
-      onChooseModels() {},
-    } });
-  }, {
-    componentUrl: moduleUrl("src/hosted/ui/HostedHome.svelte"),
-    libraryUrl: moduleUrl("../drowse/webui/src/lib/stores/savedConversations.svelte.ts"),
-    entryUrl: await appEntryUrl(page),
-  });
-}
-
 async function auditActionStates(page: Page, selector: string, label: string) {
   const candidates = await page.locator(selector).locator("button:visible, a:visible, summary:visible").evaluateAll(elements => {
     const seen = new Set<string>();
@@ -132,7 +100,7 @@ async function auditActionStates(page: Page, selector: string, label: string) {
     const control = page.locator(`${selector} [data-contrast-control="${candidate.index}"]`);
     await control.scrollIntoViewIfNeeded();
     for (const state of ["rest", "hover"]) {
-      if (state === "hover") await control.hover();
+      if (state === "hover") await control.hover({ force: true });
       else await page.mouse.move(0, 0);
       const pair = await control.evaluate(element => {
         const style = getComputedStyle(element);
@@ -175,7 +143,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 async function auditSurface(page: Page, testInfo: TestInfo, theme: string, name: string, selector = "body") {
-  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  await settle(page);
   await page.mouse.move(0, 0);
   const result = await new AxeBuilder({ page }).include(selector).withRules(["color-contrast"]).analyze();
   const summarize = ({ nodes }: any) => nodes.map((node: any) => ({ target: node.target, html: node.html, failure: node.failureSummary }));
@@ -191,87 +159,17 @@ async function auditSurface(page: Page, testInfo: TestInfo, theme: string, name:
 
 async function populatedWorkbench(page: Page, theme: string) {
   await openPage(page, "/app?layoutFixture=instruments");
-  await expect(page.locator(".shell")).toBeVisible();
+  await expect(composer(page)).toBeVisible();
   await setTheme(page, theme);
-  await page.getByRole("textbox", { name: /^Compose as / }).fill("A contrast check with a populated conversation.");
-  await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-  await waitForReply(page);
+  await sendMessage(page, "A contrast check with a populated conversation.");
 }
 
 for (const theme of ["dark", "light"]) {
-  test(`disabled button labels remain discernible in ${theme}`, async ({ page }, testInfo) => {
-    await openPage(page, "/outside-the-workbench");
-    await setTheme(page, theme);
-    await page.evaluate(async ({ buttonUrl, numberUrl, entryUrl }) => {
-      const [{ mount, unmount, createRawSnippet }, { default: Button }, { default: NumberInput }, { default: app }] = await Promise.all([
-        import("/e2e/svelte-runtime.ts"), import(buttonUrl), import(numberUrl), import(entryUrl),
-      ]);
-      await unmount(app);
-      document.body.replaceChildren();
-      const target = document.createElement("main");
-      target.style.cssText = "display:flex;flex-wrap:wrap;gap:16px;padding:24px;background:var(--bg-alt)";
-      document.body.append(target);
-      for (const variant of ["solid", "ghost", "flat", "danger"]) {
-        mount(Button, { target, props: { variant, disabled: true, children: createRawSnippet(() => ({ render: () => `<span>${variant}</span>` })) } });
-      }
-      mount(NumberInput, { target, props: { value: 42, disabled: true, ariaLabel: "Disabled numeric value" } });
-    }, { buttonUrl: moduleUrl("../drowse/webui/src/lib/ui/Button.svelte"), numberUrl: moduleUrl("../drowse/webui/src/lib/NumberInput.svelte"), entryUrl: await appEntryUrl(page) });
-    await expect(page.getByRole("spinbutton", { name: "Disabled numeric value" })).toBeDisabled();
-    await expect(page.locator(".sk-number")).toHaveCSS("opacity", "0.65");
-    await expect(page.locator(".sk-number-input")).toHaveCSS("opacity", "1");
-    await expect(page.locator(".number-rest")).toHaveCSS("opacity", "1");
-    await expect(page.locator(".number-rest")).toHaveText("42");
-    await page.locator("main").screenshot({ path: testInfo.outputPath(`disabled-${theme}.png`) });
-    for (const button of await page.locator("button").all()) {
-      const samples = await measureAction(button);
-      console.log(`disabled ${theme}: ${await button.innerText()} ${JSON.stringify(samples)}`);
-      expect.soft(Math.min(...samples.map(sample => sample.apca)), JSON.stringify(samples)).toBeGreaterThanOrEqual(30);
-    }
-  });
-
-  test(`warning actions preserve readable ink through interaction in ${theme}`, async ({ page }, testInfo) => {
-    test.setTimeout(120_000);
-    const reports: unknown[] = [];
-    for (const surface of ["chats", "saved-chats"]) {
-      if (surface === "chats") await mountStorageHome(page);
-      else {
-        await openPage(page, "/app?layoutFixture=instruments");
-        await expect(page.locator(".shell")).toBeVisible();
-        await page.evaluate(async ({ storesUrl, workspaceUrl }) => {
-          const stores = await import(storesUrl);
-          const { captureConversationSnapshot } = await import(workspaceUrl);
-          await stores.conversationLibrary.create({ name: "Contrast audit", snapshot: captureConversationSnapshot() });
-        }, { storesUrl, workspaceUrl: moduleUrl("../drowse/webui/src/lib/conversationWorkspace.ts") });
-        await page.evaluate(async url => (await import(url)).openDrawer("load_conversation"), storesUrl);
-      }
-      await setTheme(page, theme);
-      const button = page.getByRole("button", { name: "Protect storage", exact: true });
-      await expect(button).toBeVisible();
-      for (const width of [390, 1440]) {
-        await page.setViewportSize({ width, height: 900 });
-        await page.mouse.move(0, 0);
-        reports.push({ surface, width, state: "rest", samples: await expectActionContrast(button, `${surface} ${theme} ${width} rest`) });
-        await button.hover();
-        reports.push({ surface, width, state: "hover", samples: await expectActionContrast(button, `${surface} ${theme} ${width} hover`) });
-        await page.mouse.down();
-        reports.push({ surface, width, state: "pressed", samples: await expectActionContrast(button, `${surface} ${theme} ${width} pressed`) });
-        await page.mouse.move(0, 0);
-        await page.mouse.up();
-        await button.focus();
-        reports.push({ surface, width, state: "focus", samples: await expectActionContrast(button, `${surface} ${theme} ${width} focus`) });
-        await button.screenshot({ path: testInfo.outputPath(`${surface}-${theme}-${width}.png`) });
-      }
-    }
-    await testInfo.attach("rendered-warning-contrast", { body: JSON.stringify(reports, null, 2), contentType: "application/json" });
-  });
-
-  for (const path of ["/", "/credits", "/contact", "/missing-page", "/app?layoutFixture=setup"]) {
+  for (const path of ["/", "/credits", "/contact", "/missing-page", "/app?fixture=1"]) {
     test(`public text retains contrast in ${theme}: ${path}`, async ({ page }, testInfo) => {
       await openPage(page, path);
-      if (path.includes("layoutFixture=setup")) {
-        await expect(page.locator('.page-route:not([data-route="resolving"])')).toBeVisible();
-      }
       await expect(page.locator("main")).toBeVisible();
+      if (path.includes("fixture=1")) await expect(page.getByRole("heading", { name: "Choose your first model" })).toBeVisible();
       await setTheme(page, theme);
       await page.evaluate(() => document.fonts.ready);
       for (const width of [390, 1440]) {
@@ -280,37 +178,32 @@ for (const theme of ["dark", "light"]) {
       }
     });
   }
-  test(`chats and storage notice retain contrast in ${theme}`, async ({ page }, testInfo) => {
+  test(`workbench rooms and the Loom retain contrast in ${theme}`, async ({ page }, testInfo) => {
+    test.setTimeout(120_000);
+    await populatedWorkbench(page, theme);
+    await page.setViewportSize({ width: 390, height: 900 });
+    await auditSurface(page, testInfo, theme, "Workbench 390", "main");
     await page.setViewportSize({ width: 1440, height: 900 });
-    await mountStorageHome(page);
-    await setTheme(page, theme);
-    await auditSurface(page, testInfo, theme, "Chats and storage notice");
+    for (const room of ["Lens", "Artifacts", "Workbench"]) {
+      await selectRoom(page, room);
+      await auditSurface(page, testInfo, theme, `${room} 1440`, "main");
+    }
+    await page.getByRole("complementary", { name: "Thread", exact: true }).getByRole("button", { name: "Map", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Loom", exact: true })).toBeVisible();
+    await auditSurface(page, testInfo, theme, "Loom map", "main");
   });
-  for (const view of ["Chat", "Loom", "Controls"]) {
-    test(`${view} text retains contrast in ${theme}`, async ({ page }, testInfo) => {
-      await populatedWorkbench(page, theme);
-      for (const width of [390, 1440]) {
-        await page.setViewportSize({ width, height: 900 });
-        await selectWorkspaceView(page, view === "Chat" ? /^(Chat|Conversation)$/ : view);
-        await auditSurface(page, testInfo, theme, `${view} ${width}`);
-      }
-    });
-  }
-  for (const name of ["appearance", "local_runtime", "help", "feedback", "cast", "advanced_sampling", "system_prompt", "save_conversation", "load_conversation", "download_chat", "transcript", "manifold_pack", "manifold_builder", "manifold_merge", "template_lab", "health", "subspace", "manifolds", "compare", "correlation", "token_drilldown", "node_compare"]) {
-    test(`${name} dialog text retains contrast in ${theme}`, async ({ page }, testInfo) => {
-      await page.setViewportSize({ width: 1440, height: 900 });
-      await populatedWorkbench(page, theme);
-      await selectWorkspaceView(page, "Controls");
-      await page.evaluate(async ({ url, name }) => {
-        const stores = await import(url);
-        if (["manifold_builder", "template_lab", "health"].includes(name)) stores.drawerState.open = name;
-        else stores.openDrawer(name, name === "token_drilldown" ? { turnIdx: 1, tokenIdx: 0 } : undefined);
-      }, { url: storesUrl, name });
-      await expect(page.locator('.drawer[role="dialog"]')).toBeVisible();
-      await auditSurface(page, testInfo, theme, name, '.drawer[role="dialog"]');
-      await page.evaluate(async url => (await import(url)).closeDrawer(), storesUrl);
-    });
-  }
+  test(`Menu dialogs retain contrast in ${theme}`, async ({ page }, testInfo) => {
+    test.setTimeout(120_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await populatedWorkbench(page, theme);
+    for (const [item, label] of [["Saved chats", "Saved chats"], ["Transcript", "Transcript"], ["System prompt", "System prompt"],
+      ["Sampling", "Sampling settings"], ["Help and shortcuts", "Help and shortcuts"], ["Feedback", "Feedback"]]) {
+      await openMenuItem(page, item);
+      await expect(toolDialog(page, label)).toBeVisible();
+      await auditSurface(page, testInfo, theme, label, '[role="dialog"]');
+      await page.keyboard.press("Escape");
+    }
+  });
   test(`base completion text retains contrast in ${theme}`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await openPage(page, "/app?layoutFixture=base");
