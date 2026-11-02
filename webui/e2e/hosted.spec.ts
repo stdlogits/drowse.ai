@@ -1854,6 +1854,63 @@ test("the loom exposes every generated token as an exact branch point", async ({
   expect(fork.forkRawTokenIds[targetIndex]).not.toBe(generated.rawTokenIds[targetIndex]);
 });
 
+test("a token replaced from the Loom streams its new branch visibly on the Loom page", async ({ page }, testInfo) => {
+  // The worker fixture writes a token every two seconds here, slow enough to watch the branch grow.
+  test.setTimeout(120_000);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openFixtureWorkbench(page, "&fixtureSlow=1");
+  const prompt = "Watch this branch grow.";
+  await composer(page).fill(prompt);
+  await sendButton(page).click();
+  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse, { timeout: 45_000 });
+  await waitForReply(page);
+  const original = await page.evaluate(async ({ moduleUrl, prompt }) => {
+    const stores = await import(moduleUrl);
+    const user = [...stores.loomTree.nodes.values()].find((node: { text: string }) => node.text === prompt);
+    const id = (stores.loomTree.children_of.get(user.id) ?? [])[0];
+    return { userId: user.id, id, saved: JSON.stringify(stores.loomTree.nodes.get(id)) };
+  }, { moduleUrl: toastModuleUrl, prompt });
+
+  await openWorkspace(page, "Branches");
+  const loom = page.getByRole("region", { name: "Loom", exact: true });
+  await loom.locator(`[data-loom-node-id="${original.id}"] [data-loom-token-node]`).nth(2).click();
+  const act = inspector(page).getByRole("region", { name: "Token", exact: true })
+    .getByRole("region", { name: "Act on this token", exact: true });
+  await act.getByRole("button", { name: "Branch here", exact: true }).click();
+  await act.getByRole("textbox", { name: "Branch with", exact: true }).fill("Authored ");
+  await act.getByRole("button", { name: "Branch", exact: true }).click();
+
+  // The new reply grows in its own card on the Loom page, marked as being written, token by token.
+  const writing = loom.locator(".node.streaming");
+  await expect(writing).toHaveCount(1, { timeout: 20_000 });
+  await expect(writing.getByRole("status")).toHaveText("Writing…");
+  const card = loom.locator(".tree-node-wrap").filter({ has: page.locator(".node.streaming") });
+  const forkId = await card.getAttribute("data-loom-node-id");
+  expect(forkId).not.toBe(original.id);
+  await expect(card).toContainText("Authored", { timeout: 20_000 });
+  const tokensNow = await writing.locator("[data-loom-token-node]").count();
+  await expect.poll(() => writing.locator("[data-loom-token-node]").count(), { timeout: 20_000 }).toBeGreaterThan(tokensNow);
+  await card.screenshot({ path: testInfo.outputPath("replacement-streaming.png") });
+  await expect(loom.locator(".node.streaming")).toHaveCount(0, { timeout: 60_000 });
+  await expect(loom.getByRole("status").filter({ hasText: "Writing…" })).toHaveCount(0);
+  await waitForReply(page);
+
+  const final = await page.evaluate(async ({ moduleUrl, id, userId }) => {
+    const stores = await import(moduleUrl);
+    const node = stores.loomTree.nodes.get(stores.loomTree.active_node_id);
+    return {
+      original: JSON.stringify(stores.loomTree.nodes.get(id)),
+      id: node.id, parent: node.parent_id, text: node.text,
+      siblings: (stores.loomTree.children_of.get(userId) ?? []).length,
+    };
+  }, { moduleUrl: toastModuleUrl, id: original.id, userId: original.userId });
+  expect(final.original).toBe(original.saved);
+  expect(final.id).toBe(forkId);
+  expect(final.parent).toBe(original.userId);
+  expect(final.siblings).toBe(2);
+  expect(final.text).toContain("Authored ");
+});
+
 test("arbitrary role labels and structural role swaps survive generation", async ({ page }) => {
   await openFixtureWorkbench(page);
   await page.getByRole("button", { name: /→/ }).first().click();
