@@ -14,7 +14,10 @@ import {
 } from "../src/hosted/runtime/webLlmEngine";
 import type { BrowserJlensGpuDictionary } from "../src/hosted/runtime/browserInstrumentPacks";
 import type { StructuredHookProgramBuffers } from "../src/hosted/runtime/structuredHookProgram";
-import type { BlockSpec } from "../src/hosted/runtime/structuredHookProfile";
+import {
+  BLOCK_SITES_EXACT_READOUT_ABI,
+  type BlockSpec,
+} from "../src/hosted/runtime/structuredHookProfile";
 
 interface FileEntry {
   path: string;
@@ -55,9 +58,12 @@ self.onmessage = async (event: MessageEvent<Request>) => {
   if (event.data?.type !== "run") return;
   let runtime: DrowseWebLlmRuntime | null = null;
   try {
-    if (event.data.structuredHookProfile !== "standard-v3") {
+    if (
+      event.data.structuredHookProfile !== "standard-v4" &&
+      event.data.structuredHookProfile !== "standard-v4-residual"
+    ) {
       throw new Error(
-        "physical precomputed instruments require standard-v3 exact-readout-v1",
+        `physical precomputed instruments require a v5 library (standard-v4 or standard-v4-residual, ${BLOCK_SITES_EXACT_READOUT_ABI})`,
       );
     }
     if (
@@ -607,7 +613,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
         contextTokens: event.data.contextTokens,
         steeringParity: steeringParity?.value ?? null,
         structuredHookProfile: event.data.structuredHookProfile,
-        exactReadoutAbi: "exact-readout-v1",
+        exactReadoutAbi: BLOCK_SITES_EXACT_READOUT_ABI,
         layers: event.data.runtimeIdentity.layerMap.length,
         diagnosticJlensLayerLimit: event.data.jlensLayerLimit,
         diagnosticFamily: event.data.diagnosticFamily,
