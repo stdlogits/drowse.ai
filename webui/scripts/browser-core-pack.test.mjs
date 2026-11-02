@@ -2342,7 +2342,7 @@ try {
     assert.deepEqual([...program.jLensLayerIndices], [0, 1]);
   });
 
-  test("lowers thinking-only controls and exact J-lens probability gates", async () => {
+  test("lowers thinking-only controls and exact R-lens probability gates", async () => {
     const { request } = await fixture({ withWhitener: true, withJlens: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const thinking = compiler.compile("0.5 alert@thinking");
@@ -2353,6 +2353,12 @@ try {
     assert.equal(jlensGate.jLensBindingId, compiler.jlensGpuDictionary().bindingId);
     assert.deepEqual([...jlensGate.jLensLayerIndices], [0, 1]);
     assert.deepEqual([...jlensGate.jLensTokenIds], [0, 0, 0, 0, 0, 0, 0, 0]);
+    // A gate reads the attached probe it names, whatever the alias: an R-lens probe attached as
+    // `slens/watch` installs as a lens gate (drowse attaches under any as_name).
+    compiler.attachProbe({ selector: "jlens/hello", name: "slens/watch" });
+    const aliased = compiler.compile("0.5 alert@when:slens/watch>0.1");
+    assert.equal(aliased.probeKind[0], 3);
+    assert.deepEqual([...aliased.jLensLayerIndices], [0, 1]);
   });
 
   test("resolves a two-node PCA manifold name to its first pole", async () => {

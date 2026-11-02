@@ -9,10 +9,16 @@ import { parseSteeringExpression, UNIT_NAMESPACES } from "./steeringExpression";
  *
  *  A `{…}` layer clause asks nothing new: every program is laid out per layer, so a clause only
  *  chooses which layers a term's entries fill. `units` covers `neuron/` and `head/` atoms (a
- *  neuron push, a unit ablation `!neuron/…`/`!head/…`) and unit gate probes; a unit ablation is
- *  a mean-ablation inside the block, not the residual `ablation`. `slens` covers `slens/` atoms
- *  and gates. Both wait on hook ABI v5 (Half B): until then no library offers them, and the
- *  refusal is the compiler's (`instrumentAtomUnavailable`). */
+ *  neuron push, a unit ablation `!neuron/…`/`!head/…`); a unit ablation is a mean-ablation
+ *  inside the block, not the residual `ablation`. `slens` covers `slens/` atoms. Both wait on
+ *  hook ABI v5 (Half B): until then no library offers them, and the refusal is the compiler's
+ *  (`instrumentAtomUnavailable`).
+ *
+ *  A gate asks only for `probe_gate`. Its probe is the name of an attached probe, as in drowse
+ *  (the scalar key an attached instrument emits), and any name can alias any family, so the
+ *  expression alone cannot say what the gate reads. The compiler resolves it against the
+ *  attached probes: it installs lens and SAE gates by the attached probe's family and refuses an
+ *  unattached unit or S-lens gate with `instrumentAtomUnavailable`. */
 export type DrowseHookFeature =
   | "rank_one"
   | "multi_term"
@@ -119,11 +125,7 @@ function collectTermFeatures(
   if (term.selector.manifoldPosition !== null) features.add("curved_manifold");
   if (term.trigger !== null) {
     if (term.trigger.phase.kind !== "both") features.add("phase_trigger");
-    if (term.trigger.gate !== null) {
-      features.add("probe_gate");
-      const feature = namespaceFeature(gateNamespace(term.trigger.gate.probe));
-      if (feature !== null) features.add(feature);
-    }
+    if (term.trigger.gate !== null) features.add("probe_gate");
   }
   for (const atom of [term.selector.base, term.selector.onto]) {
     if (atom === null) continue;
@@ -143,26 +145,14 @@ function isUnitAtom(atom: SteeringAtom): boolean {
   return atom.namespace !== null && UNIT_NAMESPACES.has(atom.namespace);
 }
 
-/** A gate probe's namespace: `neuron/L8n344` → `neuron`; an unscoped probe has none. */
-function gateNamespace(probe: string): string | null {
-  const slash = probe.indexOf("/");
-  return slash < 0 ? null : probe.slice(0, slash);
-}
-
-/** Every namespace the expression names, in the compiler's order: each term's atoms (base, then
- *  onto) as it resolves them, then the gate probes as it installs them. */
+/** Every atom namespace the expression names, in the order the compiler resolves them: each
+ *  term's base, then its onto. */
 function instrumentNamespaces(parsed: SteeringExpression): string[] {
   const namespaces: string[] = [];
   for (const term of parsed.terms) {
     for (const atom of [term.selector.base, term.selector.onto]) {
       if (atom?.namespace) namespaces.push(atom.namespace);
     }
-  }
-  for (const term of parsed.terms) {
-    const probe = term.trigger?.gate?.probe;
-    if (probe === undefined) continue;
-    const namespace = gateNamespace(probe);
-    if (namespace !== null) namespaces.push(namespace);
   }
   return namespaces;
 }

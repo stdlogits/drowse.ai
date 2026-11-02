@@ -74,50 +74,36 @@ try {
     assertHookFeaturesSupported("0.5 calm{12-20} - 0.2 warm{3}", AFFINE_FEASIBILITY_CAPABILITIES)
   );
 
-  // Units: a neuron push, a unit ablation (inside the block, not the residual `ablation`) and a
-  // unit gate all need the units hooks.
+  // Units: a neuron push and a unit ablation (inside the block, not the residual `ablation`)
+  // need the units hooks.
   assert.deepEqual(features("0.3 neuron/L8n344"), ["rank_one", "units"]);
   assert.deepEqual(features("!neuron/L8n344"), ["rank_one", "units"]);
   assert.deepEqual(features("!head/L20h17 + 0.2 calm"), ["multi_term", "rank_one", "units"]);
-  assert.deepEqual(features("0.5 calm@when:neuron/L8n344>0.2"), [
-    "phase_trigger",
-    "probe_gate",
-    "rank_one",
-    "units",
-  ]);
+  // The S lens: atoms (by word or vocab id) and ablation.
+  assert.deepEqual(features("0.4 slens/Owl"), ["rank_one", "slens"]);
+  assert.deepEqual(features("0.4 slens/#12"), ["rank_one", "slens"]);
+  assert.deepEqual(features("!slens/Owl"), ["ablation", "rank_one", "slens"]);
+  // A gate names an attached probe, and any name can alias any family (drowse attaches a probe
+  // under any `as_name`), so a gate asks only for the gate hook whatever its probe is called.
+  // The compiler resolves the probe's family against the attached probes.
+  for (const expression of [
+    "0.5 calm@when:neuron/L8n344>0.2",
+    "0.5 alert@when:slens/Owl>3",
+    "0.5 alert@when:slens/watch>0.2",
+    "0.5 alert@when:jlens/Owl>3",
+    "0.5 alert@when:sae/42>3",
+    "0.5 alert@when:watch>0.2",
+  ]) {
+    assert.deepEqual(features(expression), ["phase_trigger", "probe_gate", "rank_one"], expression);
+  }
   assert.deepEqual(features("0.5 calm@after&when:head/L3h2<=0.5"), [
     "phase_trigger",
     "probe_gate",
     "rank_one",
-    "units",
-  ]);
-  // The S lens: atoms (by word or vocab id), ablation and gates.
-  assert.deepEqual(features("0.4 slens/Owl"), ["rank_one", "slens"]);
-  assert.deepEqual(features("0.4 slens/#12"), ["rank_one", "slens"]);
-  assert.deepEqual(features("!slens/Owl"), ["ablation", "rank_one", "slens"]);
-  assert.deepEqual(features("0.5 alert@when:slens/Owl>3"), [
-    "phase_trigger",
-    "probe_gate",
-    "rank_one",
-    "slens",
-  ]);
-  // Lens and SAE gates install their own probe kinds.
-  assert.deepEqual(features("0.5 alert@when:jlens/Owl>3"), [
-    "jlens",
-    "phase_trigger",
-    "probe_gate",
-    "rank_one",
-  ]);
-  assert.deepEqual(features("0.5 alert@when:sae/42>3"), [
-    "phase_trigger",
-    "probe_gate",
-    "rank_one",
-    "sae",
   ]);
 
   // Until hook ABI v5 no library runs units or the S lens. The refusal is the compiler's, word
-  // for word (browser-core-pack pins the compiler side), naming the first atom it resolves and
-  // then the first gate it installs.
+  // for word (browser-core-pack pins the compiler side), naming the first atom it resolves.
   const structured = Object.fromEntries(
     Object.keys(AFFINE_FEASIBILITY_CAPABILITIES).map((feature) => [feature, true]),
   );
@@ -128,9 +114,6 @@ try {
     ["0.3 slens/Owl", "slens"],
     ["0.2 neuron/L8n344", "neuron"],
     ["!head/L3h2", "head"],
-    ["0.5 alert@when:neuron/L8n344>2", "neuron"],
-    ["0.5 alert@after&when:head/L3h2<=0.5", "head"],
-    ["0.5 alert@when:slens/Owl>3", "slens"],
     ["0.5 alert@when:slens/Owl>3 + !head/L3h2", "head"],
     ["0.2 calm{3} + 0.3 slens/Owl + !neuron/L1n2", "slens"],
   ]) {
@@ -148,14 +131,23 @@ try {
       },
     );
   }
+  // A gate on a unit- or S-lens-named probe passes here: an R-lens probe attached as
+  // `slens/watch` compiles, and an unattached one is the compiler's to refuse.
+  for (const expression of [
+    "0.5 alert@when:neuron/L8n344>2",
+    "0.5 alert@after&when:head/L3h2<=0.5",
+    "0.5 alert@when:slens/watch>0.2",
+  ]) {
+    assert.doesNotThrow(() => assertHookFeaturesSupported(expression, structured), expression);
+  }
   // A library that offers them (Half B) passes the same expressions.
   assert.doesNotThrow(() => assertHookFeaturesSupported(
     "0.2 neuron/L8n344 + !head/L3h2 + 0.3 slens/Owl@when:slens/Owl>3",
     { ...structured, units: true, slens: true },
   ));
-  // The affine library also lacks the gate hooks; the units refusal still speaks first.
+  // The affine library also lacks the gate hooks; a unit atom's refusal still speaks first.
   assert.throws(
-    () => assertHookFeaturesSupported("0.5 alert@when:neuron/L8n344>2", AFFINE_FEASIBILITY_CAPABILITIES),
+    () => assertHookFeaturesSupported("0.5 alert@when:calm>2 + !neuron/L8n344", AFFINE_FEASIBILITY_CAPABILITIES),
     (error) => {
       assert.equal(error.message, "neuron/ instrument atoms are not available in the browser runtime");
       assert.deepEqual(error.missingFeatures, ["phase_trigger", "probe_gate", "units"]);
