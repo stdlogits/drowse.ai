@@ -30,13 +30,15 @@ assert.deepEqual(executionProfiles, {
   thinkingProfile: qwen4b.thinkingProfile,
   quantization: "q4f32_1",
   requiredFeatures: [],
-  blockSpec: null,
+  blockSpec: qwen4b.blockSpec,
   unitRefusal: null,
 });
+assert.ok(qwen4b.blockSpec, "the lock records qwen3-4b's block spec");
 // A v5 library: the block spec travels with standard-v4, the refusal with -residual.
 const blockSpec = { dFF: 9728, nHeads: 32 };
+const { blockSpec: _lockedSpec, unitRefusal: _lockedRefusal, ...bareQwen4b } = qwen4b;
 const v5 = (profile, extra) => lockedModelExecutionProfiles(
-  { ...qwen4b, structuredHookProfile: profile, ...extra },
+  { ...bareQwen4b, structuredHookProfile: profile, ...extra },
   { structuredHookProfile: profile, thinkingProfile: qwen4b.thinkingProfile, quantization: qwen4b.quantization },
 );
 assert.deepEqual(v5("standard-v4", { blockSpec }).blockSpec, blockSpec);
@@ -46,10 +48,11 @@ for (const [profile, extra] of [
   ["standard-v4", { blockSpec, unitRefusal: "fused qkv" }],
   ["standard-v4-residual", {}],
   ["standard-v4-residual", { blockSpec, unitRefusal: "fused qkv" }],
-  ["standard-v3", { blockSpec }],
 ]) {
   assert.throws(() => v5(profile, extra), /blockSpec and unitRefusal/, `${profile} ${JSON.stringify(extra)}`);
 }
+// Hook ABI v5 only: a v1-v3 profile is not a hosted profile any more.
+assert.throws(() => v5("standard-v3", { blockSpec }), /structuredHookProfile is not allow-listed/);
 assert.throws(
   () => lockedModelExecutionProfiles(qwen4b, {
     structuredHookProfile: "standard-v4-residual",
