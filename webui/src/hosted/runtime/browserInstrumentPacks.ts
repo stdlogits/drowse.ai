@@ -2,7 +2,6 @@ import { decodeFp32Safetensors, type Fp32SafetensorsReader } from "../artifacts"
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import type { ProbeInfo } from "../../../../drowse/webui/src/lib/types";
-import { runtimeIdentitySha256 } from "../../lib/runtime/catalog";
 import { LEGACY_PRODUCT_SLUGS } from "../../../../drowse/webui/src/lib/brandMigration";
 import type {
   BrowserInstrumentPackArtifacts,
@@ -1071,7 +1070,7 @@ async function loadSae(
     !nonnegativeInteger(manifest.layer) || !positiveInteger(manifest.d_model) ||
     !positiveInteger(manifest.d_sae) || manifest.d_model !== hiddenSize ||
     manifest.model_id !== request.variant.runtimeIdentity.sourceModel ||
-    !matchesRuntimeFingerprint(manifest.model_fingerprint, request) ||
+    manifest.model_fingerprint !== request.variant.runtimeIdentitySha256 ||
     manifest.model_source_fingerprint !== request.variant.runtimeIdentity.sourceRevision ||
     typeof manifest.release !== "string" ||
     !/^local:[A-Za-z][A-Za-z0-9_-]*$/u.test(manifest.release) ||
@@ -1460,7 +1459,7 @@ function browserLensSites(
     manifest.checkpoint !== false || manifest.consumed_prefix_sha256 !== null ||
     manifest.dtype !== "float32" || manifest.d_model !== request.variant.runtimeIdentity.hiddenSize ||
     !nonnegativeInteger(manifest.n_prompts) ||
-    !matchesRuntimeFingerprint(manifest.model_fingerprint, request) ||
+    manifest.model_fingerprint !== request.variant.runtimeIdentitySha256 ||
     manifest.model_source_fingerprint !== request.variant.runtimeIdentity.sourceRevision ||
     manifest.model_layer_count !== request.variant.runtimeIdentity.layerMap.length
   ) {
@@ -1860,20 +1859,6 @@ async function loadUnits(
     layers,
     nullBasis: null,
   };
-}
-
-function matchesRuntimeFingerprint(
-  fingerprint: unknown,
-  request: BrowserModelLoadRequest,
-): boolean {
-  if (fingerprint === request.variant.runtimeIdentitySha256) return true;
-  if (request.variant.runtimeIdentity.runtimeAbi !== "drowse-web-runtime-v1") {
-    return false;
-  }
-  return LEGACY_PRODUCT_SLUGS.some((slug) => fingerprint === runtimeIdentitySha256({
-    ...request.variant.runtimeIdentity,
-    runtimeAbi: `${slug}-web-runtime-v1`,
-  }));
 }
 
 function jlensDirectionsByteLength(

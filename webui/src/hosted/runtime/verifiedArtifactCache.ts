@@ -1,4 +1,4 @@
-import type { BrowserModelArtifact } from "./modelBackend";
+import { largestWeightTensorBytes, type BrowserModelArtifact } from "./modelBackend";
 
 export interface ReadOnlyArtifactCache {
   fetchWithCache(url: string, storeType?: string, signal?: AbortSignal): Promise<unknown>;
@@ -14,6 +14,8 @@ export interface VerifiedWebLlmArtifacts {
   captureSpecialTokenIds: number[];
   /** The model's vocabulary size (unembedding rows), from mlc-chat-config.json. */
   vocabSize: number;
+  /** Its largest weight tensor's bytes, from tensor-cache.json (the floor of its binding). */
+  largestWeightBytes: number;
   isBaseModel: boolean;
   defaultUserRole: string | null;
   defaultAssistantRole: string | null;
@@ -180,6 +182,7 @@ export async function prepareVerifiedWebLlmArtifacts(
   if (!records || records.length === 0) {
     throw invalid("MLC_TENSOR_CACHE_INVALID", "tensor-cache.json has no weight shards");
   }
+
   const referencedWeights = new Set<string>();
   for (const record of records) {
     if (!isRecord(record) || typeof record.dataPath !== "string") {
@@ -209,6 +212,12 @@ export async function prepareVerifiedWebLlmArtifacts(
       "The installed weight set does not exactly match tensor-cache.json",
     );
   }
+  let largestWeightBytes: number;
+  try {
+    largestWeightBytes = largestWeightTensorBytes(tensorDocument);
+  } catch (error) {
+    throw invalid("MLC_TENSOR_CACHE_INVALID", (error as Error).message);
+  }
 
   return {
     artifactCache: new VerifiedArtifactCache(files),
@@ -216,6 +225,7 @@ export async function prepareVerifiedWebLlmArtifacts(
     modelLibraryUrl: modelLibrary.manifest.url,
     captureSpecialTokenIds,
     vocabSize: vocabSize as number,
+    largestWeightBytes,
     isBaseModel,
     defaultUserRole: defaultRoles.user,
     defaultAssistantRole: defaultRoles.assistant,

@@ -140,10 +140,13 @@ export const FIXTURE_BLOCK_SPEC = Object.freeze({
 
 /** The lock entry's block sites for a fixture variant: a standard-v4 library's block spec, a
  *  residual one's unit refusal. */
-export function fixtureBlockSites(structuredHookProfile) {
-  return structuredHookProfile === "standard-v4"
-    ? { blockSpec: { ...FIXTURE_BLOCK_SPEC }, unitRefusal: null }
-    : { blockSpec: null, unitRefusal: "fixture blocks are not described" };
+/** What the fixture lock records about a variant's library: its block spec (standard-v4) or
+ *  unit refusal (residual), and its compiled prefill chunk (the variant's smallest context). */
+export function fixtureLibraryContract(variant) {
+  const prefillChunkSize = Math.min(...variant.contextProfiles.map((profile) => profile.contextTokens));
+  return variant.structuredHookProfile === "standard-v4"
+    ? { blockSpec: { ...FIXTURE_BLOCK_SPEC }, unitRefusal: null, prefillChunkSize }
+    : { blockSpec: null, unitRefusal: "fixture blocks are not described", prefillChunkSize };
 }
 
 export function catalogRuntimeLockModels(document = catalogFixture()) {
@@ -154,7 +157,7 @@ export function catalogRuntimeLockModels(document = catalogFixture()) {
     convertedRepository: "a9lim/drowse-web-fixture",
     convertedRevision: FIXTURE_REVISION,
     contextProfiles: variant.contextProfiles.map((profile) => profile.contextTokens),
-    ...fixtureBlockSites(variant.structuredHookProfile),
+    ...fixtureLibraryContract(variant),
   })));
 }
 

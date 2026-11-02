@@ -46,12 +46,12 @@ import {
   BLOCK_SITES_RUNTIME_ABI,
   isLocalAttentionLayer,
   UNIT_POSITIONS_FROM,
-  type BlockSitesCapacityProfile,
+  type StructuredHookCapacityProfile,
 } from "../structuredHookProfile";
 import { DenseSequence, finalLogits, rmsNorm, rmsScale, type DenseModelWeights } from "./denseModel";
 
 export interface CpuBlockSitesOptions {
-  readonly profile: BlockSitesCapacityProfile;
+  readonly profile: StructuredHookCapacityProfile;
   readonly contextTokens: number;
   readonly prefillChunkSize?: number;
   /** The refusal a residual profile answers with (a lock's `unitRefusal`). */

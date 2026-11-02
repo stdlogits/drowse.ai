@@ -2055,6 +2055,79 @@ try {
   assert.equal(failedTree.active_node_id, failedTree.nodes[1].id);
 
   {
+    // A stopped reply pools its last token's aggregate view: an SAE probe whose family's live
+    // readout is off rides no token envelope, but the cancelled aggregate still reads it.
+    const engine = cancellableGeneration("reject");
+    const stream = engine.streamGeneration.bind(engine);
+    const reading = {
+      value: 0.25, unit: "raw_activation", per_layer: { "1": 0.25 },
+      depth: { center: [1], spread: [0], basis: "single_layer" },
+    };
+    engine.streamGeneration = (plan, onToken) => stream(plan, async token => {
+      await onToken({
+        ...token,
+        aggregateMeasurements: {
+          version: 2, scope: "token", provenance: "captured",
+          instruments: { sae: { binding: { source: "fixture-sae", steering: null, layer: 1 }, readings: { "sae/3": reading } } },
+          scores: { "sae/3": 0.25 },
+        },
+      });
+    });
+    const runtime = new BrowserLoomRuntime({
+      session: session(), generation: engine, createId: ids("cancel-off-family"),
+    });
+    const events = [];
+    const pending = runtime.generate({
+      type: "submit", text: "Measure then stop", authored_role: "user", generated_role: "assistant",
+    }, event => events.push(event));
+    await engine.started;
+    await runtime.stop();
+    await pending;
+    assert.equal(events.find(event => event.type === "token").measurements, undefined);
+    const done = events.find(event => event.type === "done").result;
+    assert.equal(done.finish_reason, "cancelled");
+    assert.equal(done.measurements.scope, "aggregate");
+    assert.equal(done.measurements.instruments.sae.readings["sae/3"].value, 0.25);
+  }
+
+  {
+    // With return_probe_readings off the generation offers no aggregate, so a stopped reply has
+    // none, even though its tokens stream live readings.
+    const engine = cancellableGeneration("reject");
+    const stream = engine.streamGeneration.bind(engine);
+    engine.streamGeneration = (plan, onToken) => stream(plan, async token => {
+      await onToken({
+        ...token,
+        measurements: {
+          version: 2, scope: "token", provenance: "captured",
+          instruments: { sae: { binding: { source: "fixture-sae", steering: null, layer: 1 }, readings: {
+            "sae/3": {
+              value: 0.25, unit: "raw_activation", per_layer: { "1": 0.25 },
+              depth: { center: [1], spread: [0], basis: "single_layer" },
+            },
+          } } },
+          scores: { "sae/3": 0.25 },
+        },
+      });
+    });
+    const runtime = new BrowserLoomRuntime({
+      session: session(), generation: engine, createId: ids("cancel-unread"),
+    });
+    const events = [];
+    const pending = runtime.generate({
+      type: "submit", text: "Stream then stop", authored_role: "user", generated_role: "assistant",
+      sampling: { return_probe_readings: false },
+    }, event => events.push(event));
+    await engine.started;
+    await runtime.stop();
+    await pending;
+    assert.equal(events.find(event => event.type === "token").measurements.scores["sae/3"], 0.25);
+    const done = events.find(event => event.type === "done").result;
+    assert.equal(done.finish_reason, "cancelled");
+    assert.equal(done.measurements, undefined);
+  }
+
+  {
     const engine = cancellableGeneration("reject");
     const stream = engine.streamGeneration.bind(engine);
     engine.streamGeneration = (plan, onToken) => stream(plan, async token => {

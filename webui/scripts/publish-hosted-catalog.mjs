@@ -152,6 +152,7 @@ export function lockedCatalogModels(runtime) {
       convertedRepository: model.convertedRepository,
       convertedRevision: model.convertedRevision,
       contextProfiles: model.contextProfiles,
+      prefillChunkSize: model.prefillChunkSize,
       blockSpec: model.blockSpec ?? null,
       unitRefusal: model.unitRefusal ?? null,
     };

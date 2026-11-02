@@ -32,7 +32,7 @@ for (const set of ["model", "core"]) {
   }
 }
 // The library the lock pins: its hook profile and the block spec (or refusal) the load attests.
-const { structuredHookProfile, blockSpec, unitRefusal } = lockedModelExecutionProfiles(model, manifests.model);
+const { structuredHookProfile, blockSpec, unitRefusal, prefillChunkSize } = lockedModelExecutionProfiles(model, manifests.model);
 const identity = {
   sourceModel: model.sourceRepository, sourceRevision: model.sourceRevision,
   convertedManifestSha256: model.manifestSha256, quantization: model.quantization,
@@ -88,7 +88,7 @@ try {
       if (data.type === "result") resolve(data.value);
     };
     worker.postMessage(payload);
-  }), { modelId: model.id, identity, structuredHookProfile, blockSpec, unitRefusal, modelFiles: sets.model, coreFiles: sets.core });
+  }), { modelId: model.id, identity, structuredHookProfile, blockSpec, unitRefusal, prefillChunkSize, modelFiles: sets.model, coreFiles: sets.core });
   const artifacts = Object.fromEntries(Object.entries(sets).map(([name, files]) => [name,
     files.map(({ path, role, bytes, sha256 }) => ({ path, role, bytes, sha256 })),
   ]));

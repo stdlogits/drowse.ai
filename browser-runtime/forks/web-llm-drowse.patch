@@ -1,5 +1,5 @@
 diff --git a/package-lock.json b/package-lock.json
-index 0070bde..2b279d6 100644
+index 0070bde..04a0042 100644
 --- a/package-lock.json
 +++ b/package-lock.json
 @@ -1,21 +1,21 @@
@@ -7,7 +7,7 @@ index 0070bde..2b279d6 100644
 -  "name": "@mlc-ai/web-llm",
 -  "version": "0.2.84",
 +  "name": "@drowse/web-llm",
-+  "version": "0.2.84-drowse.46",
++  "version": "0.2.84-drowse.47",
    "lockfileVersion": 3,
    "requires": true,
    "packages": {
@@ -15,7 +15,7 @@ index 0070bde..2b279d6 100644
 -      "name": "@mlc-ai/web-llm",
 -      "version": "0.2.84",
 +      "name": "@drowse/web-llm",
-+      "version": "0.2.84-drowse.46",
++      "version": "0.2.84-drowse.47",
        "license": "Apache-2.0",
        "dependencies": {
 -        "loglevel": "^1.9.1"
@@ -170,7 +170,7 @@ index 0070bde..2b279d6 100644
        "version": "9.3.0",
        "resolved": "https://registry.npmjs.org/v8-to-istanbul/-/v8-to-istanbul-9.3.0.tgz",
 diff --git a/package.json b/package.json
-index cabfc3d..ac3861e 100644
+index cabfc3d..4eb66fc 100644
 --- a/package.json
 +++ b/package.json
 @@ -1,12 +1,12 @@
@@ -178,7 +178,7 @@ index cabfc3d..ac3861e 100644
 -  "name": "@mlc-ai/web-llm",
 -  "version": "0.2.84",
 +  "name": "@drowse/web-llm",
-+  "version": "0.2.84-drowse.46",
++  "version": "0.2.84-drowse.47",
    "description": "Hardware accelerated language model chats on browsers",
    "main": "lib/index.js",
    "types": "lib/index.d.ts",
@@ -646,272 +646,6 @@ index 122e933..a9fb36b 100644
      );
    }
    const iterEnd = includeLastMsg ? input.length : input.length - 1;
-diff --git a/src/drowse_gpu_controls.ts b/src/drowse_gpu_controls.ts
-new file mode 100644
-index 0000000..156b4b9
---- /dev/null
-+++ b/src/drowse_gpu_controls.ts
-@@ -0,0 +1,36 @@
-+import type * as tvmjs from "@mlc-ai/web-runtime";
-+
-+export function drowseCurveControlShader(stride: number): string {
-+  return `
-+@group(0) @binding(0) var<storage, read> masks: array<f32>;
-+@group(0) @binding(1) var<storage, read_write> parameters: array<f32>;
-+struct PODArgs { count: u32, packGridDimX: u32 }
-+@group(0) @binding(2) var<uniform> args: PODArgs;
-+@compute @workgroup_size(64, 1, 1)
-+fn main_kernel(@builtin(global_invocation_id) position: vec3<u32>) {
-+  if (position.x < args.count) {
-+    parameters[position.x * ${stride}u] = masks[position.x];
-+  }
-+}`;
-+}
-+
-+export function createDrowseCurveControlKernel(
-+  tvm: tvmjs.Instance,
-+  stride: number,
-+): tvmjs.PackedFunc {
-+  const create = tvm.getGlobalFunc("wasm.WebGPUCreateShader");
-+  try {
-+    return tvm.detachFromCurrentScope(
-+      create(
-+        JSON.stringify({
-+          name: "main_kernel",
-+          arg_types: ["handle", "handle", "uint32"],
-+          launch_param_tags: ["blockIdx.x", "paramWriteAccess:[false,true]"],
-+        }),
-+        drowseCurveControlShader(stride),
-+      ) as tvmjs.PackedFunc,
-+    );
-+  } finally {
-+    create.dispose();
-+  }
-+}
-diff --git a/src/drowse_gpu_topk.ts b/src/drowse_gpu_topk.ts
-new file mode 100644
-index 0000000..74d754a
---- /dev/null
-+++ b/src/drowse_gpu_topk.ts
-@@ -0,0 +1,218 @@
-+import type * as tvmjs from "@mlc-ai/web-runtime";
-+
-+export function drowseSamplingTopKShader(
-+  capacity: number,
-+  merge: boolean,
-+): string {
-+  if (capacity === 1) return drowseSamplingArgmaxShader(merge);
-+  const width = merge ? capacity * 2 : Math.max(256, capacity);
-+  return `
-+@group(0) @binding(0) var<storage, read_write> output_values: array<f32>;
-+@group(0) @binding(1) var<storage, read_write> output_indices: array<i32>;
-+@group(0) @binding(2) var<storage, read> source_values: array<f32>;
-+${merge ? "@group(0) @binding(3) var<storage, read> source_indices: array<i32>;" : ""}
-+struct PODArgs { columns: u32, lists: u32, packGridDimX: u32 }
-+@group(0) @binding(${merge ? 4 : 3}) var<uniform> args: PODArgs;
-+var<workgroup> values: array<f32, ${width}>;
-+var<workgroup> indices: array<i32, ${width}>;
-+fn better(av: f32, ai: i32, bv: f32, bi: i32) -> bool {
-+  return ai >= 0 && (bi < 0 || av > bv || (av == bv && ai < bi));
-+}
-+@compute @workgroup_size(128, 1, 1)
-+fn main_kernel(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) local: vec3<u32>) {
-+  for (var i = local.x; i < ${width}u; i += 128u) {
-+    values[i] = -3.402823e38;
-+    indices[i] = -1;
-+    ${
-+      merge
-+        ? `
-+    let list = group.x * 2u + i / ${capacity}u;
-+    let column = select(i, ${width - 1}u - i, i >= ${capacity}u);
-+    if (list < args.lists) {
-+      let source = list * ${capacity}u + column;
-+      values[i] = source_values[source];
-+      indices[i] = source_indices[source];
-+    }`
-+        : `
-+    let source = group.x * ${width}u + i;
-+    if (source < args.columns) {
-+      values[i] = source_values[source];
-+      indices[i] = i32(source);
-+    }`
-+    }
-+  }
-+  workgroupBarrier();
-+  ${
-+    merge
-+      ? `for (var distance = ${capacity}u; distance > 0u; distance /= 2u) {`
-+      : `
-+  for (var size = 2u; size <= ${width}u; size *= 2u) {
-+    for (var distance = size / 2u; distance > 0u; distance /= 2u) {`
-+  }
-+      for (var i = local.x; i < ${merge ? capacity : width}u; i += 128u) {
-+        let peer = i ^ distance;
-+        if (i < peer) {
-+          let av = values[i]; let ai = indices[i];
-+          let bv = values[peer]; let bi = indices[peer];
-+          let descending = ${merge ? "true" : "(i & size) == 0u"};
-+          if ((descending && better(bv, bi, av, ai)) || (!descending && better(av, ai, bv, bi))) {
-+            values[i] = bv; indices[i] = bi;
-+            values[peer] = av; indices[peer] = ai;
-+          }
-+        }
-+      }
-+      workgroupBarrier();
-+    }
-+  ${merge ? "" : "}"}
-+  for (var i = local.x; i < ${capacity}u; i += 128u) {
-+    output_values[group.x * ${capacity}u + i] = values[i];
-+    output_indices[group.x * ${capacity}u + i] = indices[i];
-+  }
-+}`;
-+}
-+
-+function drowseSamplingArgmaxShader(merge: boolean): string {
-+  return `
-+@group(0) @binding(0) var<storage, read_write> output_values: array<f32>;
-+@group(0) @binding(1) var<storage, read_write> output_indices: array<i32>;
-+@group(0) @binding(2) var<storage, read> source_values: array<f32>;
-+${merge ? "@group(0) @binding(3) var<storage, read> source_indices: array<i32>;" : ""}
-+struct PODArgs { columns: u32, lists: u32, packGridDimX: u32 }
-+@group(0) @binding(${merge ? 4 : 3}) var<uniform> args: PODArgs;
-+var<workgroup> values: array<f32, 128>;
-+var<workgroup> indices: array<i32, 128>;
-+fn better(av: f32, ai: i32, bv: f32, bi: i32) -> bool {
-+  return ai >= 0 && (bi < 0 || av > bv || (av == bv && ai < bi));
-+}
-+@compute @workgroup_size(128, 1, 1)
-+fn main_kernel(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) local: vec3<u32>) {
-+  var value = -3.402823e38;
-+  var index = -1;
-+  for (var offset = local.x; offset < 256u; offset += 128u) {
-+    let source = group.x * 256u + offset;
-+    if (source < args.${merge ? "lists" : "columns"}) {
-+      let candidate = ${merge ? "source_indices[source]" : "i32(source)"};
-+      let score = source_values[source];
-+      if (better(score, candidate, value, index)) {
-+        value = score;
-+        index = candidate;
-+      }
-+    }
-+  }
-+  values[local.x] = value;
-+  indices[local.x] = index;
-+  workgroupBarrier();
-+  for (var distance = 64u; distance > 0u; distance /= 2u) {
-+    if (local.x < distance) {
-+      let peer = local.x + distance;
-+      if (better(values[peer], indices[peer], values[local.x], indices[local.x])) {
-+        values[local.x] = values[peer];
-+        indices[local.x] = indices[peer];
-+      }
-+    }
-+    workgroupBarrier();
-+  }
-+  if (local.x == 0u) {
-+    output_values[group.x] = values[0];
-+    output_indices[group.x] = indices[0];
-+  }
-+}`;
-+}
-+
-+export class DrowseGpuTopK {
-+  private kernels = new Map<number, [tvmjs.PackedFunc, tvmjs.PackedFunc]>();
-+
-+  constructor(private readonly tvm: tvmjs.Instance) {}
-+
-+  select(
-+    probabilities: tvmjs.Tensor,
-+    count: number,
-+  ): [tvmjs.Tensor, tvmjs.Tensor] {
-+    const columns = probabilities.shape.at(-1)!;
-+    if (
-+      !Number.isSafeInteger(count) ||
-+      count < 1 ||
-+      count > Math.min(columns, 1024)
-+    ) {
-+      throw new RangeError(
-+        "Drowse GPU sampling supports 1 through 1024 candidates",
-+      );
-+    }
-+    const capacity = 2 ** Math.ceil(Math.log2(count));
-+    let kernels = this.kernels.get(capacity);
-+    if (!kernels) {
-+      const create = this.tvm.getGlobalFunc("wasm.WebGPUCreateShader");
-+      try {
-+        kernels = [false, true].map((merge) => {
-+          const handles = merge ? 4 : 3;
-+          const kernel = create(
-+            JSON.stringify({
-+              name: "main_kernel",
-+              arg_types: [...Array(handles).fill("handle"), "uint32", "uint32"],
-+              launch_param_tags: [
-+                "blockIdx.x",
-+                `paramWriteAccess:${JSON.stringify([true, true, ...Array(handles - 2).fill(false)])}`,
-+              ],
-+            }),
-+            drowseSamplingTopKShader(capacity, merge),
-+          ) as tvmjs.PackedFunc;
-+          return this.tvm.detachFromCurrentScope(kernel);
-+        }) as [tvmjs.PackedFunc, tvmjs.PackedFunc];
-+      } finally {
-+        create.dispose();
-+      }
-+      this.kernels.set(capacity, kernels);
-+    }
-+    let lists = Math.ceil(columns / Math.max(256, capacity));
-+    let values = this.tvm.empty(
-+      [lists * capacity],
-+      "float32",
-+      probabilities.device,
-+    );
-+    let indices = this.tvm.empty(
-+      [lists * capacity],
-+      "int32",
-+      probabilities.device,
-+    );
-+    kernels[0](
-+      values.getDataPtr(),
-+      indices.getDataPtr(),
-+      probabilities.getDataPtr(),
-+      columns,
-+      lists,
-+      lists,
-+    );
-+    while (lists > 1) {
-+      const nextLists = Math.ceil(lists / (capacity === 1 ? 256 : 2));
-+      const nextValues = this.tvm.empty(
-+        [nextLists * capacity],
-+        "float32",
-+        probabilities.device,
-+      );
-+      const nextIndices = this.tvm.empty(
-+        [nextLists * capacity],
-+        "int32",
-+        probabilities.device,
-+      );
-+      kernels[1](
-+        nextValues.getDataPtr(),
-+        nextIndices.getDataPtr(),
-+        values.getDataPtr(),
-+        indices.getDataPtr(),
-+        columns,
-+        lists,
-+        nextLists,
-+      );
-+      values = nextValues;
-+      indices = nextIndices;
-+      lists = nextLists;
-+    }
-+    return [values.view([count]), indices.view([count])];
-+  }
-+
-+  dispose(): void {
-+    for (const pair of this.kernels.values())
-+      for (const kernel of pair) kernel.dispose();
-+    this.kernels.clear();
-+  }
-+}
 diff --git a/src/drowse.ts b/src/drowse.ts
 new file mode 100644
 index 0000000..bc02db8
@@ -2692,8 +2426,274 @@ index 0000000..bc02db8
 +function validDrowseBindingId(value: unknown): value is string {
 +  return typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
 +}
+diff --git a/src/drowse_gpu_controls.ts b/src/drowse_gpu_controls.ts
+new file mode 100644
+index 0000000..156b4b9
+--- /dev/null
++++ b/src/drowse_gpu_controls.ts
+@@ -0,0 +1,36 @@
++import type * as tvmjs from "@mlc-ai/web-runtime";
++
++export function drowseCurveControlShader(stride: number): string {
++  return `
++@group(0) @binding(0) var<storage, read> masks: array<f32>;
++@group(0) @binding(1) var<storage, read_write> parameters: array<f32>;
++struct PODArgs { count: u32, packGridDimX: u32 }
++@group(0) @binding(2) var<uniform> args: PODArgs;
++@compute @workgroup_size(64, 1, 1)
++fn main_kernel(@builtin(global_invocation_id) position: vec3<u32>) {
++  if (position.x < args.count) {
++    parameters[position.x * ${stride}u] = masks[position.x];
++  }
++}`;
++}
++
++export function createDrowseCurveControlKernel(
++  tvm: tvmjs.Instance,
++  stride: number,
++): tvmjs.PackedFunc {
++  const create = tvm.getGlobalFunc("wasm.WebGPUCreateShader");
++  try {
++    return tvm.detachFromCurrentScope(
++      create(
++        JSON.stringify({
++          name: "main_kernel",
++          arg_types: ["handle", "handle", "uint32"],
++          launch_param_tags: ["blockIdx.x", "paramWriteAccess:[false,true]"],
++        }),
++        drowseCurveControlShader(stride),
++      ) as tvmjs.PackedFunc,
++    );
++  } finally {
++    create.dispose();
++  }
++}
+diff --git a/src/drowse_gpu_topk.ts b/src/drowse_gpu_topk.ts
+new file mode 100644
+index 0000000..74d754a
+--- /dev/null
++++ b/src/drowse_gpu_topk.ts
+@@ -0,0 +1,218 @@
++import type * as tvmjs from "@mlc-ai/web-runtime";
++
++export function drowseSamplingTopKShader(
++  capacity: number,
++  merge: boolean,
++): string {
++  if (capacity === 1) return drowseSamplingArgmaxShader(merge);
++  const width = merge ? capacity * 2 : Math.max(256, capacity);
++  return `
++@group(0) @binding(0) var<storage, read_write> output_values: array<f32>;
++@group(0) @binding(1) var<storage, read_write> output_indices: array<i32>;
++@group(0) @binding(2) var<storage, read> source_values: array<f32>;
++${merge ? "@group(0) @binding(3) var<storage, read> source_indices: array<i32>;" : ""}
++struct PODArgs { columns: u32, lists: u32, packGridDimX: u32 }
++@group(0) @binding(${merge ? 4 : 3}) var<uniform> args: PODArgs;
++var<workgroup> values: array<f32, ${width}>;
++var<workgroup> indices: array<i32, ${width}>;
++fn better(av: f32, ai: i32, bv: f32, bi: i32) -> bool {
++  return ai >= 0 && (bi < 0 || av > bv || (av == bv && ai < bi));
++}
++@compute @workgroup_size(128, 1, 1)
++fn main_kernel(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) local: vec3<u32>) {
++  for (var i = local.x; i < ${width}u; i += 128u) {
++    values[i] = -3.402823e38;
++    indices[i] = -1;
++    ${
++      merge
++        ? `
++    let list = group.x * 2u + i / ${capacity}u;
++    let column = select(i, ${width - 1}u - i, i >= ${capacity}u);
++    if (list < args.lists) {
++      let source = list * ${capacity}u + column;
++      values[i] = source_values[source];
++      indices[i] = source_indices[source];
++    }`
++        : `
++    let source = group.x * ${width}u + i;
++    if (source < args.columns) {
++      values[i] = source_values[source];
++      indices[i] = i32(source);
++    }`
++    }
++  }
++  workgroupBarrier();
++  ${
++    merge
++      ? `for (var distance = ${capacity}u; distance > 0u; distance /= 2u) {`
++      : `
++  for (var size = 2u; size <= ${width}u; size *= 2u) {
++    for (var distance = size / 2u; distance > 0u; distance /= 2u) {`
++  }
++      for (var i = local.x; i < ${merge ? capacity : width}u; i += 128u) {
++        let peer = i ^ distance;
++        if (i < peer) {
++          let av = values[i]; let ai = indices[i];
++          let bv = values[peer]; let bi = indices[peer];
++          let descending = ${merge ? "true" : "(i & size) == 0u"};
++          if ((descending && better(bv, bi, av, ai)) || (!descending && better(av, ai, bv, bi))) {
++            values[i] = bv; indices[i] = bi;
++            values[peer] = av; indices[peer] = ai;
++          }
++        }
++      }
++      workgroupBarrier();
++    }
++  ${merge ? "" : "}"}
++  for (var i = local.x; i < ${capacity}u; i += 128u) {
++    output_values[group.x * ${capacity}u + i] = values[i];
++    output_indices[group.x * ${capacity}u + i] = indices[i];
++  }
++}`;
++}
++
++function drowseSamplingArgmaxShader(merge: boolean): string {
++  return `
++@group(0) @binding(0) var<storage, read_write> output_values: array<f32>;
++@group(0) @binding(1) var<storage, read_write> output_indices: array<i32>;
++@group(0) @binding(2) var<storage, read> source_values: array<f32>;
++${merge ? "@group(0) @binding(3) var<storage, read> source_indices: array<i32>;" : ""}
++struct PODArgs { columns: u32, lists: u32, packGridDimX: u32 }
++@group(0) @binding(${merge ? 4 : 3}) var<uniform> args: PODArgs;
++var<workgroup> values: array<f32, 128>;
++var<workgroup> indices: array<i32, 128>;
++fn better(av: f32, ai: i32, bv: f32, bi: i32) -> bool {
++  return ai >= 0 && (bi < 0 || av > bv || (av == bv && ai < bi));
++}
++@compute @workgroup_size(128, 1, 1)
++fn main_kernel(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) local: vec3<u32>) {
++  var value = -3.402823e38;
++  var index = -1;
++  for (var offset = local.x; offset < 256u; offset += 128u) {
++    let source = group.x * 256u + offset;
++    if (source < args.${merge ? "lists" : "columns"}) {
++      let candidate = ${merge ? "source_indices[source]" : "i32(source)"};
++      let score = source_values[source];
++      if (better(score, candidate, value, index)) {
++        value = score;
++        index = candidate;
++      }
++    }
++  }
++  values[local.x] = value;
++  indices[local.x] = index;
++  workgroupBarrier();
++  for (var distance = 64u; distance > 0u; distance /= 2u) {
++    if (local.x < distance) {
++      let peer = local.x + distance;
++      if (better(values[peer], indices[peer], values[local.x], indices[local.x])) {
++        values[local.x] = values[peer];
++        indices[local.x] = indices[peer];
++      }
++    }
++    workgroupBarrier();
++  }
++  if (local.x == 0u) {
++    output_values[group.x] = values[0];
++    output_indices[group.x] = indices[0];
++  }
++}`;
++}
++
++export class DrowseGpuTopK {
++  private kernels = new Map<number, [tvmjs.PackedFunc, tvmjs.PackedFunc]>();
++
++  constructor(private readonly tvm: tvmjs.Instance) {}
++
++  select(
++    probabilities: tvmjs.Tensor,
++    count: number,
++  ): [tvmjs.Tensor, tvmjs.Tensor] {
++    const columns = probabilities.shape.at(-1)!;
++    if (
++      !Number.isSafeInteger(count) ||
++      count < 1 ||
++      count > Math.min(columns, 1024)
++    ) {
++      throw new RangeError(
++        "Drowse GPU sampling supports 1 through 1024 candidates",
++      );
++    }
++    const capacity = 2 ** Math.ceil(Math.log2(count));
++    let kernels = this.kernels.get(capacity);
++    if (!kernels) {
++      const create = this.tvm.getGlobalFunc("wasm.WebGPUCreateShader");
++      try {
++        kernels = [false, true].map((merge) => {
++          const handles = merge ? 4 : 3;
++          const kernel = create(
++            JSON.stringify({
++              name: "main_kernel",
++              arg_types: [...Array(handles).fill("handle"), "uint32", "uint32"],
++              launch_param_tags: [
++                "blockIdx.x",
++                `paramWriteAccess:${JSON.stringify([true, true, ...Array(handles - 2).fill(false)])}`,
++              ],
++            }),
++            drowseSamplingTopKShader(capacity, merge),
++          ) as tvmjs.PackedFunc;
++          return this.tvm.detachFromCurrentScope(kernel);
++        }) as [tvmjs.PackedFunc, tvmjs.PackedFunc];
++      } finally {
++        create.dispose();
++      }
++      this.kernels.set(capacity, kernels);
++    }
++    let lists = Math.ceil(columns / Math.max(256, capacity));
++    let values = this.tvm.empty(
++      [lists * capacity],
++      "float32",
++      probabilities.device,
++    );
++    let indices = this.tvm.empty(
++      [lists * capacity],
++      "int32",
++      probabilities.device,
++    );
++    kernels[0](
++      values.getDataPtr(),
++      indices.getDataPtr(),
++      probabilities.getDataPtr(),
++      columns,
++      lists,
++      lists,
++    );
++    while (lists > 1) {
++      const nextLists = Math.ceil(lists / (capacity === 1 ? 256 : 2));
++      const nextValues = this.tvm.empty(
++        [nextLists * capacity],
++        "float32",
++        probabilities.device,
++      );
++      const nextIndices = this.tvm.empty(
++        [nextLists * capacity],
++        "int32",
++        probabilities.device,
++      );
++      kernels[1](
++        nextValues.getDataPtr(),
++        nextIndices.getDataPtr(),
++        values.getDataPtr(),
++        indices.getDataPtr(),
++        columns,
++        lists,
++        nextLists,
++      );
++      values = nextValues;
++      indices = nextIndices;
++      lists = nextLists;
++    }
++    return [values.view([count]), indices.view([count])];
++  }
++
++  dispose(): void {
++    for (const pair of this.kernels.values())
++      for (const kernel of pair) kernel.dispose();
++    this.kernels.clear();
++  }
++}
 diff --git a/src/engine.ts b/src/engine.ts
-index 1934771..eabbf13 100644
+index 1934771..6771f14 100644
 --- a/src/engine.ts
 +++ b/src/engine.ts
 @@ -76,11 +76,45 @@ import {
@@ -2785,18 +2785,21 @@ index 1934771..eabbf13 100644
          // do not cache wasm on local host as we might update code frequently
          return (await fetch(wasmUrl)).arrayBuffer();
        } else if (!wasmUrl.startsWith("http")) {
-@@ -345,7 +392,9 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -345,7 +392,12 @@ export class MLCEngine implements MLCEngineInterface {
      }
  
      // detect GPU
 -    const gpuDetectOutput = await tvmjs.detectGPUDevice();
 +    const gpuDetectOutput = this.appConfig.gpuAdapter
-+      ? await requestGPUDeviceFromAdapter(this.appConfig.gpuAdapter)
++      ? await requestGPUDeviceFromAdapter(
++          this.appConfig.gpuAdapter,
++          modelRecord.buffer_size_required_bytes,
++        )
 +      : await tvmjs.detectGPUDevice();
      if (gpuDetectOutput == undefined) {
        throw new WebGPUNotAvailableError();
      }
-@@ -374,11 +423,14 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -374,11 +426,14 @@ export class MLCEngine implements MLCEngineInterface {
      let deviceLostInReload = false;
      gpuDetectOutput.device.lost.then((info: any) => {
        if (this.deviceLostIsError) {
@@ -2812,7 +2815,7 @@ index 1934771..eabbf13 100644
          deviceLostInReload = true;
        }
      });
-@@ -408,6 +460,11 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -408,6 +463,11 @@ export class MLCEngine implements MLCEngineInterface {
          tokenizer,
          curModelConfig,
          logitProcessor,
@@ -2824,7 +2827,7 @@ index 1934771..eabbf13 100644
        );
      }
      await newPipeline.asyncLoadWebGPUPipelines();
-@@ -430,24 +487,38 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -430,24 +490,38 @@ export class MLCEngine implements MLCEngineInterface {
    }
  
    async unload() {
@@ -2872,7 +2875,7 @@ index 1934771..eabbf13 100644
    }
  
    //---------------------------------------------------
-@@ -462,7 +533,6 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -462,7 +536,6 @@ export class MLCEngine implements MLCEngineInterface {
      chatConfig: ChatConfig,
      genConfig: GenerationConfig,
    ): Promise<string> {
@@ -2880,7 +2883,7 @@ index 1934771..eabbf13 100644
      if (genConfig !== undefined) {
        postInitAndCheckGenerationConfigValues(genConfig);
      }
-@@ -535,41 +605,39 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -535,41 +608,39 @@ export class MLCEngine implements MLCEngineInterface {
      const created = getUnixTimestampSeconds();
      const id = crypto.randomUUID();
      this.interruptSignal = false;
@@ -2948,7 +2951,7 @@ index 1934771..eabbf13 100644
        if (isChatCompletion) {
          const chunk: ChatCompletionChunk = {
            id: id,
-@@ -577,6 +645,9 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -577,6 +648,9 @@ export class MLCEngine implements MLCEngineInterface {
              {
                delta: { content: deltaMessage, role: "assistant" },
                finish_reason: null, // not finished yet
@@ -2958,7 +2961,7 @@ index 1934771..eabbf13 100644
                index: 0,
                logprobs: logprobs,
              },
-@@ -593,6 +664,9 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -593,6 +667,9 @@ export class MLCEngine implements MLCEngineInterface {
              {
                text: deltaMessage,
                finish_reason: null, // not finished yet
@@ -2968,7 +2971,7 @@ index 1934771..eabbf13 100644
                index: 0,
                logprobs: logprobs,
              },
-@@ -615,7 +689,13 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -615,7 +692,13 @@ export class MLCEngine implements MLCEngineInterface {
        throw err;
      }
      if (curChunk) {
@@ -2983,7 +2986,7 @@ index 1934771..eabbf13 100644
      }
  
      while (!pipeline.stopped()) {
-@@ -633,7 +713,13 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -633,7 +716,13 @@ export class MLCEngine implements MLCEngineInterface {
          throw err;
        }
        if (curChunk) {
@@ -2998,7 +3001,7 @@ index 1934771..eabbf13 100644
        }
      }
  
-@@ -645,6 +731,13 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -645,6 +734,13 @@ export class MLCEngine implements MLCEngineInterface {
      // 3. Last chunk empty marking the end
      // If function calling, use the last chunk to return tool_calls
      let finish_reason = pipeline.getFinishReason()!;
@@ -3012,7 +3015,7 @@ index 1934771..eabbf13 100644
      let tool_calls:
        | Array<ChatCompletionChunk.Choice.Delta.ToolCall>
        | undefined;
-@@ -675,6 +768,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -675,6 +771,7 @@ export class MLCEngine implements MLCEngineInterface {
                  }
                : {},
              finish_reason: finish_reason,
@@ -3020,7 +3023,7 @@ index 1934771..eabbf13 100644
              index: 0,
            },
          ],
-@@ -690,6 +784,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -690,6 +787,7 @@ export class MLCEngine implements MLCEngineInterface {
            {
              text: "",
              finish_reason: finish_reason,
@@ -3028,7 +3031,7 @@ index 1934771..eabbf13 100644
              index: 0,
            },
          ],
-@@ -706,7 +801,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -706,7 +804,7 @@ export class MLCEngine implements MLCEngineInterface {
          "response_format" in request &&
          (request.response_format?.type === "grammar" ||
            request.response_format?.type === "json_object");
@@ -3037,7 +3040,7 @@ index 1934771..eabbf13 100644
        const prompt_tokens = pipeline.getCurRoundPrefillTotalTokens();
        const prefill_tokens_per_s = pipeline.getCurRoundPrefillTokensPerSec();
        const decode_tokens_per_s = pipeline.getCurRoundDecodingTokensPerSec();
-@@ -814,6 +909,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -814,6 +912,7 @@ export class MLCEngine implements MLCEngineInterface {
        max_tokens: request.max_tokens,
        stop: request.stop,
        top_p: request.top_p,
@@ -3045,7 +3048,7 @@ index 1934771..eabbf13 100644
        temperature: request.temperature,
        logit_bias: request.logit_bias,
        logprobs: request.logprobs,
-@@ -822,6 +918,15 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -822,6 +921,15 @@ export class MLCEngine implements MLCEngineInterface {
        ignore_eos: request.ignore_eos,
        enable_thinking: request.extra_body?.enable_thinking,
        enable_latency_breakdown: request.extra_body?.enable_latency_breakdown,
@@ -3061,7 +3064,7 @@ index 1934771..eabbf13 100644
      };
  
      // 0.5 Block wait until this pipeline finishes all previous requests
-@@ -842,6 +947,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -842,6 +950,7 @@ export class MLCEngine implements MLCEngineInterface {
  
      // Big try-finally to release lock in case of errors
      try {
@@ -3069,7 +3072,7 @@ index 1934771..eabbf13 100644
        if (request.seed !== null && request.seed !== undefined) {
          selectedPipeline.setSeed(request.seed);
        }
-@@ -889,12 +995,14 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -889,12 +998,14 @@ export class MLCEngine implements MLCEngineInterface {
  
          choices.push({
            finish_reason: finish_reason,
@@ -3089,7 +3092,7 @@ index 1934771..eabbf13 100644
            message: isFunctionCalling
              ? {
                  content: null,
-@@ -906,7 +1014,8 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -906,7 +1017,8 @@ export class MLCEngine implements MLCEngineInterface {
                  role: "assistant",
                },
          });
@@ -3099,7 +3102,7 @@ index 1934771..eabbf13 100644
          prompt_tokens += selectedPipeline.getCurRoundPrefillTotalTokens();
          prefill_time += selectedPipeline.getCurRoundPrefillTotalTime();
          decode_time += selectedPipeline.getCurRoundDecodingTotalTime();
-@@ -997,11 +1106,20 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -997,11 +1109,20 @@ export class MLCEngine implements MLCEngineInterface {
        max_tokens: request.max_tokens,
        stop: request.stop,
        top_p: request.top_p,
@@ -3120,7 +3123,7 @@ index 1934771..eabbf13 100644
      };
  
      // 0.5 Block wait until this pipeline finishes all previous requests
-@@ -1022,6 +1140,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -1022,6 +1143,7 @@ export class MLCEngine implements MLCEngineInterface {
  
      // Big try-finally to release lock in case of errors
      try {
@@ -3128,7 +3131,7 @@ index 1934771..eabbf13 100644
        if (request.seed !== null && request.seed !== undefined) {
          selectedPipeline.setSeed(request.seed);
        }
-@@ -1051,15 +1170,18 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -1051,15 +1173,18 @@ export class MLCEngine implements MLCEngineInterface {
  
          choices.push({
            finish_reason: finish_reason,
@@ -3153,7 +3156,7 @@ index 1934771..eabbf13 100644
          prompt_tokens += selectedPipeline.getCurRoundPrefillTotalTokens();
          prefill_time += selectedPipeline.getCurRoundPrefillTotalTime();
          decode_time += selectedPipeline.getCurRoundDecodingTotalTime();
-@@ -1302,6 +1424,481 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -1302,6 +1427,481 @@ export class MLCEngine implements MLCEngineInterface {
      return selectedPipeline.forwardTokensAndSample(inputIds, isPrefill);
    }
  
@@ -3635,7 +3638,7 @@ index 1934771..eabbf13 100644
    /**
     * Get the current generated response.
     *
-@@ -1402,8 +1999,16 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -1402,8 +2002,16 @@ export class MLCEngine implements MLCEngineInterface {
        ] as ChatCompletionMessageParam;
        input_str = last_msg.content as string;
        input_role_str =
@@ -3656,10 +3659,10 @@ index 1934771..eabbf13 100644
        input_str = input.prompt;
 diff --git a/src/gpu.ts b/src/gpu.ts
 new file mode 100644
-index 0000000..52f4053
+index 0000000..3881ae1
 --- /dev/null
 +++ b/src/gpu.ts
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,101 @@
 +/// <reference types="@webgpu/types" />
 +
 +import type { GPUDeviceDetectOutput } from "@mlc-ai/web-runtime";
@@ -3668,15 +3671,42 @@ index 0000000..52f4053
 +const DROWSE_REQUIRED_MAX_COMPUTE_WORKGROUP_SIZE_X = 256;
 +const DROWSE_REQUIRED_MAX_COMPUTE_INVOCATIONS_PER_WORKGROUP = 256;
 +
++/** WebGPU's default `maxBufferSize` and `maxStorageBufferBindingSize`: what a device gets when
++ *  it asks for no more. */
++const WEBGPU_DEFAULT_MAX_BUFFER_SIZE = 1 << 28;
++const WEBGPU_DEFAULT_MAX_STORAGE_BUFFER_BINDING_SIZE = 1 << 27;
++
++/**
++ * The production device from the caller's adapter. `requiredBindingBytes` is the model's largest
++ * buffer (its catalog requirement, the model record's `buffer_size_required_bytes`): the device
++ * asks for exactly that `maxStorageBufferBindingSize` and `maxBufferSize` (WebGPU's defaults when
++ * they are larger), so every adapter the catalog admits runs the model under the same limits, and
++ * an adapter that reports less fails here, before a weight is fetched.
++ */
 +export async function requestGPUDeviceFromAdapter(
 +  adapter: GPUAdapter,
++  requiredBindingBytes?: number,
 +): Promise<GPUDeviceDetectOutput> {
-+  const maxBufferSize = selectLimit(adapter, "maxBufferSize", 1 << 30, 1 << 28);
-+  const maxStorageBufferBindingSize = selectLimit(
++  if (
++    requiredBindingBytes !== undefined &&
++    (!Number.isSafeInteger(requiredBindingBytes) || requiredBindingBytes <= 0)
++  ) {
++    throw new TypeError(
++      `The model's required buffer size is invalid: ${requiredBindingBytes}`,
++    );
++  }
++  const maxBufferSize = requireLimit(
++    adapter,
++    "maxBufferSize",
++    Math.max(WEBGPU_DEFAULT_MAX_BUFFER_SIZE, requiredBindingBytes ?? 0),
++  );
++  const maxStorageBufferBindingSize = requireLimit(
 +    adapter,
 +    "maxStorageBufferBindingSize",
-+    1 << 30,
-+    1 << 27,
++    Math.max(
++      WEBGPU_DEFAULT_MAX_STORAGE_BUFFER_BINDING_SIZE,
++      requiredBindingBytes ?? 0,
++    ),
 +  );
 +  const maxComputeWorkgroupStorageSize = requireLimit(
 +    adapter,
@@ -3717,22 +3747,10 @@ index 0000000..52f4053
 +  return { adapter, adapterInfo, device };
 +}
 +
-+function selectLimit(
-+  adapter: GPUAdapter,
-+  name: "maxBufferSize" | "maxStorageBufferBindingSize",
-+  preferred: number,
-+  minimum: number,
-+): number {
-+  const supported = adapter.limits[name];
-+  if (supported >= preferred) return preferred;
-+  if (supported >= minimum) return minimum;
-+  throw new Error(
-+    `The selected WebGPU adapter ${name} limit is too small: ${supported} < ${minimum}`,
-+  );
-+}
-+
 +function requireLimit<
 +  T extends
++    | "maxBufferSize"
++    | "maxStorageBufferBindingSize"
 +    | "maxComputeWorkgroupStorageSize"
 +    | "maxStorageBuffersPerShaderStage"
 +    | "maxComputeWorkgroupSizeX"
@@ -3859,7 +3877,7 @@ index d583419..9a057a6 100644
    hasModelInCache,
    deleteChatConfigInCache,
 diff --git a/src/llm_chat.ts b/src/llm_chat.ts
-index 616cff4..712a6e8 100644
+index 616cff4..2504400 100644
 --- a/src/llm_chat.ts
 +++ b/src/llm_chat.ts
 @@ -1,4 +1,6 @@
@@ -3977,7 +3995,7 @@ index 616cff4..712a6e8 100644
  
  type ImageURL = ChatCompletionContentPartImage.ImageURL;
  
-@@ -47,6 +130,417 @@ type VMFunctionAvailability = {
+@@ -47,6 +130,437 @@ type VMFunctionAvailability = {
  
  type VMFunctionRegistry = Record<string, tvmjs.PackedFunc | undefined>;
  
@@ -3990,6 +4008,26 @@ index 616cff4..712a6e8 100644
 +  layerIds: number[];
 +  byteLength: number;
 +};
++
++/** Capture positions one forward reads (`captureDrowseResiduals`): its float32
++ *  `[layers, positions, hidden]` output stays within the device's buffer and binding limits. */
++export function drowseCapturePositionsPerForward(
++  layerCount: number,
++  hiddenSize: number,
++  limits: DrowseJlensBufferLimits | undefined,
++): number {
++  if (limits === undefined) return Number.POSITIVE_INFINITY;
++  const bound = Math.min(
++    limits.maxBufferSize,
++    limits.maxStorageBufferBindingSize,
++  );
++  return Math.max(
++    1,
++    Math.floor(
++      bound / (layerCount * hiddenSize * Float32Array.BYTES_PER_ELEMENT),
++    ),
++  );
++}
 +
 +export const DROWSE_JLENS_MAX_CHUNK_BYTES = 32 * 1024 * 1024;
 +const DROWSE_JLENS_MAX_MATRICES_PER_CHUNK = 1;
@@ -4395,7 +4433,7 @@ index 616cff4..712a6e8 100644
  type ResolvedModelABI = {
    kvStateKind: Exclude<KVStateKind, "none">;
    prefillABI: ComputeABIKind;
-@@ -67,6 +561,21 @@ export class LLMChatPipeline {
+@@ -67,6 +581,21 @@ export class LLMChatPipeline {
    private vm: tvmjs.VirtualMachine;
    private prefill: tvmjs.PackedFunc;
    private decoding: tvmjs.PackedFunc;
@@ -4417,7 +4455,7 @@ index 616cff4..712a6e8 100644
    private resolvedModelABI!: ResolvedModelABI;
    private kvStateKind: KVStateKind = "kv_cache";
    private image_embed: tvmjs.PackedFunc | undefined;
-@@ -94,7 +603,82 @@ export class LLMChatPipeline {
+@@ -94,7 +623,82 @@ export class LLMChatPipeline {
    private prefillLogitPositionHost = new Int32Array(1);
    private maxHistorySize = 1;
    private logitsOnCPU?: tvmjs.Tensor = undefined;
@@ -4500,7 +4538,7 @@ index 616cff4..712a6e8 100644
  
    // meta data
    private bosTokenId = 1;
-@@ -109,8 +693,12 @@ export class LLMChatPipeline {
+@@ -109,8 +713,12 @@ export class LLMChatPipeline {
    // states
    private outputMessage = "";
    private outputIds: Array<number> = [];
@@ -4513,7 +4551,7 @@ index 616cff4..712a6e8 100644
    // frequency of appeared token ids till now (refresh after PrefillStep); token_id mapped to freq
    private appearedTokensFreq = new Map<number, number>();
    private imageDataCache = new Map<string, ImageData>();
-@@ -130,6 +718,10 @@ export class LLMChatPipeline {
+@@ -130,6 +738,10 @@ export class LLMChatPipeline {
    private curRoundPrefillTotalTokens = 0;
    private curRoundDecodingTotalTime = 0;
    private curRoundPrefillTotalTime = 0;
@@ -4524,7 +4562,7 @@ index 616cff4..712a6e8 100644
  
    // additional stats, reset at every prefillStep()
    public curRoundLatencyBreakdown: LatencyBreakdown = {
-@@ -181,12 +773,14 @@ export class LLMChatPipeline {
+@@ -181,12 +793,14 @@ export class LLMChatPipeline {
      tokenizer: Tokenizer,
      config: ChatConfig,
      logitProcessor?: LogitProcessor,
@@ -4539,7 +4577,7 @@ index 616cff4..712a6e8 100644
      this.fullVocabSize = this.config.vocab_size;
      this.bitmaskSize = Math.ceil(this.fullVocabSize / 32);
  
-@@ -233,6 +827,26 @@ export class LLMChatPipeline {
+@@ -233,6 +847,26 @@ export class LLMChatPipeline {
        "batch_prefill",
        "decode",
        "batch_decode",
@@ -4566,7 +4604,7 @@ index 616cff4..712a6e8 100644
        "create_tir_paged_kv_cache",
        "create_rnn_state",
        "sample_with_top_p",
-@@ -253,9 +867,15 @@ export class LLMChatPipeline {
+@@ -253,9 +887,15 @@ export class LLMChatPipeline {
  
      const vmFunctionAvailability =
        LLMChatPipeline.getVMFunctionAvailability(vmFunctionRegistry);
@@ -4582,7 +4620,7 @@ index 616cff4..712a6e8 100644
      );
      const stateKinds: string[] = [];
      if (this.resolvedModelABI.needsKVCache) {
-@@ -287,6 +907,130 @@ export class LLMChatPipeline {
+@@ -287,6 +927,130 @@ export class LLMChatPipeline {
          vmFunctionRegistry,
        ),
      );
@@ -4713,7 +4751,7 @@ index 616cff4..712a6e8 100644
      if (this.resolvedModelABI.prefillABI === "batch") {
        log.info("Using batch_prefill kernel.");
      }
-@@ -480,31 +1224,2669 @@ export class LLMChatPipeline {
+@@ -480,31 +1244,2687 @@ export class LLMChatPipeline {
        this.tvm.empty([numProbs], "float32", this.device),
      );
  
@@ -5851,17 +5889,35 @@ index 616cff4..712a6e8 100644
 +    const layerCount = this.requireModelDimension("num_hidden_layers");
 +    const hiddenSize = this.requireModelDimension("hidden_size");
 +    const values = new Float32Array(layerCount * positions.length * hiddenSize);
++    // A forward's capture is one float32 `[L, positions, d]` buffer: a chunk holding more
++    // positions than the device's binding admits ends before the first one that does not fit.
++    const positionsPerForward = drowseCapturePositionsPerForward(
++      layerCount,
++      hiddenSize,
++      this.drowseJlensBufferLimits,
++    );
 +    this.resetDrowseCaptureState();
 +    try {
++      let firstPending = 0;
 +      for (
-+        let chunkStart = 0;
++        let chunkStart = 0, chunkEnd = 0;
 +        chunkStart < inputIds.length;
-+        chunkStart += this.prefillChunkSize
++        chunkStart = chunkEnd
 +      ) {
-+        const chunk = inputIds.slice(
-+          chunkStart,
++        while (
++          firstPending < positions.length &&
++          positions[firstPending] < chunkStart
++        ) {
++          firstPending += 1;
++        }
++        chunkEnd = Math.min(
++          inputIds.length,
 +          chunkStart + this.prefillChunkSize,
++          firstPending + positionsPerForward < positions.length
++            ? positions[firstPending + positionsPerForward]
++            : Infinity,
 +        );
++        const chunk = inputIds.slice(chunkStart, chunkEnd);
 +        const selected: Array<{ outputIndex: number; localPosition: number }> =
 +          [];
 +        for (
@@ -7406,7 +7462,7 @@ index 616cff4..712a6e8 100644
    }
  
    /**
-@@ -514,6 +3896,11 @@ export class LLMChatPipeline {
+@@ -514,6 +3934,11 @@ export class LLMChatPipeline {
      return this.outputMessage;
    }
  
@@ -7418,7 +7474,7 @@ index 616cff4..712a6e8 100644
    /**
     * Reset the runtime statistics
     */
-@@ -535,6 +3922,7 @@ export class LLMChatPipeline {
+@@ -535,6 +3960,7 @@ export class LLMChatPipeline {
      }
      this.resetKVCache();
      this.filledKVCacheLength = 0;
@@ -7426,7 +7482,7 @@ index 616cff4..712a6e8 100644
      this.logitProcessor?.resetState();
      this.tvm.endScope();
    }
-@@ -543,6 +3931,7 @@ export class LLMChatPipeline {
+@@ -543,6 +3969,7 @@ export class LLMChatPipeline {
     * Reset KV Cache
     */
    resetKVCache() {
@@ -7434,7 +7490,7 @@ index 616cff4..712a6e8 100644
      const states = this.getActiveKVStates();
      for (const state of states) {
        this.fclearKVCaches(state);
-@@ -572,6 +3961,10 @@ export class LLMChatPipeline {
+@@ -572,6 +3999,10 @@ export class LLMChatPipeline {
      return this.finishReason;
    }
  
@@ -7445,7 +7501,7 @@ index 616cff4..712a6e8 100644
    /**
     * @returns tokenLogprobArray for this current round of autoregressive generation.
     * Updated upon each sampled token, cleared upon each prefillStep().
-@@ -587,6 +3980,10 @@ export class LLMChatPipeline {
+@@ -587,6 +4018,10 @@ export class LLMChatPipeline {
      return this.curRoundDecodingTotalTokens;
    }
  
@@ -7456,7 +7512,7 @@ index 616cff4..712a6e8 100644
    /**
     * @returns the number of tokens decoded for a single request or a single choice in the request.
     */
-@@ -721,13 +4118,17 @@ export class LLMChatPipeline {
+@@ -721,13 +4156,17 @@ export class LLMChatPipeline {
     */
    async prefillStep(
      inp: string,
@@ -7477,7 +7533,7 @@ index 616cff4..712a6e8 100644
        );
      }
      if (this.resetStatsPerPrefill) {
-@@ -738,8 +4139,10 @@ export class LLMChatPipeline {
+@@ -738,8 +4177,10 @@ export class LLMChatPipeline {
  
      // cleanup the per convo states
      this.outputIds = [];
@@ -7488,7 +7544,7 @@ index 616cff4..712a6e8 100644
      this.tokenLogprobArray = [];
      this.curRoundDecodingTotalTokens = 0;
      this.curRoundPrefillTotalTokens = 0;
-@@ -747,6 +4150,10 @@ export class LLMChatPipeline {
+@@ -747,6 +4188,10 @@ export class LLMChatPipeline {
      this.curRoundDecodingTotalTime = 0;
      this.curRoundGrammarInitTotalTime = 0;
      this.curRoundGrammarPerTokenTotalTime = 0;
@@ -7499,7 +7555,7 @@ index 616cff4..712a6e8 100644
  
      this.curRoundLatencyBreakdown = {
        logitProcessorTime: [],
-@@ -758,6 +4165,8 @@ export class LLMChatPipeline {
+@@ -758,6 +4203,8 @@ export class LLMChatPipeline {
      };
  
      this.stopTriggered = false;
@@ -7508,7 +7564,7 @@ index 616cff4..712a6e8 100644
      const conversation = this.conversation;
  
      // -1. Instantiate grammar matcher according to generation config. This step is overlapped
-@@ -835,17 +4244,28 @@ export class LLMChatPipeline {
+@@ -835,17 +4282,28 @@ export class LLMChatPipeline {
        conversation.prompt = inp;
      } else {
        conversation.appendMessage(msgRole, inp, inp_role_str);
@@ -7541,7 +7597,7 @@ index 616cff4..712a6e8 100644
        }
      }
      const [inputData, promptLen, getEmbedSize] = await this.getInputData();
-@@ -944,8 +4364,9 @@ export class LLMChatPipeline {
+@@ -944,8 +4402,9 @@ export class LLMChatPipeline {
      }
      this.stopTriggered = true;
      this.finishReason = "abort";
@@ -7552,7 +7608,7 @@ index 616cff4..712a6e8 100644
      }
    }
  
-@@ -999,9 +4420,11 @@ export class LLMChatPipeline {
+@@ -999,9 +4458,11 @@ export class LLMChatPipeline {
      if (stopTokens.includes(nextToken)) {
        this.stopTriggered = true;
        this.finishReason = "stop";
@@ -7564,7 +7620,7 @@ index 616cff4..712a6e8 100644
        // Update token appearance frequency
        const curFreq = this.appearedTokensFreq.get(nextToken);
        if (curFreq !== undefined) {
-@@ -1013,6 +4436,7 @@ export class LLMChatPipeline {
+@@ -1013,6 +4474,7 @@ export class LLMChatPipeline {
  
      // Stop condition 2: stop string; update `this.outputMessage` subsequently
      let outputMessage = this.tokenizer.decode(new Int32Array(this.outputIds));
@@ -7572,7 +7628,7 @@ index 616cff4..712a6e8 100644
      let stopPos = -1;
      for (const stopStr of stopStrs) {
        // Stop at the first stopStr we find
-@@ -1021,32 +4445,36 @@ export class LLMChatPipeline {
+@@ -1021,32 +4483,36 @@ export class LLMChatPipeline {
          outputMessage = outputMessage.substring(0, stopPos);
          this.stopTriggered = true;
          this.finishReason = "stop";
@@ -7611,7 +7667,7 @@ index 616cff4..712a6e8 100644
        }
      }
    }
-@@ -1227,7 +4655,87 @@ export class LLMChatPipeline {
+@@ -1227,7 +4693,87 @@ export class LLMChatPipeline {
    private async embedAndForward(
      inputData: Array<Array<number> | ImageURL>,
      inputDataLen: number,
@@ -7699,7 +7755,7 @@ index 616cff4..712a6e8 100644
      if (inputDataLen > this.prefillChunkSize) {
        throw new Error(
          "InternalError: expect inputDataLen <= this.prefillChunkSize.",
-@@ -1238,51 +4746,140 @@ export class LLMChatPipeline {
+@@ -1238,51 +4784,140 @@ export class LLMChatPipeline {
  
      // 1. Embed all inputData
      this.tvm.beginScope();
@@ -7881,7 +7937,7 @@ index 616cff4..712a6e8 100644
      this.tvm.attachToCurrentScope(logits);
      return logits;
    }
-@@ -1292,7 +4889,14 @@ export class LLMChatPipeline {
+@@ -1292,7 +4927,14 @@ export class LLMChatPipeline {
      names: string[],
    ): VMFunctionRegistry {
      const registry: VMFunctionRegistry = {};
@@ -7897,7 +7953,7 @@ index 616cff4..712a6e8 100644
        try {
          const func = vm.getFunction(name) as unknown;
          if (typeof func === "function") {
-@@ -1365,6 +4969,7 @@ export class LLMChatPipeline {
+@@ -1365,6 +5007,7 @@ export class LLMChatPipeline {
    private static resolveModelABI(
      kvStateKind: KVStateKind,
      availability: VMFunctionAvailability,
@@ -7905,7 +7961,7 @@ index 616cff4..712a6e8 100644
    ): ResolvedModelABI {
      const hasSingleKernelPair = availability.prefill && availability.decode;
      const hasBatchKernelPair =
-@@ -1450,6 +5055,17 @@ export class LLMChatPipeline {
+@@ -1450,6 +5093,17 @@ export class LLMChatPipeline {
      }
  
      // kv_cache
@@ -7923,7 +7979,7 @@ index 616cff4..712a6e8 100644
      if (hasSingleKernelPair) {
        return {
          kvStateKind,
-@@ -1525,14 +5141,151 @@ export class LLMChatPipeline {
+@@ -1525,14 +5179,151 @@ export class LLMChatPipeline {
      return states;
    }
  
@@ -8076,7 +8132,7 @@ index 616cff4..712a6e8 100644
          this.params,
        );
      }
-@@ -1549,27 +5302,42 @@ export class LLMChatPipeline {
+@@ -1549,27 +5340,42 @@ export class LLMChatPipeline {
        this.resolvedModelABI.needsKVCache &&
        this.resolvedModelABI.needsRNNState
      ) {
@@ -8123,7 +8179,7 @@ index 616cff4..712a6e8 100644
          this.params,
        );
      }
-@@ -1577,20 +5345,68 @@ export class LLMChatPipeline {
+@@ -1577,20 +5383,68 @@ export class LLMChatPipeline {
        this.resolvedModelABI.needsKVCache &&
        this.resolvedModelABI.needsRNNState
      ) {
@@ -8194,7 +8250,7 @@ index 616cff4..712a6e8 100644
    // NOTE: caller must call device.sync()
    private updateLogitsOnCPU(logits: tvmjs.Tensor): tvmjs.Tensor {
      if (this.logitsOnCPU == undefined) {
-@@ -1610,7 +5426,7 @@ export class LLMChatPipeline {
+@@ -1610,7 +5464,7 @@ export class LLMChatPipeline {
      logitsOnGPU: tvmjs.Tensor,
      genConfig?: GenerationConfig,
    ) {
@@ -8203,7 +8259,7 @@ index 616cff4..712a6e8 100644
      // Also load other genConfig items like logit_bias. Consume all fields of `genConfig` here.
      function _hasValue(value: any): boolean {
        // if we use `if value` directly, `value` being 0 evaluates to false, violating semantics
-@@ -1618,6 +5434,7 @@ export class LLMChatPipeline {
+@@ -1618,6 +5472,7 @@ export class LLMChatPipeline {
      }
      let temperature: number = this.config.temperature;
      let top_p: number = this.config.top_p;
@@ -8211,7 +8267,7 @@ index 616cff4..712a6e8 100644
      let repetition_penalty: number = this.config.repetition_penalty;
      let frequency_penalty: number = this.config.frequency_penalty;
      let presence_penalty: number = this.config.presence_penalty;
-@@ -1633,6 +5450,9 @@ export class LLMChatPipeline {
+@@ -1633,6 +5488,9 @@ export class LLMChatPipeline {
        if (_hasValue(genConfig.top_p)) {
          top_p = genConfig.top_p!;
        }
@@ -8221,7 +8277,7 @@ index 616cff4..712a6e8 100644
        // TODO: setting top_p to 1.0 by default might run into issues since
        // top_p masking in relax uses < instead of <=
        // Set default top_p to 1.0 if not set
-@@ -1675,11 +5495,14 @@ export class LLMChatPipeline {
+@@ -1675,11 +5533,14 @@ export class LLMChatPipeline {
        }
      }
      // Check range validity
@@ -8239,7 +8295,7 @@ index 616cff4..712a6e8 100644
      }
      if (repetition_penalty <= 0) {
        throw new MinValueError("repetition_penalty", 0);
-@@ -1894,13 +5717,38 @@ export class LLMChatPipeline {
+@@ -1894,13 +5755,38 @@ export class LLMChatPipeline {
      // 4. Sample token from logits
      const sampleBegin = performance.now();
  
@@ -8282,7 +8338,7 @@ index 616cff4..712a6e8 100644
  
      this.tvm.beginScope();
      const temperaturesDevice = this.tvm
-@@ -1913,79 +5761,131 @@ export class LLMChatPipeline {
+@@ -1913,79 +5799,131 @@ export class LLMChatPipeline {
      );
      probs = probs.view([numProbs, this.fullVocabSize]);
  
@@ -8464,7 +8520,7 @@ index 616cff4..712a6e8 100644
    }
  
    /**
-@@ -2028,20 +5928,37 @@ export class LLMChatPipeline {
+@@ -2028,20 +5966,37 @@ export class LLMChatPipeline {
        if (this.filledKVCacheLength !== 0) {
          throw new TextCompletionExpectsKVEmptyError();
        }
@@ -8513,7 +8569,7 @@ index 616cff4..712a6e8 100644
      }
  
      // 1.5. Preload image dimensions to compute per-image embed sizes
-@@ -2082,7 +5999,7 @@ export class LLMChatPipeline {
+@@ -2082,7 +6037,7 @@ export class LLMChatPipeline {
  
      // 3. Encode all prompts. Iterate through each message in the prompt array, where each
      // prompt can either be a string, or an array of a mixture of string and ImageURLs.
@@ -8522,7 +8578,7 @@ index 616cff4..712a6e8 100644
      for (let i = 0; i < prompts.length; i++) {
        const curPrompt = prompts[i];
        if (typeof curPrompt === "string") {
-@@ -2116,6 +6033,26 @@ export class LLMChatPipeline {
+@@ -2116,6 +6071,26 @@ export class LLMChatPipeline {
          }
        }
      }
@@ -8549,7 +8605,7 @@ index 616cff4..712a6e8 100644
      // Deal with last curTokens
      if (curTokens.length !== 0) {
        ret.push([...curTokens]);
-@@ -2186,50 +6123,51 @@ export class LLMChatPipeline {
+@@ -2186,50 +6161,51 @@ export class LLMChatPipeline {
    }
  
    /**
@@ -8617,7 +8673,7 @@ index 616cff4..712a6e8 100644
      } as ChatCompletionTokenLogprob;
    }
  
-@@ -2284,3 +6222,10 @@ export class LLMChatPipeline {
+@@ -2284,3 +6260,10 @@ export class LLMChatPipeline {
      log.info(msg);
    }
  }
@@ -10083,12 +10139,962 @@ index 8fa04b2..92ae4af 100644
  describe("Test getConversationFromChatCompletionRequest with image", () => {
    // Constants for testing
    type ImageURL = ChatCompletionContentPartImage.ImageURL;
+diff --git a/tests/drowse.test.ts b/tests/drowse.test.ts
+new file mode 100644
+index 0000000..dea121b
+--- /dev/null
++++ b/tests/drowse.test.ts
+@@ -0,0 +1,944 @@
++import { describe, expect, test } from "@jest/globals";
++import {
++  DROWSE_REPLAY_META,
++  validateDrowseReplayMeta,
++  DROWSE_HOOK_ABI,
++  DROWSE_EXACT_READOUT_ABI,
++  DROWSE_EXACT_READOUT_ABI_VERSION,
++  DROWSE_EXACT_READOUT_MAX_SAE_FEATURES_PER_CHUNK,
++  DROWSE_READOUT_TOP_K,
++  DROWSE_STRUCTURED_HOOK_FORMAT,
++  DROWSE_STRUCTURED_MAX_AFFINE_GROUPS,
++  DROWSE_STRUCTURED_MAX_CURVE_NODES,
++  DROWSE_STRUCTURED_MAX_CURVES,
++  DROWSE_STRUCTURED_MAX_EMBED_DIM,
++  DROWSE_STRUCTURED_MAX_INTRINSIC_DIM,
++  DROWSE_STRUCTURED_MAX_PROBES,
++  DROWSE_STRUCTURED_MAX_RANK,
++  DROWSE_STRUCTURED_CURVE_PARAMETER_STRIDE,
++  DROWSE_STRUCTURED_PROFILE_MAGIC,
++  DROWSE_STRUCTURED_MIN_COMPUTE_WORKGROUP_STORAGE_SIZE,
++  DROWSE_STRUCTURED_MAX_GEOMETRY_PROBES,
++  DROWSE_STRUCTURED_MAX_WHITENER_RANK,
++  DROWSE_STRUCTURED_MAX_GEOMETRY_CANDIDATES,
++  DROWSE_STRUCTURED_GEOMETRY_OUTPUT_STRIDE,
++  DROWSE_STRUCTURED_GEOMETRY_FOOT_RESTARTS,
++  DROWSE_STRUCTURED_GEOMETRY_FOOT_ITERATIONS,
++  DROWSE_STRUCTURED_GEOMETRY_WARM_RESTARTS,
++  DROWSE_STRUCTURED_GEOMETRY_WARM_ITERATIONS,
++  DROWSE_STRUCTURED_GEOMETRY_HEADER_STRIDE,
++  DROWSE_STRUCTURED_GEOMETRY_KERNEL_STORAGE_BINDINGS,
++  DROWSE_STRUCTURED_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
++  DrowseStructuredProgram,
++  packDrowseCurveParameters,
++  packDrowseGeometryHeader,
++  packDrowseGeometryPayload,
++  drowseGeometryPayloadElements,
++  updatePackedDrowseCurveActive,
++  validateDrowseCapturePositions,
++  validateDrowseCaptureRows,
++  validateDrowseJlensDictionary,
++  validateDrowseSaeDictionary,
++  validateDrowseStructuredProgram,
++  decodeDrowseStructuredHookProfile,
++  drowseProgramHasUnits,
++  drowseUnitSectionLengths,
++  validateDrowseUnitSection,
++  DROWSE_DESCRIPTOR_CONTEXT_TOKENS,
++  DROWSE_DESCRIPTOR_HEAD_DIM,
++  DROWSE_DESCRIPTOR_PREFILL_CHUNK_SIZE,
++  DROWSE_DESCRIPTOR_UNIT_SITES,
++  DROWSE_PACKED_READ_FUNCTIONS,
++  DROWSE_READOUT_FUNCTIONS,
++  DROWSE_UNIT_READ_FUNCTIONS,
++} from "../src/drowse";
++
++describe("Drowse structured hook profile", () => {
++  // Schema 4: v3's fields with ABI 5 / format 4 / readout 2, then 36 block and unit fields
++  // (attested by the caller; the bridge reads UNIT_SITES and HEAD_DIM).
++  const tail = new Array(36).fill(0);
++  tail[0] = 1; // UNIT_SITES
++  tail[4] = 64; // HEAD_DIM
++  const descriptor = Int32Array.from([
++    DROWSE_STRUCTURED_PROFILE_MAGIC,
++    4,
++    4,
++    5,
++    4,
++    12,
++    768,
++    DROWSE_STRUCTURED_MAX_AFFINE_GROUPS,
++    DROWSE_STRUCTURED_MAX_RANK,
++    DROWSE_STRUCTURED_MAX_PROBES,
++    DROWSE_STRUCTURED_MAX_CURVES,
++    DROWSE_STRUCTURED_MAX_CURVE_NODES,
++    DROWSE_STRUCTURED_MAX_INTRINSIC_DIM,
++    DROWSE_STRUCTURED_MAX_EMBED_DIM,
++    DROWSE_STRUCTURED_CURVE_PARAMETER_STRIDE,
++    DROWSE_STRUCTURED_MIN_COMPUTE_WORKGROUP_STORAGE_SIZE,
++    DROWSE_STRUCTURED_MAX_GEOMETRY_PROBES,
++    DROWSE_STRUCTURED_MAX_WHITENER_RANK,
++    DROWSE_STRUCTURED_MAX_GEOMETRY_CANDIDATES,
++    DROWSE_STRUCTURED_GEOMETRY_OUTPUT_STRIDE,
++    DROWSE_STRUCTURED_GEOMETRY_FOOT_RESTARTS,
++    DROWSE_STRUCTURED_GEOMETRY_FOOT_ITERATIONS,
++    DROWSE_STRUCTURED_GEOMETRY_WARM_RESTARTS,
++    DROWSE_STRUCTURED_GEOMETRY_WARM_ITERATIONS,
++    DROWSE_STRUCTURED_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
++    DROWSE_STRUCTURED_GEOMETRY_KERNEL_STORAGE_BINDINGS,
++    DROWSE_STRUCTURED_GEOMETRY_HEADER_STRIDE,
++    drowseGeometryPayloadElements(12, 768),
++    DROWSE_EXACT_READOUT_ABI_VERSION,
++    DROWSE_READOUT_TOP_K,
++    DROWSE_EXACT_READOUT_MAX_SAE_FEATURES_PER_CHUNK,
++    ...tail,
++  ]);
++
++  test("decodes the immutable compiled descriptor", () => {
++    expect(decodeDrowseStructuredHookProfile(descriptor, 12, 768)).toEqual({
++      schemaVersion: 4,
++      id: "standard-v4",
++      unitSites: 1,
++      descriptor: Array.from(descriptor),
++      hookAbi: DROWSE_HOOK_ABI,
++      format: DROWSE_STRUCTURED_HOOK_FORMAT,
++      layerCount: 12,
++      hiddenSize: 768,
++      maxAffineGroups: DROWSE_STRUCTURED_MAX_AFFINE_GROUPS,
++      maxRank: DROWSE_STRUCTURED_MAX_RANK,
++      maxProbes: DROWSE_STRUCTURED_MAX_PROBES,
++      maxCurves: DROWSE_STRUCTURED_MAX_CURVES,
++      maxCurveNodes: DROWSE_STRUCTURED_MAX_CURVE_NODES,
++      maxIntrinsicDim: DROWSE_STRUCTURED_MAX_INTRINSIC_DIM,
++      maxEmbedDim: DROWSE_STRUCTURED_MAX_EMBED_DIM,
++      curveParameterStride: DROWSE_STRUCTURED_CURVE_PARAMETER_STRIDE,
++      maxComputeWorkgroupStorageSize:
++        DROWSE_STRUCTURED_MIN_COMPUTE_WORKGROUP_STORAGE_SIZE,
++      maxGeometryProbes: DROWSE_STRUCTURED_MAX_GEOMETRY_PROBES,
++      maxWhitenerRank: DROWSE_STRUCTURED_MAX_WHITENER_RANK,
++      maxGeometryCandidates: DROWSE_STRUCTURED_MAX_GEOMETRY_CANDIDATES,
++      geometryOutputStride: DROWSE_STRUCTURED_GEOMETRY_OUTPUT_STRIDE,
++      geometryFootRestarts: DROWSE_STRUCTURED_GEOMETRY_FOOT_RESTARTS,
++      geometryFootIterations: DROWSE_STRUCTURED_GEOMETRY_FOOT_ITERATIONS,
++      geometryWarmRestarts: DROWSE_STRUCTURED_GEOMETRY_WARM_RESTARTS,
++      geometryWarmIterations: DROWSE_STRUCTURED_GEOMETRY_WARM_ITERATIONS,
++      requiredMaxStorageBuffersPerShaderStage:
++        DROWSE_STRUCTURED_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
++      geometryKernelStorageBindings:
++        DROWSE_STRUCTURED_GEOMETRY_KERNEL_STORAGE_BINDINGS,
++      geometryHeaderStride: DROWSE_STRUCTURED_GEOMETRY_HEADER_STRIDE,
++      geometryPayloadElements: drowseGeometryPayloadElements(12, 768),
++      exactReadoutAbiVersion: DROWSE_EXACT_READOUT_ABI_VERSION,
++      exactReadoutAbi: DROWSE_EXACT_READOUT_ABI,
++      readoutTopK: DROWSE_READOUT_TOP_K,
++      maxSaeFeaturesPerChunk: DROWSE_EXACT_READOUT_MAX_SAE_FEATURES_PER_CHUNK,
++    });
++  });
++
++  test("rejects capacity or model-shape drift", () => {
++    const changed = descriptor.slice();
++    changed[8] += 1;
++    expect(() => decodeDrowseStructuredHookProfile(changed, 12, 768)).toThrow();
++    const oldProfile = descriptor.slice();
++    oldProfile[2] = 2;
++    expect(() =>
++      decodeDrowseStructuredHookProfile(oldProfile, 12, 768),
++    ).toThrow();
++    expect(() =>
++      decodeDrowseStructuredHookProfile(descriptor, 11, 768),
++    ).toThrow();
++    expect(() =>
++      decodeDrowseStructuredHookProfile(descriptor.slice(0, 31), 12, 768),
++    ).toThrow(/wrong length/);
++    const residual = descriptor.slice();
++    residual[31] = 0;
++    expect(decodeDrowseStructuredHookProfile(residual, 12, 768).id).toBe(
++      "standard-v4-residual",
++    );
++    const noMode = descriptor.slice();
++    noMode[31] = 2;
++    expect(() => decodeDrowseStructuredHookProfile(noMode, 12, 768)).toThrow(
++      /unit-site mode/,
++    );
++  });
++});
++
++describe("Drowse unit section (drowse-structured-v4)", () => {
++  const layers = 2;
++  const headDim = 4;
++  const lengths = drowseUnitSectionLengths(layers, headDim);
++  const section = () => ({
++    unitMeta: new Uint32Array(lengths.meta),
++    unitCoeff: new Float32Array(lengths.coeff),
++    unitActive: new Float32Array(lengths.active),
++    tapGrams: new Float32Array(lengths.tapGrams),
++  });
++  const program = (unit: Partial<ReturnType<typeof section>>) =>
++    unit as unknown as Parameters<typeof validateDrowseUnitSection>[0];
++
++  test("names the descriptor fields the bridge reads by C0's order", () => {
++    expect([
++      DROWSE_DESCRIPTOR_UNIT_SITES,
++      DROWSE_DESCRIPTOR_HEAD_DIM,
++      DROWSE_DESCRIPTOR_PREFILL_CHUNK_SIZE,
++      DROWSE_DESCRIPTOR_CONTEXT_TOKENS,
++    ]).toEqual([31, 35, 51, 66]);
++  });
++
++  test("sizes the tables as HOOK_ABI.md lays them out", () => {
++    expect(lengths).toEqual({
++      meta: 4 * 3 + 800,
++      coeff: 512 + 64 * 5,
++      active: 4,
++      tapGrams: 16 * 16,
++    });
++  });
++
++  test("accepts an empty and a populated section", () => {
++    expect(() =>
++      validateDrowseUnitSection(program({}), layers, headDim, 8, 2),
++    ).not.toThrow();
++    const unit = section();
++    // one neuron ablation at layer 1 (index 7, group 2), one head tap at layer 0 (head 1, slot 3)
++    unit.unitMeta[2] = 1; // neuron offsets [0, 0, 1]
++    unit.unitMeta[3] = 7;
++    unit.unitMeta[3 + 256] = 2;
++    const tapHead = 3 * (layers + 1) + 2 * 256 + 2 * 64 + 2 * 64;
++    unit.unitMeta[tapHead + 1] = 1;
++    unit.unitMeta[tapHead + 2] = 1;
++    unit.unitMeta[tapHead + 3] = 1;
++    unit.unitMeta[tapHead + 3 + 16] = 3;
++    expect(() =>
++      validateDrowseUnitSection(program(unit), layers, headDim, 8, 2),
++    ).not.toThrow();
++    expect(drowseProgramHasUnits(program(unit))).toBe(true);
++    expect(drowseProgramHasUnits(program({}))).toBe(false);
++  });
++
++  test("fails closed on partial sections, lengths, offsets and indices", () => {
++    const partial = section() as Partial<ReturnType<typeof section>>;
++    delete partial.tapGrams;
++    expect(() =>
++      validateDrowseUnitSection(program(partial), layers, headDim, 8, 2),
++    ).toThrow(/all four tables/);
++    const short = section();
++    short.unitCoeff = new Float32Array(lengths.coeff - 1);
++    expect(() =>
++      validateDrowseUnitSection(program(short), layers, headDim, 8, 2),
++    ).toThrow();
++    const decreasing = section();
++    decreasing.unitMeta[1] = 2;
++    decreasing.unitMeta[2] = 1;
++    expect(() =>
++      validateDrowseUnitSection(program(decreasing), layers, headDim, 8, 2),
++    ).toThrow(/must not decrease/);
++    const neuron = section();
++    neuron.unitMeta[2] = 1;
++    neuron.unitMeta[3] = 8; // d_ff is 8
++    expect(() =>
++      validateDrowseUnitSection(program(neuron), layers, headDim, 8, 2),
++    ).toThrow(/entry 0 is out of range/);
++    const group = section();
++    group.unitMeta[2] = 1;
++    group.unitMeta[3 + 256] = 4; // four groups
++    expect(() =>
++      validateDrowseUnitSection(program(group), layers, headDim, 8, 2),
++    ).toThrow();
++    const nonFinite = section();
++    nonFinite.unitCoeff[0] = Number.NaN;
++    expect(() =>
++      validateDrowseUnitSection(program(nonFinite), layers, headDim, 8, 2),
++    ).toThrow(/finite/);
++  });
++});
++
++describe("Drowse static reads (exact-readout-v2)", () => {
++  test("names every library's readout functions and the units libraries' reads apart", () => {
++    const readout = new Set<string>(DROWSE_READOUT_FUNCTIONS);
++    const units = new Set<string>(DROWSE_UNIT_READ_FUNCTIONS);
++    expect(readout.size).toBe(12);
++    expect(units.size).toBe(9);
++    for (const name of units) expect(readout.has(name)).toBe(false);
++    for (const name of DROWSE_PACKED_READ_FUNCTIONS) {
++      expect(readout.has(name) || units.has(name)).toBe(true);
++    }
++    for (const weightFree of [
++      "drowse_topk",
++      "drowse_log_sum_exp",
++      "drowse_batched_matmul",
++      "drowse_chan_merge",
++      "drowse_head_write_norms",
++      "drowse_gather_head_grams",
++    ]) {
++      expect(DROWSE_PACKED_READ_FUNCTIONS.has(weightFree)).toBe(false);
++    }
++  });
++});
++
++describe("Drowse precomputed SAE dictionaries", () => {
++  const dictionary = {
++    hookAbi: DROWSE_HOOK_ABI,
++    bindingId: "a".repeat(64),
++    hiddenSize: 2,
++    runtimeLayerIndex: 1,
++    featureCount: 3,
++    activation: "relu",
++    encoder: Float32Array.from([1, 2, 3, 4, 5, 6]),
++    encoderBias: Float32Array.from([0.1, 0.2, 0.3]),
++    encoderThreshold: new Float32Array(3),
++    decoderBias: Float32Array.from([0.4, 0.5]),
++  } as const;
++
++  test("validates the exact runtime shape and finite payload", () => {
++    expect(() => validateDrowseSaeDictionary(dictionary, 2, 2)).not.toThrow();
++    expect(() =>
++      validateDrowseSaeDictionary(
++        { ...dictionary, runtimeLayerIndex: 2 },
++        2,
++        2,
++      ),
++    ).toThrow(/layer is invalid/);
++    expect(() =>
++      validateDrowseSaeDictionary({ ...dictionary, hiddenSize: 3 }, 2, 2),
++    ).toThrow(/targets 3 hidden dimensions/);
++    expect(() =>
++      validateDrowseSaeDictionary(
++        {
++          ...dictionary,
++          encoderBias: Float32Array.from([0.1, Number.NaN, 0.3]),
++        },
++        2,
++        2,
++      ),
++    ).toThrow(/encoder bias values must be finite/);
++    expect(() =>
++      validateDrowseSaeDictionary(
++        { ...dictionary, encoder: new Float32Array(5) },
++        2,
++        2,
++      ),
++    ).toThrow(/encoder must contain exactly 6 values/);
++  });
++});
++
++describe("Drowse resident J-lens dictionaries", () => {
++  const dictionary = {
++    hookAbi: DROWSE_HOOK_ABI,
++    bindingId: "b".repeat(64),
++    hiddenSize: 2,
++    layerIndices: Int32Array.from([0, 1]),
++    matrices: [new Float32Array(4), new Float32Array(4)],
++  } as const;
++
++  test("validates exact bindings, layers, and per-layer matrix shapes", () => {
++    expect(() => validateDrowseJlensDictionary(dictionary, 2, 2)).not.toThrow();
++    expect(() =>
++      validateDrowseJlensDictionary(
++        { ...dictionary, bindingId: "floating" },
++        2,
++        2,
++      ),
++    ).toThrow(/identity is invalid/);
++    expect(() =>
++      validateDrowseJlensDictionary(
++        { ...dictionary, layerIndices: Int32Array.from([1, 0]) },
++        2,
++        2,
++      ),
++    ).toThrow(/unique, ordered, and in range/);
++    expect(() =>
++      validateDrowseJlensDictionary(
++        { ...dictionary, matrices: [new Float32Array(4), new Float32Array(3)] },
++        2,
++        2,
++      ),
++    ).toThrow(/wrong shape/);
++  });
++});
++
++/** A drowse-structured-v4 program; every program carries the geometry buffers. */
++function structuredProgram(): DrowseStructuredProgram {
++  return structuredGeometryProgram();
++}
++
++function structuredBase(): DrowseStructuredProgram {
++  const layerCount = 2;
++  const hiddenSize = 2;
++  const curveSlots = layerCount * DROWSE_STRUCTURED_MAX_CURVES;
++  return {
++    hookAbi: DROWSE_HOOK_ABI,
++    format: DROWSE_STRUCTURED_HOOK_FORMAT,
++    hiddenSize,
++    layerCount,
++    affineActive: new Uint32Array(
++      layerCount * DROWSE_STRUCTURED_MAX_AFFINE_GROUPS,
++    ),
++    affineBasis: new Float32Array(
++      layerCount *
++        DROWSE_STRUCTURED_MAX_AFFINE_GROUPS *
++        DROWSE_STRUCTURED_MAX_RANK *
++        hiddenSize,
++    ),
++    affineNeutral: new Float32Array(
++      layerCount * DROWSE_STRUCTURED_MAX_AFFINE_GROUPS * hiddenSize,
++    ),
++    affineTarget: new Float32Array(
++      layerCount *
++        DROWSE_STRUCTURED_MAX_AFFINE_GROUPS *
++        DROWSE_STRUCTURED_MAX_RANK,
++    ),
++    affineAlong: new Float32Array(
++      layerCount * DROWSE_STRUCTURED_MAX_AFFINE_GROUPS,
++    ),
++    affineKappa: new Float32Array(
++      layerCount *
++        DROWSE_STRUCTURED_MAX_AFFINE_GROUPS *
++        DROWSE_STRUCTURED_MAX_RANK,
++    ),
++    probeKind: new Uint32Array(layerCount * DROWSE_STRUCTURED_MAX_PROBES),
++    probeDirection: new Float32Array(
++      layerCount * DROWSE_STRUCTURED_MAX_PROBES * hiddenSize,
++    ),
++    probeBias: new Float32Array(layerCount * DROWSE_STRUCTURED_MAX_PROBES),
++    probeThreshold: new Float32Array(layerCount * DROWSE_STRUCTURED_MAX_PROBES),
++    curveActive: new Uint32Array(curveSlots),
++    curveRank: new Uint32Array(curveSlots),
++    curveIntrinsicDim: new Uint32Array(curveSlots),
++    curveEmbedDim: new Uint32Array(curveSlots),
++    curveNodeCount: new Uint32Array(curveSlots),
++    curveBasis: new Float32Array(
++      curveSlots * DROWSE_STRUCTURED_MAX_RANK * hiddenSize,
++    ),
++    curveNeutral: new Float32Array(curveSlots * hiddenSize),
++    curveNodeParameters: new Float32Array(
++      curveSlots *
++        DROWSE_STRUCTURED_MAX_CURVE_NODES *
++        DROWSE_STRUCTURED_MAX_EMBED_DIM,
++    ),
++    curveRbfWeights: new Float32Array(
++      curveSlots *
++        DROWSE_STRUCTURED_MAX_CURVE_NODES *
++        DROWSE_STRUCTURED_MAX_RANK,
++    ),
++    curvePolynomial: new Float32Array(
++      curveSlots *
++        (DROWSE_STRUCTURED_MAX_EMBED_DIM + 1) *
++        DROWSE_STRUCTURED_MAX_RANK,
++    ),
++    curveCoordinateOffset: new Float32Array(
++      curveSlots * DROWSE_STRUCTURED_MAX_EMBED_DIM,
++    ),
++    curveCoordinateScale: new Float32Array(
++      curveSlots * DROWSE_STRUCTURED_MAX_EMBED_DIM,
++    ),
++    curveOrigin: new Float32Array(
++      curveSlots * DROWSE_STRUCTURED_MAX_INTRINSIC_DIM,
++    ),
++    curveTarget: new Float32Array(
++      curveSlots * DROWSE_STRUCTURED_MAX_INTRINSIC_DIM,
++    ),
++    curveAlong: new Float32Array(curveSlots),
++    curveOnto: new Float32Array(curveSlots),
++    curveBounds: new Float32Array(
++      curveSlots * DROWSE_STRUCTURED_MAX_INTRINSIC_DIM * 2,
++    ),
++    curveAxisPeriodic: new Uint32Array(
++      curveSlots * DROWSE_STRUCTURED_MAX_INTRINSIC_DIM,
++    ),
++    curveAxisPeriod: new Float32Array(
++      curveSlots * DROWSE_STRUCTURED_MAX_INTRINSIC_DIM,
++    ),
++    curveSigmaPresent: new Uint32Array(curveSlots),
++    curveSigmaRbfWeights: new Float32Array(
++      curveSlots * DROWSE_STRUCTURED_MAX_CURVE_NODES,
++    ),
++    curveSigmaPolynomial: new Float32Array(
++      curveSlots * (DROWSE_STRUCTURED_MAX_EMBED_DIM + 1),
++    ),
++    curveDamping: new Float32Array(curveSlots),
++  };
++}
++
++function structuredGeometryProgram(): DrowseStructuredProgram {
++  const program = structuredBase();
++  const l = program.layerCount;
++  const d = program.hiddenSize;
++  const g = DROWSE_STRUCTURED_MAX_GEOMETRY_PROBES;
++  const r = DROWSE_STRUCTURED_MAX_RANK;
++  const i = DROWSE_STRUCTURED_MAX_INTRINSIC_DIM;
++  const n = DROWSE_STRUCTURED_MAX_CURVE_NODES;
++  const slots = l * g;
++  program.format = DROWSE_STRUCTURED_HOOK_FORMAT;
++  program.curveDomainKind = new Uint32Array(l * DROWSE_STRUCTURED_MAX_CURVES);
++  program.whitenerRank = new Uint32Array(l);
++  program.whitenerRidge = new Float32Array(l).fill(1);
++  program.whitenerBasis = new Float32Array(
++    l * DROWSE_STRUCTURED_MAX_WHITENER_RANK * d,
++  );
++  program.whitenerCorrection = new Float32Array(
++    l * DROWSE_STRUCTURED_MAX_WHITENER_RANK,
++  );
++  program.geometryActive = new Uint32Array(slots);
++  program.geometryKind = new Uint32Array(slots);
++  program.geometryRank = new Uint32Array(slots);
++  program.geometryIntrinsicDim = new Uint32Array(slots);
++  program.geometryCandidateCount = new Uint32Array(slots);
++  program.geometryCurveNodeCount = new Uint32Array(slots);
++  program.geometryDomainKind = new Uint32Array(slots);
++  program.geometryMean = new Float32Array(slots * d);
++  program.geometryInverseMean = new Float32Array(slots * d);
++  program.geometryBasis = new Float32Array(slots * r * d);
++  program.geometryGramInverse = new Float32Array(slots * r * r);
++  program.geometryCholesky = new Float32Array(slots * r * r);
++  program.geometryNodeWhite = new Float32Array(
++    slots * DROWSE_STRUCTURED_MAX_GEOMETRY_CANDIDATES * r,
++  );
++  program.geometryCoordMap = new Float32Array(slots * i * r);
++  program.geometryCoordBias = new Float32Array(slots * i);
++  program.geometryCurveParameters = new Float32Array(
++    slots * DROWSE_STRUCTURED_CURVE_PARAMETER_STRIDE,
++  );
++  program.geometryCurveNodeCoords = new Float32Array(slots * n * i);
++  program.geometryCurveNodeValues = new Float32Array(slots * n * r);
++  program.geometryFeet = new Float32Array(slots * i);
++  return program;
++}
++
++describe("Drowse structured hidden capture", () => {
++  test("hiddenCapture is a boolean flag", () => {
++    const flagged = structuredProgram();
++    flagged.hiddenCapture = true;
++    expect(() => validateDrowseStructuredProgram(flagged, 2, 2)).not.toThrow();
++    const malformed = structuredProgram() as any;
++    malformed.hiddenCapture = 1;
++    expect(() => validateDrowseStructuredProgram(malformed, 2, 2)).toThrow(
++      /hiddenCapture must be a boolean/,
++    );
++  });
++});
++
++describe("Drowse structured J-lens programs", () => {
++  test("requires exact full-vocabulary readout buffers for probability probes", () => {
++    const valid = structuredProgram();
++    valid.probeKind[8] = 3;
++    valid.jLensBindingId = "b".repeat(64);
++    valid.jLensLayerIndices = new Int32Array([1]);
++    valid.jLensTokenIds = new Int32Array(DROWSE_STRUCTURED_MAX_PROBES);
++    expect(() => validateDrowseStructuredProgram(valid, 2, 2)).not.toThrow();
++
++    const missing = structuredProgram();
++    missing.probeKind[0] = 3;
++    expect(() => validateDrowseStructuredProgram(missing, 2, 2)).toThrow(
++      /complete probability program/,
++    );
++
++    const fullVocabularyReadout = structuredProgram();
++    fullVocabularyReadout.jLensBindingId = "b".repeat(64);
++    fullVocabularyReadout.jLensLayerIndices = new Int32Array([0, 1]);
++    fullVocabularyReadout.jLensTokenIds = new Int32Array(
++      DROWSE_STRUCTURED_MAX_PROBES,
++    );
++    expect(() =>
++      validateDrowseStructuredProgram(fullVocabularyReadout, 2, 2),
++    ).not.toThrow();
++  });
++
++  test("rejects malformed exact readout bindings and negative token IDs", () => {
++    const invalidBinding = structuredProgram();
++    invalidBinding.probeKind[8] = 3;
++    invalidBinding.jLensBindingId = "floating";
++    invalidBinding.jLensLayerIndices = new Int32Array([1]);
++    invalidBinding.jLensTokenIds = new Int32Array(DROWSE_STRUCTURED_MAX_PROBES);
++    expect(() => validateDrowseStructuredProgram(invalidBinding, 2, 2)).toThrow(
++      /binding is invalid/,
++    );
++
++    const negative = structuredProgram();
++    negative.probeKind[8] = 3;
++    negative.jLensBindingId = "b".repeat(64);
++    negative.jLensLayerIndices = new Int32Array([1]);
++    negative.jLensTokenIds = new Int32Array(DROWSE_STRUCTURED_MAX_PROBES);
++    negative.jLensTokenIds[0] = -1;
++    expect(() => validateDrowseStructuredProgram(negative, 2, 2)).toThrow(
++      /token IDs are invalid/,
++    );
++
++    const wrongLayers = structuredProgram();
++    wrongLayers.probeKind[8] = 3;
++    wrongLayers.jLensBindingId = "b".repeat(64);
++    wrongLayers.jLensLayerIndices = new Int32Array([0]);
++    wrongLayers.jLensTokenIds = new Int32Array(DROWSE_STRUCTURED_MAX_PROBES);
++    expect(() => validateDrowseStructuredProgram(wrongLayers, 2, 2)).toThrow(
++      /exactly match the active probability layers/,
++    );
++
++    const duplicateLayers = structuredProgram();
++    duplicateLayers.probeKind[0] = 3;
++    duplicateLayers.probeKind[8] = 3;
++    duplicateLayers.jLensBindingId = "b".repeat(64);
++    duplicateLayers.jLensLayerIndices = new Int32Array([0, 0]);
++    duplicateLayers.jLensTokenIds = new Int32Array(
++      DROWSE_STRUCTURED_MAX_PROBES,
++    );
++    expect(() =>
++      validateDrowseStructuredProgram(duplicateLayers, 2, 2),
++    ).toThrow(/unique, ordered, and in range/);
++
++    const outOfRangeLayer = structuredProgram();
++    outOfRangeLayer.probeKind[8] = 3;
++    outOfRangeLayer.jLensBindingId = "b".repeat(64);
++    outOfRangeLayer.jLensLayerIndices = new Int32Array([2]);
++    outOfRangeLayer.jLensTokenIds = new Int32Array(
++      DROWSE_STRUCTURED_MAX_PROBES,
++    );
++    expect(() =>
++      validateDrowseStructuredProgram(outOfRangeLayer, 2, 2),
++    ).toThrow(/unique, ordered, and in range/);
++  });
++});
++
++describe("Drowse structured-v3 geometry programs", () => {
++  test("accepts zeroed whiteners when no geometry slot is active", () => {
++    const inactive = structuredGeometryProgram();
++    inactive.whitenerRidge!.fill(0);
++    expect(() => validateDrowseStructuredProgram(inactive, 2, 2)).not.toThrow();
++  });
++
++  test("accepts exact flat and hyperspherical curved geometry descriptors", () => {
++    const flat = structuredGeometryProgram();
++    flat.whitenerRank![0] = 1;
++    flat.geometryActive![0] = 1;
++    flat.geometryKind![0] = 1;
++    flat.geometryRank![0] = 1;
++    flat.geometryIntrinsicDim![0] = 1;
++    flat.geometryCandidateCount![0] = 1;
++    expect(() => validateDrowseStructuredProgram(flat, 2, 2)).not.toThrow();
++
++    const sphere = structuredGeometryProgram();
++    sphere.whitenerRank![0] = 1;
++    sphere.geometryActive![0] = 1;
++    sphere.geometryKind![0] = 2;
++    sphere.geometryRank![0] = 3;
++    sphere.geometryIntrinsicDim![0] = 2;
++    sphere.geometryCandidateCount![0] = 3;
++    sphere.geometryCurveNodeCount![0] = 2;
++    sphere.geometryDomainKind![0] = 2;
++    expect(() => validateDrowseStructuredProgram(sphere, 2, 2)).not.toThrow();
++  });
++
++  test("requires a positive-definite whitener only on active geometry layers", () => {
++    const missing = structuredGeometryProgram();
++    missing.whitenerRidge!.fill(0);
++    missing.geometryActive![DROWSE_STRUCTURED_MAX_GEOMETRY_PROBES] = 1;
++    missing.geometryKind![DROWSE_STRUCTURED_MAX_GEOMETRY_PROBES] = 1;
++    missing.geometryRank![DROWSE_STRUCTURED_MAX_GEOMETRY_PROBES] = 1;
++    missing.geometryIntrinsicDim![DROWSE_STRUCTURED_MAX_GEOMETRY_PROBES] = 1;
++    missing.geometryCandidateCount![DROWSE_STRUCTURED_MAX_GEOMETRY_PROBES] = 1;
++    missing.whitenerRank![1] = 1;
++    expect(() => validateDrowseStructuredProgram(missing, 2, 2)).toThrow(
++      /active geometry layer 1 requires a positive-definite whitener/,
++    );
++
++    missing.whitenerRidge![1] = Number.NaN;
++    expect(() => validateDrowseStructuredProgram(missing, 2, 2)).toThrow(
++      /whitenerRidge values must be finite/,
++    );
++
++    missing.whitenerRidge![1] = 1;
++    expect(() => validateDrowseStructuredProgram(missing, 2, 2)).not.toThrow();
++  });
++
++  test("rejects missing domain buffers and invalid geometry kinds", () => {
++    const missing = structuredGeometryProgram();
++    missing.curveDomainKind = undefined;
++    expect(() => validateDrowseStructuredProgram(missing, 2, 2)).toThrow(
++      /missing curveDomainKind/,
++    );
++
++    const invalid = structuredGeometryProgram();
++    invalid.whitenerRank![0] = 1;
++    invalid.geometryActive![0] = 1;
++    invalid.geometryKind![0] = 3;
++    invalid.geometryRank![0] = 1;
++    invalid.geometryIntrinsicDim![0] = 1;
++    invalid.geometryCandidateCount![0] = 1;
++    expect(() => validateDrowseStructuredProgram(invalid, 2, 2)).toThrow(
++      /geometry slot 0 exceeds the supported shape/,
++    );
++  });
++});
++
++describe("Drowse curved program packing", () => {
++  test("preserves the fixed GPU ABI layout and updates only active signals", () => {
++    const program = structuredProgram();
++    program.curveActive[0] = 1;
++    program.curveIntrinsicDim[0] = 2;
++    program.curveNodeParameters[0] = 3;
++    program.curveRbfWeights[0] = 4;
++    program.curvePolynomial[0] = 5;
++    program.curveCoordinateOffset[0] = 6;
++    program.curveCoordinateScale[0] = 7;
++    program.curveOrigin[0] = 8;
++    program.curveTarget[0] = 9;
++    program.curveAlong[0] = 10;
++    program.curveOnto[0] = 11;
++    program.curveBounds[0] = 12;
++    program.curveAxisPeriodic[0] = 1;
++    program.curveAxisPeriod[0] = 14;
++    program.curveSigmaPresent[0] = 1;
++    program.curveSigmaRbfWeights[0] = 16;
++    program.curveSigmaPolynomial[0] = 17;
++    program.curveDamping[0] = 18;
++
++    const packed = packDrowseCurveParameters(program);
++    expect(packed.length).toBe(
++      program.layerCount *
++        DROWSE_STRUCTURED_MAX_CURVES *
++        DROWSE_STRUCTURED_CURVE_PARAMETER_STRIDE,
++    );
++    for (const [offset, value] of [
++      [0, 1],
++      [1, 2],
++      [2, 3],
++      [258, 4],
++      [514, 5],
++      [586, 6],
++      [594, 7],
++      [602, 8],
++      [606, 9],
++      [610, 10],
++      [611, 11],
++      [612, 12],
++      [620, 1],
++      [624, 14],
++      [628, 1],
++      [629, 16],
++      [661, 17],
++      [670, 18],
++    ]) {
++      expect(packed[offset]).toBe(value);
++    }
++    const before = packed.slice();
++    const active = new Uint32Array(program.curveActive.length);
++    active[1] = 1;
++    updatePackedDrowseCurveActive(packed, active);
++    expect(packed[0]).toBe(0);
++    expect(packed[DROWSE_STRUCTURED_CURVE_PARAMETER_STRIDE]).toBe(1);
++    expect(packed.slice(1, DROWSE_STRUCTURED_CURVE_PARAMETER_STRIDE)).toEqual(
++      before.slice(1, DROWSE_STRUCTURED_CURVE_PARAMETER_STRIDE),
++    );
++  });
++});
++
++describe("Drowse geometry program packing", () => {
++  test("packs one immutable header and payload within the eight-binding budget", () => {
++    const program = structuredGeometryProgram();
++    const headerFields = [
++      program.geometryActive!,
++      program.geometryKind!,
++      program.geometryRank!,
++      program.geometryIntrinsicDim!,
++      program.geometryCandidateCount!,
++      program.geometryCurveNodeCount!,
++      program.geometryDomainKind!,
++    ];
++    headerFields.forEach((field, index) => {
++      field[0] = index + 1;
++    });
++    const header = packDrowseGeometryHeader(program);
++    expect(Array.from(header.slice(0, 7))).toEqual([1, 2, 3, 4, 5, 6, 7]);
++    expect(header.length).toBe(
++      program.layerCount *
++        DROWSE_STRUCTURED_MAX_GEOMETRY_PROBES *
++        DROWSE_STRUCTURED_GEOMETRY_HEADER_STRIDE,
++    );
++
++    const payloadFields = [
++      program.geometryMean!,
++      program.geometryInverseMean!,
++      program.geometryBasis!,
++      program.geometryGramInverse!,
++      program.geometryCholesky!,
++      program.geometryNodeWhite!,
++      program.geometryCoordMap!,
++      program.geometryCoordBias!,
++      program.geometryCurveParameters!,
++      program.geometryCurveNodeCoords!,
++      program.geometryCurveNodeValues!,
++    ];
++    payloadFields.forEach((field, index) => field.fill(index + 1));
++    const payload = packDrowseGeometryPayload(program);
++    let offset = 0;
++    payloadFields.forEach((field, index) => {
++      expect(payload[offset]).toBe(index + 1);
++      expect(payload[offset + field.length - 1]).toBe(index + 1);
++      offset += field.length;
++    });
++    expect(offset).toBe(payload.length);
++    expect(payload.length).toBe(
++      drowseGeometryPayloadElements(program.layerCount, program.hiddenSize),
++    );
++    expect(DROWSE_STRUCTURED_GEOMETRY_KERNEL_STORAGE_BINDINGS).toBe(8);
++    expect(
++      DROWSE_STRUCTURED_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
++    ).toBe(8);
++  });
++});
++
++describe("Drowse residual capture positions", () => {
++  test("accepts ordered unique positions inside the prompt", () => {
++    expect(() => validateDrowseCapturePositions([0, 3, 4], 5)).not.toThrow();
++  });
++
++  test.each([
++    [[], 5],
++    [[0], 0],
++    [[-1], 5],
++    [[1, 1], 5],
++    [[2, 1], 5],
++    [[5], 5],
++    [[1.5], 5],
++  ])("rejects invalid positions %p for %p tokens", (positions, tokenCount) => {
++    expect(() =>
++      validateDrowseCapturePositions(
++        positions as number[],
++        tokenCount as number,
++      ),
++    ).toThrow();
++  });
++});
++
++describe("Drowse capture row validation", () => {
++  test("accepts a conversation ending in an assistant response", () => {
++    expect(() =>
++      validateDrowseCaptureRows(
++        [
++          {
++            system: "brief",
++            messages: [
++              { role: "user", content: "prompt" },
++              { role: "system", content: "keep this position" },
++              { role: "assistant", content: "response" },
++            ],
++          },
++        ],
++        [1, 3, 8],
++      ),
++    ).not.toThrow();
++  });
++
++  test("rejects a named system capture turn", () => {
++    expect(() =>
++      validateDrowseCaptureRows(
++        [
++          {
++            system: "brief",
++            messages: [
++              { role: "system", content: "later", roleName: "named" },
++              { role: "assistant", content: "response" },
++            ],
++          },
++        ],
++        [],
++      ),
++    ).toThrow(/cannot name a role/);
++  });
++
++  test("rejects unfinished rows and unsorted special-token IDs", () => {
++    expect(() =>
++      validateDrowseCaptureRows(
++        [{ system: "", messages: [{ role: "user", content: "prompt" }] }],
++        [],
++      ),
++    ).toThrow(/end with an assistant/);
++    expect(() =>
++      validateDrowseCaptureRows(
++        [
++          {
++            system: "",
++            messages: [{ role: "assistant", content: "response" }],
++          },
++        ],
++        [3, 3],
++      ),
++    ).toThrow(/sorted unique/);
++  });
++});
++
++describe("drowse replay meta (HOOK_ABI.md §7)", () => {
++  const model = {
++    layerCount: 4,
++    dFF: 8,
++    nHeads: 2,
++    contextTokens: 64,
++    rowCount: 6,
++    tokenCount: 12,
++  };
++  const m = DROWSE_REPLAY_META;
++  const meta = (flags: number) => {
++    const out = new Int32Array(m.length).fill(-1);
++    out[m.spanCount] = 0;
++    out[m.traceCount] = 0;
++    out[m.patternLayerCount] = 0;
++    out[m.flags] = flags;
++    return out;
++  };
++
++  test("is laid out as drowse.ai's replayMetaLayout (134 values under standard-v4)", () => {
++    expect(m.length).toBe(134);
++    expect([
++      m.populationRow,
++      m.traceCount,
++      m.traces,
++      m.patternLayerCount,
++      m.patternLayers,
++      m.flags,
++    ]).toEqual([18, 19, 20, 116, 117, 133]);
++  });
++
++  test("accepts anatomy, activity and patterns within the model", () => {
++    const value = meta(7);
++    value[m.anatomyPosition] = 11;
++    value[m.spanCount] = 2;
++    value.set([0, 1, -1, 1, 1, 5, 5, 0], m.spans);
++    value[m.populationRow] = 2;
++    value[m.traceCount] = 2;
++    value.set([1, 0, 7, 3, 1, 1], m.traces);
++    value[m.patternLayerCount] = 2;
++    value.set([1, 3], m.patternLayers);
++    expect(validateDrowseReplayMeta(value, model)).toBe(7);
++    expect(validateDrowseReplayMeta(meta(0), model)).toBe(0);
++  });
++
++  test("fails closed on what the kernels would index by", () => {
++    const anatomy = meta(1);
++    anatomy[m.anatomyPosition] = 12; // past the fed positions
++    expect(() => validateDrowseReplayMeta(anatomy, model)).toThrow(
++      /anatomy position/,
++    );
++    const trace = meta(2);
++    trace[m.spanCount] = 1;
++    trace.set([0, 6, 3, 0], m.spans);
++    trace[m.traceCount] = 1;
++    trace.set([1, 0, 8], m.traces); // d_ff is 8
++    expect(() => validateDrowseReplayMeta(trace, model)).toThrow(/trace 0/);
++    const flag = meta(2);
++    flag[m.spanCount] = 1;
++    flag.set([0, 6, -1, 0], m.spans); // unproduced flag must be 1
++    expect(() => validateDrowseReplayMeta(flag, model)).toThrow(/unproduced/);
++    const patterns = meta(4);
++    patterns[m.patternLayerCount] = 1;
++    patterns[m.patternLayers] = 2;
++    expect(() => validateDrowseReplayMeta(patterns, model)).toThrow(
++      /anatomy position/,
++    );
++    const unsorted = meta(5);
++    unsorted[m.anatomyPosition] = 3;
++    unsorted[m.patternLayerCount] = 2;
++    unsorted.set([3, 1], m.patternLayers);
++    expect(() => validateDrowseReplayMeta(unsorted, model)).toThrow(/ascend/);
++    expect(() => validateDrowseReplayMeta(new Int32Array(125), model)).toThrow(
++      /Int32Array/,
++    );
++  });
++});
 diff --git a/tests/drowse_pipeline.test.ts b/tests/drowse_pipeline.test.ts
 new file mode 100644
-index 0000000..bf2b844
+index 0000000..6f36833
 --- /dev/null
 +++ b/tests/drowse_pipeline.test.ts
-@@ -0,0 +1,1116 @@
+@@ -0,0 +1,1156 @@
 +import { jest, test, expect } from "@jest/globals";
 +
 +import {
@@ -10207,6 +11213,46 @@ index 0000000..bf2b844
 +      10, 11, 12, 13, 30, 31, 32, 33, 20, 21, 22, 23, 40, 41, 42, 43,
 +    ]),
 +  });
++});
++
++test("residual capture ends a chunk where its positions would outgrow the device binding", async () => {
++  const result = pipeline();
++  result["drowseCapturePrefill"] = jest.fn();
++  result["drowseCaptureDecoding"] = jest.fn();
++  result["prefillChunkSize"] = 4;
++  result["contextWindowSize"] = 8;
++  result["slidingWindowSize"] = -1;
++  // Two positions of [2 layers, 4 hidden] float32 fit a 64-byte binding; a third does not.
++  result["drowseJlensBufferLimits"] = {
++    maxBufferSize: 1 << 20,
++    maxStorageBufferBindingSize: 2 * 2 * 4 * 4,
++  };
++  result["resetDrowseCaptureState"] = jest.fn();
++  result["embedAndForward"] = jest.fn(async () => tensor());
++  result["captureDrowseTokenChunk"] = jest.fn(
++    async (_chunk: number[], local: number[]) =>
++      Float32Array.from({ length: 2 * local.length * 4 }, () => 1),
++  );
++
++  const capture = await result.captureDrowseResiduals(
++    [100, 101, 102, 103, 104, 105],
++    [0, 1, 2, 3, 4],
++  );
++
++  const calls = (result["captureDrowseTokenChunk"] as jest.Mock).mock.calls;
++  expect(calls).toEqual([
++    [
++      [100, 101],
++      [0, 1],
++    ],
++    [
++      [102, 103],
++      [0, 1],
++    ],
++    [[104, 105], [0]],
++  ]);
++  expect(result["embedAndForward"]).not.toHaveBeenCalled();
++  expect(capture.positionCount).toBe(5);
 +});
 +
 +test("residual capture resets KV state after a failed chunk", async () => {
@@ -11477,956 +12523,6 @@ index 0000000..2ca10a4
 +  expect(result.drowsePositionCurve).toBeUndefined();
 +  expect(result.drowsePositionActive).toBe(true);
 +});
-diff --git a/tests/drowse.test.ts b/tests/drowse.test.ts
-new file mode 100644
-index 0000000..dea121b
---- /dev/null
-+++ b/tests/drowse.test.ts
-@@ -0,0 +1,944 @@
-+import { describe, expect, test } from "@jest/globals";
-+import {
-+  DROWSE_REPLAY_META,
-+  validateDrowseReplayMeta,
-+  DROWSE_HOOK_ABI,
-+  DROWSE_EXACT_READOUT_ABI,
-+  DROWSE_EXACT_READOUT_ABI_VERSION,
-+  DROWSE_EXACT_READOUT_MAX_SAE_FEATURES_PER_CHUNK,
-+  DROWSE_READOUT_TOP_K,
-+  DROWSE_STRUCTURED_HOOK_FORMAT,
-+  DROWSE_STRUCTURED_MAX_AFFINE_GROUPS,
-+  DROWSE_STRUCTURED_MAX_CURVE_NODES,
-+  DROWSE_STRUCTURED_MAX_CURVES,
-+  DROWSE_STRUCTURED_MAX_EMBED_DIM,
-+  DROWSE_STRUCTURED_MAX_INTRINSIC_DIM,
-+  DROWSE_STRUCTURED_MAX_PROBES,
-+  DROWSE_STRUCTURED_MAX_RANK,
-+  DROWSE_STRUCTURED_CURVE_PARAMETER_STRIDE,
-+  DROWSE_STRUCTURED_PROFILE_MAGIC,
-+  DROWSE_STRUCTURED_MIN_COMPUTE_WORKGROUP_STORAGE_SIZE,
-+  DROWSE_STRUCTURED_MAX_GEOMETRY_PROBES,
-+  DROWSE_STRUCTURED_MAX_WHITENER_RANK,
-+  DROWSE_STRUCTURED_MAX_GEOMETRY_CANDIDATES,
-+  DROWSE_STRUCTURED_GEOMETRY_OUTPUT_STRIDE,
-+  DROWSE_STRUCTURED_GEOMETRY_FOOT_RESTARTS,
-+  DROWSE_STRUCTURED_GEOMETRY_FOOT_ITERATIONS,
-+  DROWSE_STRUCTURED_GEOMETRY_WARM_RESTARTS,
-+  DROWSE_STRUCTURED_GEOMETRY_WARM_ITERATIONS,
-+  DROWSE_STRUCTURED_GEOMETRY_HEADER_STRIDE,
-+  DROWSE_STRUCTURED_GEOMETRY_KERNEL_STORAGE_BINDINGS,
-+  DROWSE_STRUCTURED_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
-+  DrowseStructuredProgram,
-+  packDrowseCurveParameters,
-+  packDrowseGeometryHeader,
-+  packDrowseGeometryPayload,
-+  drowseGeometryPayloadElements,
-+  updatePackedDrowseCurveActive,
-+  validateDrowseCapturePositions,
-+  validateDrowseCaptureRows,
-+  validateDrowseJlensDictionary,
-+  validateDrowseSaeDictionary,
-+  validateDrowseStructuredProgram,
-+  decodeDrowseStructuredHookProfile,
-+  drowseProgramHasUnits,
-+  drowseUnitSectionLengths,
-+  validateDrowseUnitSection,
-+  DROWSE_DESCRIPTOR_CONTEXT_TOKENS,
-+  DROWSE_DESCRIPTOR_HEAD_DIM,
-+  DROWSE_DESCRIPTOR_PREFILL_CHUNK_SIZE,
-+  DROWSE_DESCRIPTOR_UNIT_SITES,
-+  DROWSE_PACKED_READ_FUNCTIONS,
-+  DROWSE_READOUT_FUNCTIONS,
-+  DROWSE_UNIT_READ_FUNCTIONS,
-+} from "../src/drowse";
-+
-+describe("Drowse structured hook profile", () => {
-+  // Schema 4: v3's fields with ABI 5 / format 4 / readout 2, then 36 block and unit fields
-+  // (attested by the caller; the bridge reads UNIT_SITES and HEAD_DIM).
-+  const tail = new Array(36).fill(0);
-+  tail[0] = 1; // UNIT_SITES
-+  tail[4] = 64; // HEAD_DIM
-+  const descriptor = Int32Array.from([
-+    DROWSE_STRUCTURED_PROFILE_MAGIC,
-+    4,
-+    4,
-+    5,
-+    4,
-+    12,
-+    768,
-+    DROWSE_STRUCTURED_MAX_AFFINE_GROUPS,
-+    DROWSE_STRUCTURED_MAX_RANK,
-+    DROWSE_STRUCTURED_MAX_PROBES,
-+    DROWSE_STRUCTURED_MAX_CURVES,
-+    DROWSE_STRUCTURED_MAX_CURVE_NODES,
-+    DROWSE_STRUCTURED_MAX_INTRINSIC_DIM,
-+    DROWSE_STRUCTURED_MAX_EMBED_DIM,
-+    DROWSE_STRUCTURED_CURVE_PARAMETER_STRIDE,
-+    DROWSE_STRUCTURED_MIN_COMPUTE_WORKGROUP_STORAGE_SIZE,
-+    DROWSE_STRUCTURED_MAX_GEOMETRY_PROBES,
-+    DROWSE_STRUCTURED_MAX_WHITENER_RANK,
-+    DROWSE_STRUCTURED_MAX_GEOMETRY_CANDIDATES,
-+    DROWSE_STRUCTURED_GEOMETRY_OUTPUT_STRIDE,
-+    DROWSE_STRUCTURED_GEOMETRY_FOOT_RESTARTS,
-+    DROWSE_STRUCTURED_GEOMETRY_FOOT_ITERATIONS,
-+    DROWSE_STRUCTURED_GEOMETRY_WARM_RESTARTS,
-+    DROWSE_STRUCTURED_GEOMETRY_WARM_ITERATIONS,
-+    DROWSE_STRUCTURED_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
-+    DROWSE_STRUCTURED_GEOMETRY_KERNEL_STORAGE_BINDINGS,
-+    DROWSE_STRUCTURED_GEOMETRY_HEADER_STRIDE,
-+    drowseGeometryPayloadElements(12, 768),
-+    DROWSE_EXACT_READOUT_ABI_VERSION,
-+    DROWSE_READOUT_TOP_K,
-+    DROWSE_EXACT_READOUT_MAX_SAE_FEATURES_PER_CHUNK,
-+    ...tail,
-+  ]);
-+
-+  test("decodes the immutable compiled descriptor", () => {
-+    expect(decodeDrowseStructuredHookProfile(descriptor, 12, 768)).toEqual({
-+      schemaVersion: 4,
-+      id: "standard-v4",
-+      unitSites: 1,
-+      descriptor: Array.from(descriptor),
-+      hookAbi: DROWSE_HOOK_ABI,
-+      format: DROWSE_STRUCTURED_HOOK_FORMAT,
-+      layerCount: 12,
-+      hiddenSize: 768,
-+      maxAffineGroups: DROWSE_STRUCTURED_MAX_AFFINE_GROUPS,
-+      maxRank: DROWSE_STRUCTURED_MAX_RANK,
-+      maxProbes: DROWSE_STRUCTURED_MAX_PROBES,
-+      maxCurves: DROWSE_STRUCTURED_MAX_CURVES,
-+      maxCurveNodes: DROWSE_STRUCTURED_MAX_CURVE_NODES,
-+      maxIntrinsicDim: DROWSE_STRUCTURED_MAX_INTRINSIC_DIM,
-+      maxEmbedDim: DROWSE_STRUCTURED_MAX_EMBED_DIM,
-+      curveParameterStride: DROWSE_STRUCTURED_CURVE_PARAMETER_STRIDE,
-+      maxComputeWorkgroupStorageSize:
-+        DROWSE_STRUCTURED_MIN_COMPUTE_WORKGROUP_STORAGE_SIZE,
-+      maxGeometryProbes: DROWSE_STRUCTURED_MAX_GEOMETRY_PROBES,
-+      maxWhitenerRank: DROWSE_STRUCTURED_MAX_WHITENER_RANK,
-+      maxGeometryCandidates: DROWSE_STRUCTURED_MAX_GEOMETRY_CANDIDATES,
-+      geometryOutputStride: DROWSE_STRUCTURED_GEOMETRY_OUTPUT_STRIDE,
-+      geometryFootRestarts: DROWSE_STRUCTURED_GEOMETRY_FOOT_RESTARTS,
-+      geometryFootIterations: DROWSE_STRUCTURED_GEOMETRY_FOOT_ITERATIONS,
-+      geometryWarmRestarts: DROWSE_STRUCTURED_GEOMETRY_WARM_RESTARTS,
-+      geometryWarmIterations: DROWSE_STRUCTURED_GEOMETRY_WARM_ITERATIONS,
-+      requiredMaxStorageBuffersPerShaderStage:
-+        DROWSE_STRUCTURED_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
-+      geometryKernelStorageBindings:
-+        DROWSE_STRUCTURED_GEOMETRY_KERNEL_STORAGE_BINDINGS,
-+      geometryHeaderStride: DROWSE_STRUCTURED_GEOMETRY_HEADER_STRIDE,
-+      geometryPayloadElements: drowseGeometryPayloadElements(12, 768),
-+      exactReadoutAbiVersion: DROWSE_EXACT_READOUT_ABI_VERSION,
-+      exactReadoutAbi: DROWSE_EXACT_READOUT_ABI,
-+      readoutTopK: DROWSE_READOUT_TOP_K,
-+      maxSaeFeaturesPerChunk: DROWSE_EXACT_READOUT_MAX_SAE_FEATURES_PER_CHUNK,
-+    });
-+  });
-+
-+  test("rejects capacity or model-shape drift", () => {
-+    const changed = descriptor.slice();
-+    changed[8] += 1;
-+    expect(() => decodeDrowseStructuredHookProfile(changed, 12, 768)).toThrow();
-+    const oldProfile = descriptor.slice();
-+    oldProfile[2] = 2;
-+    expect(() =>
-+      decodeDrowseStructuredHookProfile(oldProfile, 12, 768),
-+    ).toThrow();
-+    expect(() =>
-+      decodeDrowseStructuredHookProfile(descriptor, 11, 768),
-+    ).toThrow();
-+    expect(() =>
-+      decodeDrowseStructuredHookProfile(descriptor.slice(0, 31), 12, 768),
-+    ).toThrow(/wrong length/);
-+    const residual = descriptor.slice();
-+    residual[31] = 0;
-+    expect(decodeDrowseStructuredHookProfile(residual, 12, 768).id).toBe(
-+      "standard-v4-residual",
-+    );
-+    const noMode = descriptor.slice();
-+    noMode[31] = 2;
-+    expect(() => decodeDrowseStructuredHookProfile(noMode, 12, 768)).toThrow(
-+      /unit-site mode/,
-+    );
-+  });
-+});
-+
-+describe("Drowse unit section (drowse-structured-v4)", () => {
-+  const layers = 2;
-+  const headDim = 4;
-+  const lengths = drowseUnitSectionLengths(layers, headDim);
-+  const section = () => ({
-+    unitMeta: new Uint32Array(lengths.meta),
-+    unitCoeff: new Float32Array(lengths.coeff),
-+    unitActive: new Float32Array(lengths.active),
-+    tapGrams: new Float32Array(lengths.tapGrams),
-+  });
-+  const program = (unit: Partial<ReturnType<typeof section>>) =>
-+    unit as unknown as Parameters<typeof validateDrowseUnitSection>[0];
-+
-+  test("names the descriptor fields the bridge reads by C0's order", () => {
-+    expect([
-+      DROWSE_DESCRIPTOR_UNIT_SITES,
-+      DROWSE_DESCRIPTOR_HEAD_DIM,
-+      DROWSE_DESCRIPTOR_PREFILL_CHUNK_SIZE,
-+      DROWSE_DESCRIPTOR_CONTEXT_TOKENS,
-+    ]).toEqual([31, 35, 51, 66]);
-+  });
-+
-+  test("sizes the tables as HOOK_ABI.md lays them out", () => {
-+    expect(lengths).toEqual({
-+      meta: 4 * 3 + 800,
-+      coeff: 512 + 64 * 5,
-+      active: 4,
-+      tapGrams: 16 * 16,
-+    });
-+  });
-+
-+  test("accepts an empty and a populated section", () => {
-+    expect(() =>
-+      validateDrowseUnitSection(program({}), layers, headDim, 8, 2),
-+    ).not.toThrow();
-+    const unit = section();
-+    // one neuron ablation at layer 1 (index 7, group 2), one head tap at layer 0 (head 1, slot 3)
-+    unit.unitMeta[2] = 1; // neuron offsets [0, 0, 1]
-+    unit.unitMeta[3] = 7;
-+    unit.unitMeta[3 + 256] = 2;
-+    const tapHead = 3 * (layers + 1) + 2 * 256 + 2 * 64 + 2 * 64;
-+    unit.unitMeta[tapHead + 1] = 1;
-+    unit.unitMeta[tapHead + 2] = 1;
-+    unit.unitMeta[tapHead + 3] = 1;
-+    unit.unitMeta[tapHead + 3 + 16] = 3;
-+    expect(() =>
-+      validateDrowseUnitSection(program(unit), layers, headDim, 8, 2),
-+    ).not.toThrow();
-+    expect(drowseProgramHasUnits(program(unit))).toBe(true);
-+    expect(drowseProgramHasUnits(program({}))).toBe(false);
-+  });
-+
-+  test("fails closed on partial sections, lengths, offsets and indices", () => {
-+    const partial = section() as Partial<ReturnType<typeof section>>;
-+    delete partial.tapGrams;
-+    expect(() =>
-+      validateDrowseUnitSection(program(partial), layers, headDim, 8, 2),
-+    ).toThrow(/all four tables/);
-+    const short = section();
-+    short.unitCoeff = new Float32Array(lengths.coeff - 1);
-+    expect(() =>
-+      validateDrowseUnitSection(program(short), layers, headDim, 8, 2),
-+    ).toThrow();
-+    const decreasing = section();
-+    decreasing.unitMeta[1] = 2;
-+    decreasing.unitMeta[2] = 1;
-+    expect(() =>
-+      validateDrowseUnitSection(program(decreasing), layers, headDim, 8, 2),
-+    ).toThrow(/must not decrease/);
-+    const neuron = section();
-+    neuron.unitMeta[2] = 1;
-+    neuron.unitMeta[3] = 8; // d_ff is 8
-+    expect(() =>
-+      validateDrowseUnitSection(program(neuron), layers, headDim, 8, 2),
-+    ).toThrow(/entry 0 is out of range/);
-+    const group = section();
-+    group.unitMeta[2] = 1;
-+    group.unitMeta[3 + 256] = 4; // four groups
-+    expect(() =>
-+      validateDrowseUnitSection(program(group), layers, headDim, 8, 2),
-+    ).toThrow();
-+    const nonFinite = section();
-+    nonFinite.unitCoeff[0] = Number.NaN;
-+    expect(() =>
-+      validateDrowseUnitSection(program(nonFinite), layers, headDim, 8, 2),
-+    ).toThrow(/finite/);
-+  });
-+});
-+
-+describe("Drowse static reads (exact-readout-v2)", () => {
-+  test("names every library's readout functions and the units libraries' reads apart", () => {
-+    const readout = new Set<string>(DROWSE_READOUT_FUNCTIONS);
-+    const units = new Set<string>(DROWSE_UNIT_READ_FUNCTIONS);
-+    expect(readout.size).toBe(12);
-+    expect(units.size).toBe(9);
-+    for (const name of units) expect(readout.has(name)).toBe(false);
-+    for (const name of DROWSE_PACKED_READ_FUNCTIONS) {
-+      expect(readout.has(name) || units.has(name)).toBe(true);
-+    }
-+    for (const weightFree of [
-+      "drowse_topk",
-+      "drowse_log_sum_exp",
-+      "drowse_batched_matmul",
-+      "drowse_chan_merge",
-+      "drowse_head_write_norms",
-+      "drowse_gather_head_grams",
-+    ]) {
-+      expect(DROWSE_PACKED_READ_FUNCTIONS.has(weightFree)).toBe(false);
-+    }
-+  });
-+});
-+
-+describe("Drowse precomputed SAE dictionaries", () => {
-+  const dictionary = {
-+    hookAbi: DROWSE_HOOK_ABI,
-+    bindingId: "a".repeat(64),
-+    hiddenSize: 2,
-+    runtimeLayerIndex: 1,
-+    featureCount: 3,
-+    activation: "relu",
-+    encoder: Float32Array.from([1, 2, 3, 4, 5, 6]),
-+    encoderBias: Float32Array.from([0.1, 0.2, 0.3]),
-+    encoderThreshold: new Float32Array(3),
-+    decoderBias: Float32Array.from([0.4, 0.5]),
-+  } as const;
-+
-+  test("validates the exact runtime shape and finite payload", () => {
-+    expect(() => validateDrowseSaeDictionary(dictionary, 2, 2)).not.toThrow();
-+    expect(() =>
-+      validateDrowseSaeDictionary(
-+        { ...dictionary, runtimeLayerIndex: 2 },
-+        2,
-+        2,
-+      ),
-+    ).toThrow(/layer is invalid/);
-+    expect(() =>
-+      validateDrowseSaeDictionary({ ...dictionary, hiddenSize: 3 }, 2, 2),
-+    ).toThrow(/targets 3 hidden dimensions/);
-+    expect(() =>
-+      validateDrowseSaeDictionary(
-+        {
-+          ...dictionary,
-+          encoderBias: Float32Array.from([0.1, Number.NaN, 0.3]),
-+        },
-+        2,
-+        2,
-+      ),
-+    ).toThrow(/encoder bias values must be finite/);
-+    expect(() =>
-+      validateDrowseSaeDictionary(
-+        { ...dictionary, encoder: new Float32Array(5) },
-+        2,
-+        2,
-+      ),
-+    ).toThrow(/encoder must contain exactly 6 values/);
-+  });
-+});
-+
-+describe("Drowse resident J-lens dictionaries", () => {
-+  const dictionary = {
-+    hookAbi: DROWSE_HOOK_ABI,
-+    bindingId: "b".repeat(64),
-+    hiddenSize: 2,
-+    layerIndices: Int32Array.from([0, 1]),
-+    matrices: [new Float32Array(4), new Float32Array(4)],
-+  } as const;
-+
-+  test("validates exact bindings, layers, and per-layer matrix shapes", () => {
-+    expect(() => validateDrowseJlensDictionary(dictionary, 2, 2)).not.toThrow();
-+    expect(() =>
-+      validateDrowseJlensDictionary(
-+        { ...dictionary, bindingId: "floating" },
-+        2,
-+        2,
-+      ),
-+    ).toThrow(/identity is invalid/);
-+    expect(() =>
-+      validateDrowseJlensDictionary(
-+        { ...dictionary, layerIndices: Int32Array.from([1, 0]) },
-+        2,
-+        2,
-+      ),
-+    ).toThrow(/unique, ordered, and in range/);
-+    expect(() =>
-+      validateDrowseJlensDictionary(
-+        { ...dictionary, matrices: [new Float32Array(4), new Float32Array(3)] },
-+        2,
-+        2,
-+      ),
-+    ).toThrow(/wrong shape/);
-+  });
-+});
-+
-+/** A drowse-structured-v4 program; every program carries the geometry buffers. */
-+function structuredProgram(): DrowseStructuredProgram {
-+  return structuredGeometryProgram();
-+}
-+
-+function structuredBase(): DrowseStructuredProgram {
-+  const layerCount = 2;
-+  const hiddenSize = 2;
-+  const curveSlots = layerCount * DROWSE_STRUCTURED_MAX_CURVES;
-+  return {
-+    hookAbi: DROWSE_HOOK_ABI,
-+    format: DROWSE_STRUCTURED_HOOK_FORMAT,
-+    hiddenSize,
-+    layerCount,
-+    affineActive: new Uint32Array(
-+      layerCount * DROWSE_STRUCTURED_MAX_AFFINE_GROUPS,
-+    ),
-+    affineBasis: new Float32Array(
-+      layerCount *
-+        DROWSE_STRUCTURED_MAX_AFFINE_GROUPS *
-+        DROWSE_STRUCTURED_MAX_RANK *
-+        hiddenSize,
-+    ),
-+    affineNeutral: new Float32Array(
-+      layerCount * DROWSE_STRUCTURED_MAX_AFFINE_GROUPS * hiddenSize,
-+    ),
-+    affineTarget: new Float32Array(
-+      layerCount *
-+        DROWSE_STRUCTURED_MAX_AFFINE_GROUPS *
-+        DROWSE_STRUCTURED_MAX_RANK,
-+    ),
-+    affineAlong: new Float32Array(
-+      layerCount * DROWSE_STRUCTURED_MAX_AFFINE_GROUPS,
-+    ),
-+    affineKappa: new Float32Array(
-+      layerCount *
-+        DROWSE_STRUCTURED_MAX_AFFINE_GROUPS *
-+        DROWSE_STRUCTURED_MAX_RANK,
-+    ),
-+    probeKind: new Uint32Array(layerCount * DROWSE_STRUCTURED_MAX_PROBES),
-+    probeDirection: new Float32Array(
-+      layerCount * DROWSE_STRUCTURED_MAX_PROBES * hiddenSize,
-+    ),
-+    probeBias: new Float32Array(layerCount * DROWSE_STRUCTURED_MAX_PROBES),
-+    probeThreshold: new Float32Array(layerCount * DROWSE_STRUCTURED_MAX_PROBES),
-+    curveActive: new Uint32Array(curveSlots),
-+    curveRank: new Uint32Array(curveSlots),
-+    curveIntrinsicDim: new Uint32Array(curveSlots),
-+    curveEmbedDim: new Uint32Array(curveSlots),
-+    curveNodeCount: new Uint32Array(curveSlots),
-+    curveBasis: new Float32Array(
-+      curveSlots * DROWSE_STRUCTURED_MAX_RANK * hiddenSize,
-+    ),
-+    curveNeutral: new Float32Array(curveSlots * hiddenSize),
-+    curveNodeParameters: new Float32Array(
-+      curveSlots *
-+        DROWSE_STRUCTURED_MAX_CURVE_NODES *
-+        DROWSE_STRUCTURED_MAX_EMBED_DIM,
-+    ),
-+    curveRbfWeights: new Float32Array(
-+      curveSlots *
-+        DROWSE_STRUCTURED_MAX_CURVE_NODES *
-+        DROWSE_STRUCTURED_MAX_RANK,
-+    ),
-+    curvePolynomial: new Float32Array(
-+      curveSlots *
-+        (DROWSE_STRUCTURED_MAX_EMBED_DIM + 1) *
-+        DROWSE_STRUCTURED_MAX_RANK,
-+    ),
-+    curveCoordinateOffset: new Float32Array(
-+      curveSlots * DROWSE_STRUCTURED_MAX_EMBED_DIM,
-+    ),
-+    curveCoordinateScale: new Float32Array(
-+      curveSlots * DROWSE_STRUCTURED_MAX_EMBED_DIM,
-+    ),
-+    curveOrigin: new Float32Array(
-+      curveSlots * DROWSE_STRUCTURED_MAX_INTRINSIC_DIM,
-+    ),
-+    curveTarget: new Float32Array(
-+      curveSlots * DROWSE_STRUCTURED_MAX_INTRINSIC_DIM,
-+    ),
-+    curveAlong: new Float32Array(curveSlots),
-+    curveOnto: new Float32Array(curveSlots),
-+    curveBounds: new Float32Array(
-+      curveSlots * DROWSE_STRUCTURED_MAX_INTRINSIC_DIM * 2,
-+    ),
-+    curveAxisPeriodic: new Uint32Array(
-+      curveSlots * DROWSE_STRUCTURED_MAX_INTRINSIC_DIM,
-+    ),
-+    curveAxisPeriod: new Float32Array(
-+      curveSlots * DROWSE_STRUCTURED_MAX_INTRINSIC_DIM,
-+    ),
-+    curveSigmaPresent: new Uint32Array(curveSlots),
-+    curveSigmaRbfWeights: new Float32Array(
-+      curveSlots * DROWSE_STRUCTURED_MAX_CURVE_NODES,
-+    ),
-+    curveSigmaPolynomial: new Float32Array(
-+      curveSlots * (DROWSE_STRUCTURED_MAX_EMBED_DIM + 1),
-+    ),
-+    curveDamping: new Float32Array(curveSlots),
-+  };
-+}
-+
-+function structuredGeometryProgram(): DrowseStructuredProgram {
-+  const program = structuredBase();
-+  const l = program.layerCount;
-+  const d = program.hiddenSize;
-+  const g = DROWSE_STRUCTURED_MAX_GEOMETRY_PROBES;
-+  const r = DROWSE_STRUCTURED_MAX_RANK;
-+  const i = DROWSE_STRUCTURED_MAX_INTRINSIC_DIM;
-+  const n = DROWSE_STRUCTURED_MAX_CURVE_NODES;
-+  const slots = l * g;
-+  program.format = DROWSE_STRUCTURED_HOOK_FORMAT;
-+  program.curveDomainKind = new Uint32Array(l * DROWSE_STRUCTURED_MAX_CURVES);
-+  program.whitenerRank = new Uint32Array(l);
-+  program.whitenerRidge = new Float32Array(l).fill(1);
-+  program.whitenerBasis = new Float32Array(
-+    l * DROWSE_STRUCTURED_MAX_WHITENER_RANK * d,
-+  );
-+  program.whitenerCorrection = new Float32Array(
-+    l * DROWSE_STRUCTURED_MAX_WHITENER_RANK,
-+  );
-+  program.geometryActive = new Uint32Array(slots);
-+  program.geometryKind = new Uint32Array(slots);
-+  program.geometryRank = new Uint32Array(slots);
-+  program.geometryIntrinsicDim = new Uint32Array(slots);
-+  program.geometryCandidateCount = new Uint32Array(slots);
-+  program.geometryCurveNodeCount = new Uint32Array(slots);
-+  program.geometryDomainKind = new Uint32Array(slots);
-+  program.geometryMean = new Float32Array(slots * d);
-+  program.geometryInverseMean = new Float32Array(slots * d);
-+  program.geometryBasis = new Float32Array(slots * r * d);
-+  program.geometryGramInverse = new Float32Array(slots * r * r);
-+  program.geometryCholesky = new Float32Array(slots * r * r);
-+  program.geometryNodeWhite = new Float32Array(
-+    slots * DROWSE_STRUCTURED_MAX_GEOMETRY_CANDIDATES * r,
-+  );
-+  program.geometryCoordMap = new Float32Array(slots * i * r);
-+  program.geometryCoordBias = new Float32Array(slots * i);
-+  program.geometryCurveParameters = new Float32Array(
-+    slots * DROWSE_STRUCTURED_CURVE_PARAMETER_STRIDE,
-+  );
-+  program.geometryCurveNodeCoords = new Float32Array(slots * n * i);
-+  program.geometryCurveNodeValues = new Float32Array(slots * n * r);
-+  program.geometryFeet = new Float32Array(slots * i);
-+  return program;
-+}
-+
-+describe("Drowse structured hidden capture", () => {
-+  test("hiddenCapture is a boolean flag", () => {
-+    const flagged = structuredProgram();
-+    flagged.hiddenCapture = true;
-+    expect(() => validateDrowseStructuredProgram(flagged, 2, 2)).not.toThrow();
-+    const malformed = structuredProgram() as any;
-+    malformed.hiddenCapture = 1;
-+    expect(() => validateDrowseStructuredProgram(malformed, 2, 2)).toThrow(
-+      /hiddenCapture must be a boolean/,
-+    );
-+  });
-+});
-+
-+describe("Drowse structured J-lens programs", () => {
-+  test("requires exact full-vocabulary readout buffers for probability probes", () => {
-+    const valid = structuredProgram();
-+    valid.probeKind[8] = 3;
-+    valid.jLensBindingId = "b".repeat(64);
-+    valid.jLensLayerIndices = new Int32Array([1]);
-+    valid.jLensTokenIds = new Int32Array(DROWSE_STRUCTURED_MAX_PROBES);
-+    expect(() => validateDrowseStructuredProgram(valid, 2, 2)).not.toThrow();
-+
-+    const missing = structuredProgram();
-+    missing.probeKind[0] = 3;
-+    expect(() => validateDrowseStructuredProgram(missing, 2, 2)).toThrow(
-+      /complete probability program/,
-+    );
-+
-+    const fullVocabularyReadout = structuredProgram();
-+    fullVocabularyReadout.jLensBindingId = "b".repeat(64);
-+    fullVocabularyReadout.jLensLayerIndices = new Int32Array([0, 1]);
-+    fullVocabularyReadout.jLensTokenIds = new Int32Array(
-+      DROWSE_STRUCTURED_MAX_PROBES,
-+    );
-+    expect(() =>
-+      validateDrowseStructuredProgram(fullVocabularyReadout, 2, 2),
-+    ).not.toThrow();
-+  });
-+
-+  test("rejects malformed exact readout bindings and negative token IDs", () => {
-+    const invalidBinding = structuredProgram();
-+    invalidBinding.probeKind[8] = 3;
-+    invalidBinding.jLensBindingId = "floating";
-+    invalidBinding.jLensLayerIndices = new Int32Array([1]);
-+    invalidBinding.jLensTokenIds = new Int32Array(DROWSE_STRUCTURED_MAX_PROBES);
-+    expect(() => validateDrowseStructuredProgram(invalidBinding, 2, 2)).toThrow(
-+      /binding is invalid/,
-+    );
-+
-+    const negative = structuredProgram();
-+    negative.probeKind[8] = 3;
-+    negative.jLensBindingId = "b".repeat(64);
-+    negative.jLensLayerIndices = new Int32Array([1]);
-+    negative.jLensTokenIds = new Int32Array(DROWSE_STRUCTURED_MAX_PROBES);
-+    negative.jLensTokenIds[0] = -1;
-+    expect(() => validateDrowseStructuredProgram(negative, 2, 2)).toThrow(
-+      /token IDs are invalid/,
-+    );
-+
-+    const wrongLayers = structuredProgram();
-+    wrongLayers.probeKind[8] = 3;
-+    wrongLayers.jLensBindingId = "b".repeat(64);
-+    wrongLayers.jLensLayerIndices = new Int32Array([0]);
-+    wrongLayers.jLensTokenIds = new Int32Array(DROWSE_STRUCTURED_MAX_PROBES);
-+    expect(() => validateDrowseStructuredProgram(wrongLayers, 2, 2)).toThrow(
-+      /exactly match the active probability layers/,
-+    );
-+
-+    const duplicateLayers = structuredProgram();
-+    duplicateLayers.probeKind[0] = 3;
-+    duplicateLayers.probeKind[8] = 3;
-+    duplicateLayers.jLensBindingId = "b".repeat(64);
-+    duplicateLayers.jLensLayerIndices = new Int32Array([0, 0]);
-+    duplicateLayers.jLensTokenIds = new Int32Array(
-+      DROWSE_STRUCTURED_MAX_PROBES,
-+    );
-+    expect(() =>
-+      validateDrowseStructuredProgram(duplicateLayers, 2, 2),
-+    ).toThrow(/unique, ordered, and in range/);
-+
-+    const outOfRangeLayer = structuredProgram();
-+    outOfRangeLayer.probeKind[8] = 3;
-+    outOfRangeLayer.jLensBindingId = "b".repeat(64);
-+    outOfRangeLayer.jLensLayerIndices = new Int32Array([2]);
-+    outOfRangeLayer.jLensTokenIds = new Int32Array(
-+      DROWSE_STRUCTURED_MAX_PROBES,
-+    );
-+    expect(() =>
-+      validateDrowseStructuredProgram(outOfRangeLayer, 2, 2),
-+    ).toThrow(/unique, ordered, and in range/);
-+  });
-+});
-+
-+describe("Drowse structured-v3 geometry programs", () => {
-+  test("accepts zeroed whiteners when no geometry slot is active", () => {
-+    const inactive = structuredGeometryProgram();
-+    inactive.whitenerRidge!.fill(0);
-+    expect(() => validateDrowseStructuredProgram(inactive, 2, 2)).not.toThrow();
-+  });
-+
-+  test("accepts exact flat and hyperspherical curved geometry descriptors", () => {
-+    const flat = structuredGeometryProgram();
-+    flat.whitenerRank![0] = 1;
-+    flat.geometryActive![0] = 1;
-+    flat.geometryKind![0] = 1;
-+    flat.geometryRank![0] = 1;
-+    flat.geometryIntrinsicDim![0] = 1;
-+    flat.geometryCandidateCount![0] = 1;
-+    expect(() => validateDrowseStructuredProgram(flat, 2, 2)).not.toThrow();
-+
-+    const sphere = structuredGeometryProgram();
-+    sphere.whitenerRank![0] = 1;
-+    sphere.geometryActive![0] = 1;
-+    sphere.geometryKind![0] = 2;
-+    sphere.geometryRank![0] = 3;
-+    sphere.geometryIntrinsicDim![0] = 2;
-+    sphere.geometryCandidateCount![0] = 3;
-+    sphere.geometryCurveNodeCount![0] = 2;
-+    sphere.geometryDomainKind![0] = 2;
-+    expect(() => validateDrowseStructuredProgram(sphere, 2, 2)).not.toThrow();
-+  });
-+
-+  test("requires a positive-definite whitener only on active geometry layers", () => {
-+    const missing = structuredGeometryProgram();
-+    missing.whitenerRidge!.fill(0);
-+    missing.geometryActive![DROWSE_STRUCTURED_MAX_GEOMETRY_PROBES] = 1;
-+    missing.geometryKind![DROWSE_STRUCTURED_MAX_GEOMETRY_PROBES] = 1;
-+    missing.geometryRank![DROWSE_STRUCTURED_MAX_GEOMETRY_PROBES] = 1;
-+    missing.geometryIntrinsicDim![DROWSE_STRUCTURED_MAX_GEOMETRY_PROBES] = 1;
-+    missing.geometryCandidateCount![DROWSE_STRUCTURED_MAX_GEOMETRY_PROBES] = 1;
-+    missing.whitenerRank![1] = 1;
-+    expect(() => validateDrowseStructuredProgram(missing, 2, 2)).toThrow(
-+      /active geometry layer 1 requires a positive-definite whitener/,
-+    );
-+
-+    missing.whitenerRidge![1] = Number.NaN;
-+    expect(() => validateDrowseStructuredProgram(missing, 2, 2)).toThrow(
-+      /whitenerRidge values must be finite/,
-+    );
-+
-+    missing.whitenerRidge![1] = 1;
-+    expect(() => validateDrowseStructuredProgram(missing, 2, 2)).not.toThrow();
-+  });
-+
-+  test("rejects missing domain buffers and invalid geometry kinds", () => {
-+    const missing = structuredGeometryProgram();
-+    missing.curveDomainKind = undefined;
-+    expect(() => validateDrowseStructuredProgram(missing, 2, 2)).toThrow(
-+      /missing curveDomainKind/,
-+    );
-+
-+    const invalid = structuredGeometryProgram();
-+    invalid.whitenerRank![0] = 1;
-+    invalid.geometryActive![0] = 1;
-+    invalid.geometryKind![0] = 3;
-+    invalid.geometryRank![0] = 1;
-+    invalid.geometryIntrinsicDim![0] = 1;
-+    invalid.geometryCandidateCount![0] = 1;
-+    expect(() => validateDrowseStructuredProgram(invalid, 2, 2)).toThrow(
-+      /geometry slot 0 exceeds the supported shape/,
-+    );
-+  });
-+});
-+
-+describe("Drowse curved program packing", () => {
-+  test("preserves the fixed GPU ABI layout and updates only active signals", () => {
-+    const program = structuredProgram();
-+    program.curveActive[0] = 1;
-+    program.curveIntrinsicDim[0] = 2;
-+    program.curveNodeParameters[0] = 3;
-+    program.curveRbfWeights[0] = 4;
-+    program.curvePolynomial[0] = 5;
-+    program.curveCoordinateOffset[0] = 6;
-+    program.curveCoordinateScale[0] = 7;
-+    program.curveOrigin[0] = 8;
-+    program.curveTarget[0] = 9;
-+    program.curveAlong[0] = 10;
-+    program.curveOnto[0] = 11;
-+    program.curveBounds[0] = 12;
-+    program.curveAxisPeriodic[0] = 1;
-+    program.curveAxisPeriod[0] = 14;
-+    program.curveSigmaPresent[0] = 1;
-+    program.curveSigmaRbfWeights[0] = 16;
-+    program.curveSigmaPolynomial[0] = 17;
-+    program.curveDamping[0] = 18;
-+
-+    const packed = packDrowseCurveParameters(program);
-+    expect(packed.length).toBe(
-+      program.layerCount *
-+        DROWSE_STRUCTURED_MAX_CURVES *
-+        DROWSE_STRUCTURED_CURVE_PARAMETER_STRIDE,
-+    );
-+    for (const [offset, value] of [
-+      [0, 1],
-+      [1, 2],
-+      [2, 3],
-+      [258, 4],
-+      [514, 5],
-+      [586, 6],
-+      [594, 7],
-+      [602, 8],
-+      [606, 9],
-+      [610, 10],
-+      [611, 11],
-+      [612, 12],
-+      [620, 1],
-+      [624, 14],
-+      [628, 1],
-+      [629, 16],
-+      [661, 17],
-+      [670, 18],
-+    ]) {
-+      expect(packed[offset]).toBe(value);
-+    }
-+    const before = packed.slice();
-+    const active = new Uint32Array(program.curveActive.length);
-+    active[1] = 1;
-+    updatePackedDrowseCurveActive(packed, active);
-+    expect(packed[0]).toBe(0);
-+    expect(packed[DROWSE_STRUCTURED_CURVE_PARAMETER_STRIDE]).toBe(1);
-+    expect(packed.slice(1, DROWSE_STRUCTURED_CURVE_PARAMETER_STRIDE)).toEqual(
-+      before.slice(1, DROWSE_STRUCTURED_CURVE_PARAMETER_STRIDE),
-+    );
-+  });
-+});
-+
-+describe("Drowse geometry program packing", () => {
-+  test("packs one immutable header and payload within the eight-binding budget", () => {
-+    const program = structuredGeometryProgram();
-+    const headerFields = [
-+      program.geometryActive!,
-+      program.geometryKind!,
-+      program.geometryRank!,
-+      program.geometryIntrinsicDim!,
-+      program.geometryCandidateCount!,
-+      program.geometryCurveNodeCount!,
-+      program.geometryDomainKind!,
-+    ];
-+    headerFields.forEach((field, index) => {
-+      field[0] = index + 1;
-+    });
-+    const header = packDrowseGeometryHeader(program);
-+    expect(Array.from(header.slice(0, 7))).toEqual([1, 2, 3, 4, 5, 6, 7]);
-+    expect(header.length).toBe(
-+      program.layerCount *
-+        DROWSE_STRUCTURED_MAX_GEOMETRY_PROBES *
-+        DROWSE_STRUCTURED_GEOMETRY_HEADER_STRIDE,
-+    );
-+
-+    const payloadFields = [
-+      program.geometryMean!,
-+      program.geometryInverseMean!,
-+      program.geometryBasis!,
-+      program.geometryGramInverse!,
-+      program.geometryCholesky!,
-+      program.geometryNodeWhite!,
-+      program.geometryCoordMap!,
-+      program.geometryCoordBias!,
-+      program.geometryCurveParameters!,
-+      program.geometryCurveNodeCoords!,
-+      program.geometryCurveNodeValues!,
-+    ];
-+    payloadFields.forEach((field, index) => field.fill(index + 1));
-+    const payload = packDrowseGeometryPayload(program);
-+    let offset = 0;
-+    payloadFields.forEach((field, index) => {
-+      expect(payload[offset]).toBe(index + 1);
-+      expect(payload[offset + field.length - 1]).toBe(index + 1);
-+      offset += field.length;
-+    });
-+    expect(offset).toBe(payload.length);
-+    expect(payload.length).toBe(
-+      drowseGeometryPayloadElements(program.layerCount, program.hiddenSize),
-+    );
-+    expect(DROWSE_STRUCTURED_GEOMETRY_KERNEL_STORAGE_BINDINGS).toBe(8);
-+    expect(
-+      DROWSE_STRUCTURED_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
-+    ).toBe(8);
-+  });
-+});
-+
-+describe("Drowse residual capture positions", () => {
-+  test("accepts ordered unique positions inside the prompt", () => {
-+    expect(() => validateDrowseCapturePositions([0, 3, 4], 5)).not.toThrow();
-+  });
-+
-+  test.each([
-+    [[], 5],
-+    [[0], 0],
-+    [[-1], 5],
-+    [[1, 1], 5],
-+    [[2, 1], 5],
-+    [[5], 5],
-+    [[1.5], 5],
-+  ])("rejects invalid positions %p for %p tokens", (positions, tokenCount) => {
-+    expect(() =>
-+      validateDrowseCapturePositions(
-+        positions as number[],
-+        tokenCount as number,
-+      ),
-+    ).toThrow();
-+  });
-+});
-+
-+describe("Drowse capture row validation", () => {
-+  test("accepts a conversation ending in an assistant response", () => {
-+    expect(() =>
-+      validateDrowseCaptureRows(
-+        [
-+          {
-+            system: "brief",
-+            messages: [
-+              { role: "user", content: "prompt" },
-+              { role: "system", content: "keep this position" },
-+              { role: "assistant", content: "response" },
-+            ],
-+          },
-+        ],
-+        [1, 3, 8],
-+      ),
-+    ).not.toThrow();
-+  });
-+
-+  test("rejects a named system capture turn", () => {
-+    expect(() =>
-+      validateDrowseCaptureRows(
-+        [
-+          {
-+            system: "brief",
-+            messages: [
-+              { role: "system", content: "later", roleName: "named" },
-+              { role: "assistant", content: "response" },
-+            ],
-+          },
-+        ],
-+        [],
-+      ),
-+    ).toThrow(/cannot name a role/);
-+  });
-+
-+  test("rejects unfinished rows and unsorted special-token IDs", () => {
-+    expect(() =>
-+      validateDrowseCaptureRows(
-+        [{ system: "", messages: [{ role: "user", content: "prompt" }] }],
-+        [],
-+      ),
-+    ).toThrow(/end with an assistant/);
-+    expect(() =>
-+      validateDrowseCaptureRows(
-+        [
-+          {
-+            system: "",
-+            messages: [{ role: "assistant", content: "response" }],
-+          },
-+        ],
-+        [3, 3],
-+      ),
-+    ).toThrow(/sorted unique/);
-+  });
-+});
-+
-+describe("drowse replay meta (HOOK_ABI.md §7)", () => {
-+  const model = {
-+    layerCount: 4,
-+    dFF: 8,
-+    nHeads: 2,
-+    contextTokens: 64,
-+    rowCount: 6,
-+    tokenCount: 12,
-+  };
-+  const m = DROWSE_REPLAY_META;
-+  const meta = (flags: number) => {
-+    const out = new Int32Array(m.length).fill(-1);
-+    out[m.spanCount] = 0;
-+    out[m.traceCount] = 0;
-+    out[m.patternLayerCount] = 0;
-+    out[m.flags] = flags;
-+    return out;
-+  };
-+
-+  test("is laid out as drowse.ai's replayMetaLayout (134 values under standard-v4)", () => {
-+    expect(m.length).toBe(134);
-+    expect([
-+      m.populationRow,
-+      m.traceCount,
-+      m.traces,
-+      m.patternLayerCount,
-+      m.patternLayers,
-+      m.flags,
-+    ]).toEqual([18, 19, 20, 116, 117, 133]);
-+  });
-+
-+  test("accepts anatomy, activity and patterns within the model", () => {
-+    const value = meta(7);
-+    value[m.anatomyPosition] = 11;
-+    value[m.spanCount] = 2;
-+    value.set([0, 1, -1, 1, 1, 5, 5, 0], m.spans);
-+    value[m.populationRow] = 2;
-+    value[m.traceCount] = 2;
-+    value.set([1, 0, 7, 3, 1, 1], m.traces);
-+    value[m.patternLayerCount] = 2;
-+    value.set([1, 3], m.patternLayers);
-+    expect(validateDrowseReplayMeta(value, model)).toBe(7);
-+    expect(validateDrowseReplayMeta(meta(0), model)).toBe(0);
-+  });
-+
-+  test("fails closed on what the kernels would index by", () => {
-+    const anatomy = meta(1);
-+    anatomy[m.anatomyPosition] = 12; // past the fed positions
-+    expect(() => validateDrowseReplayMeta(anatomy, model)).toThrow(
-+      /anatomy position/,
-+    );
-+    const trace = meta(2);
-+    trace[m.spanCount] = 1;
-+    trace.set([0, 6, 3, 0], m.spans);
-+    trace[m.traceCount] = 1;
-+    trace.set([1, 0, 8], m.traces); // d_ff is 8
-+    expect(() => validateDrowseReplayMeta(trace, model)).toThrow(/trace 0/);
-+    const flag = meta(2);
-+    flag[m.spanCount] = 1;
-+    flag.set([0, 6, -1, 0], m.spans); // unproduced flag must be 1
-+    expect(() => validateDrowseReplayMeta(flag, model)).toThrow(/unproduced/);
-+    const patterns = meta(4);
-+    patterns[m.patternLayerCount] = 1;
-+    patterns[m.patternLayers] = 2;
-+    expect(() => validateDrowseReplayMeta(patterns, model)).toThrow(
-+      /anatomy position/,
-+    );
-+    const unsorted = meta(5);
-+    unsorted[m.anatomyPosition] = 3;
-+    unsorted[m.patternLayerCount] = 2;
-+    unsorted.set([3, 1], m.patternLayers);
-+    expect(() => validateDrowseReplayMeta(unsorted, model)).toThrow(/ascend/);
-+    expect(() => validateDrowseReplayMeta(new Int32Array(125), model)).toThrow(
-+      /Int32Array/,
-+    );
-+  });
-+});
 diff --git a/tests/engine_integration.test.ts b/tests/engine_integration.test.ts
 index 43b9e95..ee2ca61 100644
 --- a/tests/engine_integration.test.ts
@@ -12966,10 +13062,10 @@ index e48b225..9940976 100644
        frequency_penalty: 1.5,
 diff --git a/tests/gpu.test.ts b/tests/gpu.test.ts
 new file mode 100644
-index 0000000..2febdb6
+index 0000000..f9c5fd4
 --- /dev/null
 +++ b/tests/gpu.test.ts
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,139 @@
 +/// <reference types="@webgpu/types" />
 +
 +import { requestGPUDeviceFromAdapter } from "../src/gpu";
@@ -13005,10 +13101,11 @@ index 0000000..2febdb6
 +  expect(result.adapter).toBe(fixture.adapter);
 +  expect(result.device).toBe(fixture.device);
 +  expect(result.adapterInfo.vendor).toBe("fixture");
++  // No model binding named: WebGPU's defaults, whatever the adapter offers.
 +  expect(fixture.requestDevice).toHaveBeenCalledWith({
 +    requiredLimits: {
-+      maxBufferSize: 1 << 30,
-+      maxStorageBufferBindingSize: 1 << 30,
++      maxBufferSize: 1 << 28,
++      maxStorageBufferBindingSize: 1 << 27,
 +      maxComputeWorkgroupStorageSize: 32 << 10,
 +      maxStorageBuffersPerShaderStage: 10,
 +      maxComputeWorkgroupSizeX: 256,
@@ -13018,30 +13115,71 @@ index 0000000..2febdb6
 +  });
 +});
 +
-+test("uses the documented fallback limits without changing adapters", async () => {
-+  const fixture = adapter({
-+    maxBufferSize: 1 << 28,
-+    maxStorageBufferBindingSize: 1 << 27,
-+  });
-+  await requestGPUDeviceFromAdapter(fixture.adapter);
++test("requests exactly the model's binding, not a 1 GiB step", async () => {
++  // gemma3-4b's q4 embedding (320 MiB) on an adapter that offers 4 GiB, and on one offering
++  // 512 MiB (which the old 1 GiB/128 MiB step bound at 128 MiB and could not load).
++  const binding = 335_609_856;
++  for (const offered of [2 ** 32, 1 << 29]) {
++    const fixture = adapter({
++      maxBufferSize: offered,
++      maxStorageBufferBindingSize: offered,
++    });
++    await requestGPUDeviceFromAdapter(fixture.adapter, binding);
++    expect(fixture.requestDevice).toHaveBeenCalledWith(
++      expect.objectContaining({
++        requiredLimits: expect.objectContaining({
++          maxBufferSize: binding,
++          maxStorageBufferBindingSize: binding,
++        }),
++      }),
++    );
++  }
++});
++
++test("keeps WebGPU's defaults for a model below them", async () => {
++  const fixture = adapter();
++  await requestGPUDeviceFromAdapter(fixture.adapter, 98 << 20);
 +  expect(fixture.requestDevice).toHaveBeenCalledWith(
 +    expect.objectContaining({
 +      requiredLimits: expect.objectContaining({
 +        maxBufferSize: 1 << 28,
 +        maxStorageBufferBindingSize: 1 << 27,
-+        maxComputeWorkgroupSizeX: 256,
-+        maxComputeInvocationsPerWorkgroup: 256,
 +      }),
 +    }),
 +  );
 +});
 +
-+test("rejects an adapter below the runtime minimum", async () => {
++test("rejects an adapter below the model's binding before requesting a device", async () => {
++  const fixture = adapter({ maxStorageBufferBindingSize: 1 << 28 });
++  await expect(
++    requestGPUDeviceFromAdapter(fixture.adapter, 320 << 20),
++  ).rejects.toThrow(
++    `maxStorageBufferBindingSize limit is too small: ${1 << 28} < ${320 << 20}`,
++  );
++  const small = adapter({ maxBufferSize: 300 << 20 });
++  await expect(
++    requestGPUDeviceFromAdapter(small.adapter, 320 << 20),
++  ).rejects.toThrow("maxBufferSize limit is too small");
++  expect(fixture.requestDevice).not.toHaveBeenCalled();
++  expect(small.requestDevice).not.toHaveBeenCalled();
++});
++
++test("rejects an adapter below WebGPU's default binding", async () => {
 +  const fixture = adapter({ maxStorageBufferBindingSize: (1 << 27) - 1 });
 +  await expect(requestGPUDeviceFromAdapter(fixture.adapter)).rejects.toThrow(
 +    "maxStorageBufferBindingSize limit is too small",
 +  );
 +  expect(fixture.requestDevice).not.toHaveBeenCalled();
++});
++
++test("rejects an invalid model binding", async () => {
++  for (const binding of [0, -1, 1.5, Number.NaN]) {
++    const fixture = adapter();
++    await expect(
++      requestGPUDeviceFromAdapter(fixture.adapter, binding),
++    ).rejects.toThrow("required buffer size is invalid");
++    expect(fixture.requestDevice).not.toHaveBeenCalled();
++  }
 +});
 +
 +test("rejects fewer than ten storage buffers per shader stage", async () => {

@@ -76,15 +76,25 @@ export function lockedModelExecutionProfiles(lock, manifest) {
     throw new Error("hosted model artifacts do not match runtime-lock execution profile");
   }
   const { blockSpec, unitRefusal } = lockedBlockSites(lock, lockedStructuredHookProfile);
+  const prefillChunkSize = lock?.prefillChunkSize;
+  if (
+    !Number.isSafeInteger(prefillChunkSize) || prefillChunkSize < 1 ||
+    prefillChunkSize > Math.min(...(lock?.contextProfiles ?? [0])) ||
+    (manifest?.prefillChunkSize !== undefined && manifest.prefillChunkSize !== prefillChunkSize)
+  ) {
+    throw new Error("hosted model prefill chunk does not match the runtime lock");
+  }
   return {
     structuredHookProfile: lockedStructuredHookProfile,
     thinkingProfile: lockedThinkingProfile,
     quantization,
     requiredFeatures: quantization === "q4f16_1" ? ["shader-f16"] : [],
     // What the runtime attests a v5 library's descriptor against (HOOK_ABI.md §6): the block
-    // spec of a standard-v4 library, the refusal text of a standard-v4-residual one.
+    // spec of a standard-v4 library, the refusal text of a standard-v4-residual one, and the
+    // prefill chunk it was compiled with.
     blockSpec,
     unitRefusal,
+    prefillChunkSize,
   };
 }
 

@@ -8,7 +8,7 @@ The runtime lock is hook ABI v5 (`runtime-lock.json` schema 2): `drowse-web-runt
 `block-sites-v5`, `exact-readout-v2`, each model's capacity profile by architecture
 (`standard-v4` for Gemma 3 and Qwen3, with the `blockSpec` its library's schema-4 descriptor
 attests; `standard-v4-residual` for GPT-2, Pythia and Qwen3.5 base, with the `unitRefusal` its
-unit calls answer), the WebLLM archive `0.2.84-drowse.46`, the fork manifest, compiler recipe
+unit calls answer), the WebLLM archive `0.2.84-drowse.47`, the fork manifest, compiler recipe
 and LLVM identities. It stays `feasibility-required` until every v5 library's converted revision,
 converted-manifest digest and library digest are filled (`prepare-hosted-candidate-lock.mjs`,
 below); `check-runtime-lock.mjs --release` lists what is still pending. Exact converted-model
@@ -493,7 +493,10 @@ an immutable revision. Model directories contain `hosted-artifacts.json`; each
 core or optional-instrument directory contains `hosted-pack-artifacts.json`
 with exact relative paths, byte sizes, and SHA-256 digests. The builder rehashes
 every file, closes all runtime-lock context profiles, derives runtime/context
-identity digests, and validates the completed catalog with the browser parser:
+identity digests, derives each variant's `maxBufferSize` and
+`maxStorageBufferBindingSize` from its library (`libraryBindingBytes`,
+HOOK_ABI.md §10; the spec's `requirements` name only features and the other
+limits), and validates the completed catalog with the browser parser:
 
 ```bash
 npm run build:hosted:catalog -- RELEASE_SPEC.json catalog.json

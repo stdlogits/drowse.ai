@@ -56,13 +56,22 @@ try {
     contextProfiles: [{ contextTokens: 128 }, { contextTokens: 64 }],
     runtimeIdentity: { layerMap: [0, 1, 2, 3], hiddenSize: 64 },
   });
-  const request = (profile, extra = {}) => ({ variant: variant(profile), ...extra });
+  // The lock's prefill chunk (32) is below the smallest context (64), as on the base models
+  // (1024 against 2048): the descriptor attests the lock's value, not a context.
+  const request = (profile, extra = {}) => ({ variant: variant(profile), prefillChunkSize: 32, ...extra });
 
   // ------------------------------------------------ descriptor model and attestation ---
   const model = engine.hookProfileDescriptorModel(request("standard-v4", { blockSpec: spec }));
   assert.deepEqual(model, {
-    layerCount: 4, hiddenSize: 64, contextTokens: 128, prefillChunkSize: 64, blockSpec: spec,
+    layerCount: 4, hiddenSize: 64, contextTokens: 128, prefillChunkSize: 32, blockSpec: spec,
   });
+  for (const prefillChunkSize of [null, undefined, 0, 65, 1.5]) {
+    assert.throws(
+      () => engine.hookProfileDescriptorModel(request("standard-v4", { blockSpec: spec, prefillChunkSize })),
+      (error) => error.code === "HOOK_ABI_MISMATCH" && /prefill chunk/.test(error.message),
+      String(prefillChunkSize),
+    );
+  }
   const v4 = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4;
   const residual = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL;
   const descriptor = Array.from(profiles.expectedHookProfileDescriptor(v4, model));
@@ -102,6 +111,13 @@ try {
     () => engine.attestCompiledStructuredHookProfile(bridgeProfile(), request("standard-v4", { blockSpec: spec }), "post-block-residual-v4"),
     (error) => error.code === "HOOK_ABI_MISMATCH",
   );
+  // A library compiled with the smallest context as its prefill chunk does not attest under a
+  // lock recording 32 (a prefill derived from the contexts is refused).
+  const contextPrefill = Array.from(profiles.expectedHookProfileDescriptor(v4, { ...model, prefillChunkSize: 64 }));
+  assert.throws(
+    () => attest(bridgeProfile({ descriptor: contextPrefill })),
+    (error) => error.code === "HOOK_ABI_MISMATCH" && /PREFILL_CHUNK_SIZE/.test(error.message),
+  );
   // A standard-v4 library cannot be attested without the lock's block spec.
   assert.throws(() => attest(bridgeProfile(), {}), (error) =>
     error.code === "HOOK_ABI_MISMATCH" && /block spec/.test(error.message));
@@ -120,7 +136,7 @@ try {
   assert.equal(capabilities.profile.id, "standard-v4");
   assert.equal(capabilities.vocabSize, 259);
   assert.equal(capabilities.contextTokens, 128);
-  assert.equal(capabilities.prefillChunkSize, 64);
+  assert.equal(capabilities.prefillChunkSize, 32);
   assert.equal(capabilities.blockSpec, spec);
   assert.equal(capabilities.unitRefusal, null);
   const refusal = "drowse units need a dense gated MLP block; gpt2 fuses q/k/v";
@@ -310,15 +326,21 @@ function computingBridge(log) {
   const run = (fn, a) => {
     const [x, y] = a;
     switch (fn) {
+      // Each unit's rows are tagged with its (layer, index), so a request split across calls
+      // must still come back in request order.
       case "drowse_neuron_rows": {
         const n = x.shape[0];
         const d = 64;
+        const unit = (u) => 100 * x.data[2 * u] + x.data[2 * u + 1];
         return { shape: [n, 3, d], data: Float32Array.from({ length: n * 3 * d }, (_, i) =>
-          1000 * Math.floor(i / (3 * d)) + 100 * (Math.floor(i / d) % 3) + (i % d)) };
+          1000 * unit(Math.floor(i / (3 * d))) + 100 * (Math.floor(i / d) % 3) + (i % d)) };
       }
       case "drowse_head_rows": {
         const n = x.shape[0];
-        return { shape: [n, 4, 16, 64], data: Float32Array.from({ length: n * 4 * 16 * 64 }, (_, i) => i) };
+        const block = 4 * 16 * 64;
+        const unit = (u) => 10 * x.data[2 * u] + x.data[2 * u + 1];
+        return { shape: [n, 4, 16, 64], data: Float32Array.from({ length: n * block }, (_, i) =>
+          100000 * unit(Math.floor(i / block)) + (i % block)) };
       }
       case "drowse_gather_head_grams":
         return { shape: [y.shape[0], 16, 16], data: Float32Array.from({ length: y.shape[0] * 256 }, (_, i) =>
@@ -372,6 +394,12 @@ function computingBridge(log) {
           outM2[c] = m2.data[c] + qb + delta * delta * count.data[0] * r / total;
         }
         return [{ shape: [w], data: outMean }, { shape: [w], data: outM2 }];
+      }
+      case "drowse_vocab_logits": {
+        // Row r peaks (10) at the id its first element names, 0 elsewhere.
+        const n = x.shape[0];
+        return { shape: [n, 259], data: Float32Array.from({ length: n * 259 }, (_, i) =>
+          i % 259 === x.data[Math.floor(i / 259) * 64] ? 10 : 0) };
       }
       case "drowse_footprint_scores":
         return { shape: [x.shape[0], 259], data: Float32Array.from({ length: x.shape[0] * 259 }, (_, i) =>
@@ -436,18 +464,35 @@ async function staticReads(backendModule, modelBackend, programs, capabilities, 
   const units = [{ kind: "neuron", layer: 1, index: 5 }, { kind: "neuron", layer: 3, index: 0 }];
   const write = await live.unitWeightRows("neuron_write", units);
   assert.deepEqual(write.shape, [2, 64]);
-  assert.equal(write.data[64 + 7], 1000 + 7);
+  assert.equal(write.data[64 + 7], 1000 * 300 + 7);
   const read = await live.unitWeightRows("neuron_read", units);
   assert.deepEqual(read.shape, [2, 2, 64]);
-  assert.equal(read.data[64], 200);
+  assert.equal(read.data[64], 1000 * 105 + 200);
   await assert.rejects(live.unitWeightRows("neuron_write", [{ kind: "neuron", layer: 4, index: 0 }]), RangeError);
   await assert.rejects(live.unitWeightRows("head_write", units), RangeError);
   const headWrite = await live.unitWeightRows("head_write", [{ kind: "head", layer: 0, index: 1 }]);
   assert.deepEqual(headWrite.shape, [1, 64, 16]);
-  assert.equal(headWrite.data[5 * 16 + 2], 2 * 64 + 5);
+  assert.equal(headWrite.data[5 * 16 + 2], 100000 + 2 * 64 + 5);
   const headRead = await live.unitWeightRows("head_read", [{ kind: "head", layer: 0, index: 1 }]);
   assert.deepEqual(headRead.shape, [1, 3, 16, 64]);
-  assert.equal(headRead.data[0], 16 * 64);
+  assert.equal(headRead.data[0], 100000 + 16 * 64);
+  // A request longer than one call's bound (a layer's head rows, [H, 4, hd, d]) runs in several
+  // calls: every neuron of a layer takes floor(4·H·hd / 3) = 85 and then 11, five heads 4 and 1.
+  const rowCalls = (fn) => log.filter((entry) => entry.steps?.[0]?.fn === fn).map((entry) => entry.steps[0].args[0].tensor.shape[0]);
+  const neuronsBefore = rowCalls("drowse_neuron_rows").length;
+  const layer = Array.from({ length: spec.dFF }, (_, index) => ({ kind: "neuron", layer: 2, index }));
+  assert.equal(modelBackend.unitRowsPerCall(spec, "neuron"), 85);
+  const wholeLayer = await live.unitWeightRows("neuron_write", layer);
+  assert.deepEqual(wholeLayer.shape, [spec.dFF, 64]);
+  assert.deepEqual(rowCalls("drowse_neuron_rows").slice(neuronsBefore), [85, 11]);
+  for (const u of [0, 84, 85, 95]) assert.equal(wholeLayer.data[u * 64 + 3], 1000 * (200 + u) + 3);
+  const heads = [0, 1, 2, 3].map((index) => ({ kind: "head", layer: 0, index })).concat({ kind: "head", layer: 1, index: 2 });
+  const headsBefore = rowCalls("drowse_head_rows").length;
+  const fiveHeads = await live.unitWeightRows("head_read", heads);
+  assert.deepEqual(fiveHeads.shape, [5, 3, 16, 64]);
+  assert.deepEqual(rowCalls("drowse_head_rows").slice(headsBefore), [4, 1]);
+  assert.equal(fiveHeads.data[3 * 3 * 1024], 100000 * 3 + 1024);
+  assert.equal(fiveHeads.data[4 * 3 * 1024], 100000 * 12 + 1024);
 
   // Residents, then the vocabulary reads composed over them.
   const lens = await live.uploadLensLayer("s", "out", 1, f32(new Float32Array(64 * 64), [64, 64]));
@@ -463,6 +508,29 @@ async function staticReads(backendModule, modelBackend, programs, capabilities, 
   assert.deepEqual([...footprint.ids.data.subarray(0, 5)], [0, 1, 2, 3, 4]);
   assert.deepEqual([...footprint.z.data.subarray(0, 4)], [5, 4, 3, -Infinity]);
   await assert.rejects(live.footprintTopK(f32(new Float32Array(64), [1, 64]), 257, stats), RangeError);
+  // A long full-vocabulary read runs in calls of at most VOCAB_READ_ROWS rows, so each call's
+  // [rows, V] output stays within the library's binding; the rows come back joined in order.
+  const chunkRows = modelBackend.VOCAB_READ_ROWS;
+  const many = 2 * chunkRows + 22;
+  const planted = Float32Array.from({ length: many * 64 }, (_, i) => (i % 64 === 0 ? (i / 64) % 259 : 0));
+  const before = log.length;
+  const readout = await live.vocabReadoutTopK(f32(planted, [many, 64]), 2);
+  const calls = log.slice(before);
+  assert.deepEqual(calls.map((call) => call.steps[0].args[0].tensor.shape[0]), [chunkRows, chunkRows, 22]);
+  assert.deepEqual(readout.ids.shape, [many, 2]);
+  assert.deepEqual(readout.logSumExp.shape, [many]);
+  for (const row of [0, chunkRows - 1, chunkRows, many - 1]) {
+    assert.equal(readout.ids.data[row * 2], row % 259, `row ${row} keeps its own readout`);
+    assert.equal(readout.logits.data[row * 2], 10);
+  }
+  const picked = await live.vocabTokenLogits(
+    f32(planted, [many, 64]),
+    modelBackend.i32Tensor(Int32Array.from({ length: many }, (_, row) => row % 259), [many, 1]),
+  );
+  assert.ok(picked.logits.data.every((value) => value === 10), "each chunk picks its own rows' ids");
+  const footprints = await live.footprintTopK(f32(new Float32Array(many * 64), [many, 64]), 3, stats);
+  assert.deepEqual(footprints.ids.shape, [many, 3]);
+  assert.equal(log.length - before, 9);
   const directions = await live.footprintDirections([lens, lens], Int32Array.of(3, 4), stats);
   assert.deepEqual(directions.shape, [2, 2, 64]);
   assert.deepEqual(log.at(-1).steps.map((step) => step.fn),

@@ -60,7 +60,7 @@ try {
     },
   });
   const tensorCache = JSON.stringify({
-    records: [{ dataPath: "params_shard_0.bin", nbytes: 1, records: [] }],
+    records: [{ dataPath: "params_shard_0.bin", nbytes: 1, records: [{ name: "w", dtype: "float32", shape: [1], format: "raw", nbytes: 4, byteOffset: 0 }] }],
   });
   const artifact = (path, role, content) => ({
     manifest: {
@@ -130,13 +130,15 @@ try {
     unitSites: 0,
     descriptor: Array.from(expectedHookProfileDescriptor(
       STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL,
-      hookProfileDescriptorModel({ variant: forVariant }),
+      hookProfileDescriptorModel({ variant: forVariant, prefillChunkSize: 1024 }),
     )),
     ...overrides,
   });
+  // The lock's prefill chunk (1024, below the variant's one 2048 context, as on the base models).
   const loadRequest = (overrides = {}) => ({
     model: { id: "smollm2-360m-instruct" },
     variant,
+    prefillChunkSize: 1024,
     contextTokens: 2048,
     adapter,
     artifacts,
@@ -390,6 +392,15 @@ try {
   assert.equal(appConfig.model_list[0].model_lib, `${base}model-lib.wasm`);
   assert.equal(appConfig.model_list[0].overrides.context_window_size, 2048);
   assert.deepEqual(appConfig.model_list[0].required_features, ["shader-f16"]);
+  // The device's binding is the library's, derived from the verified files and the lock (one
+  // 4-byte weight, 16 vocabulary rows, d = 2), not the variant's declared 128 MiB.
+  const { libraryBindingBytes } = await server.ssrLoadModule("/src/hosted/runtime/modelBackend.ts");
+  const derivedBinding = libraryBindingBytes(STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL, {
+    layerCount: 2, hiddenSize: 2, vocabSize: 16, contextTokens: 2048, prefillChunkSize: 1024,
+    blockSpec: null, largestWeightBytes: 4,
+  });
+  assert.equal(appConfig.model_list[0].buffer_size_required_bytes, derivedBinding);
+  assert.notEqual(derivedBinding, variant.requirements.limits.maxStorageBufferBindingSize);
   const hookProgram = compileStructuredHookProgram(2, [{
     affineGroups: [{ active: true, basis: [[1, 0]], neutral: [0, 0], target: [1], along: 0.5, kappa: [0] }],
     probes: [{ kind: "linear", direction: [1, 0], bias: 0 }],
@@ -765,7 +776,7 @@ try {
   );
 
   // Schema-4 attestation: any descriptor element, the profile id or the unit-site flag that
-  // differs from the lock fails the load (and unloads the engine); a variant on a pre-v5 profile
+  // differs from the lock fails the load (and unloads the engine); a variant on any other profile
   // is refused before attestation.
   const changedDescriptor = compiledProfile().descriptor;
   changedDescriptor[5] += 1;
@@ -785,9 +796,31 @@ try {
     await assert.rejects(mismatchedProfile.load(loadRequest()), (error) => error.code === code);
     assert.equal(MismatchedProfileEngine.instances.at(-1).unloaded, 1);
   }
+  // The descriptor's PREFILL_CHUNK_SIZE is the lock's: a load whose lock entry records none, or a
+  // library compiled at the context (2048) under a lock recording 1024, fails attestation.
   await assert.rejects(
     new DrowseWebLlmRuntime({ DROWSE_HOOK_ABI: "block-sites-v5", MLCEngine: FixtureEngine })
-      .load(loadRequest({ variant: { ...variant, structuredHookProfile: "standard-v3" } })),
+      .load(loadRequest({ prefillChunkSize: null })),
+    (error) => error.code === "HOOK_ABI_MISMATCH" && /prefill chunk/u.test(error.message),
+  );
+  class ContextPrefillEngine extends FixtureEngine {
+    async getDrowseStructuredHookProfile() {
+      return compiledProfile({
+        descriptor: Array.from(expectedHookProfileDescriptor(
+          STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL,
+          hookProfileDescriptorModel({ variant, prefillChunkSize: 2048 }),
+        )),
+      });
+    }
+  }
+  await assert.rejects(
+    new DrowseWebLlmRuntime({ DROWSE_HOOK_ABI: "block-sites-v5", MLCEngine: ContextPrefillEngine })
+      .load(loadRequest()),
+    (error) => error.code === "HOOK_ABI_MISMATCH" && /PREFILL_CHUNK_SIZE/u.test(error.message),
+  );
+  await assert.rejects(
+    new DrowseWebLlmRuntime({ DROWSE_HOOK_ABI: "block-sites-v5", MLCEngine: FixtureEngine })
+      .load(loadRequest({ variant: { ...variant, structuredHookProfile: "unknown-profile" } })),
     (error) => error.code === "STRUCTURED_HOOK_PROFILE_MISMATCH",
   );
 
@@ -810,7 +843,7 @@ try {
         unitSites: 1,
         descriptor: Array.from(expectedHookProfileDescriptor(
           STANDARD_STRUCTURED_HOOK_PROFILE_V4,
-          hookProfileDescriptorModel({ variant: unitsVariant, blockSpec }),
+          hookProfileDescriptorModel({ variant: unitsVariant, blockSpec, prefillChunkSize: 1024 }),
         )),
       };
     }

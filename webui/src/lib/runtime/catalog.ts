@@ -12,9 +12,9 @@ import type {
 } from "../../../../drowse/webui/src/lib/runtime/contracts";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
+import { blockSitesBindingBytes } from "../../hosted/runtime/modelBackend";
 import {
   EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
-  isBlockSitesProfile,
   resolveStructuredHookProfile,
   structuredHookMemoryRequirements,
   WEB_LLM_RUNTIME_MIN_STORAGE_BUFFERS_PER_SHADER_STAGE,
@@ -69,20 +69,27 @@ export interface CatalogRuntimeLockModel {
   convertedRepository: string;
   convertedRevision: string;
   contextProfiles: readonly number[];
+  /** The library's compiled prefill chunk, which its descriptor attests (HOOK_ABI.md §6). */
+  prefillChunkSize: number;
   /** The block spec a `standard-v4` library's descriptor is attested against (B1 §8.2). */
   blockSpec: BlockSpec | null;
   /** What a `standard-v4-residual` library's unit members answer (native's 422 text). */
   unitRefusal: string | null;
 }
 
-/** The lock's block sites for a catalog variant (the load request's `blockSpec` and
- *  `unitRefusal`): the entry whose runtime identity it carries, or nothing locked. */
-export function lockedBlockSites(
+/** What the lock records about a catalog variant's compiled library (the load request's
+ *  `blockSpec`, `unitRefusal` and `prefillChunkSize`): the entry whose runtime identity it carries,
+ *  or nothing locked (a load then fails attestation with `HOOK_ABI_MISMATCH`). */
+export function lockedLibraryContract(
   locks: readonly CatalogRuntimeLockModel[],
   variant: Pick<ModelVariant, "runtimeIdentity">,
-): { blockSpec: BlockSpec | null; unitRefusal: string | null } {
+): { blockSpec: BlockSpec | null; unitRefusal: string | null; prefillChunkSize: number | null } {
   const lock = locks.find((candidate) => sameRuntimeIdentity(candidate.runtimeIdentity, variant.runtimeIdentity));
-  return { blockSpec: lock?.blockSpec ?? null, unitRefusal: lock?.unitRefusal ?? null };
+  return {
+    blockSpec: lock?.blockSpec ?? null,
+    unitRefusal: lock?.unitRefusal ?? null,
+    prefillChunkSize: lock?.prefillChunkSize ?? null,
+  };
 }
 
 export class CatalogValidationError extends Error {
@@ -302,12 +309,32 @@ function validateRuntimeLockBindings(
       // A v5 library attests its block spec (unit sites) or answers its unit members with the
       // lock's refusal (residual), so the lock entry must record the one its profile needs.
       const profile = resolveStructuredHookProfile(variant.structuredHookProfile);
-      const unitSites = isBlockSitesProfile(profile) && profile.unitSites === 1;
+      const unitSites = profile.unitSites === 1;
       if (unitSites ? lock.blockSpec === null : !lock.unitRefusal) {
         throw new CatalogValidationError(
           "CATALOG_RUNTIME_IDENTITY_UNLOCKED",
           `The embedded browser runtime lock does not record variant ${variant.id}'s ${unitSites ? "block spec" : "unit refusal"}`,
         );
+      }
+      // The bridge asks the device for exactly the variant's binding, so it must cover the units
+      // machinery at the lock's largest context (HOOK_ABI.md §10); the catalog builder derives the
+      // rest (weights, vocabulary reads) from the files.
+      if (unitSites) {
+        const binding = blockSitesBindingBytes(profile, {
+          layerCount: lock.runtimeIdentity.layerMap.length,
+          hiddenSize: lock.runtimeIdentity.hiddenSize,
+          contextTokens: Math.max(...lock.contextProfiles),
+          prefillChunkSize: lock.prefillChunkSize,
+          blockSpec: lock.blockSpec!,
+        });
+        for (const name of ["maxBufferSize", "maxStorageBufferBindingSize"] as const) {
+          if ((variant.requirements.limits[name] ?? 0) < binding) {
+            throw new CatalogValidationError(
+              "CATALOG_SCHEMA_INVALID",
+              `Catalog variant ${variant.id} declares ${name} below its library's ${binding}-byte binding`,
+            );
+          }
+        }
       }
       if (model.sourceUrl !== `https://huggingface.co/${lock.runtimeIdentity.sourceModel}`) {
         throw new CatalogValidationError(
@@ -467,9 +494,6 @@ function validateVariant(value: unknown, index: number): ModelVariant {
   try {
     structuredHookProfile = resolveStructuredHookProfile(item.structuredHookProfile);
   } catch {
-    throw invalid(`${path}.structuredHookProfile is not allow-listed`);
-  }
-  if (!isBlockSitesProfile(structuredHookProfile)) {
     throw invalid(`${path}.structuredHookProfile is not allow-listed`);
   }
   const thinkingProfile = validateThinkingProfile(item.thinkingProfile, `${path}.thinkingProfile`);

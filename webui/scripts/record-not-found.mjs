@@ -36,7 +36,7 @@ const artifactHash = role => {
 };
 // The library the repository lock pins: its hook profile and the block spec the load attests.
 const { value: runtimeLock } = await readRuntimeLock(resolve(root, "../browser-runtime/runtime-lock.json"));
-const { structuredHookProfile, blockSpec, unitRefusal } = lockedModelExecutionProfiles(
+const { structuredHookProfile, blockSpec, unitRefusal, prefillChunkSize } = lockedModelExecutionProfiles(
   runtimeLock.models.find(entry => entry.id === "gemma3-4b-instruct"),
   manifest,
 );
@@ -96,7 +96,7 @@ try {
       if (data.type === "result") resolve(data.value);
     };
     worker.postMessage(payload);
-  }), { modelId: "gemma3-4b-instruct", identity, structuredHookProfile, blockSpec, unitRefusal, modelFiles: sets.model, seeds });
+  }), { modelId: "gemma3-4b-instruct", identity, structuredHookProfile, blockSpec, unitRefusal, prefillChunkSize, modelFiles: sets.model, seeds });
   const artifacts = Object.fromEntries(Object.entries(sets).map(([name, files]) => [name,
     files.map(({ path, role, bytes, sha256 }) => ({ path, role, bytes, sha256 })),
   ]));

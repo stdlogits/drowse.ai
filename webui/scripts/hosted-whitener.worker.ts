@@ -58,6 +58,7 @@ interface BuildRequest {
   /** The runtime lock's block spec (standard-v4) and unit refusal (standard-v4-residual). */
   blockSpec: BlockSpec | null;
   unitRefusal: string | null;
+  prefillChunkSize: number;
   thinkingProfile: ModelVariant["thinkingProfile"];
   artifactProducer: {
     drowseVersion: string;
@@ -165,6 +166,7 @@ self.onmessage = async (event: MessageEvent<BuildRequest>) => {
         contextTokens: context.contextTokens,
         blockSpec: event.data.blockSpec,
         unitRefusal: event.data.unitRefusal,
+        prefillChunkSize: event.data.prefillChunkSize,
         adapter,
         artifacts,
         signal: new AbortController().signal,

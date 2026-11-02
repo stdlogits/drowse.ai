@@ -77,8 +77,8 @@ try {
   );
   assert.throws(() => backend.validateBlockSitesCapabilities({ ...capabilities, hookAbi: "post-block-residual-v4" }), /wrong ABI/);
   assert.throws(
-    () => backend.validateBlockSitesCapabilities({ ...capabilities, profile: profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V3 }),
-    /predates/,
+    () => backend.validateBlockSitesCapabilities({ ...capabilities, profile: { ...capabilities.profile, id: "unknown-profile" } }),
+    /Unsupported structured hook capacity profile/,
   );
 
   // ------------------------------------------------------------------------ tensors ---
@@ -209,6 +209,41 @@ try {
   assert.equal(gemma270m.headGrams * 4 / MiB, 18);
   assert.equal(gemma270m.tapGrams * 4 / MiB, 4);
   assert.ok(gemma270m.unitMeta * 4 + gemma270m.unitCoeff * 4 < 100 * 1024, "unit tables stay under 100 KiB");
+
+  // ------------------------------------------------- the library's binding (HOOK_ABI.md §10) ---
+  // The units machinery's largest buffer: pattern_keys whole at the largest context (qwen3-4b,
+  // 4096 tokens: 256 MiB), else the head grams or a chunk's [prefill, 2·d_ff] gate/up activation.
+  const qwen4bModel = { layerCount: 36, hiddenSize: 2560, contextTokens: 4096, prefillChunkSize: 2048, blockSpec: spec };
+  assert.equal(backend.blockSitesBindingBytes(v4, qwen4bModel), 256 * MiB);
+  assert.equal(backend.blockSitesBindingBytes(v4, { ...qwen4bModel, contextTokens: 2048 }), 160 * MiB,
+    "at 2048 tokens a layer's head rows (32 × 4 × 128 × 2560) outgrow the chunk's gate/up " +
+    "(2048 × 2 × 9728, 152 MiB) and pattern_keys (128 MiB)");
+  // The catalog's binding: the largest of that, the largest weight, a 64-row vocabulary read and a
+  // resident lens layer. gemma3-4b's q4 embedding (320 MiB) wins; qwen3-4b's pattern_keys win.
+  const library = (overrides) => backend.libraryBindingBytes(v4, {
+    ...qwen4bModel, vocabSize: 151_936, largestWeightBytes: 194_478_080, ...overrides,
+  });
+  assert.equal(library({}), 256 * MiB);
+  assert.equal(library({ vocabSize: 262_208, largestWeightBytes: 335_626_240 }), 335_626_240);
+  const pythia = { layerCount: 6, hiddenSize: 512, contextTokens: 2048, prefillChunkSize: 1024, blockSpec: null, vocabSize: 50_304 };
+  assert.equal(backend.libraryBindingBytes(residual, { ...pythia, largestWeightBytes: 103_022_592 }), 103_022_592);
+  assert.equal(backend.libraryBindingBytes(residual, { ...pythia, largestWeightBytes: 1 }), backend.VOCAB_READ_ROWS * 50_304 * 4,
+    "a tiny library still binds a vocabulary read's rows");
+  assert.throws(() => backend.libraryBindingBytes(v4, { ...pythia, largestWeightBytes: 1 }), /block spec/);
+  assert.throws(() => library({ largestWeightBytes: 0 }), /largestWeightBytes/);
+  // The largest weight as the GPU holds it, from tensor-cache.json (a bf16-encoded fp32 record
+  // binds fp32 bytes): gemma3-270m's q0f32 embedding is the 640 MiB binding.
+  const q0Cache = { records: [{ records: [{ dtype: "float32", shape: [262144, 640], format: "f32-to-bf16" }] }] };
+  assert.equal(backend.largestWeightTensorBytes(q0Cache), 640 * MiB);
+  for (const cache of [
+    { records: [] },
+    { records: [{}] },
+    { records: [{ records: [{ dtype: "float32", shape: [-1] }] }] },
+    { records: [{ records: [{ dtype: "unknown", shape: [1] }] }] },
+    { records: [{ records: [{ dtype: "float32", shape: [Number.MAX_SAFE_INTEGER, 2] }] }] },
+  ]) {
+    assert.throws(() => backend.largestWeightTensorBytes(cache), /weight tensor/);
+  }
 
   console.log("block-sites backend seam: surfaces, errors, tensors and replay layouts pass");
 } finally {

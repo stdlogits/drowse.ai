@@ -27,7 +27,8 @@ const options = parseArguments(process.argv.slice(2));
 const webui = fileURLToPath(new URL("..", import.meta.url));
 const goldens = goldensDirectory;
 const {
-  fixture, modelDirectory, roles, artifacts, blockSpec, layerCount, hiddenSize, contextTokens, runtimeIdentity,
+  fixture, modelDirectory, roles, artifacts, blockSpec, layerCount, hiddenSize, contextTokens, prefillChunkSize,
+  runtimeIdentity,
 } = await stageUnitsFixture(options);
 // Short rows: the fixture's byte-level vocabulary spends a token per character, in a
 // 128-token context.
@@ -50,6 +51,7 @@ const buildRequest = {
   thinkingProfile: null,
   blockSpec,
   unitRefusal: null,
+  prefillChunkSize,
   artifactProducer: { drowseVersion: "0.0.0-fixture", producerVersion: "browser-core-build" },
   manifolds: fixtureConcepts(),
 };
@@ -200,6 +202,7 @@ try {
       contextTokens: request.contexts[0],
       blockSpec: request.blockSpec,
       unitRefusal: null,
+      prefillChunkSize: request.prefillChunkSize,
       adapter: await navigator.gpu.requestAdapter(),
       artifacts: files,
       signal: new AbortController().signal,

@@ -12,7 +12,7 @@ import { expectedBuildToolchain } from "./hosted-model-closure.mjs";
 
 assert.equal(structuredHookProfile("standard-v4"), "standard-v4");
 assert.equal(structuredHookProfile("standard-v4-residual"), "standard-v4-residual");
-assert.throws(() => structuredHookProfile("standard-v3"), /not allow-listed/);
+assert.throws(() => structuredHookProfile("unknown-profile"), /not allow-listed/);
 assert.throws(() => structuredHookProfile("adapter-derived"), /not allow-listed/);
 assert.equal(thinkingProfile(null), null);
 const verifiedThinkingProfile = {
@@ -169,6 +169,7 @@ try {
     tokenizerSha256: files.find((file) => file.role === "tokenizer").sha256,
     chatTemplateSha256: files.find((file) => file.role === "chat_template").sha256,
     contextProfiles: [2048, 4096],
+    prefillChunkSize,
   };
   const runtime = {
     runtimeAbi: manifest.runtimeAbi,
@@ -193,6 +194,11 @@ try {
   );
   await assert.rejects(
     () => validatePublishDirectory(directory, { ...model, contextProfiles: [2048] }, runtime),
+    /context configuration differs/,
+  );
+  // The library's prefill chunk must be the lock's (1024 recorded, 2048 compiled).
+  await assert.rejects(
+    () => validatePublishDirectory(directory, { ...model, prefillChunkSize: 1024 }, runtime),
     /context configuration differs/,
   );
   await writeFile(join(directory, "tensor-cache.json"), JSON.stringify({ records: [] }));

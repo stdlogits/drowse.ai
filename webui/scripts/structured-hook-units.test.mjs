@@ -32,39 +32,49 @@ try {
     server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts"),
     server.ssrLoadModule("/src/hosted/runtime/structuredHookProgram.ts"),
   ]);
-  const v3 = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V3;
   const v4 = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4;
   const residual = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL;
 
   // ---------------------------------------------------------------- profiles (§3.5) ---
-  for (const [key, value] of Object.entries(v3)) {
-    if (key === "id") continue;
-    assert.equal(v4[key], value, `standard-v4 keeps standard-v3's ${key}`);
-    assert.equal(residual[key], value, `standard-v4-residual keeps standard-v3's ${key}`);
-  }
-  assert.deepEqual(
-    Object.fromEntries(Object.entries(v4).filter(([key]) => !(key in v3))),
-    {
-      unitSites: 1, maxUnitGroups: 4, maxNeuronAblations: 256, maxHeadAblations: 64,
-      maxUnitTaps: 64, maxHeadTaps: 16, maxActivityTraces: 32, maxActivitySpans: 4,
-      maxPatternLayers: 16, maxPatternHeads: 16, maxLensReadTopK: 256, maxAnatomyUnits: 64,
-    },
+  // The two v5 profiles share the steering, probe and geometry capacities and differ in units.
+  const UNIT_KEYS = [
+    "unitSites", "maxUnitGroups", "maxNeuronAblations", "maxHeadAblations", "maxUnitTaps",
+    "maxHeadTaps", "maxActivityTraces", "maxActivitySpans", "maxPatternLayers", "maxPatternHeads",
+    "maxLensReadTopK", "maxAnatomyUnits",
+  ];
+  const shared = (profile) => Object.fromEntries(
+    Object.entries(profile).filter(([key]) => key !== "id" && !UNIT_KEYS.includes(key)),
   );
-  assert.deepEqual(
-    Object.fromEntries(Object.entries(residual).filter(([key]) => !(key in v3))),
-    {
-      unitSites: 0, maxUnitGroups: 0, maxNeuronAblations: 0, maxHeadAblations: 0,
-      maxUnitTaps: 0, maxHeadTaps: 0, maxActivityTraces: 0, maxActivitySpans: 0,
-      maxPatternLayers: 0, maxPatternHeads: 0, maxLensReadTopK: 256, maxAnatomyUnits: 0,
-    },
-  );
+  assert.deepEqual(shared(v4), {
+    maxAffineGroups: 4, maxRank: 8, maxProbes: 8, maxCurves: 4, maxCurveNodes: 32,
+    maxIntrinsicDim: 4, maxEmbedDim: 8, maxGeometryProbes: 8, maxWhitenerRank: 96,
+    maxGeometryCandidates: 33, geometryOutputStride: 41, geometryFootRestarts: 3,
+    geometryFootIterations: 12, geometryWarmRestarts: 2, geometryWarmIterations: 4,
+    requiredMaxStorageBuffersPerShaderStage: 8, geometryKernelStorageBindings: 8,
+    geometryHeaderStride: 7, maxComputeWorkgroupStorageSize: 32 * 1024,
+  });
+  assert.deepEqual(shared(residual), shared(v4));
+  const unitCapacities = (profile) => Object.fromEntries(UNIT_KEYS.map((key) => [key, profile[key]]));
+  assert.deepEqual(unitCapacities(v4), {
+    unitSites: 1, maxUnitGroups: 4, maxNeuronAblations: 256, maxHeadAblations: 64,
+    maxUnitTaps: 64, maxHeadTaps: 16, maxActivityTraces: 32, maxActivitySpans: 4,
+    maxPatternLayers: 16, maxPatternHeads: 16, maxLensReadTopK: 256, maxAnatomyUnits: 64,
+  });
+  assert.deepEqual(unitCapacities(residual), {
+    unitSites: 0, maxUnitGroups: 0, maxNeuronAblations: 0, maxHeadAblations: 0,
+    maxUnitTaps: 0, maxHeadTaps: 0, maxActivityTraces: 0, maxActivitySpans: 0,
+    maxPatternLayers: 0, maxPatternHeads: 0, maxLensReadTopK: 256, maxAnatomyUnits: 0,
+  });
   assert.equal(profiles.validateStructuredHookProfile({ ...v4 }), v4);
   assert.equal(profiles.resolveStructuredHookProfile("standard-v4-residual"), residual);
   assert.throws(() => profiles.validateStructuredHookProfile({ ...v4, maxUnitTaps: 65 }), /was modified/);
   const { maxPatternHeads: _dropped, ...missing } = v4;
   assert.throws(() => profiles.validateStructuredHookProfile(missing), /unsupported shape/);
-  assert.throws(() => profiles.validateStructuredHookProfile({ ...v3, unitSites: 0 }), /unsupported shape/);
-  assert.throws(() => profiles.validateBlockSitesProfile(v3), /predates hook ABI block-sites-v5/);
+  assert.throws(() => profiles.validateStructuredHookProfile(shared(v4)), /Unsupported structured hook capacity profile/);
+  // Only the two v5 profiles resolve.
+  for (const id of ["unknown-profile", "standard-v4-units", ""]) {
+    assert.throws(() => profiles.resolveStructuredHookProfile(id), /Unsupported structured hook capacity profile/);
+  }
   assert.equal(profiles.BLOCK_SITES_HOOK_ABI, "block-sites-v5");
   assert.equal(profiles.BLOCK_SITES_RUNTIME_ABI, "drowse-web-runtime-v2");
   assert.equal(profiles.BLOCK_SITES_EXACT_READOUT_ABI, "exact-readout-v2");
@@ -190,7 +200,10 @@ try {
     /requires the model's block spec/,
   );
   assert.throws(() => profiles.expectedHookProfileDescriptor(residual, model("qwen3")), /forbids a block spec/);
-  assert.throws(() => profiles.expectedHookProfileDescriptor(v3, model("qwen3")), /predates/);
+  assert.throws(
+    () => profiles.expectedHookProfileDescriptor({ ...v4, id: "unknown-profile" }, model("qwen3")),
+    /Unsupported structured hook capacity profile/,
+  );
   assert.throws(
     () => profiles.expectedHookProfileDescriptor(v4, { ...model("qwen3"), prefillChunkSize: 8192 }),
     /exceeds the context window/,
@@ -232,7 +245,6 @@ try {
   assert.equal(layout.activeLength, 4);
   assert.equal(layout.tapGramsLength, 16 * 16 * 16);
   assert.throws(() => hooks.structuredUnitSectionLayout(residual, 4, 16), /no unit sites/);
-  assert.throws(() => hooks.structuredUnitSectionLayout(v3, 4, 16), /no unit sites/);
 
   const tap = (kind, layer, index, slot) => ({
     name: `probe-${slot}`, unit: hooks.structuredUnitName(kind, layer, index), kind, layer, index,
@@ -314,7 +326,10 @@ try {
     {},
     {},
   ];
-  assert.throws(() => hooks.compileStructuredHookProgram(2, layers, v3), /compiles standard-v4 programs, not standard-v3/);
+  assert.throws(
+    () => hooks.compileStructuredHookProgram(2, layers, { ...v4, id: "unknown-profile" }),
+    /Unsupported structured hook capacity profile/,
+  );
   const programV4 = hooks.compileStructuredHookProgram(2, layers, v4);
   assert.equal(programV4.format, "drowse-structured-v4");
   assert.equal(programV4.hookAbi, "block-sites-v5");

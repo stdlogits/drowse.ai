@@ -73,6 +73,8 @@ const hd = config.head_dim;
 const profile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4;
 const layout = programs.structuredUnitSectionLayout(profile, L, hd);
 const context = chatConfig.context_window_size;
+// The lock records the library's compiled prefill chunk; the fixture's chat config is the lock here.
+const prefillChunkSize = chatConfig.prefill_chunk_size;
 const variant = {
   structuredHookProfile: "standard-v4",
   contextProfiles: [{ contextTokens: context }],
@@ -544,7 +546,7 @@ try {
     return { profile: await engine.getDrowseStructuredHookProfile("units"), units: await engine.supportsDrowseUnitSites("units") };
   });
   // The adapter's own attestation: the library's descriptor against the lock-shaped model.
-  const attested = engineModule.attestCompiledStructuredHookProfile(profileValue.profile, { variant, blockSpec }, "block-sites-v5");
+  const attested = engineModule.attestCompiledStructuredHookProfile(profileValue.profile, { variant, blockSpec, prefillChunkSize }, "block-sites-v5");
   descriptorRecord = { schema: 4, fields: attested.descriptor.length, unitSites: attested.unitSites, unitsPair: profileValue.units };
   log(`descriptor attested: ${attested.descriptor.length} fields, unit sites ${attested.unitSites}, units pair ${profileValue.units}`);
   if (options.suite === "units" || options.suite === "all") {
@@ -556,7 +558,7 @@ try {
     }
   }
   if (options.suite === "reads" || options.suite === "all") {
-    const capabilities = engineModule.blockSitesCapabilitiesFor(attested, { variant, blockSpec, unitRefusal: null }, chatConfig.vocab_size);
+    const capabilities = engineModule.blockSitesCapabilitiesFor(attested, { variant, blockSpec, unitRefusal: null, prefillChunkSize }, chatConfig.vocab_size);
     await page.evaluate(installReads, { capabilities });
     const call = async (member, ...args) => {
       const out = await page.evaluate(callRead, { member, args: args.map(toPage) });
@@ -575,7 +577,7 @@ try {
     log(`reads ${options.arch} ${options.quantization}: ${Object.entries(worst).map(([k, v]) => `${k} ${v.toExponential(2)}`).join(", ")}`);
   }
   if (options.suite === "replay" || options.suite === "all") {
-    const capabilities = engineModule.blockSitesCapabilitiesFor(attested, { variant, blockSpec, unitRefusal: null }, chatConfig.vocab_size);
+    const capabilities = engineModule.blockSitesCapabilitiesFor(attested, { variant, blockSpec, unitRefusal: null, prefillChunkSize }, chatConfig.vocab_size);
     await page.evaluate((scales) => { window.unitScales = scales; }, Array.from(unitScalesData));
     const worstByGolden = {};
     for (const item of replayCases) {

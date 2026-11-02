@@ -52,6 +52,7 @@ export const HOSTED_DISTRIBUTION_CONFIG: HostedDistributionConfig = Object.freez
       convertedRepository: model.convertedRepository,
       convertedRevision: model.convertedRevision,
       contextProfiles: [...model.contextProfiles],
+      prefillChunkSize: model.prefillChunkSize,
       blockSpec: model.blockSpec,
       unitRefusal: model.unitRefusal,
     } satisfies CatalogRuntimeLockModel];

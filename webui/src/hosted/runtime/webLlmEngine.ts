@@ -1,4 +1,5 @@
 import {
+  libraryBindingBytes,
   validateBlockSitesCapabilities,
   type BlockSitesCapabilities,
 } from "./modelBackend";
@@ -28,7 +29,6 @@ import {
   EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
   expectedHookProfileDescriptor,
   hookProfileDescriptorMismatches,
-  isBlockSitesProfile,
   type BlockSpec,
   type HookProfileDescriptorModel,
   resolveStructuredHookProfile,
@@ -358,6 +358,10 @@ export class DrowseWebLlmRuntime {
       );
     }
     const prepared = await prepareVerifiedWebLlmArtifacts(request.artifacts, request.signal);
+    // The device gets exactly the library's binding (HOOK_ABI.md §10), derived from the verified
+    // files and the lock (its prefill chunk and block spec) as the catalog builder derives the
+    // variant's limits; the bridge refuses an adapter below it before a weight is read.
+    const bindingBytes = lockedLibraryBindingBytes(request, prepared);
     if (request.model.modelType === "base" && !prepared.isBaseModel) {
       throw runtimeError("BASE_MODEL_TEMPLATE_MISMATCH", "This base-model download contains a chat template and cannot be opened as a completion model");
     }
@@ -406,8 +410,7 @@ export class DrowseWebLlmRuntime {
             model_lib: prepared.modelLibraryUrl,
             overrides: { context_window_size: request.contextTokens },
             required_features: [...request.variant.requirements.features],
-            buffer_size_required_bytes:
-              request.variant.requirements.limits.maxStorageBufferBindingSize,
+            buffer_size_required_bytes: bindingBytes,
           },
         ],
       },
@@ -1443,35 +1446,83 @@ function sameTokenIds(actual: readonly number[], expected: readonly number[]): b
     actual.every((tokenId, index) => tokenId === expected[index]);
 }
 
-/** The descriptor model a variant's library must attest (B1 §3.5): the lock's context profiles
- *  (largest compiled window, smallest prefill chunk, the adoption rule) and its block spec. */
+/** The model half of a library's descriptor (HOOK_ABI.md §6): CONTEXT_TOKENS is the largest of
+ *  the variant's context profiles, PREFILL_CHUNK_SIZE the lock's `prefillChunkSize` (the chunk the
+ *  library was compiled with, no larger than the smallest context it is offered at). */
 export function hookProfileDescriptorModel(
-  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec">,
+  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec" | "prefillChunkSize">,
 ): HookProfileDescriptorModel {
   const contexts = request.variant.contextProfiles.map((profile) => profile.contextTokens);
   if (contexts.length === 0) {
     throw runtimeError("HOOK_ABI_MISMATCH", "The model variant names no compiled context window");
   }
+  const prefillChunkSize = request.prefillChunkSize ?? null;
+  if (prefillChunkSize === null) {
+    throw runtimeError(
+      "HOOK_ABI_MISMATCH",
+      "The runtime lock does not record this model's prefill chunk, so its library cannot be attested",
+    );
+  }
+  if (
+    !Number.isSafeInteger(prefillChunkSize) || prefillChunkSize < 1 ||
+    prefillChunkSize > Math.min(...contexts)
+  ) {
+    throw runtimeError(
+      "HOOK_ABI_MISMATCH",
+      `The runtime lock's prefill chunk ${prefillChunkSize} exceeds the variant's smallest context`,
+    );
+  }
   return {
     layerCount: request.variant.runtimeIdentity.layerMap.length,
     hiddenSize: request.variant.runtimeIdentity.hiddenSize,
     contextTokens: Math.max(...contexts),
-    prefillChunkSize: Math.min(...contexts),
+    prefillChunkSize,
     blockSpec: request.blockSpec ?? null,
   };
+}
+
+/** The binding the device asks for (HOOK_ABI.md §10): the library's, from its verified files and
+ *  the lock's model half. A variant on another profile, a units library whose lock entry records no
+ *  block spec, and a lock entry without a prefill chunk fail here, before the engine starts. */
+function lockedLibraryBindingBytes(
+  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec" | "prefillChunkSize">,
+  prepared: { readonly vocabSize: number; readonly largestWeightBytes: number },
+): number {
+  let profile: ReturnType<typeof resolveStructuredHookProfile>;
+  try {
+    profile = resolveStructuredHookProfile(request.variant.structuredHookProfile);
+  } catch {
+    throw runtimeError(
+      "STRUCTURED_HOOK_PROFILE_MISMATCH",
+      `Hook ABI block-sites-v5 libraries attest standard-v4 or standard-v4-residual, not ${String(request.variant.structuredHookProfile)}`,
+    );
+  }
+  const model = hookProfileDescriptorModel(request);
+  if (profile.unitSites === 1 && model.blockSpec === null) {
+    throw runtimeError(
+      "HOOK_ABI_MISMATCH",
+      "The runtime lock does not record this model's block spec, so its unit sites cannot be attested",
+    );
+  }
+  return libraryBindingBytes(profile, {
+    layerCount: model.layerCount,
+    hiddenSize: model.hiddenSize,
+    vocabSize: prepared.vocabSize,
+    contextTokens: model.contextTokens,
+    prefillChunkSize: model.prefillChunkSize,
+    blockSpec: profile.unitSites === 1 ? model.blockSpec : null,
+    largestWeightBytes: prepared.largestWeightBytes,
+  });
 }
 
 /** Hook ABI v5: the library's schema-4 descriptor, element by element, against the lock (B1
  *  §3.5 attestation); every mismatch fails the load with `HOOK_ABI_MISMATCH`. */
 function attestBlockSitesHookProfile(
   record: Record<string, unknown>,
-  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec">,
+  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec" | "prefillChunkSize">,
   moduleHookAbi: string,
 ): CompiledDrowseStructuredHookProfile {
   const profile = resolveStructuredHookProfile(request.variant.structuredHookProfile);
-  if (!isBlockSitesProfile(profile)) {
-    throw new TypeError("attestBlockSitesHookProfile requires a block-sites profile");
-  }
   const model = hookProfileDescriptorModel(request);
   if (profile.unitSites === 1 && model.blockSpec === null) {
     throw runtimeError(
@@ -1548,12 +1599,11 @@ function attestBlockSitesHookProfile(
  *  records no refusal text. */
 export function blockSitesCapabilitiesFor(
   profile: CompiledDrowseStructuredHookProfile | null,
-  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec" | "unitRefusal">,
+  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec" | "unitRefusal" | "prefillChunkSize">,
   vocabSize: number,
 ): BlockSitesCapabilities | null {
   if (profile === null || profile.schemaVersion !== 4) return null;
   const capacity = resolveStructuredHookProfile(request.variant.structuredHookProfile);
-  if (!isBlockSitesProfile(capacity)) return null;
   const units = capacity.unitSites === 1;
   const refusal = units ? null : request.unitRefusal ?? null;
   if (!units && (refusal === null || refusal.length === 0)) return null;
@@ -1575,7 +1625,7 @@ export function blockSitesCapabilitiesFor(
 
 export function attestCompiledStructuredHookProfile(
   value: unknown,
-  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec">,
+  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec" | "prefillChunkSize">,
   moduleHookAbi: string,
 ): CompiledDrowseStructuredHookProfile {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -1585,11 +1635,12 @@ export function attestCompiledStructuredHookProfile(
     );
   }
   const record = value as Record<string, unknown>;
-  const profile = resolveStructuredHookProfile(request.variant.structuredHookProfile);
-  if (!isBlockSitesProfile(profile)) {
+  try {
+    resolveStructuredHookProfile(request.variant.structuredHookProfile);
+  } catch {
     throw runtimeError(
       "STRUCTURED_HOOK_PROFILE_MISMATCH",
-      `Hook ABI block-sites-v5 libraries attest standard-v4 or standard-v4-residual, not ${profile.id}`,
+      `Hook ABI block-sites-v5 libraries attest standard-v4 or standard-v4-residual, not ${String(request.variant.structuredHookProfile)}`,
     );
   }
   return attestBlockSitesHookProfile(record, request, moduleHookAbi);
