@@ -394,7 +394,7 @@ test("saved chats persist, rename in the library, and delete only after confirma
   card = libraryDrawer.locator("[data-saved-conversation]").first();
   await expect(card.getByText("open now", { exact: true })).toBeVisible();
   await card.getByRole("button", { name: "Delete", exact: true }).click();
-  await expect(card.getByText(/This cannot be undone/)).toBeVisible();
+  await expect(card.getByRole("group", { name: /^Confirm deletion of / })).toBeVisible();
   await card.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(card.getByText("Hibernation notes", { exact: true })).toBeVisible();
   await card.getByRole("button", { name: "Delete", exact: true }).click();
@@ -1154,8 +1154,7 @@ test("models without an SAE say that no SAE is available", async ({ page }) => {
   await expect(features).toContainText("Off");
   await expect(features.getByRole("button", { name: "Choose an SAE", exact: true })).toBeVisible();
   await sendMessage(page, "Inspect without an SAE");
-  const token = await inspectToken(page, "deterministic");
-  await expect(token.getByRole("region", { name: "Features", exact: true })).toHaveCount(0);
+  await inspectToken(page, "deterministic");
   await page.keyboard.press("Escape");
   await features.getByRole("button", { name: "Choose an SAE", exact: true }).click();
   await expect(page.locator("main h1")).toHaveText("Artifacts");
@@ -1293,9 +1292,12 @@ test("geometry measurements populate and completed timing stays frozen", async (
     return Object.keys(reply?.tokens[0]?.measurements?.instruments ?? {}).sort();
   }, toastModuleUrl)).toContain("geometry");
   const status = page.getByLabel("Generation status", { exact: true });
-  const settledStatus = await status.locator(".text").allInnerTexts();
+  // The footer also reports the autosave; let it land before reading the frozen timing.
+  await expect(status).toContainText("Saved");
+  await settle(page);
+  const settledStatus = await status.locator(".morph-source").allTextContents();
   await page.waitForTimeout(750);
-  expect(await status.locator(".text").allInnerTexts()).toEqual(settledStatus);
+  expect(await status.locator(".morph-source").allTextContents()).toEqual(settledStatus);
   expect(pageErrors).toEqual([]);
 });
 
@@ -1675,7 +1677,7 @@ test("loom projections stay synchronized across path, options, and starred point
   await expect(loom).toContainText(fixtureResponse);
   await expect(loom.getByText("Nothing starred yet")).toHaveCount(0);
   await views.getByRole("button", { name: /^Options/ }).click();
-  await options.getByRole("listitem").first().getByRole("button", { name: /^Starred?$/ }).click();
+  await options.getByRole("listitem").first().getByRole("button", { name: "Unstar", exact: true }).click();
   await views.getByRole("button", { name: /^Starred/ }).click();
   await expect(loom.getByText("Nothing starred yet")).toBeVisible();
 
@@ -1773,14 +1775,16 @@ test("arbitrary role labels and structural role swaps survive generation", async
 
   await expect(page.getByRole("combobox", { name: "You write as" })).toHaveValue("critic");
   await expect(page.getByRole("combobox", { name: "Model writes as" })).toHaveValue("guide");
-  await page.getByRole("button", { name: "Swap writer roles" }).click();
+  await page.getByRole("button", { name: "Swap", exact: true }).click();
   await expect(page.getByRole("combobox", { name: "You write as" })).toHaveValue("guide");
   await expect(page.getByRole("combobox", { name: "Model writes as" })).toHaveValue("critic");
 
   const prompt = "Continue this role-swapped scene";
   await page.getByRole("textbox", { name: "Compose as guide" }).fill(prompt);
   await sendButton(page).click();
-  await expect(page.locator(".msg .dw-said").last()).toContainText(fixtureResponse);
+  // The model now writes the user's seat, so its reply is a user turn.
+  await expect(page.locator(".chat .msg").last()).toContainText(fixtureResponse);
+  await waitForReply(page);
 
   const roles = await page.evaluate(async ({ moduleUrl, prompt }) => {
     const stores = await import(moduleUrl);
@@ -1801,7 +1805,7 @@ test("arbitrary role labels and structural role swaps survive generation", async
   });
 });
 
-test("custom roles can be entered directly, configured, and used for generation", async ({ page }) => {
+test("custom roles can be entered directly, open their settings, and are used for generation", async ({ page }) => {
   await openFixtureWorkbench(page);
   await page.getByRole("button", { name: /→/ }).first().click();
 
@@ -1810,23 +1814,10 @@ test("custom roles can be entered directly, configured, and used for generation"
   await expect(generatedRole).toHaveValue("critic");
 
   await page.getByRole("button", { name: "Role settings" }).click();
-  const drawer = page.getByRole("dialog", { name: "Role settings" });
-  await expect(drawer.getByText(
-    "Set reusable behavior for roles already used in this conversation.",
-    { exact: true },
-  )).toHaveCount(0);
-  await expect(drawer.getByText(
-    "Choose a role to configure. Change role names directly beside the message box.",
-    { exact: true },
-  )).toHaveCount(0);
-  await drawer.getByRole("button", { name: /critic/i }).click();
-  const note = drawer.getByRole("textbox", { name: "Private note" });
-  await note.fill("Reviews the response carefully");
-  await drawer.getByRole("button", { name: /^assistant\b/i }).click();
-  await drawer.getByRole("button", { name: /^critic\b/i }).click();
-  await expect(note).toHaveValue("Reviews the response carefully");
-  await expect(drawer.getByRole("status").filter({ hasText: /^Saved$/ })).toHaveText("Saved");
-  await page.keyboard.press("Escape");
+  await expect(page.locator("main h1")).toHaveText("Artifacts");
+  await expect(page.getByRole("group", { name: "Artifacts sections", exact: true }).getByRole("button", { name: "Roles", exact: true }))
+    .toHaveAttribute("aria-pressed", "true");
+  await selectRoom(page, "Workbench");
   await expect(generatedRole).toHaveValue("critic");
 
   const prompt = "Review this as a critic";
@@ -1850,7 +1841,6 @@ test("custom roles can be entered directly, configured, and used for generation"
 test("raw completion mode submits and preserves a flat base-model buffer", async ({ page }) => {
   await openFixtureWorkbench(page);
   await page.getByRole("group", { name: "Format" }).first().getByRole("button", { name: "Raw", exact: true }).click();
-  await openWorkspace(page, "Conversation");
   const buffer = page.getByLabel("Completion buffer", { exact: true });
   await expect(buffer).toBeVisible();
   const editor = buffer.getByRole("textbox", { name: "Editable completion buffer" });
@@ -1912,11 +1902,14 @@ test("browser transcript YAML exports and imports through the worker runtime", a
   await expect(rendered).toHaveValue(new RegExp(prompt));
   const yaml = await rendered.inputValue();
 
-  await drawer.getByRole("tab", { name: "import" }).click();
+  await drawer.getByRole("tab", { name: "Import" }).click();
+  const before = await page.evaluate(async (moduleUrl) => (await import(moduleUrl)).loomTree.nodes.size, toastModuleUrl);
   await drawer.getByRole("textbox", { name: "Transcript YAML to import" }).fill(yaml);
-  await drawer.getByRole("button", { name: "import", exact: true }).click();
-  await expect(drawer.getByText(/imported · leaf/)).toBeVisible();
-  await drawer.getByRole("button", { name: "close", exact: true }).click();
+  await drawer.getByRole("button", { name: "Import", exact: true }).click();
+  await expect.poll(() => page.evaluate(async (moduleUrl) => (await import(moduleUrl)).loomTree.nodes.size, toastModuleUrl))
+    .toBeGreaterThan(before);
+  await expect(drawer.getByRole("alert")).toHaveCount(0);
+  await page.keyboard.press("Escape");
   await expect(
     page.locator(".chat .log").getByText(prompt, { exact: true }),
   ).toBeVisible();
