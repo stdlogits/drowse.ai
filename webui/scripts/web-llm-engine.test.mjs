@@ -767,7 +767,7 @@ try {
   );
 
   // Schema-4 attestation: any descriptor element, the profile id or the unit-site flag that
-  // differs from the lock fails the load (and unloads the engine); a variant on a pre-v5 profile
+  // differs from the lock fails the load (and unloads the engine); a variant on any other profile
   // is refused before attestation.
   const changedDescriptor = compiledProfile().descriptor;
   changedDescriptor[5] += 1;
@@ -811,7 +811,7 @@ try {
   );
   await assert.rejects(
     new DrowseWebLlmRuntime({ DROWSE_HOOK_ABI: "block-sites-v5", MLCEngine: FixtureEngine })
-      .load(loadRequest({ variant: { ...variant, structuredHookProfile: "standard-v3" } })),
+      .load(loadRequest({ variant: { ...variant, structuredHookProfile: "unknown-profile" } })),
     (error) => error.code === "STRUCTURED_HOOK_PROFILE_MISMATCH",
   );
 

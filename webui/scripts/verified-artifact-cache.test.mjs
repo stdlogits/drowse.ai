@@ -355,7 +355,7 @@ try {
     model: { id: "fixture-model" },
     variant: {
       id: "fixture-q4",
-      structuredHookProfile: "standard-v1",
+      structuredHookProfile: "standard-v4",
       thinkingProfile: null,
       runtimeIdentity: {
         hookAbi: "post-block-residual-v4",
@@ -367,6 +367,8 @@ try {
         limits: {
           maxStorageBufferBindingSize: 134_217_728,
           maxStorageBuffersPerShaderStage: 10,
+          maxComputeWorkgroupSizeX: 256,
+          maxComputeInvocationsPerWorkgroup: 256,
         },
       },
     },
@@ -378,6 +380,8 @@ try {
         maxBufferSize: 268_435_456,
         maxStorageBufferBindingSize: 134_217_728,
         maxStorageBuffersPerShaderStage: 10,
+        maxComputeWorkgroupSizeX: 256,
+        maxComputeInvocationsPerWorkgroup: 256,
       },
       requestDevice() {},
     },

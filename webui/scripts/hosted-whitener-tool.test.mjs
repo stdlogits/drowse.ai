@@ -61,8 +61,8 @@ for (const [profile, extra] of [
 ]) {
   assert.throws(() => v5(profile, extra), /blockSpec and unitRefusal/, `${profile} ${JSON.stringify(extra)}`);
 }
-// Hook ABI v5 only: a v1-v3 profile is not a hosted profile any more.
-assert.throws(() => v5("standard-v3", { blockSpec }), /structuredHookProfile is not allow-listed/);
+// Hook ABI v5 only: no other profile is a hosted profile.
+assert.throws(() => v5("unknown-profile", { blockSpec }), /structuredHookProfile is not allow-listed/);
 assert.throws(
   () => lockedModelExecutionProfiles(qwen4b, {
     structuredHookProfile: "standard-v4-residual",
@@ -361,7 +361,6 @@ const validatorSource = await readFile(resolve(import.meta.dirname, "validate-ho
 assert.match(validatorSource, /structuredHookProfile: lock\.structuredHookProfile/);
 assert.match(validatorSource, /id: `\$\{modelId\}-\$\{lock\.quantization\}`/);
 assert.match(validatorSource, /readRuntimeLock\(runtimeLockPath\)/);
-assert.doesNotMatch(validatorSource, /structuredHookProfile: "standard-v1"/);
 
 // drowse 6.0's default concepts, as core sources: the checked-in copies equal the pinned drowse's
 // bundled corpora, and every one reads as a core source (three of them one-node).

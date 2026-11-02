@@ -5,11 +5,9 @@ import type {
 import {
   BLOCK_SITES_HOOK_ABI,
   checkedStructuredHookProduct,
-  isBlockSitesProfile,
   structuredCurveParameterStride,
   UNIT_POSITIONS_FROM,
   validateStructuredHookProfile,
-  type BlockSitesCapacityProfile,
   type StructuredHookCapacityProfile,
 } from "./structuredHookProfile";
 
@@ -19,16 +17,12 @@ export const STRUCTURED_HOOK_FORMAT = "drowse-structured-v4" as const;
 export type StructuredHookFormat = typeof STRUCTURED_HOOK_FORMAT;
 export type StructuredHookAbi = typeof BLOCK_SITES_HOOK_ABI;
 
-/** The hook ABI and format of a program compiled under `profile`: only the v4 profiles compile
- *  (`standard-v4`, `standard-v4-residual`); the v1-v3 profiles' libraries cannot load. */
+/** The hook ABI and format of a program compiled under `profile` (`standard-v4` or
+ *  `standard-v4-residual`, the only profiles that resolve). */
 export function structuredHookIdentity(
   profile: StructuredHookCapacityProfile,
 ): { hookAbi: StructuredHookAbi; format: StructuredHookFormat } {
-  if (!isBlockSitesProfile(profile)) {
-    throw new TypeError(
-      `Hook ABI ${BLOCK_SITES_HOOK_ABI} compiles standard-v4 programs, not ${profile.id}`,
-    );
-  }
+  validateStructuredHookProfile(profile);
   return { hookAbi: BLOCK_SITES_HOOK_ABI, format: STRUCTURED_HOOK_FORMAT };
 }
 
@@ -3125,9 +3119,9 @@ export interface StructuredUnitSectionLayout {
   };
 }
 
-function unitsProfile(input: StructuredHookCapacityProfile): BlockSitesCapacityProfile {
+function unitsProfile(input: StructuredHookCapacityProfile): StructuredHookCapacityProfile {
   const profile = validateStructuredHookProfile(input);
-  if (!isBlockSitesProfile(profile) || profile.unitSites !== 1) {
+  if (profile.unitSites !== 1) {
     throw new StructuredUnitProgramError(
       "UNIT_SECTION_UNSUPPORTED",
       `The ${profile.id} structured hook profile has no unit sites`,
@@ -3648,7 +3642,7 @@ function validateStructuredUnitSection(
     return;
   }
   if (present !== 5) throw new TypeError("Structured hook unit section is incomplete");
-  if (!isBlockSitesProfile(profile) || profile.unitSites !== 1) {
+  if (profile.unitSites !== 1) {
     throw new StructuredUnitProgramError(
       "UNIT_SECTION_UNSUPPORTED",
       `A ${profile.id} model library rejects any unit section`,

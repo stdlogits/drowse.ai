@@ -33,7 +33,6 @@ import { outputTokenLimitForSignals } from "../../../../drowse/webui/src/lib/run
 import {
   CatalogValidationError,
   lockedLibraryContract,
-  runtimeIdentitySha256,
   type CatalogRuntimeLockModel,
 } from "../../lib/runtime/catalog";
 import { BrowserCapabilityChecker, requestPersistentStorage, storageEstimate } from "./capabilities";
@@ -88,7 +87,6 @@ import {
   packInstallFiles,
 } from "./optionalPackCompatibility";
 import { clearOwnedRuntimeStorage } from "./legacyRuntimeStorage";
-import { LEGACY_PRODUCT_SLUGS } from "../../../../drowse/webui/src/lib/brandMigration";
 import {
   ActivationSpool,
   BrowserActivationSpool,
@@ -160,7 +158,6 @@ interface SessionCoordinatorLike {
   restore(
     identity: HostedSessionRuntimeIdentity,
     mode?: "replace" | "reset",
-    compatibleRuntimeIdentitySha256s?: readonly string[],
   ): Promise<HostedSessionRestoreResult>;
   persist(identity: HostedSessionRuntimeIdentity): Promise<unknown>;
   close(): Promise<void>;
@@ -2388,7 +2385,6 @@ export class HostedRuntimeWorker {
     const restore = await sessionCoordinator.restore(
       sessionIdentity,
       resetSession ? "reset" : "replace",
-      compatibleSessionRuntimeIdentitySha256s(selection),
     );
     this.snapshot = { ...this.snapshot, modelDefaults: sessionCoordinator.modelDefaults };
     if (restore.status === "incompatible") {
@@ -2953,18 +2949,6 @@ function sessionIdentityFor(
     contextTokens: selection.contextTokens,
     ownerEpoch: randomUuid(),
   };
-}
-
-function compatibleSessionRuntimeIdentitySha256s(
-  selection: LoadedModelSelection,
-): readonly string[] {
-  if (selection.variant.runtimeIdentity.runtimeAbi !== "drowse-web-runtime-v1") {
-    return [];
-  }
-  return LEGACY_PRODUCT_SLUGS.map((slug) => runtimeIdentitySha256({
-    ...selection.variant.runtimeIdentity,
-    runtimeAbi: `${slug}-web-runtime-v1`,
-  }));
 }
 
 function validRequest(value: unknown): value is WorkerRequest {

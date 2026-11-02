@@ -77,8 +77,8 @@ try {
   );
   assert.throws(() => backend.validateBlockSitesCapabilities({ ...capabilities, hookAbi: "post-block-residual-v4" }), /wrong ABI/);
   assert.throws(
-    () => backend.validateBlockSitesCapabilities({ ...capabilities, profile: profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V3 }),
-    /predates/,
+    () => backend.validateBlockSitesCapabilities({ ...capabilities, profile: { ...capabilities.profile, id: "unknown-profile" } }),
+    /Unsupported structured hook capacity profile/,
   );
 
   // ------------------------------------------------------------------------ tensors ---

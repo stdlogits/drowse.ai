@@ -389,7 +389,7 @@ try {
     /maxComputeWorkgroupSizeX must explicitly declare at least 256 for standard-v4-residual/,
   );
   assert.throws(
-    () => prepareRequirements({ features: [], limits: {} }, "legacy", "standard-v3"),
+    () => prepareRequirements({ features: [], limits: {} }, "legacy", "unknown-profile"),
     /not allow-listed/,
   );
   // A units library ships its R, S and units packs at every context.

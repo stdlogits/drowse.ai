@@ -245,7 +245,7 @@ test("production-app catalog closes the runtime lock and pack bindings", () => {
     layerMap: [0, 1],
     quantization: "q4f16_1",
     contextProfiles: [2048, 4096],
-    structuredHookProfile: "standard-v3",
+    structuredHookProfile: "standard-v4",
     thinkingProfile: {
       start: "<think>",
       end: "</think>",
@@ -294,7 +294,7 @@ test("production-app catalog closes the runtime lock and pack bindings", () => {
   assert.equal(variant.requirements.limits.maxComputeWorkgroupSizeX, 256);
   const exactReadout = createProductionAppCatalog({
     runtimeLock: { runtimeAbi: "drowse-web-runtime-v1", hookAbi: "post-block-residual-v4" },
-    lock: { ...lock, structuredHookProfile: "standard-v3" },
+    lock: { ...lock, structuredHookProfile: "standard-v4" },
     revision,
     modelFiles,
     coreFiles: files("core_pack", "7".repeat(64)),
@@ -322,7 +322,7 @@ test("production-app catalog closes the runtime lock and pack bindings", () => {
       sourceRepository: "Qwen/Qwen3-4B",
       convertedRepository: "stdlogits/drowse-web-qwen3-4b",
       quantization: "q4f16_1",
-      structuredHookProfile: "standard-v3",
+      structuredHookProfile: "standard-v4",
     },
     revision,
     modelFiles,

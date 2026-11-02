@@ -2913,12 +2913,13 @@ try {
     }, {
       modelBackend: backend,
       sessionCoordinatorFactory: () => ({
-        async restore(identity, mode, compatibleIdentities) {
+        async restore(identity, mode, ...rest) {
           calls.push(`restore:${identity.modelVariantId}:${identity.contextTokens}`);
           assert.equal(identity.runtimeIdentitySha256, variant.runtimeIdentitySha256);
           assert.equal(typeof identity.ownerEpoch, "string");
           assert.equal(mode, "replace");
-          assert.deepEqual(compatibleIdentities, []);
+          // A session restores under its own runtime identity only (no former-product aliases).
+          assert.deepEqual(rest, []);
           return { status: "not_found" };
         },
         async persist() { scope.timeline.push("session:persist"); },

@@ -14,7 +14,6 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import {
   EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
-  isBlockSitesProfile,
   resolveStructuredHookProfile,
   structuredHookMemoryRequirements,
   WEB_LLM_RUNTIME_MIN_STORAGE_BUFFERS_PER_SHADER_STAGE,
@@ -309,7 +308,7 @@ function validateRuntimeLockBindings(
       // A v5 library attests its block spec (unit sites) or answers its unit members with the
       // lock's refusal (residual), so the lock entry must record the one its profile needs.
       const profile = resolveStructuredHookProfile(variant.structuredHookProfile);
-      const unitSites = isBlockSitesProfile(profile) && profile.unitSites === 1;
+      const unitSites = profile.unitSites === 1;
       if (unitSites ? lock.blockSpec === null : !lock.unitRefusal) {
         throw new CatalogValidationError(
           "CATALOG_RUNTIME_IDENTITY_UNLOCKED",
@@ -474,9 +473,6 @@ function validateVariant(value: unknown, index: number): ModelVariant {
   try {
     structuredHookProfile = resolveStructuredHookProfile(item.structuredHookProfile);
   } catch {
-    throw invalid(`${path}.structuredHookProfile is not allow-listed`);
-  }
-  if (!isBlockSitesProfile(structuredHookProfile)) {
     throw invalid(`${path}.structuredHookProfile is not allow-listed`);
   }
   const thinkingProfile = validateThinkingProfile(item.thinkingProfile, `${path}.thinkingProfile`);

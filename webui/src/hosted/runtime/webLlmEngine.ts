@@ -28,7 +28,6 @@ import {
   EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
   expectedHookProfileDescriptor,
   hookProfileDescriptorMismatches,
-  isBlockSitesProfile,
   type BlockSpec,
   type HookProfileDescriptorModel,
   resolveStructuredHookProfile,
@@ -1488,9 +1487,6 @@ function attestBlockSitesHookProfile(
   moduleHookAbi: string,
 ): CompiledDrowseStructuredHookProfile {
   const profile = resolveStructuredHookProfile(request.variant.structuredHookProfile);
-  if (!isBlockSitesProfile(profile)) {
-    throw new TypeError("attestBlockSitesHookProfile requires a block-sites profile");
-  }
   const model = hookProfileDescriptorModel(request);
   if (profile.unitSites === 1 && model.blockSpec === null) {
     throw runtimeError(
@@ -1572,7 +1568,6 @@ export function blockSitesCapabilitiesFor(
 ): BlockSitesCapabilities | null {
   if (profile === null || profile.schemaVersion !== 4) return null;
   const capacity = resolveStructuredHookProfile(request.variant.structuredHookProfile);
-  if (!isBlockSitesProfile(capacity)) return null;
   const units = capacity.unitSites === 1;
   const refusal = units ? null : request.unitRefusal ?? null;
   if (!units && (refusal === null || refusal.length === 0)) return null;
@@ -1604,11 +1599,12 @@ export function attestCompiledStructuredHookProfile(
     );
   }
   const record = value as Record<string, unknown>;
-  const profile = resolveStructuredHookProfile(request.variant.structuredHookProfile);
-  if (!isBlockSitesProfile(profile)) {
+  try {
+    resolveStructuredHookProfile(request.variant.structuredHookProfile);
+  } catch {
     throw runtimeError(
       "STRUCTURED_HOOK_PROFILE_MISMATCH",
-      `Hook ABI block-sites-v5 libraries attest standard-v4 or standard-v4-residual, not ${profile.id}`,
+      `Hook ABI block-sites-v5 libraries attest standard-v4 or standard-v4-residual, not ${String(request.variant.structuredHookProfile)}`,
     );
   }
   return attestBlockSitesHookProfile(record, request, moduleHookAbi);

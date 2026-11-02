@@ -3054,9 +3054,9 @@ try {
       "CATALOG_SCHEMA_INVALID",
     );
 
-    // A pre-v5 profile names a library this runtime cannot load.
+    // Any other profile names a library this runtime cannot load.
     const preBlockSitesProfile = catalogDocument();
-    preBlockSitesProfile.models[0].variants[0].structuredHookProfile = "standard-v3";
+    preBlockSitesProfile.models[0].variants[0].structuredHookProfile = "unknown-profile";
     const signedPreBlockSitesProfile = await signedCatalog(preBlockSitesProfile, signed.pair);
     await rejectsCode(
       () => catalog.verifyCatalog(

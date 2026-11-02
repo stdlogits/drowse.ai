@@ -1130,7 +1130,7 @@ test("hook ABI v5 runtime evidence: units goldens per backend and each productio
     /repository runtime lock/,
   );
   const unbound = structuredClone(report);
-  unbound.checks.load.measurements.exactReadoutProfile = "standard-v3";
+  unbound.checks.load.measurements.exactReadoutProfile = "standard-v4-residual";
   assert.throws(
     () => adaptObserverReports({
       evidenceType: "productionLibrary", nonce, producer: libraryProducer,

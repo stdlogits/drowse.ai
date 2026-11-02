@@ -27,8 +27,7 @@ import {
   BLOCK_SITES_RUNTIME_ABI,
   checkedStructuredHookProduct,
   UNIT_POSITIONS_FROM,
-  validateBlockSitesProfile,
-  type BlockSitesCapacityProfile,
+  validateStructuredHookProfile,
   type BlockSpec,
   type StructuredHookCapacityProfile,
 } from "./structuredHookProfile";
@@ -262,7 +261,7 @@ export interface BlockSitesCapabilities {
   readonly runtimeAbi: typeof BLOCK_SITES_RUNTIME_ABI;
   readonly exactReadoutAbi: typeof BLOCK_SITES_EXACT_READOUT_ABI;
   /** The attested profile (B1 §3.5); `unitSites` says whether the unit members run. */
-  readonly profile: BlockSitesCapacityProfile;
+  readonly profile: StructuredHookCapacityProfile;
   readonly layerCount: number;
   readonly hiddenSize: number;
   readonly vocabSize: number;
@@ -279,7 +278,7 @@ export interface BlockSitesCapabilities {
 
 /** Validate a capabilities record against its own profile (the bridge builds it at load). */
 export function validateBlockSitesCapabilities(value: BlockSitesCapabilities): BlockSitesCapabilities {
-  const profile = validateBlockSitesProfile(value.profile);
+  const profile = validateStructuredHookProfile(value.profile);
   if (
     value.hookAbi !== BLOCK_SITES_HOOK_ABI ||
     value.runtimeAbi !== BLOCK_SITES_RUNTIME_ABI ||
@@ -753,7 +752,7 @@ export function replayMetaLayout(input: StructuredHookCapacityProfile): {
   readonly patternLayers: number;
   readonly flags: number;
 } {
-  const profile = validateBlockSitesProfile(input);
+  const profile = validateStructuredHookProfile(input);
   if (profile.unitSites !== 1) {
     throw new UnsupportedBlockError(`the ${profile.id} profile has no replay entry point`);
   }
@@ -793,7 +792,7 @@ export function encodeReplayMeta(
   },
   request: Pick<BlockSitesReplayRequest, "anatomyPosition" | "activity" | "patternLayers">,
 ): Int32Array {
-  const profile = validateBlockSitesProfile(input);
+  const profile = validateStructuredHookProfile(input);
   const layout = replayMetaLayout(profile);
   const { layerCount, contextTokens, blockSpec } = model;
   if (!Number.isSafeInteger(contextTokens) || contextTokens < 1 || contextTokens >= 2 ** 24) {
@@ -900,7 +899,7 @@ export function blockSitesBufferElements(
   | "patternKeysSlot" | "patternQ" | "replayMeta" | "chunkAct" | "chunkHeadValues",
   number
 >> {
-  const profile = validateBlockSitesProfile(input);
+  const profile = validateStructuredHookProfile(input);
   const spec = model.blockSpec;
   const l = model.layerCount;
   const hd = spec.headDim;

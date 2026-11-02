@@ -12,7 +12,7 @@ import { expectedBuildToolchain } from "./hosted-model-closure.mjs";
 
 assert.equal(structuredHookProfile("standard-v4"), "standard-v4");
 assert.equal(structuredHookProfile("standard-v4-residual"), "standard-v4-residual");
-assert.throws(() => structuredHookProfile("standard-v3"), /not allow-listed/);
+assert.throws(() => structuredHookProfile("unknown-profile"), /not allow-listed/);
 assert.throws(() => structuredHookProfile("adapter-derived"), /not allow-listed/);
 assert.equal(thinkingProfile(null), null);
 const verifiedThinkingProfile = {

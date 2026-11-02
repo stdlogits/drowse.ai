@@ -412,7 +412,7 @@ test("accepts only one measured pass for every required check in order", () => {
   assert.equal(requiredBrowserFullRuntimeChecks("standard-v4").includes("units"), true);
   assert.equal(requiredBrowserFullRuntimeChecks("standard-v4-residual").includes("unit_refusal"), true);
   assert.equal(requiredBrowserFullRuntimeChecks("standard-v4-residual").includes("units"), false);
-  assert.throws(() => requiredBrowserFullRuntimeChecks("standard-v3"), /predates hook ABI v5/);
+  assert.throws(() => requiredBrowserFullRuntimeChecks("unknown-profile"), /predates hook ABI v5/);
   assert.throws(
     () => validateBrowserFullRuntimeTranscript(events, "standard-v4-residual"),
     /unit_refusal did not start in the required order/,
