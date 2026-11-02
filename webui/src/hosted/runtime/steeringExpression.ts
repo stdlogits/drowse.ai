@@ -92,7 +92,7 @@ export class SteeringExpressionError extends Error {
   readonly code: string = "SteeringExprError";
 
   constructor(message: string, readonly column: number | null = null) {
-    super(column === null ? message : `${message} (column ${column})`);
+    super(column === null ? message : `${message} (col ${column})`);
     this.name = "SteeringExpressionError";
   }
 }
@@ -206,11 +206,12 @@ function lex(text: string): Token[] {
     if (character === '"' || character === "'") {
       throw new SteeringExpressionError(
         "quoted identifiers are not supported; use underscores for multi-word concept names " +
-          "(e.g. 'artificial_intelligence') and '.' for bipolar pairs",
+          "(e.g. 'artificial_intelligence') and '.' for bipolar pairs (e.g. " +
+          "'human.artificial_intelligence')",
         index,
       );
     }
-    throw new SteeringExpressionError(`unexpected character ${JSON.stringify(character)}`, index);
+    throw new SteeringExpressionError(`unexpected character ${pythonStringRepr(character)}`, index);
   }
   tokens.push({ kind: "EOF", value: "", column: text.length });
   return tokens;
@@ -420,12 +421,13 @@ class Parser {
     if (trailing.kind !== "EOF") {
       if (trailing.kind === "IDENT") {
         throw this.error(
-          `unexpected identifier '${trailing.value}' after a complete term; multi-word concept ` +
-            "names use underscores (e.g. 'artificial_intelligence'), and bipolar pairs join with '.'",
+          `unexpected identifier ${tokenRepr(trailing)} after a complete term; multi-word ` +
+            "concept names use underscores (e.g. 'artificial_intelligence', not 'artificial " +
+            "intelligence'), and bipolar pairs join with '.' (e.g. 'human.artificial_intelligence')",
           trailing,
         );
       }
-      throw this.error(`unexpected token ${trailing.kind}`, trailing);
+      throw this.error(`unexpected token ${trailing.kind} (${tokenRepr(trailing)})`, trailing);
     }
     return terms;
   }
@@ -544,7 +546,11 @@ class Parser {
     }
     const phase = PHASES[keyword];
     if (phase === undefined) {
-      throw this.error(`unknown trigger '@${keyword}'; ${TRIGGER_FORMS_HELP}`, token);
+      throw this.error(
+        `unknown trigger '@${keyword}'; ${TRIGGER_FORMS_HELP}.  Note: '@' is for triggers only; ` +
+          "HF revisions are not accepted inside steering expressions.",
+        token,
+      );
     }
     return phase;
   }
@@ -613,7 +619,8 @@ class Parser {
     const operator = this.consume();
     if (!["GT", "GTE", "LT", "LTE"].includes(operator.kind)) {
       throw this.error(
-        `expected comparison op (>, >=, <, <=) in '@when:' clause, got ${operator.kind}`,
+        "expected comparison op (>, >=, <, <=) in '@when:' clause, got " +
+          `${operator.kind} (${tokenRepr(operator)})`,
         operator,
       );
     }
@@ -723,7 +730,7 @@ class Parser {
     try {
       unit = canonicalUnitName(namespace, String(token.value));
     } catch (error) {
-      throw this.error(error instanceof Error ? error.message.replace(/ \(column \d+\)$/u, "") : String(error), token);
+      throw this.error(error instanceof Error ? error.message.replace(/ \(col \d+\)$/u, "") : String(error), token);
     }
     if (this.peek().kind === "DOT") {
       throw this.error(`'${namespace}/${unit}' is a whole unit and takes no '.'`, this.peek());
@@ -761,7 +768,9 @@ class Parser {
 
   private expect(kind: TokenKind): Token {
     const token = this.peek();
-    if (token.kind !== kind) throw this.error(`expected ${kind}, got ${token.kind}`, token);
+    if (token.kind !== kind) {
+      throw this.error(`expected ${kind}, got ${token.kind} (${tokenRepr(token)})`, token);
+    }
     return this.consume();
   }
 
@@ -883,12 +892,52 @@ function formatPosition(position: readonly number[] | string): string {
 }
 
 function exactPosition(position: readonly number[] | string): string {
-  return typeof position === "string" ? position : position.map(pythonRepr).join(",");
+  return typeof position === "string" ? position : position.map(pythonFloatRepr).join(",");
 }
 
-function pythonRepr(value: number): string {
-  if (Object.is(value, -0)) return "-0.0";
-  return Number.isInteger(value) && Math.abs(value) < 1e16 ? `${value}.0` : String(value);
+/** Python's `repr` of a float: the shortest round-trip digits, fixed between 1e-4 and 1e16. */
+function pythonFloatRepr(value: number): string {
+  if (Number.isNaN(value)) return "nan";
+  if (!Number.isFinite(value)) return value > 0 ? "inf" : "-inf";
+  if (value === 0) return Object.is(value, -0) ? "-0.0" : "0.0";
+  const [mantissa, exponentText] = Math.abs(value).toExponential().split("e");
+  const exponent = Number(exponentText);
+  const digits = mantissa.replace(".", "");
+  const sign = value < 0 ? "-" : "";
+  if (exponent < -4 || exponent >= 16) {
+    const scaled = digits.length > 1 ? `${digits[0]}.${digits.slice(1)}` : digits;
+    return `${sign}${scaled}e${exponent < 0 ? "-" : "+"}${String(Math.abs(exponent)).padStart(2, "0")}`;
+  }
+  if (exponent >= digits.length - 1) return `${sign}${digits}${"0".repeat(exponent - digits.length + 1)}.0`;
+  if (exponent >= 0) return `${sign}${digits.slice(0, exponent + 1)}.${digits.slice(exponent + 1)}`;
+  return `${sign}0.${"0".repeat(-exponent - 1)}${digits}`;
+}
+
+const NON_PRINTABLE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Zs}]/u;
+
+/** Python's `repr` of a string: single quotes unless only double quotes avoid escaping. */
+function pythonStringRepr(text: string): string {
+  const quote = text.includes("'") && !text.includes('"') ? '"' : "'";
+  let output = quote;
+  for (const character of text) {
+    const code = character.codePointAt(0)!;
+    if (character === quote || character === "\\") output += `\\${character}`;
+    else if (character === "\n") output += "\\n";
+    else if (character === "\r") output += "\\r";
+    else if (character === "\t") output += "\\t";
+    else if (character !== " " && NON_PRINTABLE.test(character)) {
+      const hex = code.toString(16);
+      output += code < 0x100
+        ? `\\x${hex.padStart(2, "0")}`
+        : code < 0x10000 ? `\\u${hex.padStart(4, "0")}` : `\\U${hex.padStart(8, "0")}`;
+    } else output += character;
+  }
+  return output + quote;
+}
+
+/** A token's value as Python's `{t.value!r}` writes it. */
+function tokenRepr(token: Token): string {
+  return typeof token.value === "number" ? pythonFloatRepr(token.value) : pythonStringRepr(token.value);
 }
 
 function scopeOf(term: SteeringExpressionTerm): LayerScope {

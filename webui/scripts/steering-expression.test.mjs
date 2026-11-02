@@ -181,6 +181,29 @@ try {
     /selects the workspace band \(layers 5-9\) but is fitted at layers 0-1/,
   );
 
+  // Rejection text is what validate shows; these are drowse 6.0's parse_expr messages verbatim
+  // (Python reprs, token values, `(col N)`).
+  for (const [written, message] of [
+    ["0.٣ x", "unexpected character '٣' (col 2)"],
+    ["a.b.c", "unexpected token DOT ('.') (col 3)"],
+    ["x + ", "expected IDENT, got EOF ('') (col 4)"],
+    ["x y", "unexpected identifier 'y' after a complete term; multi-word concept names use " +
+      "underscores (e.g. 'artificial_intelligence', not 'artificial intelligence'), and bipolar " +
+      "pairs join with '.' (e.g. 'human.artificial_intelligence') (col 2)"],
+    ["\"x\"", "quoted identifiers are not supported; use underscores for multi-word concept names " +
+      "(e.g. 'artificial_intelligence') and '.' for bipolar pairs (e.g. " +
+      "'human.artificial_intelligence') (col 0)"],
+    ["0.5 x@foo", "unknown trigger '@foo'; valid: after, before, both, generated, prompt, response, " +
+      "thinking; 'first:<n>' / 'after:<n>' token windows; 'when:<probe><op><threshold>' probe " +
+      "gates; or a compound '<preset>&when:<probe><op><threshold>'.  Note: '@' is for triggers " +
+      "only; HF revisions are not accepted inside steering expressions. (col 6)"],
+    ["foo@when:bar:fraction[0]>0",
+      "expected comparison op (>, >=, <, <=) in '@when:' clause, got LBRACK ('[') (col 21)"],
+    ["0.5 x@first:1.5", "trigger '@first:' takes a non-negative integer token count, got '1.5' (col 12)"],
+  ]) {
+    assert.throws(() => parseSteering(written), (error) => error.message === message, written);
+  }
+
   // The `inverted` regen, against drowse 6.0's Recipe.invert_steering where no bare label
   // resolves; a bare label keeps its written name (drowse resolves it, which changes only text).
   for (const [written, inverted] of [
