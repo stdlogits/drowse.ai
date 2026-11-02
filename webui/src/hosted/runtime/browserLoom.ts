@@ -1547,6 +1547,16 @@ export class BrowserLoomRuntime {
     options: { steered: boolean; raw: boolean; label: string; produced: boolean },
   ): Promise<UnitsNodeReplay> {
     return this.withReplayLock(async () => {
+      const authored = this.requireNode(nodeId);
+      if (authored.recipe === null && (authored.role === "user" || authored.role === "assistant")) {
+        // Native `NodeReplayer.forward` replays an authored turn's captured prompt tokens
+        // (`resolve_prompt_anchor`). The browser measures no prompts, so its authored turns hold
+        // no capture, and drowse refuses such a turn in these words.
+        throw Object.assign(
+          new Error(`${options.label}: '${authored.id}' is an authored turn no generation has measured yet, so it has no prompt tokens to replay`),
+          { code: "INVALID_NODE_OPERATION", status: 400, recoverable: false },
+        );
+      }
       const node = this.replayableNode(nodeId);
       const raw = node.raw_token_ids!;
       const anchor = rawIndex ?? raw.length - 1;
@@ -1554,12 +1564,6 @@ export class BrowserLoomRuntime {
         throw loomError("INVALID_NODE_OPERATION", `Raw token index ${anchor} is outside node ${node.id}`);
       }
       const settings = replaySettings(this.session, node, anchor + 1, options.steered, this.maxOutputTokens);
-      if (settings.positionSpans !== undefined && settings.positionSpans !== null) {
-        throw loomError(
-          "TOKEN_REPLAY_UNAVAILABLE",
-          `${options.label} cannot replay position-targeted steering yet; replay with steered=false`,
-        );
-      }
       let program: StructuredHookProgramBuffers | null = null;
       if (settings.steering) {
         const compiled = await this.compileRequiredSteering(settings.steering);
@@ -1586,6 +1590,8 @@ export class BrowserLoomRuntime {
           rawIds: Int32Array.from(raw),
           rawIndex: anchor,
           spans: [{ firstRow: 0, stopRow: raw.length, at: promptIds.length - 1 }],
+          // Position-targeted steering replays with its recorded spans (B1 §2.3, §3.1).
+          positionSpans: program === null ? null : settings.positionSpans ?? null,
         },
         program,
         steering: settings.steering ?? null,

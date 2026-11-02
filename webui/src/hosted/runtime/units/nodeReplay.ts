@@ -36,6 +36,10 @@ export interface NodeReplayForward {
   readonly promptLength: number;
   readonly rawIds: Int32Array;
   readonly spans: readonly { readonly firstRow: number; readonly stopRow: number; readonly at: number }[];
+  /** The node's recorded steering positions (browser position targeting, B1 §3.1): absolute
+   *  `[start, end)` spans, sorted and disjoint, outside which no steering term fires. Null or
+   *  absent: everywhere. */
+  readonly positionSpans?: readonly (readonly [number, number])[] | null;
 }
 
 /** One replay forward: positions `[start, stop)` under one control evaluation. */
@@ -46,6 +50,9 @@ export interface ReplaySegmentPlan {
   readonly genStep: number;
   /** Stepwise segments evaluate their gates from the previous forward's readback. */
   readonly gated: boolean;
+  /** Inside the node's steering positions (always true without them): outside, every active
+   *  mask is zeroed, as the bridge uploads them there. */
+  readonly inSpan: boolean;
 }
 
 /** Gate scores (`priorScores`) from a forward's readback, for the next segment's controls. */
@@ -67,9 +74,49 @@ export function replaySegments(
   promptLength: number,
   length: number,
   canThink = false,
+  positionSpans: readonly (readonly [number, number])[] | null = null,
+): ReplaySegmentPlan[] {
+  const segments = triggerSegments(program, promptLength, length, canThink);
+  return program === null || positionSpans === null ? segments : splitAtSpans(segments, positionSpans);
+}
+
+/** Split each segment where it crosses a steering-position span boundary (the bridge's prefill
+ *  chunk loop splits there too), marking the pieces inside a span. A trigger segment's controls
+ *  hold across its pieces; a decode piece's `genStep` follows its first position. */
+function splitAtSpans(
+  segments: readonly ReplaySegmentPlan[],
+  spans: readonly (readonly [number, number])[],
+): ReplaySegmentPlan[] {
+  const out: ReplaySegmentPlan[] = [];
+  for (const segment of segments) {
+    const cuts = new Set([segment.start, segment.stop]);
+    for (const [start, end] of spans) {
+      if (start > segment.start && start < segment.stop) cuts.add(start);
+      if (end > segment.start && end < segment.stop) cuts.add(end);
+    }
+    const points = [...cuts].sort((a, b) => a - b);
+    for (let i = 0; i + 1 < points.length; i += 1) {
+      const [start, stop] = [points[i], points[i + 1]];
+      out.push({
+        ...segment,
+        start,
+        stop,
+        genStep: segment.prefill ? segment.genStep : segment.genStep + (start - segment.start),
+        inSpan: spans.some(([first, end]) => start >= first && start < end),
+      });
+    }
+  }
+  return out;
+}
+
+function triggerSegments(
+  program: StructuredHookProgramBuffers | null,
+  promptLength: number,
+  length: number,
+  canThink: boolean,
 ): ReplaySegmentPlan[] {
   const windowed = program === null ? [] : controlsOf(program).filter((c) => c !== null && (c.phase.kind !== "both" || c.gate !== null));
-  if (windowed.length === 0) return [{ start: 0, stop: length, prefill: false, genStep: 0, gated: false }];
+  if (windowed.length === 0) return [{ start: 0, stop: length, prefill: false, genStep: 0, gated: false, inSpan: true }];
   const decoded = length > promptLength;
   const gated = decoded && windowed.some((c) => c!.gate !== null && c!.phase.kind !== "prompt_only");
   const phased = decoded && canThink && windowed.some((c) => c!.phase.kind === "thinking_only" || c!.phase.kind === "after_thinking");
@@ -80,10 +127,10 @@ export function replaySegments(
   }
   const prefillStop = Math.min(promptLength, length);
   const out: ReplaySegmentPlan[] = [];
-  if (prefillStop > 0) out.push({ start: 0, stop: prefillStop, prefill: true, genStep: 0, gated });
+  if (prefillStop > 0) out.push({ start: 0, stop: prefillStop, prefill: true, genStep: 0, gated, inSpan: true });
   if (gated) {
     for (let position = prefillStop; position < length; position += 1) {
-      out.push({ start: position, stop: position + 1, prefill: false, genStep: position - promptLength + 1, gated: true });
+      out.push({ start: position, stop: position + 1, prefill: false, genStep: position - promptLength + 1, gated: true, inSpan: true });
     }
     return out;
   }
@@ -98,13 +145,23 @@ export function replaySegments(
     const state = fires(step);
     let stop = start + 1;
     while (stop < length && fires(stop - promptLength + 1) === state) stop += 1;
-    out.push({ start, stop, prefill: false, genStep: step, gated: false });
+    out.push({ start, stop, prefill: false, genStep: step, gated: false, inSpan: true });
     start = stop;
   }
   return out;
 }
 
 const NO_CONTROLS: StructuredHookControlState = { affineActive: new Uint32Array(0), curveActive: new Uint32Array(0) };
+
+/** Controls outside the steering positions: nothing fires (unit taps still read). */
+function outsideSpan(state: StructuredHookControlState): StructuredHookControlState {
+  return {
+    ...state,
+    affineActive: new Uint32Array(state.affineActive.length),
+    curveActive: new Uint32Array(state.curveActive.length),
+    ...(state.unitActive === undefined ? {} : { unitActive: new Float32Array(state.unitActive.length) }),
+  };
+}
 
 /** Drive a replay's segments through the backend (`drive_segments`), the controls of each
  *  evaluated as the decode loop would have (gates from the previous forward's readback). */
@@ -115,7 +172,7 @@ export async function driveReplay(
   options: { canThink?: boolean; gateScores?: ReplayGateScores; signal?: AbortSignal } = {},
 ): Promise<BlockSitesReplayResult> {
   const program = request.program;
-  const segments = replaySegments(program, forward.promptLength, forward.ids.length, options.canThink);
+  const segments = replaySegments(program, forward.promptLength, forward.ids.length, options.canThink, forward.positionSpans ?? null);
   const evaluate = program === null ? null : createStructuredHookControlEvaluator(program);
   const replay = await backend.openReplay(request, options.signal);
   try {
@@ -129,7 +186,8 @@ export async function driveReplay(
           ? { priorMeasurements: readback.measurements.data, priorScores: options.gateScores?.(program, readback) ?? null }
           : {}),
       };
-      const controls = evaluate === null ? NO_CONTROLS : evaluate(context);
+      const evaluated = evaluate === null ? NO_CONTROLS : evaluate(context);
+      const controls = segment.inSpan ? evaluated : outsideSpan(evaluated);
       readback = await replay.forward({ tokenIds: forward.ids.slice(segment.start, segment.stop), controls });
     }
     return await replay.finish();
@@ -302,9 +360,8 @@ export async function unitActivity(
     };
   }
   const sink = atSink.indexOf(true);
+  // The node's id and steering are the caller's (the service adds the loom node's).
   return {
-    node_id: "",
-    steering: null,
     unit: UNIT_ACTIVITY_UNIT,
     scale: { source: scales.source, detail: scales.detail },
     tokens: Array.from(forward.rawIds, (id, i) => ({ raw_index: i, token_id: id, token: decode(id) })),

@@ -2850,6 +2850,68 @@ try {
   }
 
   console.log("Browser authoritative loom checks passed");
+  // The units members' node replays (`unitsNodeReplay`): a generated node replays its render
+  // plus its raw record under its recorded steering and steering positions; an authored turn is
+  // refused in drowse's words (the browser measures no prompts, so it holds no prompt capture).
+  {
+    const { compileStructuredHookProgram } = await server.ssrLoadModule("/src/hosted/runtime/structuredHookProgram.ts");
+    const { STANDARD_STRUCTURED_HOOK_PROFILE_V4 } = await server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts");
+    const rendered = [];
+    const unitsEngine = {
+      async streamGeneration(plan, onToken) {
+        for (const [rawIndex, tokenId] of [20, 21, 22].entries()) {
+          await plan.onRawToken({ text: String.fromCodePoint(tokenId), tokenId, rawIndex, logprob: -0.1, topAlts: null });
+          await onToken({ text: String.fromCodePoint(tokenId), thinking: false, tokenId, logprob: -0.1, perplexity: Math.exp(0.1), rawIndex });
+        }
+        return generated({ text: "\u0014\u0015\u0016", tokens: 3 });
+      },
+      async stop() {},
+      runtimeCapabilities() {
+        return { topK: true, positionSpans: true, forcedReplay: true, replayScoring: false, tokenizer: true, namedRoles: true, userSeatGeneration: true, sceneStitching: true };
+      },
+      async renderPromptTokenIds(plan) {
+        rendered.push(plan);
+        return [7, 8, 9];
+      },
+    };
+    const compiled = [];
+    const unitsRuntime = new BrowserLoomRuntime({
+      session: session(),
+      generation: unitsEngine,
+      createId: ids("units-replay"),
+      compileSteering: (expression) => {
+        compiled.push(expression);
+        return compileStructuredHookProgram(2, [{}, {}], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
+      },
+    });
+    await unitsRuntime.generate(
+      { type: "submit", text: "Question", authored_role: "user", generated_role: "assistant", raw: false, steering: "0.5 calm", position_spans: [[4, 6]] },
+      () => {},
+    );
+    const [, user, assistant] = unitsRuntime.snapshot().tree.nodes;
+    const port = unitsRuntime.unitsNodeReplay();
+    const options = { steered: true, raw: false, label: "session.unit_activity", produced: false };
+    const replayed = await port.nodeForward(assistant.id, null, options);
+    assert.deepEqual([...replayed.forward.ids], [7, 8, 9, 20, 21]);
+    assert.equal(replayed.forward.promptLength, 3);
+    assert.deepEqual([...replayed.forward.rawIds], [20, 21, 22]);
+    assert.deepEqual(replayed.forward.spans, [{ firstRow: 0, stopRow: 3, at: 2 }]);
+    assert.deepEqual(replayed.forward.positionSpans, [[4, 6]]);
+    assert.equal(replayed.steering, "0.5 calm");
+    assert.ok(replayed.program !== null);
+    assert.equal(compiled.at(-1), "0.5 calm");
+    assert.equal(rendered.at(-1).generationSeat, "assistant");
+    const unsteered = await port.nodeForward(assistant.id, 1, { ...options, steered: false });
+    assert.deepEqual([...unsteered.forward.ids], [7, 8, 9, 20]);
+    assert.equal(unsteered.program, null);
+    assert.equal(unsteered.forward.positionSpans, null);
+    await assert.rejects(
+      port.nodeForward(user.id, 0, options),
+      (error) => error.status === 400 && error.code === "INVALID_NODE_OPERATION" &&
+        error.message === `session.unit_activity: '${user.id}' is an authored turn no generation has measured yet, so it has no prompt tokens to replay`,
+    );
+  }
+
 } finally {
   await server.close();
 }

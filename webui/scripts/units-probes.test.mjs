@@ -18,6 +18,16 @@ try {
   for (const arch of ARCHES) {
     const fx = await unitsFixture(server, arch);
     const golden = archGolden("unit-probes", arch);
+    // B1-goldens §3: `activation_over_scale` within z_atol; the raw activation or write norm a
+    // reading's meta carries within the library rule; the rest (depth) within the rounded rule.
+    // Each 6-decimal field also carries its own rounding (2e-6).
+    const { z_atol, atol, rtol } = golden.tolerance.library;
+    const rounded = golden.tolerance.rounded.atol;
+    const readingTolerance = (path, expected) => {
+      if (/\.(value|per_layer\.\d+)$/.test(path)) return z_atol + rounded;
+      if (/\.meta\.(activation|write_norm)$/.test(path)) return atol + rtol * Math.abs(expected) + rounded;
+      return rounded;
+    };
     const stats = fx.stats;
     const statistics = {
       documents: stats.n_documents,
@@ -56,17 +66,23 @@ try {
       for (const [step, ids] of inputs.entries()) {
         const priorScores = readback === null ? null : program.unitGateScores(bound, readback);
         if (step > 0 && entry.gate_scalars.length) {
+          // Every recorded gate scalar (native keys it by name and by `name[0]`, the scalar
+          // channel) is one the browser's next forward reads.
           const recorded = entry.gate_scalars[step - 1];
-          for (const [name, value] of Object.entries(recorded)) {
-            if (name in priorScores) assert.ok(Math.abs(priorScores[name] - value) <= 1e-4, `${arch} ${entry.name} gate scalar ${name} at step ${step}`);
+          for (const [key, value] of Object.entries(recorded)) {
+            const name = key.endsWith("[0]") ? key.slice(0, -3) : key;
+            assert.ok(name in priorScores, `${arch} ${entry.name} gate scalar ${key} at step ${step} is missing`);
+            assert.ok(Math.abs(priorScores[name] - value) <= z_atol, `${arch} ${entry.name} gate scalar ${key} at step ${step}`);
           }
         }
         const controlState = evaluate({ prefill: step === 0, thinking: false, generatedTokens: step, priorScores });
         readback = await replay.forward({ tokenIds: Int32Array.from(ids), controls: controlState });
-        const { readings } = program.unitTapReadings(bound.measurementSchema.unitTaps, readback.unitTaps.data, 4);
+        // The units channel carries the attached probes only: a gate's unit (neuron/L3n9 in the
+        // gated case) is tapped but has no reading.
+        const { readings } = program.unitTapReadings(bound.measurementSchema.unitTaps, readback.unitTaps.data, 4, new Set(golden.probes));
         const expected = entry.forwards[step].readings;
-        const actual = Object.fromEntries(Object.keys(expected).map((name) => [name, readings[name]]));
-        const problems = compareRecord(actual, expected, { numberTol: () => golden.tolerance.library.z_atol + 2e-6 });
+        assert.deepEqual(Object.keys(readings).sort(), Object.keys(expected).sort(), `${arch} ${entry.name} forward ${step} probes`);
+        const problems = compareRecord(readings, expected, { numberTol: readingTolerance });
         assert.deepEqual(problems, [], `${arch} ${entry.name} forward ${step}`);
       }
       await replay.cancel();

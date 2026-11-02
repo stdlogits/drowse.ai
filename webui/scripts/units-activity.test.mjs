@@ -15,10 +15,13 @@ function f16(bits) {
   if (e === 31) return m ? NaN : s * Infinity;
   return s * (1 + m / 1024) * 2 ** (e - 15);
 }
-const halves = (text) => {
+const halfBits = (text) => {
   const bytes = Buffer.from(text, "base64");
-  return Array.from({ length: bytes.length / 2 }, (_, i) => f16(bytes[2 * i] | (bytes[2 * i + 1] << 8)));
+  return Array.from({ length: bytes.length / 2 }, (_, i) => bytes[2 * i] | (bytes[2 * i + 1] << 8));
 };
+// f16 bit patterns on one ordered line (sign-magnitude to two's complement), so neighbours,
+// zero's two signs included, are one apart: "within one f16 ulp" is |Δ| ≤ 1 there.
+const ordered = (bits) => (bits & 0x8000 ? -(bits & 0x7fff) : bits);
 
 const server = await viteServer();
 try {
@@ -84,11 +87,13 @@ try {
       const actual = await replayModule.unitActivity(fx.backend, { nLayers: 4, spec: fx.model.spec }, scales, forward, program, {
         top: args.top ?? 32, units, rawIndex: args.raw_index ?? null, layers,
       }, (id) => fx.tokenizer.decode([id]));
-      delete actual.node_id;
-      actual.steering = entry.result.steering;
+      // unitActivity never names the steering (the service adds the loom node's); the program
+      // this test lowered by hand stands for the case's recorded expression.
+      assert.equal(entry.result.steering, entry.name === "segmented" ? "!neuron/L1n5@before" : null);
+      assert.equal("steering" in actual, false);
       const expectedPopulation = entry.result.population;
       const actualPopulation = actual.population;
-      const result = { ...entry.result, population: null };
+      const { steering: _steering, ...result } = { ...entry.result, population: null };
       actual.population = null;
       const tol = golden.tolerance.library;
       const problems = compareRecord(actual, result, {
@@ -102,17 +107,73 @@ try {
         assert.equal(actualPopulation.raw_index, expectedPopulation.raw_index);
         assert.equal(actualPopulation.encoding, expectedPopulation.encoding);
         assert.deepEqual(actualPopulation.layers.map((l) => l.layer), expectedPopulation.layers.map((l) => l.layer));
+        assert.equal(actualPopulation.layers.length, expectedPopulation.layers.length);
         actualPopulation.layers.forEach((layer, i) => {
           for (const key of ["neurons", "heads"]) {
-            const got = halves(layer[key]);
-            const want = halves(expectedPopulation.layers[i][key]);
-            got.forEach((value, j) => assert.ok(Math.abs(value - want[j]) <= Math.max(Math.abs(want[j]) * 2 ** -10, 2 ** -24) + 1e-4, `${arch} ${entry.name} population L${layer.layer} ${key}[${j}] ${value} vs ${want[j]}`));
+            const got = halfBits(layer[key]);
+            const want = halfBits(expectedPopulation.layers[i][key]);
+            assert.equal(got.length, want.length, `${arch} ${entry.name} population L${layer.layer} ${key} length`);
+            got.forEach((bits, j) => assert.ok(
+              Math.abs(ordered(bits) - ordered(want[j])) <= 1,
+              `${arch} ${entry.name} population L${layer.layer} ${key}[${j}] ${f16(bits)} vs ${f16(want[j])}`,
+            ));
           }
         });
       }
     }
   }
   console.log("units activity: every unit-activity case matches drowse");
+
+  // Position-targeted steering (browser only, B1 §2.3/§3.1): the replay splits its segments at
+  // the recorded spans and nothing fires outside them, so `!neuron/L1n5` over [p, p+2) changes
+  // only rows produced at or after p, its own rows read the ablated mean, and a span over every
+  // position replays as the unrestricted program.
+  {
+    const arch = "gemma3";
+    const fx = await unitsFixture(server, arch);
+    const golden = archGolden("unit-activity", arch);
+    const stats = fx.stats;
+    const statistics = {
+      documents: stats.n_documents,
+      neuronMean: Float32Array.from(decode(stats.neuron_mean)),
+      neuronScale: Float32Array.from(decode(stats.neuron_scale)),
+      headMean: Float32Array.from(decode(stats.head_mean)),
+      headScale: Float32Array.from(decode(stats.head_scale)),
+    };
+    const scales = scalesModule.readingScales(statistics, fx.model.spec, 4);
+    const chat = Int32Array.from(fx.record.chat_prompt.ids);
+    const rows = golden.cases.find((entry) => entry.name === "generated").result.tokens.map((t) => t.token_id);
+    const base = {
+      ids: Int32Array.from([...chat, ...rows.slice(0, -1)]),
+      promptLength: chat.length,
+      rawIds: Int32Array.from(rows),
+      spans: [{ firstRow: 0, stopRow: rows.length, at: chat.length - 1 }],
+    };
+    const ablate = () => hooks.withStructuredUnitSection(
+      hooks.compileStructuredHookProgram(64, [{}, {}, {}, {}], profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4),
+      { dFF: 96, nHeads: 4, headDim: 16 },
+      { ablations: [hooks.structuredUnitAblationTerm("neuron", 1, 5, 1, statistics.neuronMean[96 + 5], 0)], taps: [], controls: [null] },
+    );
+    const units = [readerModule.parseUnit("neuron/L1n5", fx.model.spec, 4)];
+    const run = (forward, program) => replayModule.unitActivity(fx.backend, { nLayers: 4, spec: fx.model.spec }, scales, forward, program, {
+      top: 4, units, rawIndex: null, layers: null,
+    }, (id) => fx.tokenizer.decode([id]));
+    const p = chat.length + 1;
+    assert.deepEqual(
+      replayModule.replaySegments(ablate(), base.promptLength, base.ids.length, false, [[p, p + 2]]).map((seg) => [seg.start, seg.stop, seg.inSpan]),
+      [[0, p, false], [p, p + 2, true], [p + 2, base.ids.length, false]],
+    );
+    const plain = (await run(base, null)).traces["neuron/L1n5"];
+    const full = (await run(base, ablate())).traces["neuron/L1n5"];
+    const everywhere = (await run({ ...base, positionSpans: [[0, base.ids.length]] }, ablate())).traces["neuron/L1n5"];
+    assert.deepEqual(everywhere, full);
+    const spanned = (await run({ ...base, positionSpans: [[p, p + 2]] }, ablate())).traces["neuron/L1n5"];
+    // Row r is produced at column chat.length - 1 + r: rows 0 and 1 precede the span.
+    assert.deepEqual(spanned.slice(0, 2), plain.slice(0, 2));
+    assert.deepEqual(spanned.slice(2, 4), full.slice(2, 4));
+    assert.notDeepEqual(spanned.slice(2, 4), plain.slice(2, 4));
+    console.log("units activity: position-targeted steering replays with its spans");
+  }
 } finally {
   await server.close();
 }

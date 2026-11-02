@@ -97,12 +97,30 @@ export function tapValue(tap: StructuredUnitTap, raw: number): number {
   return raw / (scale as number);
 }
 
-/** The units channel's readings for one forward's taps (`UnitsInstrument.readings`), the
- *  rounded scores, and the exact gate scores keyed by probe name and by unit. */
+/** Every tap's exact gate scalar for one forward, keyed by the tap's name (an attached probe's,
+ *  or a gate's unit) and by its unit (native `UnitsInstrument.gate_scalars`). */
+export function unitTapGateScores(
+  taps: readonly (StructuredUnitTap | null)[],
+  values: ArrayLike<number>,
+): Record<string, number> {
+  const gateScores: Record<string, number> = {};
+  for (const tap of taps) {
+    if (tap === null) continue;
+    const value = tapValue(tap, values[tap.slot]);
+    gateScores[tap.name] = value;
+    gateScores[tap.unit] = value;
+  }
+  return gateScores;
+}
+
+/** The units channel's readings for one forward (native `step_readings`): the attached unit
+ *  probes' (`probes`, their names), never a unit tapped only because a gate reads it; the rounded
+ *  scores beside them; and every tap's gate scalar (`unitTapGateScores`). */
 export function unitTapReadings(
   taps: readonly (StructuredUnitTap | null)[],
   values: ArrayLike<number>,
   nLayers: number,
+  probes: ReadonlySet<string>,
 ): {
   readings: Record<string, ScalarReadingJSON>;
   scores: Record<string, number>;
@@ -110,14 +128,11 @@ export function unitTapReadings(
 } {
   const readings: Record<string, ScalarReadingJSON> = {};
   const scores: Record<string, number> = {};
-  const gateScores: Record<string, number> = {};
   const den = Math.max(nLayers - 1, 1);
   for (const tap of taps) {
-    if (tap === null) continue;
+    if (tap === null || !probes.has(tap.name)) continue;
     const raw = values[tap.slot];
     const value = tapValue(tap, raw);
-    gateScores[tap.name] = value;
-    gateScores[tap.unit] = value;
     scores[tap.name] = roundReading(value);
     readings[tap.name] = {
       value: roundReading(value),
@@ -131,7 +146,7 @@ export function unitTapReadings(
       },
     };
   }
-  return { readings, scores, gateScores };
+  return { readings, scores, gateScores: unitTapGateScores(taps, values) };
 }
 
 /** Gate scores for a replay's next segment from its last forward's taps. */
@@ -141,5 +156,5 @@ export function unitGateScores(
 ): Readonly<Record<string, number>> {
   const taps = program.measurementSchema?.unitTaps;
   if (!taps || readback.unitTaps === null) return {};
-  return unitTapReadings(taps, readback.unitTaps.data, program.layerCount).gateScores;
+  return unitTapGateScores(taps, readback.unitTaps.data);
 }
