@@ -70,6 +70,9 @@ export interface WebLlmRawToken {
   replayScore?: WebLlmReplayScore;
   measurements?: MeasurementsEnvelopeJSON;
   hookMeasurements?: Float32Array;
+  /** The live unit tap of this token's forward (`[maxUnitTaps]` raw values in slot order, B1
+   *  §2.2), when the program has a unit section. */
+  hookUnitTaps?: Float32Array;
 }
 
 export interface WebLlmGeneratedToken {
@@ -84,6 +87,9 @@ export interface WebLlmGeneratedToken {
   replayScore?: WebLlmReplayScore;
   measurements?: MeasurementsEnvelopeJSON;
   hookMeasurements?: Float32Array;
+  /** The live unit tap of this token's forward (`[maxUnitTaps]` raw values in slot order, B1
+   *  §2.2), when the program has a unit section. */
+  hookUnitTaps?: Float32Array;
 }
 
 export interface WebLlmGenerationUsage {
@@ -193,7 +199,11 @@ export interface WebLlmGenerationHooks {
   clear(): Promise<void>;
   interrupt(): Promise<void>;
   install(program: WebLlmHookProgram): Promise<void>;
-  updateControls?(affineActive: Uint32Array, curveActive: Uint32Array): Promise<void>;
+  updateControls?(
+    affineActive: Uint32Array,
+    curveActive: Uint32Array,
+    unitActive?: Float32Array,
+  ): Promise<void>;
   readBundle?(
     topK: number,
   ): Promise<WebLlmHookMeasurementBuffers>;
@@ -207,6 +217,8 @@ export interface WebLlmGenerationHooks {
 export interface WebLlmHookMeasurementBuffers {
   scalar: Float32Array | undefined;
   geometry: Float32Array | undefined;
+  /** Raw unit taps (B1 §2.2), read in the same synchronization as `scalar`. */
+  unitTaps?: Float32Array | undefined;
   jlensTopTokens: WebLlmJlensTopTokenReadout | undefined;
   saeTopFeatures: WebLlmSaeTopFeatureReadout | undefined;
 }
@@ -222,6 +234,9 @@ interface CapturedGenerationRow {
   replayScore?: WebLlmReplayScore;
   measurements?: MeasurementsEnvelopeJSON;
   hookMeasurements?: Float32Array;
+  /** The live unit tap of this token's forward (`[maxUnitTaps]` raw values in slot order, B1
+   *  §2.2), when the program has a unit section. */
+  hookUnitTaps?: Float32Array;
 }
 
 interface ClassifiedGenerationRow extends CapturedGenerationRow {
@@ -499,9 +514,13 @@ export async function streamWebLlmGeneration(
               readoutTopK,
               plan.sampling?.persist_subspace_coords === true,
             );
-            const gateScores = capturedEnvelope === undefined
+            const unitScores = unitTapReadings(plan.hookProgram, measurement.unitTaps);
+            const envelopeScores = capturedEnvelope === undefined
               ? undefined
               : measurementGateScores(capturedEnvelope);
+            const gateScores = unitScores === undefined
+              ? envelopeScores
+              : { ...envelopeScores, ...unitScores };
             const envelope = capturedEnvelope;
             const captured: CapturedGenerationRow = {
               text: row.token,
@@ -518,6 +537,9 @@ export async function streamWebLlmGeneration(
               ...(measurement.scalar === undefined
                 ? {}
                 : { hookMeasurements: new Float32Array(measurement.scalar) }),
+              ...(measurement.unitTaps === undefined
+                ? {}
+                : { hookUnitTaps: new Float32Array(measurement.unitTaps) }),
             };
             if (plan.onRawToken) {
               await plan.onRawToken(captured);
@@ -541,6 +563,7 @@ export async function streamWebLlmGeneration(
                 piece.measurements,
                 piece.hookMeasurements,
                 piece.replayScore,
+                piece.hookUnitTaps,
               );
               (token.thinking ? thinkingText : text).push(token.text);
               if (token.text !== "") {
@@ -605,6 +628,7 @@ export async function streamWebLlmGeneration(
         piece.measurements,
         piece.hookMeasurements,
         piece.replayScore,
+        piece.hookUnitTaps,
       );
       (token.thinking ? thinkingText : text).push(token.text);
       if (token.text !== "") {
@@ -1158,6 +1182,7 @@ function emittedToken(
   measurements: MeasurementsEnvelopeJSON | undefined,
   hookMeasurements: Float32Array | undefined,
   replayScore: WebLlmReplayScore | undefined,
+  hookUnitTaps?: Float32Array,
 ): WebLlmGeneratedToken {
   return {
     text,
@@ -1176,6 +1201,9 @@ function emittedToken(
     ...(hookMeasurements === undefined
       ? {}
       : { hookMeasurements: new Float32Array(hookMeasurements) }),
+    ...(hookUnitTaps === undefined
+      ? {}
+      : { hookUnitTaps: new Float32Array(hookUnitTaps) }),
   };
 }
 
@@ -1239,11 +1267,20 @@ async function readHookMeasurements(
   const hasGeometryMeasurements = hasActiveGeometryMeasurements(hookProgram);
   const hasJlensReadout = includeDiscoveryReadouts && schema?.lensReadout === true;
   const hasSaeReadout = includeDiscoveryReadouts && schema?.saeReadout === true;
-  const bundled = !includeDiscoveryReadouts || hooks.readBundle === undefined ||
+  const hasUnitTaps = schema?.unitTaps?.some((tap) => tap !== null) === true;
+  const bundled = hooks.readBundle === undefined ||
+      (!includeDiscoveryReadouts && !hasUnitTaps) ||
       (!hasScalarMeasurements && !hasGeometryMeasurements &&
-        !hasJlensReadout && !hasSaeReadout)
+        !hasJlensReadout && !hasSaeReadout && !hasUnitTaps)
     ? undefined
     : await hooks.readBundle(readoutTopK);
+  const unitTaps = bundled?.unitTaps;
+  if (hasUnitTaps && unitTaps === undefined) {
+    throw generationError(
+      "UNIT_TAPS_UNAVAILABLE",
+      "The loaded browser model did not return the live unit tap its program declares",
+    );
+  }
   const scalar = bundled?.scalar ??
     (hasScalarMeasurements ? await hooks.read() : undefined);
   const geometry = bundled?.geometry ??
@@ -1275,9 +1312,37 @@ async function readHookMeasurements(
   return {
     scalar: scalar === undefined ? undefined : new Float32Array(scalar),
     geometry: geometry === undefined ? undefined : new Float32Array(geometry),
+    ...(unitTaps === undefined ? {} : { unitTaps: new Float32Array(unitTaps) }),
     jlensTopTokens,
     saeTopFeatures,
   };
+}
+
+/** Each tapped unit's reading (`v / S`, the pole of a neuron chosen by the sign of `act`, B1
+ *  §2.2), keyed by the unit's name, for unit gates on the next forward. */
+export function unitTapReadings(
+  hookProgram: WebLlmHookProgram | null | undefined,
+  taps: Float32Array | undefined,
+): Record<string, number> | undefined {
+  if (!hookProgram || !isStructuredProgram(hookProgram) || taps === undefined) return undefined;
+  const schema = hookProgram.measurementSchema?.unitTaps;
+  if (schema === undefined) return undefined;
+  const readings: Record<string, number> = {};
+  for (const tap of schema) {
+    if (tap === null) continue;
+    const raw = taps[tap.slot];
+    if (raw === undefined || !Number.isFinite(raw)) {
+      throw generationError(
+        "INVALID_UNIT_TAP",
+        `The browser model returned no finite tap for ${tap.unit}`,
+      );
+    }
+    const scale = typeof tap.scale.value === "number"
+      ? tap.scale.value
+      : tap.scale.value[raw >= 0 ? 0 : 1];
+    readings[tap.unit] = Math.fround(Math.fround(raw) / Math.fround(scale));
+  }
+  return readings;
 }
 
 export function measurementEnvelope(
@@ -1383,7 +1448,7 @@ export function measurementEnvelope(
   const geometrySchemas = schema.geometryProbes ?? [];
   if (geometrySchemas.some((probe) => probe !== null)) {
     if (
-      hookProgram.format !== "drowse-structured-v3" ||
+      !carriesGeometry(hookProgram.format) ||
       hookProgram.profile.maxGeometryProbes === 0
     ) {
       throw generationError(
@@ -1874,7 +1939,7 @@ function prepareSubspaceTrailPlans(program: StructuredHookProgramBuffers): void 
   const geometry = program.measurementSchema?.geometryProbes;
   if (geometry === undefined || !geometry.some((probe) => probe !== null)) return;
   if (
-    program.format !== "drowse-structured-v3" ||
+    !carriesGeometry(program.format) ||
     program.geometryActive === undefined ||
     program.geometryRank === undefined ||
     program.geometryCandidateCount === undefined ||
@@ -2111,19 +2176,25 @@ function subspaceTrailError(
   );
 }
 
+/** drowse-structured-v3 and v4 (v3 plus the unit section) carry the geometry section. */
+function carriesGeometry(format: string): boolean {
+  return format === "drowse-structured-v3" || format === "drowse-structured-v4";
+}
+
 function isStructuredProgram(
   program: WebLlmHookProgram,
 ): program is StructuredHookProgramBuffers {
   return "format" in program && (
     program.format === "drowse-structured-v2" ||
-    program.format === "drowse-structured-v3"
+    program.format === "drowse-structured-v3" ||
+    program.format === "drowse-structured-v4"
   );
 }
 
 function hasActiveGeometryMeasurements(
   program: WebLlmHookProgram,
 ): program is StructuredHookProgramBuffers {
-  if (!isStructuredProgram(program) || program.format !== "drowse-structured-v3") return false;
+  if (!isStructuredProgram(program) || !carriesGeometry(program.format)) return false;
   if (!program.measurementSchema?.geometryProbes?.some((probe) => probe !== null)) return false;
   return program.geometryActive?.some((active) => active === 1) ?? false;
 }
@@ -2182,11 +2253,22 @@ async function updateStructuredControls(
   });
   if (
     equalUint32(program.affineActive, controls.affineActive) &&
-    equalUint32(program.curveActive, controls.curveActive)
+    equalUint32(program.curveActive, controls.curveActive) &&
+    equalFloat32(program.unitActive, controls.unitActive)
   ) return;
-  await hooks.updateControls(controls.affineActive, controls.curveActive);
+  await hooks.updateControls(controls.affineActive, controls.curveActive, controls.unitActive);
   program.affineActive.set(controls.affineActive);
   program.curveActive.set(controls.curveActive);
+  if (controls.unitActive !== undefined) program.unitActive?.set(controls.unitActive);
+}
+
+function equalFloat32(left: Float32Array | undefined, right: Float32Array | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
 }
 
 function equalUint32(left: Uint32Array, right: Uint32Array): boolean {

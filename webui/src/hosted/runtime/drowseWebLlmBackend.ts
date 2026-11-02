@@ -12,8 +12,10 @@ import type {
 } from "../../../../drowse/webui/src/lib/types";
 import { BrowserLoomRuntime, type BrowserGenerationPort } from "./browserLoom";
 import {
+  BLOCK_SITES_BACKEND_MEMBERS,
   rejectingBlockSitesBackend,
   UnsupportedBlockError,
+  type BlockSitesCapabilities,
   type BrowserBlockSitesBackend,
   type BrowserGenerationPerformance,
   type BrowserGenerationStopReason,
@@ -23,7 +25,10 @@ import {
 } from "./modelBackend";
 import { runtimeServiceRoute } from "./operationPolicy";
 import type { RankOneHookProgramBuffers } from "./rankOneHookProgram";
-import type { StructuredHookProgramBuffers } from "./structuredHookProgram";
+import {
+  structuredUnitSectionLayout,
+  type StructuredHookProgramBuffers,
+} from "./structuredHookProgram";
 import type { SteeringManifoldEntry } from "./steeringExpression";
 import { DrowseWebLlmRuntime, type DrowseWebLlmModule } from "./webLlmEngine";
 import type { WebLlmCaptureRuntimePort } from "./webLlmActivationCapture";
@@ -45,6 +50,8 @@ interface DrowseWebLlmRuntimePort extends BrowserGenerationPort, WebLlmCaptureRu
     tokenIds: readonly number[],
   ): Promise<Float32Array>;
   generationPerformance(): BrowserGenerationPerformance;
+  /** Hook ABI v5's attested surface, or null when the loaded library predates it. */
+  blockSitesCapabilities?(): BlockSitesCapabilities | null;
 }
 
 export interface BrowserAuthoringRequestContext {
@@ -178,13 +185,24 @@ export class DrowseWebLlmBackend implements BrowserModelBackend {
     this.clearLoadedState();
   }
 
-  // Hook ABI v5 seam placeholder (lane C0): B4 replaces it with the bridge's surface.
   private readonly v4BlockSites = rejectingBlockSitesBackend(
     () => new UnsupportedBlockError("the loaded model library predates hook ABI block-sites-v5"),
   );
+  private blockSitesSurface: {
+    capabilities: BlockSitesCapabilities;
+    backend: BrowserBlockSitesBackend;
+  } | null = null;
 
   blockSites(): BrowserBlockSitesBackend {
-    return this.v4BlockSites;
+    const capabilities = this.runtime.blockSitesCapabilities?.() ?? null;
+    if (capabilities === null) return this.v4BlockSites;
+    if (this.blockSitesSurface?.capabilities !== capabilities) {
+      this.blockSitesSurface = {
+        capabilities,
+        backend: webLlmBlockSitesBackend(capabilities),
+      };
+    }
+    return this.blockSitesSurface.backend;
   }
 
   private clearLoadedState(): void {
@@ -395,4 +413,65 @@ function backendCleanupError(loadError: unknown, cleanupError: unknown): Error &
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** The members a stage of hook ABI v5 has not wired into the WebLLM bridge yet reject with this
+ *  code (replay, residency, static reads); they are not refusals of the model. */
+const BLOCK_SITES_MEMBER_UNAVAILABLE = "BLOCK_SITES_MEMBER_UNAVAILABLE";
+
+function blockSitesMemberUnavailable(member: string): Error {
+  return Object.assign(
+    new Error(`The browser runtime does not provide ${member} for hook ABI block-sites-v5 yet`),
+    { code: BLOCK_SITES_MEMBER_UNAVAILABLE },
+  );
+}
+
+/** The WebLLM bridge's hook ABI v5 surface (B1 §2.2, §3.4, §3.5). A residual library answers
+ *  every unit member with its lock refusal (422, as native); a units library binds
+ *  drowse-structured-v4 programs, whose generation runs through the units pair. */
+export function webLlmBlockSitesBackend(capabilities: BlockSitesCapabilities): BrowserBlockSitesBackend {
+  const units = capabilities.profile.unitSites === 1;
+  const refuse = (): Promise<never> =>
+    Promise.reject(new UnsupportedBlockError(capabilities.unitRefusal ?? "unit sites unavailable"));
+  const backend: Record<string, unknown> = {
+    capabilities: () => capabilities,
+  };
+  for (const member of BLOCK_SITES_BACKEND_MEMBERS) {
+    backend[member] = units
+      ? () => Promise.reject(blockSitesMemberUnavailable(member))
+      : refuse;
+  }
+  backend.bindStructuredProgram = async (
+    program: StructuredHookProgramBuffers,
+  ): Promise<StructuredHookProgramBuffers> => {
+    if (program.unitMeta === undefined) return program;
+    if (!units) return refuse();
+    const spec = capabilities.blockSpec!;
+    const layout = structuredUnitSectionLayout(
+      capabilities.profile,
+      capabilities.layerCount,
+      spec.headDim,
+    );
+    if (
+      program.unitMeta.length !== layout.metaLength ||
+      program.unitCoeff?.length !== layout.coeffLength ||
+      program.unitActive?.length !== layout.activeLength ||
+      program.tapGrams?.length !== layout.tapGramsLength
+    ) {
+      throw new TypeError("The program's unit section does not match the loaded model's layout");
+    }
+    // Head taps read `tapGrams[i] = G_h` (B1 §2.2). Until the bridge builds them on the GPU
+    // (`drowse_head_write_grams`), the caller supplies them and an all-zero gram fails closed.
+    const offsets = layout.meta.tapHeadOffsets;
+    const heads = program.unitMeta[offsets.offset + capabilities.layerCount];
+    const gram = spec.headDim * spec.headDim;
+    for (let entry = 0; entry < heads; entry += 1) {
+      const values = program.tapGrams.subarray(entry * gram, (entry + 1) * gram);
+      if (values.every((value) => value === 0)) {
+        throw blockSitesMemberUnavailable("the head write grams of a tapped head");
+      }
+    }
+    return program;
+  };
+  return Object.freeze(backend) as unknown as BrowserBlockSitesBackend;
 }

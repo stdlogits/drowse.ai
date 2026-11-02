@@ -1,3 +1,7 @@
+import {
+  validateBlockSitesCapabilities,
+  type BlockSitesCapabilities,
+} from "./modelBackend";
 import type {
   BrowserModelLoadRequest,
   BrowserModelLoadResult,
@@ -15,11 +19,21 @@ import type { RankOneHookProgramBuffers } from "./rankOneHookProgram";
 import {
   STRUCTURED_HOOK_FORMAT,
   STRUCTURED_HOOK_FORMAT_V2,
+  STRUCTURED_HOOK_FORMAT_V4,
   type StructuredHookProgramBuffers,
   type StructuredHookProgramV3Buffers,
 } from "./structuredHookProgram";
 import {
+  BLOCK_SITES_EXACT_READOUT_ABI,
+  BLOCK_SITES_EXACT_READOUT_ABI_VERSION,
+  BLOCK_SITES_HOOK_ABI,
+  BLOCK_SITES_RUNTIME_ABI,
   EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
+  expectedHookProfileDescriptor,
+  hookProfileDescriptorMismatches,
+  isBlockSitesProfile,
+  type BlockSpec,
+  type HookProfileDescriptorModel,
   resolveStructuredHookProfile,
   structuredCurveParameterStride,
   structuredGeometryPayloadLayout,
@@ -85,6 +99,8 @@ interface DrowseSaeTopFeatureReadout {
 interface DrowseMeasurementBundle {
   scalar?: Float32Array;
   geometry?: Float32Array;
+  /** Hook ABI v5's live unit tap (`[maxUnitTaps]`), when the program has a unit section. */
+  unitTaps?: Float32Array;
   jlensTopTokens?: DrowseJlensTopTokenReadout;
   saeTopFeatures?: DrowseSaeTopFeatureReadout;
 }
@@ -119,6 +135,8 @@ export interface DrowseWebLlmEngineInstance extends WebLlmGenerationEngine {
     program: RankOneHookProgramBuffers,
     modelId?: string,
   ): Promise<void>;
+  // The vendored bridge's type until stage 3 vendors the v5 build (its DrowseStructuredProgram
+  // carries drowse-structured-v4's unit section; the cast below goes with it).
   setDrowseStructuredProgram(
     program: StructuredHookProgramV3Buffers,
     modelId?: string,
@@ -127,7 +145,10 @@ export interface DrowseWebLlmEngineInstance extends WebLlmGenerationEngine {
     affineActive: Uint32Array,
     curveActive?: Uint32Array,
     modelId?: string,
+    unitActive?: Float32Array,
   ): Promise<void>;
+  /** Hook ABI v5: the library compiles unit sites and the units pair (`standard-v4`). */
+  supportsDrowseUnitSites?(modelId?: string): Promise<boolean>;
   clearDrowseRankOneProgram(modelId?: string): Promise<void>;
   setDrowseJlensDictionary(
     dictionary: DrowseJlensDictionary,
@@ -237,10 +258,13 @@ export interface DrowseWebLlmModule {
 }
 
 export interface CompiledDrowseStructuredHookProfile {
-  schemaVersion: 2 | 3;
+  schemaVersion: 2 | 3 | 4;
   id: StructuredHookProfileId;
   hookAbi: string;
-  format: typeof STRUCTURED_HOOK_FORMAT | typeof STRUCTURED_HOOK_FORMAT_V2;
+  format:
+    | typeof STRUCTURED_HOOK_FORMAT
+    | typeof STRUCTURED_HOOK_FORMAT_V2
+    | typeof STRUCTURED_HOOK_FORMAT_V4;
   layerCount: number;
   hiddenSize: number;
   maxAffineGroups: number;
@@ -264,14 +288,19 @@ export interface CompiledDrowseStructuredHookProfile {
   geometryKernelStorageBindings: number;
   geometryHeaderStride: number;
   geometryPayloadElements: number;
-  exactReadoutAbiVersion?: 1;
-  exactReadoutAbi?: typeof DROWSE_EXACT_READOUT_ABI;
+  exactReadoutAbiVersion?: 1 | 2;
+  exactReadoutAbi?: typeof DROWSE_EXACT_READOUT_ABI | typeof BLOCK_SITES_EXACT_READOUT_ABI;
   readoutTopK?: typeof DROWSE_READOUT_TOP_K;
   maxSaeFeaturesPerChunk?: typeof DROWSE_EXACT_READOUT_MAX_SAE_FEATURES_PER_CHUNK;
+  /** Hook ABI v5 (schema 4): whether the library compiles unit sites. */
+  unitSites?: 0 | 1;
+  /** Hook ABI v5: the whole attested descriptor (C0's `HOOK_PROFILE_DESCRIPTOR_V4_FIELDS`). */
+  descriptor?: Int32Array;
 }
 
 export class DrowseWebLlmRuntime {
   private engine: DrowseWebLlmEngineInstance | null = null;
+  private blockSites: BlockSitesCapabilities | null = null;
   private captureSpecialTokenIds: number[] | null = null;
   private vocabSize: number | null = null;
   private generating = false;
@@ -523,6 +552,11 @@ export class DrowseWebLlmRuntime {
       }
       this.captureSpecialTokenIds = [...prepared.captureSpecialTokenIds];
       this.vocabSize = prepared.vocabSize;
+      this.blockSites = blockSitesCapabilitiesFor(
+        this.structuredHookProfile,
+        request,
+        prepared.vocabSize,
+      );
       initializationPhase = null;
       return { prefillTokensPerSecond: null, decodeTokensPerSecond: null };
     } catch (error) {
@@ -535,6 +569,7 @@ export class DrowseWebLlmRuntime {
       this.thinkingProfile = null;
       this.drowseCapabilities = null;
       this.structuredHookProfile = null;
+      this.blockSites = null;
       this.maxOutputTokens = MAX_OUTPUT_TOKEN_COUNT;
       this.resetDecodedTokenCache();
       this.saeDictionaryIdentity = null;
@@ -570,6 +605,7 @@ export class DrowseWebLlmRuntime {
     this.thinkingProfile = null;
     this.drowseCapabilities = null;
     this.structuredHookProfile = null;
+    this.blockSites = null;
     this.maxOutputTokens = MAX_OUTPUT_TOKEN_COUNT;
     this.resetDecodedTokenCache();
     this.saeDictionaryIdentity = null;
@@ -613,8 +649,8 @@ export class DrowseWebLlmRuntime {
           clear: () => this.clearHookProgram(),
           interrupt: () => this.stop(),
           install: (program) => this.installHookProgram(program),
-          updateControls: (affineActive, curveActive) =>
-            this.updateStructuredControls(affineActive, curveActive),
+          updateControls: (affineActive, curveActive, unitActive) =>
+            this.updateStructuredControls(affineActive, curveActive, unitActive),
           readBundle: (topK) => this.readMeasurementBundle(topK),
           read: () => this.readMeasurements(),
           readGeometry: () => this.readGeometryMeasurements(),
@@ -751,6 +787,12 @@ export class DrowseWebLlmRuntime {
           "The steering program does not match the loaded Drowse hook ABI",
         );
       }
+      if (program.unitMeta !== undefined && this.structuredHookProfile.unitSites !== 1) {
+        throw runtimeError(
+          "UNIT_SITES_UNAVAILABLE",
+          "The loaded model library does not compile Drowse unit sites",
+        );
+      }
       const hasCurve = program.curveRank.some((rank) => rank > 0);
       if (hasCurve && !this.curvedHooks) {
         throw runtimeError(
@@ -770,19 +812,29 @@ export class DrowseWebLlmRuntime {
       if (program.saeBindingId !== undefined) {
         await this.ensureSaeDictionaryResident(program.saeBindingId);
       }
-      await this.requireEngine().setDrowseStructuredProgram(program as StructuredHookProgramV3Buffers);
+      await this.requireEngine().setDrowseStructuredProgram(
+        program as unknown as StructuredHookProgramV3Buffers,
+      );
       return;
     }
     await this.installRankOneHookProgram(program);
   }
 
+  /** Hook ABI v5's attested surface (B1 §3.5), or null when the library predates it. */
+  blockSitesCapabilities(): BlockSitesCapabilities | null {
+    return this.blockSites;
+  }
+
   async updateStructuredControls(
     affineActive: Uint32Array,
     curveActive: Uint32Array,
+    unitActive?: Float32Array,
   ): Promise<void> {
     await this.requireEngine().updateDrowseStructuredControls(
       affineActive,
       curveActive,
+      undefined,
+      unitActive,
     );
   }
 
@@ -988,6 +1040,7 @@ export class DrowseWebLlmRuntime {
   async readMeasurementBundle(topK = DROWSE_READOUT_TOP_K): Promise<{
     scalar: Float32Array | undefined;
     geometry: Float32Array | undefined;
+    unitTaps?: Float32Array;
     jlensTopTokens: WebLlmJlensTopTokenReadout | undefined;
     saeTopFeatures: WebLlmSaeTopFeatureReadout | undefined;
   }> {
@@ -1008,6 +1061,7 @@ export class DrowseWebLlmRuntime {
       geometry: value.geometry === undefined
         ? undefined
         : new Float32Array(value.geometry),
+      ...(value.unitTaps === undefined ? {} : { unitTaps: new Float32Array(value.unitTaps) }),
       jlensTopTokens,
       saeTopFeatures,
     };
@@ -1356,9 +1410,139 @@ function sameTokenIds(actual: readonly number[], expected: readonly number[]): b
     actual.every((tokenId, index) => tokenId === expected[index]);
 }
 
+/** The descriptor model a variant's library must attest (B1 §3.5): the lock's context profiles
+ *  (largest compiled window, smallest prefill chunk, the adoption rule) and its block spec. */
+export function hookProfileDescriptorModel(
+  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec">,
+): HookProfileDescriptorModel {
+  const contexts = request.variant.contextProfiles.map((profile) => profile.contextTokens);
+  if (contexts.length === 0) {
+    throw runtimeError("HOOK_ABI_MISMATCH", "The model variant names no compiled context window");
+  }
+  return {
+    layerCount: request.variant.runtimeIdentity.layerMap.length,
+    hiddenSize: request.variant.runtimeIdentity.hiddenSize,
+    contextTokens: Math.max(...contexts),
+    prefillChunkSize: Math.min(...contexts),
+    blockSpec: request.blockSpec ?? null,
+  };
+}
+
+/** Hook ABI v5: the library's schema-4 descriptor, element by element, against the lock (B1
+ *  §3.5 attestation); every mismatch fails the load with `HOOK_ABI_MISMATCH`. */
+function attestBlockSitesHookProfile(
+  record: Record<string, unknown>,
+  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec">,
+  moduleHookAbi: string,
+): CompiledDrowseStructuredHookProfile {
+  const profile = resolveStructuredHookProfile(request.variant.structuredHookProfile);
+  if (!isBlockSitesProfile(profile)) {
+    throw new TypeError("attestBlockSitesHookProfile requires a block-sites profile");
+  }
+  const model = hookProfileDescriptorModel(request);
+  if (profile.unitSites === 1 && model.blockSpec === null) {
+    throw runtimeError(
+      "HOOK_ABI_MISMATCH",
+      "The runtime lock does not record this model's block spec, so its unit sites cannot be attested",
+    );
+  }
+  const expectedDescriptor = expectedHookProfileDescriptor(profile, model);
+  const descriptor = record.descriptor;
+  if (
+    moduleHookAbi !== BLOCK_SITES_HOOK_ABI ||
+    record.schemaVersion !== 4 ||
+    record.id !== profile.id ||
+    record.hookAbi !== BLOCK_SITES_HOOK_ABI ||
+    record.format !== STRUCTURED_HOOK_FORMAT_V4 ||
+    record.unitSites !== profile.unitSites ||
+    !Array.isArray(descriptor)
+  ) {
+    throw runtimeError(
+      "HOOK_ABI_MISMATCH",
+      "The loaded model library does not attest hook ABI block-sites-v5 under the lock's profile",
+    );
+  }
+  const mismatches = hookProfileDescriptorMismatches(descriptor as number[], expectedDescriptor);
+  if (mismatches.length > 0) {
+    throw runtimeError(
+      "HOOK_ABI_MISMATCH",
+      `The loaded model library's hook profile differs from the runtime lock at ${mismatches.join(", ")}`,
+    );
+  }
+  return Object.freeze({
+    schemaVersion: 4,
+    id: profile.id,
+    hookAbi: BLOCK_SITES_HOOK_ABI,
+    format: STRUCTURED_HOOK_FORMAT_V4,
+    layerCount: model.layerCount,
+    hiddenSize: model.hiddenSize,
+    maxAffineGroups: profile.maxAffineGroups,
+    maxRank: profile.maxRank,
+    maxProbes: profile.maxProbes,
+    maxCurves: profile.maxCurves,
+    maxCurveNodes: profile.maxCurveNodes,
+    maxIntrinsicDim: profile.maxIntrinsicDim,
+    maxEmbedDim: profile.maxEmbedDim,
+    maxGeometryProbes: profile.maxGeometryProbes,
+    maxWhitenerRank: profile.maxWhitenerRank,
+    maxGeometryCandidates: profile.maxGeometryCandidates,
+    geometryOutputStride: profile.geometryOutputStride,
+    geometryFootRestarts: profile.geometryFootRestarts,
+    geometryFootIterations: profile.geometryFootIterations,
+    geometryWarmRestarts: profile.geometryWarmRestarts,
+    geometryWarmIterations: profile.geometryWarmIterations,
+    curveParameterStride: structuredCurveParameterStride(profile),
+    maxComputeWorkgroupStorageSize: profile.maxComputeWorkgroupStorageSize,
+    requiredMaxStorageBuffersPerShaderStage: profile.requiredMaxStorageBuffersPerShaderStage,
+    geometryKernelStorageBindings: profile.geometryKernelStorageBindings,
+    geometryHeaderStride: profile.geometryHeaderStride,
+    geometryPayloadElements: structuredGeometryPayloadLayout(
+      profile,
+      model.layerCount,
+      model.hiddenSize,
+    ).elements,
+    exactReadoutAbiVersion: BLOCK_SITES_EXACT_READOUT_ABI_VERSION,
+    exactReadoutAbi: BLOCK_SITES_EXACT_READOUT_ABI,
+    readoutTopK: DROWSE_READOUT_TOP_K,
+    maxSaeFeaturesPerChunk: DROWSE_EXACT_READOUT_MAX_SAE_FEATURES_PER_CHUNK,
+    unitSites: profile.unitSites,
+    descriptor: Int32Array.from(expectedDescriptor),
+  });
+}
+
+/** The v5 capabilities of an attested schema-4 library: the lock's profile, shapes, context, block
+ *  spec and (residual) refusal. Null for a pre-v5 library or a residual one whose lock entry
+ *  records no refusal text. */
+export function blockSitesCapabilitiesFor(
+  profile: CompiledDrowseStructuredHookProfile | null,
+  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec" | "unitRefusal">,
+  vocabSize: number,
+): BlockSitesCapabilities | null {
+  if (profile === null || profile.schemaVersion !== 4) return null;
+  const capacity = resolveStructuredHookProfile(request.variant.structuredHookProfile);
+  if (!isBlockSitesProfile(capacity)) return null;
+  const units = capacity.unitSites === 1;
+  const refusal = units ? null : request.unitRefusal ?? null;
+  if (!units && (refusal === null || refusal.length === 0)) return null;
+  const model = hookProfileDescriptorModel(request);
+  return validateBlockSitesCapabilities({
+    hookAbi: BLOCK_SITES_HOOK_ABI,
+    runtimeAbi: BLOCK_SITES_RUNTIME_ABI,
+    exactReadoutAbi: BLOCK_SITES_EXACT_READOUT_ABI,
+    profile: capacity,
+    layerCount: model.layerCount,
+    hiddenSize: model.hiddenSize,
+    vocabSize,
+    contextTokens: model.contextTokens,
+    prefillChunkSize: model.prefillChunkSize,
+    blockSpec: units ? model.blockSpec : null,
+    unitRefusal: refusal,
+  });
+}
+
 export function attestCompiledStructuredHookProfile(
   value: unknown,
-  request: Pick<BrowserModelLoadRequest, "variant">,
+  request: Pick<BrowserModelLoadRequest, "variant" | "blockSpec">,
   moduleHookAbi: string,
 ): CompiledDrowseStructuredHookProfile {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -1369,6 +1553,9 @@ export function attestCompiledStructuredHookProfile(
   }
   const record = value as Record<string, unknown>;
   const profile = resolveStructuredHookProfile(request.variant.structuredHookProfile);
+  if (isBlockSitesProfile(profile)) {
+    return attestBlockSitesHookProfile(record, request, moduleHookAbi);
+  }
   const expected: CompiledDrowseStructuredHookProfile = {
     schemaVersion: profile.id === "standard-v3" ? 3 : 2,
     id: profile.id,
@@ -1438,11 +1625,15 @@ export function attestCompiledStructuredHookProfile(
 function assertExactReadoutProfile(
   profile: CompiledDrowseStructuredHookProfile,
 ): void {
+  const v3 = profile.schemaVersion === 3 && profile.id === "standard-v3" &&
+    profile.exactReadoutAbiVersion === DROWSE_EXACT_READOUT_ABI_VERSION &&
+    profile.exactReadoutAbi === DROWSE_EXACT_READOUT_ABI;
+  const v5 = profile.schemaVersion === 4 &&
+    (profile.id === "standard-v4" || profile.id === "standard-v4-residual") &&
+    profile.exactReadoutAbiVersion === BLOCK_SITES_EXACT_READOUT_ABI_VERSION &&
+    profile.exactReadoutAbi === BLOCK_SITES_EXACT_READOUT_ABI;
   if (
-    profile.schemaVersion !== 3 ||
-    profile.id !== "standard-v3" ||
-    profile.exactReadoutAbiVersion !== DROWSE_EXACT_READOUT_ABI_VERSION ||
-    profile.exactReadoutAbi !== DROWSE_EXACT_READOUT_ABI ||
+    !(v3 || v5) ||
     profile.readoutTopK !== DROWSE_READOUT_TOP_K ||
     profile.maxSaeFeaturesPerChunk !==
       DROWSE_EXACT_READOUT_MAX_SAE_FEATURES_PER_CHUNK
@@ -1458,7 +1649,11 @@ function assertExactReadoutWebGpuRequirements(
   structuredHookProfile: StructuredHookProfileId,
   requirements: ModelVariantRequirements,
 ): void {
-  if (structuredHookProfile !== "standard-v3") return;
+  if (
+    structuredHookProfile !== "standard-v3" &&
+    structuredHookProfile !== "standard-v4" &&
+    structuredHookProfile !== "standard-v4-residual"
+  ) return;
   for (const [name, minimum] of Object.entries(
     EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
   )) {

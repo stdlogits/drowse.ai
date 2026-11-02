@@ -46,6 +46,13 @@ export interface BrowserInstrumentPackArtifacts {
 export interface BrowserModelLoadRequest {
   model: CatalogModel;
   variant: ModelVariant;
+  /** The runtime lock's `blockSpec` for this variant (B1 §8.2), which a `standard-v4` library's
+   *  descriptor is attested against; null or absent for a residual library (and until W4
+   *  records it, when a `standard-v4` load fails closed with `HOOK_ABI_MISMATCH`). */
+  blockSpec?: BlockSpec | null;
+  /** The runtime lock's `unitRefusal` for a residual variant (native `UnsupportedBlockError`'s
+   *  text, B1 §7): what its unit members answer (422). */
+  unitRefusal?: string | null;
   requiredCorePack: CatalogInstrumentPack;
   contextTokens: number;
   runtimeClass?: BrowserRuntimeClass;
