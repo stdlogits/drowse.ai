@@ -4621,10 +4621,10 @@ index 00000000..d67ebc61
 +    return op.tensor_expr_op(_take, name_hint=name, args=[values])
 diff --git a/python/mlc_llm/model/drowse_units.py b/python/mlc_llm/model/drowse_units.py
 new file mode 100644
-index 00000000..5c793921
+index 00000000..57e4fe4c
 --- /dev/null
 +++ b/python/mlc_llm/model/drowse_units.py
-@@ -0,0 +1,1326 @@
+@@ -0,0 +1,1327 @@
 +"""Drowse hook ABI v5 (`block-sites-v5`): in-block unit sites for dense blocks.
 +
 +Every eligible model's decoder layer runs `drowse_block(hidden, cache, layer_id, sites)`. With
@@ -5160,8 +5160,10 @@ index 00000000..5c793921
 +    }
 +
 +
-+def replay_program_spec(num_layers: int, block: dict, context: int) -> dict[str, nn.spec.Tensor]:
-+    """The replay arguments after the units program's (B1 §3.4)."""
++def replay_program_spec(num_layers: int, block: dict) -> dict[str, nn.spec.Tensor]:
++    """The replay arguments after the units program's (B1 §3.4). `traces` and `pattern_keys`
++    are sized by the caller to the replay (`trace_rows` = the node's rows, `pattern_tokens` = the
++    positions fed, 1 when not asked), both at most the context window."""
 +    d_ff, heads, kv_heads, head_dim = (
 +        block["d_ff"], block["n_heads"], block["n_kv_heads"], block["head_dim"]
 +    )
@@ -5170,18 +5172,19 @@ index 00000000..5c793921
 +        "unit_scales": nn.spec.Tensor([num_layers, 2 * d_ff + heads], "float32"),
 +        "head_grams": nn.spec.Tensor([num_layers, heads, head_dim, head_dim], "float32"),
 +        "activity_state": nn.spec.Tensor([num_layers, 3 * d_ff + 3 * heads], "float32"),
-+        "traces": nn.spec.Tensor([UNIT_MAX_ACTIVITY_TRACES, context], "float32"),
++        "traces": nn.spec.Tensor([UNIT_MAX_ACTIVITY_TRACES, "trace_rows"], "float32"),
 +        "population": nn.spec.Tensor([num_layers, d_ff + heads], "float32"),
 +        "pattern_keys": nn.spec.Tensor(
-+            [UNIT_MAX_PATTERN_LAYERS, kv_heads, context, head_dim], "float32"
++            [UNIT_MAX_PATTERN_LAYERS, kv_heads, "pattern_tokens", head_dim], "float32"
 +        ),
 +    }
 +
 +
-+def attention_rows_spec(block: dict, context: int) -> dict[str, nn.spec.Tensor]:
++def attention_rows_spec(block: dict) -> dict[str, nn.spec.Tensor]:
 +    return {
 +        "pattern_keys": nn.spec.Tensor(
-+            [UNIT_MAX_PATTERN_LAYERS, block["n_kv_heads"], context, block["head_dim"]], "float32"
++            [UNIT_MAX_PATTERN_LAYERS, block["n_kv_heads"], "pattern_tokens", block["head_dim"]],
++            "float32",
 +        ),
 +        "pattern_q": nn.spec.Tensor(
 +            [UNIT_MAX_PATTERN_LAYERS, block["n_heads"], block["head_dim"]], "float32"
@@ -5204,7 +5207,6 @@ index 00000000..5c793921
 +        num_layers: int,
 +        hidden_size: int,
 +        block: dict,
-+        context: int,
 +        positions: Tensor,
 +        unit_meta: Tensor,
 +        unit_coeff: Tensor,
@@ -5224,7 +5226,6 @@ index 00000000..5c793921
 +        )
 +        self.hidden_size = hidden_size
 +        self.block = block
-+        self.context = context
 +        self.replay_meta = replay_meta
 +        self.unit_scales = unit_scales
 +        self.head_grams = head_grams
@@ -5325,7 +5326,7 @@ index 00000000..5c793921
 +        "state_stride": 3 * d_ff + 3 * heads,
 +        "scale_stride": 2 * d_ff + heads,
 +        "population_stride": d_ff + heads,
-+        "context": sites.context,
++        "context": sites.traces.shape[1],
 +        "meta": replay_meta_layout(),
 +    }
 +
@@ -5678,7 +5679,7 @@ index 00000000..5c793921
 +    rope = not block["rope_in_graph"]
 +    theta = float(block["rope_theta"])
 +    half = head_dim // 2
-+    context = sites.context
++    context = sites.pattern_keys.shape[2]
 +    meta = replay_meta_layout()
 +    width = (heads + kv_heads) * head_dim
 +    steps = (width + _LANES - 1) // _LANES
@@ -7489,7 +7490,7 @@ index 4659a249..48289578 100644
                  "input_embeds": nn.spec.Tensor([1, "seq_len", self.hidden_size], self.dtype),
                  "paged_kv_cache": nn.spec.Object(object_type=PagedKVCache),
 diff --git a/python/mlc_llm/model/qwen3/qwen3_model.py b/python/mlc_llm/model/qwen3/qwen3_model.py
-index f3bdfec1..70c0178c 100644
+index f3bdfec1..655529bb 100644
 --- a/python/mlc_llm/model/qwen3/qwen3_model.py
 +++ b/python/mlc_llm/model/qwen3/qwen3_model.py
 @@ -12,6 +12,45 @@ from tvm.relax.frontend.nn import Tensor, op
@@ -7869,7 +7870,7 @@ index f3bdfec1..70c0178c 100644
  
      def to(self, dtype: Optional[str] = None):
          super().to(dtype=dtype)
-@@ -330,6 +636,913 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -330,6 +636,912 @@ class Qwen3LMHeadModel(nn.Module):
              logits = logits.astype("float32")
          return logits, paged_kv_cache
  
@@ -8504,7 +8505,6 @@ index f3bdfec1..70c0178c 100644
 +            self.num_hidden_layers,
 +            self.hidden_size,
 +            spec,
-+            self.drowse_context_window_size,
 +            paged_kv_cache.get_query_positions(b * s),
 +            unit_meta,
 +            unit_coeff,
@@ -8783,7 +8783,7 @@ index f3bdfec1..70c0178c 100644
      def batch_prefill(
          self,
          input_embeds: Tensor,
-@@ -375,8 +1588,157 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -375,8 +1587,153 @@ class Qwen3LMHeadModel(nn.Module):
              dtype=self.dtype,
          )
  
@@ -8834,12 +8834,8 @@ index f3bdfec1..70c0178c 100644
 +        units_spec = unit_program_spec(
 +            self.num_hidden_layers, self._drowse_block_spec()["head_dim"]
 +        )
-+        replay_spec = replay_program_spec(
-+            self.num_hidden_layers, self._drowse_block_spec(), self.drowse_context_window_size
-+        )
-+        attention_spec = attention_rows_spec(
-+            self._drowse_block_spec(), self.drowse_context_window_size
-+        )
++        replay_spec = replay_program_spec(self.num_hidden_layers, self._drowse_block_spec())
++        attention_spec = attention_rows_spec(self._drowse_block_spec())
          mod_spec = {
 +            "drowse_hook_profile": {
 +                "$": {
@@ -8941,7 +8937,7 @@ index f3bdfec1..70c0178c 100644
              "embed": {
                  "input_ids": nn.spec.Tensor(["seq_len"], "int32"),
                  "$": {
-@@ -400,6 +1762,62 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -400,6 +1757,62 @@ class Qwen3LMHeadModel(nn.Module):
                      "effect_mode": "none",
                  },
              },
@@ -9004,7 +9000,7 @@ index f3bdfec1..70c0178c 100644
              "batch_prefill": {
                  "input_embeds": nn.spec.Tensor([1, "seq_len", self.hidden_size], self.dtype),
                  "logit_positions": nn.spec.Tensor(["batch_size"], "int32"),
-@@ -417,6 +1835,169 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -417,6 +1830,169 @@ class Qwen3LMHeadModel(nn.Module):
                      "effect_mode": "none",
                  },
              },

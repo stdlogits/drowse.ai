@@ -253,9 +253,8 @@ class FixtureVM:
         curved = env.structured_curve_program_spec(model.num_hidden_layers, d)
         units = env.unit_program_spec(model.num_hidden_layers, head_dim)
         block = model._drowse_block_spec()
-        context = model.drowse_context_window_size
-        replay = env.drowse_units.replay_program_spec(model.num_hidden_layers, block, context)
-        rows = env.drowse_units.attention_rows_spec(block, context)
+        replay = env.drowse_units.replay_program_spec(model.num_hidden_layers, block)
+        rows = env.drowse_units.attention_rows_spec(block)
         packed = {"param_mode": "packed", "effect_mode": "none"}
         install_block_sites_forward(type(model), env)
         raw = {
@@ -348,9 +347,10 @@ class FixtureVM:
     def head_grams(self) -> np.ndarray:
         return self.vm["drowse_head_write_grams"](self.params).numpy()
 
-    def replay_carry(self) -> dict:
-        """A fresh replay's threaded buffers: activity state (value 0, row −1, rank −1), traces,
-        population and pattern keys."""
+    def replay_carry(self, rows: int, tokens: int) -> dict:
+        """A fresh replay's threaded buffers: activity state (value 0, row −1, rank −1), traces
+        `[32, rows]`, population and pattern keys `[8, KV, tokens, hd]` (sized to the replay, as
+        the bridge sizes them)."""
         tvm, du = self.env.tvm, self.env.drowse_units
         block, L = self.block, self.num_layers
         f, h = block["d_ff"], block["n_heads"]
@@ -359,9 +359,9 @@ class FixtureVM:
         state[:, 3 * f + h:] = -1
         arrays = {
             "state": state,
-            "traces": np.zeros((du.UNIT_MAX_ACTIVITY_TRACES, self.context), np.float32),
+            "traces": np.zeros((du.UNIT_MAX_ACTIVITY_TRACES, rows), np.float32),
             "population": np.zeros((L, f + h), np.float32),
-            "keys": np.zeros((du.UNIT_MAX_PATTERN_LAYERS, block["n_kv_heads"], self.context,
+            "keys": np.zeros((du.UNIT_MAX_PATTERN_LAYERS, block["n_kv_heads"], tokens,
                               block["head_dim"]), np.float32),
         }
         return {name: tvm.runtime.tensor(value) for name, value in arrays.items()}
@@ -764,12 +764,13 @@ def unit_scales(stats: dict) -> np.ndarray:
                       SCALE_FLOOR).astype(np.float32)
 
 
-def run_replay(vm, segments, *, program, meta, scales, grams, affine=None, anatomy=None):
+def run_replay(vm, segments, *, program, meta, scales, grams, affine=None, anatomy=None, rows=1):
     """Feed `segments` (`(ids, active)` each: one control state) on one fresh sequence in
     forwards of at most `REPLAY_CHUNK` rows, threading the carried buffers. Returns the carry,
     every forward's output, and the forward holding the anatomy position (its taps and
     queries)."""
-    cache, carry = vm.new_cache(), vm.replay_carry()
+    tokens = sum(len(ids) for ids, _ in segments)
+    cache, carry = vm.new_cache(), vm.replay_carry(max(1, rows), tokens)
     meta_t = meta
     position, outputs, at = 0, [], None
     for ids, active in segments:
@@ -1035,7 +1036,7 @@ def verify_activity(env, vm, goldens: Path, arch: str, make_program, stats, scal
         population_row = args.get("raw_index")
         meta = replay_meta(du, spans=spans, population_row=population_row, traces=traces)
         carry, outputs, _ = run_replay(vm, segments, program=unit, meta=meta, scales=scales,
-                                       grams=grams)
+                                       grams=grams, rows=len(tokens))
         check_next_tokens(label, outputs, produced, distinct=name in ("generated", "segmented"))
         state = carry["state"].numpy()
         # every unit's device peak against the diagnostics
