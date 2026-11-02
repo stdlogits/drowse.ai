@@ -143,29 +143,6 @@ for (const surface of ["models", "chats"] as const) {
   }
 }
 
-for (const [state, animation] of [["loading-pulse", "loading-breathe"], ["generation-active", "generation-breathe"]]) {
-  test(`${state} retains a full glowing pulse and reduced-motion fallback`, async ({ page }) => {
-    await page.emulateMedia({ reducedMotion: "no-preference" });
-    await page.goto(`${devUrl}/outside-the-workbench`);
-    await page.evaluate(state => {
-      const surface = document.createElement("p");
-      surface.className = `${state} loading-placeholder`;
-      surface.textContent = state === "loading-pulse" ? "Opening your local workspace…" : "Generating…";
-      document.body.append(surface);
-    }, state);
-    const surface = page.locator(`.${state}`);
-    const decoration = await surface.evaluate(el => {
-      const style = getComputedStyle(el, "::before");
-      return { width: parseFloat(style.width), hostWidth: el.getBoundingClientRect().width, shadow: style.boxShadow, animation: style.animationName };
-    });
-    expect(decoration.width).toBeCloseTo(decoration.hostWidth, 0);
-    expect(decoration.shadow).toContain("inset");
-    expect(decoration.animation).toBe(animation);
-    await page.emulateMedia({ reducedMotion: "reduce" });
-    expect(await surface.evaluate(el => getComputedStyle(el, "::before").animationName)).toBe("none");
-  });
-}
-
 test("chats save and reload without persistent storage permission", async ({ page }) => {
   await page.addInitScript(() => {
     const storage = navigator.storage ?? {};

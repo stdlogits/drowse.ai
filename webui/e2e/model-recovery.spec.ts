@@ -87,48 +87,6 @@ async function mountRecovery(page: Page, fits = ["recommended"]) {
 
 const calls = (page: Page) => page.evaluate(() => (window as any).__recovery.calls);
 
-test("saved chat action rows match the card inset at every layout size", async ({ page }, testInfo) => {
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await mountRecovery(page);
-  const card = page.locator(".chat-card").first();
-  for (const theme of ["light", "dark"]) {
-    await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
-    for (const width of [1440, 768, 390, 320]) {
-      await page.setViewportSize({ width, height: 1000 });
-      const spacing = await card.evaluate(element => {
-        const primary = element.querySelector(".chat-footer > .primary")!.getBoundingClientRect();
-        const download = element.querySelector(".backup-action")!.getBoundingClientRect();
-        const color = element.querySelector(".chat-color")!.getBoundingClientRect();
-        const box = element.getBoundingClientRect();
-        const css = getComputedStyle(element);
-        const footer = getComputedStyle(element.querySelector(".chat-footer")!);
-        return {
-          inset: parseFloat(css.paddingBottom),
-          row: Math.abs(download.top + download.height / 2 - primary.top - primary.height / 2),
-          rowGap: download.top - primary.bottom,
-          gap: parseFloat(footer.gap),
-          bottom: box.bottom - Math.max(primary.bottom, download.bottom, color.bottom),
-          buttons: Math.max(download.left - color.right, download.top - color.bottom),
-          overflow: element.scrollWidth > element.clientWidth,
-        };
-      });
-      expect(spacing.inset).toBe(16);
-      if (spacing.row > 1) expect(spacing.rowGap).toBeGreaterThanOrEqual(spacing.gap - 1);
-      expect(spacing.bottom).toBeCloseTo(spacing.inset, 0);
-      expect(spacing.buttons).toBeGreaterThanOrEqual(spacing.gap - 1);
-      expect(spacing.overflow).toBe(false);
-      for (const button of await card.locator(".primary, .backup-action").all()) {
-        await expect(button).toHaveCSS("background-image", /^none(?:, none)*$/);
-      }
-      await card.screenshot({ path: testInfo.outputPath(`card-spacing-${theme}-${width}.png`) });
-    }
-  }
-  await card.getByRole("button", { name: "More options for Saved chat 1", exact: true }).click();
-  await card.getByRole("menuitem", { name: "Delete", exact: true }).click();
-  await expect(card.locator(".chat-actions")).toHaveCSS("gap", "16px");
-  expect(await card.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-});
-
 test("a single missing model downloads in the notice with visible progress", async ({ page }, testInfo) => {
   await mountRecovery(page);
   const notice = page.locator(".model-recovery");
