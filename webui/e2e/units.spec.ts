@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import {
   inspectToken, inspector, openLayoutWorkbench, selectRoom, sendMessage, sourceUrl, storesUrl,
@@ -271,7 +272,7 @@ test("a model without unit sites answers every unit read with its refusal", asyn
     for (const member of ["tokenAnatomy", "unitActivity", "unitRead", "unitTop", "unitFind", "unitLabels"]) {
       units[member] = () => Promise.reject(new UnsupportedBlockError(refusal));
     }
-  }, { registryUrl, backendUrl: `/@fs${process.cwd()}/src/hosted/runtime/modelBackend.ts`, refusal });
+  }, { registryUrl, backendUrl: `/@fs${resolve("src/hosted/runtime/modelBackend.ts")}`, refusal });
   await sendMessage(page, "Read units on a residual model.");
   await selectRoom(page, "Units");
   await expect(page.getByRole("main")).toContainText(refusal);
