@@ -630,7 +630,7 @@ export class UnitReader {
       const a = await this.aFactor(layer, [ref.index], family);
       if (a !== null) aFactors.set(family, a);
     }
-    const maps = b === null || aFactors.size === 0 ? new Map() : await this.ovMaps(aFactors, b, ids, 1);
+    const maps = b === null || aFactors.size === 0 ? new Map<LensFamilyName, { z: Float64Array; bta: Float64Array }>() : await this.ovMaps(aFactors, b, ids, 1);
     const copies = new Map<LensFamilyName, UnitHalfJSON>();
     const suppresses = new Map<LensFamilyName, UnitHalfJSON>();
     const scores: Record<string, number | null> = { R: null, S: null };
@@ -1055,7 +1055,7 @@ export class UnitReader {
     const norms = this.artifact(table, "neurons.write_norms");
     const selected: number[] = [];
     const atoms: Float32Array[] = [];
-    let coeffs = new Float64Array(0);
+    let coeffs: Float64Array = new Float64Array(0);
     let residual = Float32Array.from(t);
     for (let step = 0; step < k; step += 1) {
       // (W w_n)·r = w_n·(W r): W is symmetric.
