@@ -143,7 +143,7 @@ export class DenseSequence {
     const T = ids.length;
     if (this.length + T > this.capacity) throw new RangeError("The sequence is past its capacity");
     const positions = Int32Array.from({ length: T }, (_, t) => this.length + t);
-    let h = new Float32Array(T * d);
+    let h: Float32Array = new Float32Array(T * d);
     for (let t = 0; t < T; t += 1) {
       for (let i = 0; i < d; i += 1) h[t * d + i] = model.embed[ids[t] * d + i] * spec.embedScale;
     }
