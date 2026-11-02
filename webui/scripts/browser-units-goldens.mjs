@@ -2,7 +2,7 @@
 // Hook ABI v5 on WebGPU: drowse's units goldens through a fixture library and the WebLLM bridge.
 //
 //   node scripts/browser-units-goldens.mjs --webllm WEB_LLM/lib/index.js \
-//     --fixtures DIR --arch qwen3|gemma3 --quantization q0f32|q4f32_1 [--suite all|units|replay]
+//     --fixtures DIR --arch qwen3|gemma3 --quantization q0f32|q4f32_1 [--suite all|units|replay|reads]
 //     [--headed]
 //
 // DIR holds build-units-fixtures.py's model directory `units-<arch>-<quantization>` and its
@@ -14,13 +14,15 @@
 // The replay suite drives `drowse_replay_batch_prefill` through the adapter's own block-sites
 // surface (webLlmBlockSites.ts, served to the page by Vite): attention-patterns (every head's row at
 // positions 2, 5, 8), token-anatomy (taps, write norms, the chosen heads' rows) and unit-activity
-// (every unit's device peak, the host ranking, traces, the float16 population).
+// (every unit's device peak, the host ranking, traces, the float16 population). The reads suite
+// runs every static-read member of the adapter (browser-units-reads.mjs).
 import { createServer as createHttpServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { basename, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { createServer as createViteServer } from "vite";
+import { verifyReads } from "./browser-units-reads.mjs";
 import { releaseToolBrowserOptions, releaseToolGpuArgs } from "./release-tool-storage-quota.mjs";
 
 const options = parseArguments(process.argv.slice(2));
@@ -74,7 +76,8 @@ const variant = {
 const tensors = await loadTensorCache(modelDirectory);
 const stats = await golden("unit-stats");
 const decode = (value) => {
-  if (value.encoding !== "float32-le-base64") return Float32Array.from(value.values ?? value);
+  if (Array.isArray(value)) return Float32Array.from(value);
+  if (value.encoding !== "float32-le-base64") return Float32Array.from(value.values);
   const bytes = Buffer.from(value.data, "base64");
   return new Float32Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
 };
@@ -520,14 +523,32 @@ try {
   // The adapter's own attestation: the library's descriptor against the lock-shaped model.
   const attested = engineModule.attestCompiledStructuredHookProfile(profileValue.profile, { variant, blockSpec }, "block-sites-v5");
   console.log(`descriptor attested: ${attested.descriptor.length} fields, unit sites ${attested.unitSites}, units pair ${profileValue.units}`);
-  if (options.suite !== "replay") {
+  if (options.suite === "units" || options.suite === "all") {
     for (const item of cases) {
       const result = await page.evaluate(runCase, { item, textIds: gemma ? prompt.slice(1) : prompt });
       const worst = checkCase(item, result);
       console.log(`${item.name}: ${result.forwards.length} forwards, worst |Δ| ${worst.toExponential(2)}`);
     }
   }
-  if (options.suite !== "units") {
+  if (options.suite === "reads" || options.suite === "all") {
+    const capabilities = engineModule.blockSitesCapabilitiesFor(attested, { variant, blockSpec, unitRefusal: null }, chatConfig.vocab_size);
+    await page.evaluate(installReads, { capabilities });
+    const call = async (member, ...args) => {
+      const out = await page.evaluate(callRead, { member, args: args.map(toPage) });
+      if ("error" in out) throw new Error(`${member}: ${out.error}`);
+      return fromPage(out.ok);
+    };
+    const f32 = (data, shape) => ({ dtype: "f32", shape, data: Float32Array.from(data) });
+    const i32 = (data, shape) => ({ dtype: "i32", shape, data: Int32Array.from(data) });
+    const u32 = (data, shape) => ({ dtype: "u32", shape, data: Uint32Array.from(data) });
+    const worst = await verifyReads({
+      call, f32, i32, u32, weights: readWeights(), golden, decode,
+      L, d, dFF: blockSpec.dFF, H: blockSpec.nHeads, KV: blockSpec.nKvHeads, hd, V: chatConfig.vocab_size,
+      sandwich: gemma, eps: config.rms_norm_eps, embedScale: blockSpec.embedScale,
+    });
+    console.log(`reads ${options.arch} ${options.quantization}: ${Object.entries(worst).map(([k, v]) => `${k} ${v.toExponential(2)}`).join(", ")}`);
+  }
+  if (options.suite === "replay" || options.suite === "all") {
     const capabilities = engineModule.blockSitesCapabilitiesFor(attested, { variant, blockSpec, unitRefusal: null }, chatConfig.vocab_size);
     await page.evaluate((scales) => { window.unitScales = scales; }, Array.from(unitScalesData));
     const worstByGolden = {};
@@ -896,7 +917,132 @@ function parseArguments(args) {
   for (const key of ["webllm", "fixtures", "arch", "quantization"]) {
     if (!result[key]) throw new Error(`--${key} is required`);
   }
-  if (!["all", "units", "replay"].includes(result.suite)) throw new Error("--suite is all, units or replay");
+  if (!["all", "units", "replay", "reads"].includes(result.suite)) throw new Error("--suite is all, units, replay or reads");
   result.port = Number(result.port);
   return result;
+}
+
+// ------------------------------------------------------------------- the reads suite ---
+
+/** Plain values crossing into the page: typed arrays travel as `{ __typed, values }`. */
+function toPage(value) {
+  if (ArrayBuffer.isView(value)) return { __typed: value.constructor.name, values: Array.from(value) };
+  if (Array.isArray(value)) return value.map(toPage);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, toPage(item)]));
+  }
+  return value;
+}
+
+function fromPage(value) {
+  if (value !== null && typeof value === "object" && "__typed" in value) return new globalThis[value.__typed](value.values);
+  if (Array.isArray(value)) return value.map(fromPage);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, fromPage(item)]));
+  }
+  return value;
+}
+
+// In the page: the adapter's surface over the bridge, kept for the member calls.
+async function installReads({ capabilities }) {
+  const engine = window.engine;
+  const { webLlmBlockSitesBackend } = await import("/src/hosted/runtime/webLlmBlockSites.ts");
+  window.readsBackend = webLlmBlockSitesBackend(capabilities, {
+    call: (request) => engine.drowseBlockSites(request, "units"),
+    installProgram: (program) => engine.setDrowseStructuredProgram(program, "units"),
+  });
+}
+
+async function callRead({ member, args }) {
+  const revive = (value) => {
+    if (value !== null && typeof value === "object" && "__typed" in value) return new globalThis[value.__typed](value.values);
+    if (Array.isArray(value)) return value.map(revive);
+    if (value !== null && typeof value === "object") {
+      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, revive(item)]));
+    }
+    return value;
+  };
+  const pack = (value) => {
+    if (ArrayBuffer.isView(value)) return { __typed: value.constructor.name, values: Array.from(value) };
+    if (Array.isArray(value)) return value.map(pack);
+    if (value !== null && typeof value === "object") {
+      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, pack(item)]));
+    }
+    return value;
+  };
+  try {
+    return { ok: pack(await window.readsBackend[member](...args.map(revive))) };
+  } catch (error) {
+    return { error: String(error?.message ?? error) };
+  }
+}
+
+/** The converted tensors as the reads' formulas use them (fp64). */
+function readWeights() {
+  const name = (suffix) => [...tensors.keys()].find((key) =>
+    [suffix, suffix.replace(".weight", ".q_weight")].some((want) => key === want || key.endsWith(`.${want}`)));
+  const weight = (suffix) => {
+    const found = name(suffix + ".weight");
+    return dequantized(found.slice(0, found.lastIndexOf(".")));
+  };
+  const vector = (suffix) => tensors.get(name(suffix + ".weight")).values;
+  const ones = () => new Float64Array(d).fill(1);
+  const gain = (layer, which) => {
+    const names = {
+      ai: "input_layernorm",
+      ao: gemma ? "post_attention_layernorm" : null,
+      mi: gemma ? "pre_feedforward_layernorm" : "post_attention_layernorm",
+      mo: gemma ? "post_feedforward_layernorm" : null,
+    };
+    return names[which] === null ? ones() : vector(`layers.${layer}.${names[which]}`);
+  };
+  const dFF = blockSpec.dFF;
+  const H = blockSpec.nHeads;
+  const KV = blockSpec.nKvHeads;
+  const rows = (w, first, count) => Array.from({ length: count }, (_, r) => w.subarray((first + r) * w.columns, (first + r + 1) * w.columns));
+  const qkv = (layer) => {
+    if (name(`layers.${layer}.self_attn.c_attn.weight`) !== undefined) {
+      const w = weight(`layers.${layer}.self_attn.c_attn`);
+      return { q: rows(w, 0, H * hd), k: rows(w, H * hd, KV * hd), v: rows(w, (H + KV) * hd, KV * hd) };
+    }
+    const part = (role, count) => rows(weight(`layers.${layer}.self_attn.${role}_proj`), 0, count);
+    return { q: part("q", H * hd), k: part("k", KV * hd), v: part("v", KV * hd) };
+  };
+  return {
+    /** `[d_ff]` columns `s·γ_mo ⊙ W_down[:, n]`. */
+    writes(layer) {
+      const w = weight(`layers.${layer}.mlp.down_proj`);
+      const g = gain(layer, "mo");
+      return Array.from({ length: dFF }, (_, n) => Float64Array.from({ length: d }, (_, k) => g[k] * w[k * w.columns + n]));
+    },
+    reads(layer) {
+      const w = weight(`layers.${layer}.mlp.gate_up_proj`);
+      const g = gain(layer, "mi");
+      const unit = (row) => {
+        const scaled = Float64Array.from(row, (v, k) => v * g[k]);
+        const norm = Math.max(Math.sqrt(scaled.reduce((s, v) => s + v * v, 0)), 1e-12);
+        return scaled.map((v) => v / norm);
+      };
+      return [rows(w, 0, dFF).map(unit), rows(w, dFF, dFF).map(unit)];
+    },
+    /** `[d, hd]` row-major: `γ_ao ⊙ W_O[:, h·hd:(h+1)·hd]`. */
+    headWrite(layer, head) {
+      const w = weight(`layers.${layer}.self_attn.o_proj`);
+      const g = gain(layer, "ao");
+      return Float64Array.from({ length: d * hd }, (_, i) => g[Math.floor(i / hd)] * w[Math.floor(i / hd) * w.columns + head * hd + (i % hd)]);
+    },
+    /** `[3, hd, d]`: `γ_ai ⊙` the query, key and value rows. */
+    headReads(layer, head) {
+      const { q, k, v } = qkv(layer);
+      const g = gain(layer, "ai");
+      const group = Math.floor(head / (H / KV));
+      const out = new Float64Array(3 * hd * d);
+      [q.slice(head * hd, (head + 1) * hd), k.slice(group * hd, (group + 1) * hd), v.slice(group * hd, (group + 1) * hd)]
+        .forEach((block, role) => block.forEach((row, i) => row.forEach((value, c) => { out[(role * hd + i) * d + c] = g[c] * value; })));
+      return out;
+    },
+    gram: (layer, head) => headGram(layer, head),
+    finalGain: () => vector("norm"),
+    embedding: () => weight("embed_tokens"),
+  };
 }
