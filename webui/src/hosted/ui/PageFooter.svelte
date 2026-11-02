@@ -1,6 +1,6 @@
 <script lang="ts">
   import { CONTACT_ADDRESS } from "../../../../drowse/webui/src/lib/contact";
-  import FluentIcon from "../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
+  import { Icon } from "@stdlogits/ledger";
 
   type Current = "home" | "credits" | "contact" | "learn" | "privacy" | "about" | "contribute";
   let { current, hosted = true, compact = false }: { current?: Current; hosted?: boolean; compact?: boolean } = $props();
@@ -39,95 +39,50 @@
   ]);
 </script>
 
+<!-- The site's footer: the pages in four quiet groups, then the version and the source offer. -->
 <footer class="page-footer" class:compact>
-  <div class="footer-content">
-    <nav class="footer-groups" aria-label="Footer">
-      {#each groups as group}
-        <div class="footer-group">
-          <h2>{group.title}</h2>
-          <ul>
-            {#each group.links as link}
-              <li>
-                <a href={link.href} aria-current={link.page && current === link.page ? "page" : undefined} rel={link.external ? "noreferrer" : undefined}>
-                  <span>{link.label}{#if link.detail}<span class="link-detail">{link.detail}</span>{/if}</span>
-                  {#if link.external}<FluentIcon name="external" size={16} /><span class="sr-only">(opens GitHub)</span>{/if}
-                </a>
-              </li>
-            {/each}
-          </ul>
-        </div>
-      {/each}
-    </nav>
-    <div class="project-info">
-      <span translate="no">Drowse{version ? ` ${version}` : ""}</span>
-      {#if releaseBuild}<span class="build" {...{ "aria-description": (sourceRevision) }}>Build {sourceRevision.slice(0, 12)}</span>{/if}
-      <a href={sourceUrl} rel="noreferrer">
-        <span>{releaseBuild ? "Source for this build" : "Source code"}</span>
-        <FluentIcon name="external" size={16} /><span class="sr-only">(opens GitHub)</span>
-      </a>
-    </div>
+  <nav class="footer-groups" aria-label="Footer">
+    {#each groups as group (group.title)}
+      <div class="footer-group">
+        <h2 class="head">{group.title}</h2>
+        <ul>
+          {#each group.links as link (link.label)}
+            <li>
+              <a href={link.href} aria-current={link.page && current === link.page ? "page" : undefined} rel={link.external ? "noreferrer" : undefined}>
+                {link.label}{#if link.detail}<span class="link-detail">{link.detail}</span>{/if}
+                {#if link.external}<Icon name="external" size={14} /><span class="sr-only">(opens GitHub)</span>{/if}
+              </a>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/each}
+  </nav>
+  <div class="project-info">
+    <span translate="no">Drowse{version ? ` ${version}` : ""}</span>
+    {#if releaseBuild}<span class="build num" {...{ "aria-description": sourceRevision }}>Build {sourceRevision.slice(0, 12)}</span>{/if}
+    <a href={sourceUrl} rel="noreferrer">
+      {releaseBuild ? "Source for this build" : "Source code"}
+      <Icon name="external" size={14} /><span class="sr-only">(opens GitHub)</span>
+    </a>
   </div>
 </footer>
 
 <style>
-  .page-footer {
-    position: relative;
-    z-index: 1;
-    flex: 0 0 auto;
-    width: min(100%, var(--page-max));
-    margin-inline: auto;
-    padding-inline: max(var(--page-gutter), env(safe-area-inset-left)) max(var(--page-gutter), env(safe-area-inset-right));
+  .page-footer { display: grid; gap: var(--s6); width: 100%; max-width: var(--page); margin: 0 auto; padding: var(--s7) var(--gutter) max(var(--s7), env(safe-area-inset-bottom)); color: var(--ink3); font: var(--type-small); }
+  .footer-groups { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s5) var(--s6); }
+  .footer-group { display: grid; align-content: start; gap: var(--s3); min-width: 0; }
+  ul { display: grid; gap: var(--s2); }
+  a { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0 var(--s1); color: var(--ink2); transition: color var(--fast) var(--ease); }
+  a[aria-current="page"] { color: var(--ink); }
+  .link-detail { flex-basis: 100%; color: var(--ink3); font: var(--type-meta); }
+  .project-info { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s5); }
+  .project-info a { color: var(--ink3); }
+  @media (hover: hover) { a:hover, .project-info a:hover { color: var(--ink); } }
+  .compact { gap: var(--s4); padding-top: var(--s5); }
+  .compact .footer-groups { gap: var(--s4) var(--s5); }
+  @media (max-width: 720px) {
+    .footer-groups { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    a { min-height: 32px; }
   }
-  .footer-content {
-    display: grid;
-    gap: var(--space-md);
-    padding-block: var(--surface-padding) max(var(--surface-padding), env(safe-area-inset-bottom));
-    border-top: 1px solid var(--grid-line);
-  }
-  .footer-groups { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-md) var(--space-8); }
-  .footer-group { display: grid; align-content: start; gap: var(--space-xs); min-width: 0; }
-  h2 {
-    margin: 0;
-    padding-inline: var(--space-2);
-    color: var(--fg-muted);
-    font-family: var(--font-structure);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-structure);
-  }
-  ul { display: grid; min-width: 0; margin: 0; padding: 0; list-style: none; }
-  .footer-group a, .project-info a {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-xs);
-    min-height: var(--control-target);
-    max-width: 100%;
-    padding-inline: var(--space-2);
-    border-radius: var(--radius-sm);
-    color: var(--fg-dim);
-    font-family: var(--font-structure);
-    font-size: var(--text-sm);
-    font-weight: var(--weight-structure);
-    text-decoration: none;
-    transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
-  }
-  .footer-group a > span { display: grid; min-width: 0; overflow-wrap: anywhere; }
-  .link-detail { color: var(--fg-muted); font-size: var(--text-xs); font-weight: var(--weight-reading); }
-  .footer-group a :global(svg), .project-info a :global(svg) { flex: none; color: var(--fg-muted); }
-  .footer-group a:hover, .project-info a:hover { color: var(--fg); background: var(--bg-hover); }
-  .footer-group a[aria-current="page"] { color: var(--accent); }
-  a:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-  .project-info { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--space-6); color: var(--fg-muted); font-size: var(--text-xs); }
-  .project-info > span { padding-inline: var(--space-2); }
-  .project-info a { font-size: var(--text-xs); }
-  .build { font-family: var(--font-mono); }
-  @media (max-width: 760px) {
-    .footer-groups { grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr)); }
-    .project-info { gap: 0 var(--space-2); }
-  }
-  @media (prefers-reduced-motion: reduce) { a { transition: none; } }
-  .page-footer.compact { width: 100%; padding: 0; }
-  .compact .footer-content { gap: var(--space-xs); padding: var(--space-2) 0 0; }
-  .compact .footer-groups { gap: var(--space-xs) var(--space-md); }
-  .compact .project-info { font-size: var(--text-2xs); }
-  .compact .footer-group a { font-size: var(--text-xs); }
 </style>
