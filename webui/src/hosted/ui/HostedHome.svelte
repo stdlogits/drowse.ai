@@ -1155,7 +1155,7 @@
   .skip-link:focus { translate: 0 0; }
 
   .home-shell { display: flex; flex-direction: column; min-height: 100dvh; }
-  main { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: var(--s6); width: 100%; max-width: 960px; margin: 0 auto; padding: var(--s6) var(--gutter) var(--s8); }
+  main { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: var(--s6); width: 100%; max-width: var(--page); margin: 0 auto; padding: var(--s6) var(--gutter) var(--s8); }
 
   .hero { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: var(--s4) var(--s5); }
   h1 { color: var(--ink); font: var(--type-title); letter-spacing: -0.04em; }
@@ -1181,6 +1181,8 @@
 
   .notice, .new-chat-panel { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: var(--s3) var(--s5); padding: var(--s5); border-radius: var(--r-row); background: var(--wash); color: var(--ink2); font: var(--type-small); }
   .notice > div, .new-chat-panel > div:first-child { display: grid; gap: var(--s2); flex: 1 1 320px; min-width: 0; }
+  .notice > div.panel-actions { display: flex; flex: none; }
+  .notice p { max-width: 72ch; }
   .notice button:not(.primary, .quiet), .new-chat-panel button:not(.primary, .quiet) { background: var(--paper); }
   @media (hover: hover) { .notice button:not(.primary, .quiet):hover:not(:disabled), .new-chat-panel button:not(.primary, .quiet):hover:not(:disabled) { background: var(--wash2); } }
   .new-chat-panel { display: grid; justify-content: stretch; }

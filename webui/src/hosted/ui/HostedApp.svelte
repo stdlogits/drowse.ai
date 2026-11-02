@@ -1091,7 +1091,7 @@
   .skip-link:focus { translate: 0 0; }
 
   .app-shell { display: flex; flex-direction: column; min-height: 100dvh; }
-  main { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: var(--s7); width: 100%; max-width: 880px; margin: 0 auto; padding: var(--s6) var(--gutter) var(--s8); }
+  main { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: var(--s7); width: 100%; max-width: var(--page); margin: 0 auto; padding: var(--s6) var(--gutter) var(--s8); }
   main:focus { outline: none; }
 
   .intro { display: grid; justify-items: start; gap: var(--s4); }
@@ -1143,7 +1143,7 @@
   .model-grid { display: grid; gap: var(--s2); }
   .model-grid > button {
     display: grid;
-    grid-template-columns: minmax(120px, 0.3fr) minmax(0, 1fr) minmax(120px, auto);
+    grid-template-columns: minmax(120px, 180px) minmax(0, 1fr) minmax(120px, auto);
     gap: var(--s1) var(--s5);
     align-items: baseline;
     justify-content: stretch;
