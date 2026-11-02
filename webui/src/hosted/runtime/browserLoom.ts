@@ -36,6 +36,7 @@ import {
   formatSteering,
   invertSteeringExpression,
   parseSteeringExpression,
+  pythonStrip,
   steeringParts,
   type SteeringExpression,
 } from "./steeringExpression";
@@ -3279,7 +3280,7 @@ export function preflightSteeringValidation(
   if (typeof raw !== "string") {
     throw loomError("INVALID_STEERING", "Steering expression must be a string");
   }
-  const expression = raw.trim();
+  const expression = pythonStrip(raw);
   let options: ReturnType<typeof validateSteeringOptions>;
   let syntax: SteeringExpression | null = null;
   try {

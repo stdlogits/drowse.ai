@@ -302,6 +302,55 @@ try {
   assert.equal(compiles.length, compilesBefore, "nothing compiles while busy");
   runtime.generating = false;
 
+  // Columns count code points and whitespace is `str.isspace`, as Python's lexer sees a `str`: an
+  // astral character inside a clause no longer shifts later columns, a lone surrogate never shows
+  // in a message, NEL and the information separators are spaces and U+FEFF is not. Each input is
+  // stripped as the validate route strips it. The outcomes are drowse 6.0's own
+  // (`_Parser(_lex(text.strip())).parse()` on the pinned submodule, run from the venv).
+  const { pythonStrip } = grammar;
+  for (const [input, expected] of [
+    ["0.5 calm{\ud83d\ude00} $", {"error": "unexpected character '$' (col 12)"}],
+    ["0.5 calm{\ud83d\ude00\ud83d\ude00} + 0.2 warm{4} ?", {"error": "unexpected character '?' (col 27)"}],
+    ["0.5 \ud83d\ude00", {"error": "unexpected character '\ud83d\ude00' (col 4)"}],
+    ["0.5 cal\ud83d\ude00m", {"error": "unexpected character '\ud83d\ude00' (col 7)"}],
+    ["0.5 calm{\ud83d\ude00}{", {"error": "unterminated layer clause; close it with '}' (col 11)"}],
+    ["0.5 calm{ \ud83d\ude00 ,}", {"error": "layer clause: malformed layers ' \ud83d\ude00 ,' (want comma-separated indices or a-b ranges, or one of all, workspace) (col 10)"}],
+    ["0.5 calm{4,\ud83d\ude00}", {"error": "layer clause: malformed layers '4,\ud83d\ude00' (want comma-separated indices or a-b ranges, or one of all, workspace) (col 11)"}],
+    ["0.5 calm{\ud83d\ude00} + 0.2 warm{3-1}", {"error": "layer clause: malformed layers '\ud83d\ude00' (want comma-separated indices or a-b ranges, or one of all, workspace) (col 9)"}],
+    ["0.5 calm{\ud83d\ude00}@when:x>\ud83d\ude00", {"error": "unexpected character '\ud83d\ude00' (col 19)"}],
+    ["0.5\u0085calm", {"terms": [[0.5]]}],
+    ["0.5\u001ccalm + 0.25\u001fwarm", {"terms": [[0.5], [0.25]]}],
+    ["0.5\ufeffcalm", {"error": "unexpected character '\\ufeff' (col 3)"}],
+    ["\u0085 0.5 calm \u001e", {"terms": [[0.5]]}],
+    ["\ufeff0.5 calm", {"error": "unexpected character '\\ufeff' (col 0)"}],
+    ["0.5 calm{\u00854\u0085}", {"terms": [[0.5]]}],
+    ["0.5 calm{4\ufeff}", {"error": "layer clause: malformed layers '4\\ufeff' (want comma-separated indices or a-b ranges, or one of all, workspace) (col 9)"}],
+    ["0.5 calm{'}", {"error": "layer clause: malformed layers \"'\" (want comma-separated indices or a-b ranges, or one of all, workspace) (col 9)"}],
+    ["0.5 calm{\"'}", {"error": "layer clause: malformed layers '\"\\'' (want comma-separated indices or a-b ranges, or one of all, workspace) (col 9)"}],
+    ["0.5 calm{4-6, \ud83d\ude00}", {"error": "layer clause: malformed layers '4-6, \ud83d\ude00' (want comma-separated indices or a-b ranges, or one of all, workspace) (col 14)"}],
+    ["0.5 calm{ sample }", {"error": "layer clause: unknown layer mode 'sample' (want all, workspace, or an index list) (col 10)"}],
+    ["0.5 calm{\u3000sample}", {"error": "layer clause: unknown layer mode 'sample' (want all, workspace, or an index list) (col 10)"}],
+    ["0.5 calm{4,,5}", {"error": "layer clause: empty entry in layers '4,,5' (col 11)"}],
+    ["0.5 calm{\ud83d\ude00,\ud83d\ude00}", {"error": "layer clause: malformed layers '\ud83d\ude00,\ud83d\ude00' (want comma-separated indices or a-b ranges, or one of all, workspace) (col 9)"}],
+  ]) {
+    const text = pythonStrip(input);
+    if ("error" in expected) {
+      assert.throws(() => parseSteeringExpression(text), (error) => {
+        assert.equal(error.message, expected.error, JSON.stringify(input));
+        return true;
+      });
+    } else {
+      assert.deepEqual(
+        parseSteeringExpression(text).terms.map((term) => [...term.coefficients]),
+        expected.terms,
+        JSON.stringify(input),
+      );
+    }
+  }
+  assert.equal(pythonStrip("\u0085\u001c 0.5 x\u3000\u001f"), "0.5 x");
+  assert.equal(pythonStrip("\ufeff0.5 x"), "\ufeff0.5 x");
+  assert.equal((await validate("\u0085 plain + 0.2 x\u001e")).expression, "0.5 plain + 0.2 x");
+
   console.log(
     `Steering grammar checks passed (${ir.accepted.length + ir.rejected.length} IR, ` +
       `${chips.cases.length + chips.readOnly.length} chip, ` +
