@@ -25,6 +25,7 @@ import {
 } from "../../../../drowse/webui/src/lib/runtime/contracts";
 import { ApiError } from "../../../../drowse/webui/src/lib/runtime/errors";
 import type { WSClientMessage, WSServerMessage } from "../../../../drowse/webui/src/lib/types";
+import { isOfferedRuntimeMethod } from "./operationPolicy";
 
 export interface WorkerLike {
   postMessage(message: unknown, transfer?: Transferable[]): void;
@@ -547,6 +548,9 @@ function serviceProxy<T extends object>(
     get(_target, property) {
       if (typeof property !== "string") return undefined;
       if (!isRuntimeServiceMethod(service, property)) return undefined;
+      // Routed and refused by the worker: withheld here so that the UI's
+      // capability checks (`typeof member === "function"`) see it absent.
+      if (!isOfferedRuntimeMethod(service, property)) return undefined;
       return (...rawArgs: unknown[]) => {
         const callbacks = rawArgs.filter(
           (arg): arg is (event: RuntimeProgressEvent) => void => typeof arg === "function",

@@ -15,6 +15,7 @@ import type {
 import { rankCatalogModels } from "../../lib/runtime/recommendation";
 import { initialRuntimeSnapshot } from "../../lib/runtime/state";
 import { DeterministicFakeRuntime } from "./fakeRuntime";
+import { offeredRuntimeClient } from "./operationPolicy";
 import type { HostedRuntimeBundle } from "./hostedController";
 
 const SHA = "a".repeat(64);
@@ -374,7 +375,7 @@ export function createFixtureHostedRuntime(withInstruments = false, baseModel = 
   let disposed = false;
   return {
     controller,
-    runtime,
+    runtime: offeredRuntimeClient(runtime),
     async dispose() {
       if (disposed) return;
       disposed = true;

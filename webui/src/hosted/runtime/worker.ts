@@ -76,6 +76,7 @@ import {
   isFittingLifecycleRequest,
   runtimeServiceOperationPolicy,
   runtimeServiceRoute,
+  unavailableRuntimeMethod,
 } from "./operationPolicy";
 import { BrowserDrowseArchiveService } from "../artifacts/service";
 import { optionalPackHardwareBlock } from "./optionalPackCompatibility";
@@ -1323,6 +1324,7 @@ export class HostedRuntimeWorker {
         400,
       );
     }
+    if (route === "unavailable") throw unavailableRuntimeMethod(request);
     const policy = runtimeServiceOperationPolicy(request);
     if (route === "hybrid_manifold_read") {
       if (!this.artifactService.handles(request)) {
@@ -1555,7 +1557,9 @@ export class HostedRuntimeWorker {
           if (queuedFailure !== null) return;
           try {
             await this.emitModelMessage(
-              request.request_id === undefined ? message : { ...message, request_id: request.request_id },
+              request.request_id === undefined || message.type === "resync"
+                ? message
+                : { ...message, request_id: request.request_id },
               requestId, protocol,
             );
           } catch (error) {
@@ -1614,6 +1618,11 @@ export class HostedRuntimeWorker {
   ): Promise<void> {
     if (message.type === "request_complete") {
       throw generationProtocolViolation("Request completion belongs to the transport");
+    }
+    if (message.type === "resync") {
+      // A server's outbound queue drops frames for a slow reader; the
+      // in-process model backend has no such queue and never drops one.
+      throw generationProtocolViolation("The browser runtime never drops a frame to resync");
     }
     if (message.type === "error") {
       protocol.terminalError = true;

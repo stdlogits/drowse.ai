@@ -1,5 +1,6 @@
 import type {
   DepthSummaryJSON,
+  FinishReason,
   LensReadoutBlockJSON,
   MeasurementsEnvelopeJSON,
   ProbeReadingJSON,
@@ -9,6 +10,7 @@ import type {
   WSSampling,
 } from "../../../../drowse/webui/src/lib/types";
 import type { RankOneHookProgramBuffers } from "./rankOneHookProgram";
+import { aggregateEnvelope, MEASUREMENTS_VERSION, roundReading } from "./measurementRows";
 import { BROWSER_RETURN_TOP_K_MAX, BROWSER_SAMPLING_TOP_K_MAX } from "../../../../drowse/webui/src/lib/runtime/samplingCapabilities";
 import { MAX_OUTPUT_TOKEN_COUNT } from "../../../../drowse/webui/src/lib/runtime/outputTokenPolicy";
 import {
@@ -129,7 +131,7 @@ export interface WebLlmGenerationResult {
   text: string;
   thinkingText: string | null;
   tokens: number;
-  finishReason: string;
+  finishReason: FinishReason;
   terminalReason: WebLlmTerminalReason;
   usage: WebLlmGenerationUsage;
   meanLogprob: number | null;
@@ -500,7 +502,7 @@ export async function streamWebLlmGeneration(
             const gateScores = capturedEnvelope === undefined
               ? undefined
               : measurementGateScores(capturedEnvelope);
-            const envelope = persistedMeasurementEnvelope(capturedEnvelope, plan.sampling);
+            const envelope = capturedEnvelope;
             const captured: CapturedGenerationRow = {
               text: row.token,
               tokenId: row.tokenId,
@@ -631,16 +633,14 @@ export async function streamWebLlmGeneration(
       text: text.join(""),
       thinkingText: thinkingText.length === 0 ? null : thinkingText.join(""),
       tokens: tokenCount,
-      finishReason: legacyFinishReason(terminalReason),
+      finishReason: finishReasonFor(terminalReason),
       terminalReason,
       usage: completedUsage,
       meanLogprob,
       meanSurprise: meanLogprob === null ? null : -meanLogprob,
       prefillTokensPerSecond,
       decodeTokensPerSecond,
-      ...(aggregateMeasurements.value
-        ? { measurements: { ...aggregateMeasurements.value, scope: "aggregate" as const } }
-        : {}),
+      ...aggregateResult(aggregateMeasurements.value),
     };
   } catch (error) {
     rememberGenerationErrorUsage(error, observedUsage);
@@ -1179,18 +1179,6 @@ function emittedToken(
   };
 }
 
-function persistedMeasurementEnvelope(
-  envelope: MeasurementsEnvelopeJSON | undefined,
-  sampling: WSSampling | null | undefined,
-): MeasurementsEnvelopeJSON | undefined {
-  if (envelope === undefined || sampling?.persist_per_layer_scores === true) {
-    return envelope;
-  }
-  const persisted = { ...envelope };
-  delete persisted.per_layer_scores;
-  return persisted;
-}
-
 class AggregateMeasurementSelector {
   private readonly specialTokenIds: ReadonlySet<number> | null | undefined;
   private first: MeasurementsEnvelopeJSON | undefined;
@@ -1319,7 +1307,6 @@ export function measurementEnvelope(
     );
   }
   const scores: Record<string, number> = {};
-  const perLayerScores: Record<string, Record<string, number>> = {};
   const gateScores: Record<string, number> = {};
   const lensReadings: Record<string, ScalarReadingJSON> = {};
   const saeReadings: Record<string, ScalarReadingJSON> = {};
@@ -1355,17 +1342,13 @@ export function measurementEnvelope(
     if (readings.length === 0) return;
     const aggregateValue = readings.reduce((sum, item) => sum + item.value, 0) /
       readings.length;
-    scores[probe.name] = probe.family === "geometry" ? round6(aggregateValue) : aggregateValue;
+    // The wire rounds every score and scalar reading (drowse's `_axis0` and
+    // `ScalarReading.to_dict`); gates read the exact values.
+    scores[probe.name] = roundReading(aggregateValue);
     gateScores[probe.name] = aggregateValue;
     const perLayer = Object.fromEntries(
-      readings.map((item) => [String(item.layer), probe.family === "geometry" ? round6(item.value) : item.value]),
+      readings.map((item) => [String(item.layer), roundReading(item.value)]),
     );
-    for (const reading of readings) {
-      const layer = String(reading.layer);
-      const row = perLayerScores[layer] ?? {};
-      row[probe.name] = probe.family === "geometry" ? round6(reading.value) : reading.value;
-      perLayerScores[layer] = row;
-    }
     if (probe.family === "geometry") {
       hasGeometry = true;
       return;
@@ -1373,7 +1356,7 @@ export function measurementEnvelope(
     if (probe.family === "sae" && probe.featureId !== undefined) {
       const maxAct = probe.maxAct ?? null;
       saeReadings[probe.name] = {
-        value: aggregateValue,
+        value: roundReading(aggregateValue),
         unit: maxAct === null ? "raw_activation" : "activation_over_max",
         per_layer: perLayer,
         depth: scalarDepthSummary(
@@ -1386,7 +1369,7 @@ export function measurementEnvelope(
     }
     if (probe.family === "lens" && probe.tokenId !== undefined) {
       lensReadings[probe.name] = {
-        value: aggregateValue,
+        value: roundReading(aggregateValue),
         unit: "mean_token_probability",
         per_layer: perLayer,
         depth: scalarDepthSummary(
@@ -1434,14 +1417,8 @@ export function measurementEnvelope(
       if (reading === null) return;
       geometryReadings[probe.name] = reading.reading;
       const primary = reading.scores[probe.name];
-      if (primary !== undefined) scores[probe.name] = round6(primary);
+      if (primary !== undefined) scores[probe.name] = roundReading(primary);
       Object.assign(gateScores, reading.scores);
-      for (const [layer, layerScores] of Object.entries(reading.perLayerScores)) {
-        const primaryPerLayer = layerScores[probe.name];
-        if (primaryPerLayer !== undefined) {
-          (perLayerScores[layer] ??= {})[probe.name] = round6(primaryPerLayer);
-        }
-      }
       hasGeometry = true;
     });
   }
@@ -1453,7 +1430,8 @@ export function measurementEnvelope(
     : exactLensReadout(hookProgram, schema, jlensTopTokens, readoutTopK);
   if (Object.keys(lensReadings).length > 0 || exactLens !== null) {
     instruments.lens = {
-      binding: { source: schema.lensSource, steering },
+      // The lens families that produced data: the browser reads the R lens only.
+      binding: { sources: { R: schema.lensSource }, steering },
       ...(Object.keys(lensReadings).length > 0 ? { readings: lensReadings } : {}),
       ...(exactLens === null ? {} : { readout: exactLens }),
     };
@@ -1473,12 +1451,11 @@ export function measurementEnvelope(
     };
   }
   const envelope: MeasurementsEnvelopeJSON = {
-    version: 1,
+    version: MEASUREMENTS_VERSION,
     scope: "token",
     provenance: "captured",
     instruments,
     ...(Object.keys(scores).length > 0 ? { scores } : {}),
-    ...(Object.keys(perLayerScores).length > 0 ? { per_layer_scores: perLayerScores } : {}),
   };
   measurementGateScoreCache.set(envelope, Object.freeze({ ...gateScores }));
   return envelope;
@@ -1561,6 +1538,7 @@ function exactLensReadout(
     layers,
     aggregate: [...value.tokenIds].map((tokenId, index) => ({
       token: value.tokens[index],
+      id: tokenId,
       strength: value.strength[index],
       com: value.centerOfMass[index],
       spread: value.spread[index],
@@ -1623,11 +1601,7 @@ function scalarDepthSummary<T extends { depth: number }>(
     (sum, reading, index) => sum + weights[index] * (reading.depth - center) ** 2,
     0,
   ) / total);
-  return { center: [round6(center)], spread: [round6(spread)], basis };
-}
-
-function round6(value: number): number {
-  return Math.round(value * 1e6) / 1e6;
+  return { center: [roundReading(center)], spread: [roundReading(spread)], basis };
 }
 
 function normalizedLayerDepth(layer: number, modelLayerCount: number): number {
@@ -1654,7 +1628,6 @@ function aggregateGeometryProbe(
 ): {
   reading: ProbeReadingJSON;
   scores: Record<string, number>;
-  perLayerScores: Record<string, Record<string, number>>;
 } | null {
   const profile = program.profile;
   if (
@@ -1815,24 +1788,7 @@ function aggregateGeometryProbe(
       );
     }
   }
-  const perLayerScores = Object.fromEntries(rows.map((row) => [
-    String(row.layer),
-    geometryScores(
-      probe.name,
-      row.coords,
-      row.fraction,
-      row.membership,
-      probe.labels,
-      row.distances,
-      geometryAssignmentProbabilities(
-        row.distances,
-        probe.assignBandwidth,
-        probe.assignLogVolumeBias,
-      ),
-      probe.labelScale,
-    ),
-  ]));
-  return { reading, scores, perLayerScores };
+  return { reading, scores };
 }
 
 function geometryAssignmentProbabilities(
@@ -2730,10 +2686,28 @@ function terminalReasonMatchesFinishReason(
   terminalReason: WebLlmTerminalReason,
   finishReason: "stop" | "length" | "abort",
 ): boolean {
-  return legacyFinishReason(terminalReason) === finishReason;
+  return webLlmFinishReason(terminalReason) === finishReason;
 }
 
-function legacyFinishReason(
+/** The `done` frame's aggregate: the last content token's readings (drowse's
+ *  aggregate envelope carries no readouts). */
+function aggregateResult(
+  lastContent: MeasurementsEnvelopeJSON | undefined,
+): { measurements?: MeasurementsEnvelopeJSON } {
+  const measurements = lastContent === undefined ? undefined : aggregateEnvelope(lastContent);
+  return measurements === undefined ? {} : { measurements };
+}
+
+/** drowse's closed `FinishReason` for a terminal reason (an external stop is `cancelled`). */
+export function finishReasonFor(terminalReason: WebLlmTerminalReason): FinishReason {
+  if (terminalReason === "length") return "length";
+  if (terminalReason === "stop_sequence") return "stop_sequence";
+  if (terminalReason === "external_stop") return "cancelled";
+  return "stop";
+}
+
+/** WebLLM's own finish reason for a terminal reason, to check its chunks against. */
+function webLlmFinishReason(
   terminalReason: WebLlmTerminalReason,
 ): "stop" | "length" | "abort" {
   if (terminalReason === "length") return "length";
