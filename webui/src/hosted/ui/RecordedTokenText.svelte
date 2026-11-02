@@ -247,7 +247,6 @@
     color: var(--ink);
     font: var(--type-small);
     white-space: normal;
-    box-shadow: var(--float);
   }
   .recorded-token-panel[aria-hidden="true"] { pointer-events: none; }
   .recorded-token-panel:focus { outline: none; }
