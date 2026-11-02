@@ -2614,6 +2614,10 @@ try {
     const done = messages.find((message) => message.type === "done");
     assert.equal(done.result.measurements.scope, "aggregate");
     assert.equal(done.result.measurements.scores["sae/7"] > 0, true);
+    // drowse's done aggregate carries readings and bindings, never readouts.
+    assert.equal(done.result.measurements.instruments.lens.readout, undefined);
+    assert.equal(done.result.measurements.instruments.sae.readout, undefined);
+    assert.ok(done.result.measurements.instruments.lens.readings["jlens/fixture"]);
 
     const generated = (await runtime.tree.get()).nodes.find(
       (node) => node.role === "assistant" && node.finish_reason !== null,

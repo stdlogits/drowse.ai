@@ -35,7 +35,7 @@ import type {
 import { DROWSE_HOOK_ABI, type RankOneHookProgramBuffers } from "./rankOneHookProgram";
 import { BrowserLoomRuntime, type BrowserGenerationPort } from "./browserLoom";
 import { unavailableRuntimeMethod } from "./operationPolicy";
-import { MEASUREMENTS_VERSION, roundReading } from "./measurementRows";
+import { aggregateEnvelope, MEASUREMENTS_VERSION, roundReading } from "./measurementRows";
 import {
   finishReasonFor,
   type WebLlmGeneratedToken,
@@ -1017,6 +1017,9 @@ class DeterministicGenerationPort implements BrowserGenerationPort {
           ? "length"
           : "eos";
     const promptTokens = generationPromptTokens(plan);
+    // drowse's done aggregate: the last token's readings and bindings, no readouts.
+    const last = tokens > 0 ? this.measurements(emitted[tokens - 1], tokens - 1, "aggregate") : undefined;
+    const aggregate = last === undefined ? undefined : aggregateEnvelope(last);
     return {
       text,
       thinkingText: null,
@@ -1032,9 +1035,7 @@ class DeterministicGenerationPort implements BrowserGenerationPort {
       meanSurprise: tokens > 0 ? 0.1 : null,
       prefillTokensPerSecond: 120,
       decodeTokensPerSecond: 48,
-      ...(tokens > 0
-        ? { measurements: this.measurements(emitted[tokens - 1], tokens - 1, "aggregate") }
-        : {}),
+      ...(aggregate === undefined ? {} : { measurements: aggregate }),
     };
   }
 
