@@ -483,13 +483,13 @@ def load_tensor_cache(directory: Path) -> dict[str, np.ndarray]:
         for record in shard["records"]:
             chunk = data[record["byteOffset"]: record["byteOffset"] + record["nbytes"]]
             encoding = record.get("format", "raw")
+            if encoding not in ("raw", "f32-to-bf16"):
+                raise SystemExit(f"{record['name']}: unsupported tensor encoding {encoding}")
             if encoding == "f32-to-bf16" and record["dtype"] == "float32":
                 bits = np.frombuffer(chunk, dtype="<u2").astype(np.uint32) << 16
                 value = bits.view(np.float32)
-            elif encoding == "raw":
+            else:  # the encoding narrows float32 records only (mlc_q4_torch.MlcTensorCache)
                 value = np.frombuffer(chunk, dtype=record["dtype"]).copy()
-            else:
-                raise SystemExit(f"{record['name']}: unsupported tensor encoding {encoding}")
             tensors[record["name"]] = value.reshape(record["shape"])
     return tensors
 
