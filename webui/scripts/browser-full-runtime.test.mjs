@@ -172,7 +172,11 @@ test("rejects invalid browser, token, timeout, and feature controls", () => {
         "--browser-channel",
         "firefox",
       ]),
-    /chrome or msedge/,
+    /chrome, chrome-beta or msedge/,
+  );
+  assert.equal(
+    parseBrowserFullRuntimeArguments([...requiredArgs, "--browser-channel", "chrome-beta"]).browserChannel,
+    "chrome-beta",
   );
   assert.throws(
     () =>

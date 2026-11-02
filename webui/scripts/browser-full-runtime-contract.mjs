@@ -143,11 +143,9 @@ export function parseBrowserFullRuntimeArguments(args) {
     if (result[field] === null)
       throw new Error(`${flagFor(field)} is required`);
   }
-  if (
-    result.browserChannel !== "chrome" &&
-    result.browserChannel !== "msedge"
-  ) {
-    throw new Error("--browser-channel must be chrome or msedge");
+  // Chrome's release channels and Edge (a machine may carry only one, such as Chrome Beta).
+  if (!["chrome", "chrome-beta", "msedge"].includes(result.browserChannel)) {
+    throw new Error("--browser-channel must be chrome, chrome-beta or msedge");
   }
   if (
     result.browserFlags !== "compatibility" &&

@@ -40,7 +40,7 @@
     "preview:hosted": "vite preview --config vite.hosted.config.ts",
     "verify:hosted:deployment": "node ./scripts/verify-hosted-deployment.mjs",
     "test:preflight-tools": "node ./scripts/preflight-hosted-distribution.test.mjs",
-    "test:evidence-tools": "node --test ./scripts/record-hosted-evidence.test.mjs ./scripts/evidence-configs.test.mjs",
+    "test:evidence-tools": "node --test ./scripts/record-hosted-evidence.test.mjs && node --test ./scripts/evidence-configs.test.mjs",
     "test:release-corpus-tools": "PYTHONDONTWRITEBYTECODE=1 python3 ./scripts/hosted_release_corpus_tool_test.py",
     "test:release-tools": "node ./scripts/release-tools.test.mjs && node ./scripts/release-tool-storage-quota.test.mjs && node ./scripts/provision-hosted-repositories.test.mjs && node ./scripts/assemble-hosted-model.test.mjs && node ./scripts/publish-hosted-model.test.mjs && node ./scripts/assemble-hosted-pack.test.mjs && node ./scripts/publish-hosted-pack.test.mjs && node ./scripts/build-hosted-catalog.test.mjs && node ./scripts/publish-hosted-catalog.test.mjs && node ./scripts/hosted-whitener-tool.test.mjs && node ./scripts/hosted-instrument-pack-tool.test.mjs && node ./scripts/hosted-sae-tool.test.mjs && node ./scripts/hosted-instrument-release-policy.test.mjs && node ./scripts/summarize-local-browser-matrix.test.mjs && npm run test:release-corpus-tools",
     "test:fork-overlays": "node ./scripts/fork-overlays.test.mjs && node ./scripts/hosted-dependency-cache.test.mjs",
