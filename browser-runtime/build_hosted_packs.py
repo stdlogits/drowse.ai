@@ -82,14 +82,20 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def save_tensors(path: Path, tensors: Mapping[str, torch.Tensor]) -> str:
-    """Save fp32/int tensors contiguous on the host; returns the file's sha256."""
-    host = {name: value.detach().to("cpu").contiguous() for name, value in sorted(tensors.items())}
-    for name, value in host.items():
-        if value.is_floating_point() and not bool(torch.isfinite(value).all()):
-            raise PackBuildError(f"{path.name}: {name} is not finite")
+def save_tensors(path: Path, tensors: Mapping[str, torch.Tensor]) -> tuple[str, dict[str, list[int]]]:
+    """Save finite fp32 tensors as the browser's safetensors reader takes them (rank 1 or
+    2: a deeper tensor is stored row-major as ``[prod(shape[:-1]), shape[-1]]``); returns
+    the file's sha256 and each tensor's logical shape, which the pack's JSON records."""
+    host: dict[str, torch.Tensor] = {}
+    shapes: dict[str, list[int]] = {}
+    for name, value in sorted(tensors.items()):
+        value = value.detach().to("cpu", torch.float32).contiguous()
+        if value.ndim == 0 or not bool(torch.isfinite(value).all()):
+            raise PackBuildError(f"{path.name}: {name} is a scalar or not finite")
+        shapes[name] = list(value.shape)
+        host[name] = value.reshape(-1, value.shape[-1]) if value.ndim > 2 else value
     save_file(host, str(path))
-    return sha256_file(path)
+    return sha256_file(path), shapes
 
 
 def mask_words(keep: torch.Tensor) -> torch.Tensor:
@@ -293,7 +299,7 @@ def build_browser_vocabulary(
     if not words:
         raise PackBuildError("no lens seed word is a single token for this tokenizer")
     tensor = pack / "browser-vocabulary.safetensors"
-    digest = save_tensors(tensor, {"unembedding": torch.stack(rows)})
+    digest, _ = save_tensors(tensor, {"unembedding": torch.stack(rows)})
     write_json(pack / "browser-vocabulary.json", {
         "format": VOCABULARY_FORMAT,
         "hidden_size": hidden_size,
@@ -312,15 +318,17 @@ def build_embedding_statistics(model: NativeModel, pack: Path, runtime: Mapping[
 
     emb = model.session.lens.token_embeddings()
     keep = emb.keep.to("cpu", torch.bool)
-    tensors = {
-        "mask": mask_words(keep),
+    words = mask_words(keep)
+    if not torch.equal(unpack_mask_words(words, keep.numel()), keep):
+        raise PackBuildError("the mask bitmap does not round-trip")
+    # The bitmap is raw little-endian u32 words (the browser's safetensors reader is fp32 only).
+    mask_file = pack / f"{EMBEDDING_STATISTICS}.mask.u32"
+    mask_file.write_bytes(words.to(torch.int64).numpy().astype("<u4").tobytes())
+    tensor = pack / f"{EMBEDDING_STATISTICS}.safetensors"
+    digest, _ = save_tensors(tensor, {
         "mean_E": emb.mean.to("cpu", torch.float32),
         "sigma_E": emb.cov.to("cpu", torch.float32),
-    }
-    if not torch.equal(unpack_mask_words(tensors["mask"], keep.numel()), keep):
-        raise PackBuildError("the mask bitmap does not round-trip")
-    tensor = pack / f"{EMBEDDING_STATISTICS}.safetensors"
-    digest = save_tensors(tensor, tensors)
+    })
     describe = emb.describe()
     record = {
         "format": "drowse-s-embedding-statistics-v1",
@@ -330,6 +338,9 @@ def build_embedding_statistics(model: NativeModel, pack: Path, runtime: Mapping[
         "embedding_scale": float(emb.scale),
         "mask": {"source": describe["source"], "detail": describe["detail"], "kept": int(describe["kept"])},
         "mask_sha256": hashlib.sha256(keep.to(torch.uint8).numpy().tobytes()).hexdigest(),
+        "mask_file": mask_file.name,
+        "mask_words": int(words.numel()),
+        "mask_file_sha256": sha256_file(mask_file),
         "tokenizer_fingerprint": tokenizer_fingerprint(model.session.tokenizer),
         "tensor_file": tensor.name,
         "tensor_sha256": digest,
@@ -379,11 +390,8 @@ def build_units_pack(
             if not tensors:
                 raise PackBuildError(f"layer {layer} has no {part} artifacts")
             name = f"{part}.layer-{layer}.safetensors"
-            entry[part] = {
-                "file": name,
-                "sha256": save_tensors(pack / name, tensors),
-                "keys": sorted(tensors),
-            }
+            digest, shapes = save_tensors(pack / name, tensors)
+            entry[part] = {"file": name, "sha256": digest, "shapes": shapes}
         entries[str(layer)] = entry
         if progress is not None:
             progress(f"units layer {layer}: {len(reads)} reads, {len(contrast)} contrast tensors")
@@ -394,7 +402,7 @@ def build_units_pack(
     kept = emb.keep.to("cpu").nonzero().squeeze(1)
     if not torch.equal(head_kept, kept[kept < unembed_rows]):
         raise PackBuildError("the head-read vocabulary is not the mask's kept ids inside the unembedding")
-    model_digest = save_tensors(pack / UNITS_MODEL, {"null_basis": null})
+    model_digest, _ = save_tensors(pack / UNITS_MODEL, {"null_basis": null})
     from drowse.units.reads import NULL_SHARE
 
     blocks = model.spec.blocks
@@ -448,7 +456,7 @@ def build_core_statistics(model: NativeModel, runtime: Mapping[str, Any], root: 
     core = root / "core"
     core.mkdir(parents=True)
     tensor = core / f"{CORE_STATISTICS}.safetensors"
-    digest = save_tensors(tensor, tensors)
+    digest, shapes = save_tensors(tensor, tensors)
     neutral_identity = model.neutral_identity()
     record = {
         "format": "drowse-neutral-statistics-v1",
@@ -456,7 +464,7 @@ def build_core_statistics(model: NativeModel, runtime: Mapping[str, Any], root: 
         "model_layer_count": model.n_layers,
         "n_documents": int(stats.n_documents),
         "neutral": neutral_identity,
-        "shapes": {name: list(value.shape) for name, value in sorted(tensors.items())},
+        "shapes": shapes,
         "tensor_file": tensor.name,
         "tensor_sha256": digest,
     }

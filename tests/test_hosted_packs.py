@@ -118,7 +118,10 @@ def test_slens_pack_carries_the_sessions_embedding_statistics(built) -> None:
     record = json.loads((pack / "embedding-statistics.json").read_text())
     tensors = load_file(pack / record["tensor_file"])
     emb = model.session.lens.token_embeddings()
-    assert torch.equal(unpack_mask_words(tensors["mask"], record["vocab_rows"]), emb.keep.cpu())
+    raw = (pack / record["mask_file"]).read_bytes()
+    assert len(raw) == 4 * record["mask_words"]
+    words = torch.from_numpy(np.frombuffer(raw, dtype="<u4").astype(np.int64))
+    assert torch.equal(unpack_mask_words(words, record["vocab_rows"]), emb.keep.cpu())
     assert torch.equal(tensors["mean_E"], emb.mean.cpu())
     assert torch.equal(tensors["sigma_E"], emb.cov.cpu())
     assert record["mask"] == emb.describe()
@@ -143,8 +146,9 @@ def test_units_pack_is_the_unit_artifacts_golden(built) -> None:
         for part in ("reads", "contrast"):
             spec = units["layers"][str(entry["layer"])][part]
             tensors = load_file(pack / spec["file"])
-            assert sorted(tensors) == spec["keys"]
-            shipped.update(tensors)
+            assert sorted(tensors) == sorted(spec["shapes"])
+            assert all(value.ndim <= 2 for value in tensors.values())
+            shipped.update({name: value.reshape(spec["shapes"][name]) for name, value in tensors.items()})
         assert sorted(shipped) == sorted(entry["tensors"])
         for name, value in entry["tensors"].items():
             np.testing.assert_allclose(
@@ -164,7 +168,10 @@ def test_units_pack_is_the_unit_artifacts_golden(built) -> None:
 def test_core_statistics_stack_the_neutral_pass(built) -> None:
     _, fx, model, runtime, out, _ = built
     record = json.loads((out / "core" / "neutral-statistics.json").read_text())
-    tensors = load_file(out / "core" / record["tensor_file"])
+    tensors = {
+        name: value.reshape(record["shapes"][name])
+        for name, value in load_file(out / "core" / record["tensor_file"]).items()
+    }
     stats = fx.session.units.runtime.stats()
     assert record["n_documents"] == stats.n_documents
     for layer in range(model.n_layers):
