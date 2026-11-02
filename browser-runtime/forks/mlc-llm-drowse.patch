@@ -4621,10 +4621,10 @@ index 00000000..d67ebc61
 +    return op.tensor_expr_op(_take, name_hint=name, args=[values])
 diff --git a/python/mlc_llm/model/drowse_reads.py b/python/mlc_llm/model/drowse_reads.py
 new file mode 100644
-index 00000000..c2be84e0
+index 00000000..29d20f3b
 --- /dev/null
 +++ b/python/mlc_llm/model/drowse_reads.py
-@@ -0,0 +1,1334 @@
+@@ -0,0 +1,1340 @@
 +"""Drowse static reads and `exact-readout-v2` (hook ABI v5, B1 §4.1).
 +
 +Weight primitives read the resident weights in fp32, dequantizing group-quantized storage inside
@@ -5643,8 +5643,13 @@ index 00000000..c2be84e0
 +        pi = T.sblock_alloc_buffer((_LANES,), "int32", scope="shared")
 +        prev_v = T.sblock_alloc_buffer((1,), "float32", scope="shared")
 +        prev_i = T.sblock_alloc_buffer((1,), "int32", scope="shared")
++        # Conditions read registers only (the sync planner cannot see a shared read in a test).
 +        bv = T.sblock_alloc_buffer((1,), "float32", scope="local")
 +        bi = T.sblock_alloc_buffer((1,), "int32", scope="local")
++        cv = T.sblock_alloc_buffer((1,), "float32", scope="local")
++        ci = T.sblock_alloc_buffer((1,), "int32", scope="local")
++        lv = T.sblock_alloc_buffer((1,), "float32", scope="local")
++        li = T.sblock_alloc_buffer((1,), "int32", scope="local")
 +        for row in T.thread_binding(_i32(n), thread="blockIdx.x"):
 +            for lane in T.thread_binding(_LANES, thread="threadIdx.x"):
 +                with T.sblock("drowse_topk"):
@@ -5655,49 +5660,48 @@ index 00000000..c2be84e0
 +                        prev_i[0] = -1
 +                    T.tvm_storage_sync("shared")
 +                    for p in T.serial(_i32(k)):
++                        lv[0] = prev_v[0]
++                        li[0] = prev_i[0]
 +                        bv[0] = T.float32(LOWEST)
 +                        bi[0] = -1
 +                        for c in T.serial(_i32(chunks)):
 +                            if c * _LANES + t < _i32(width):
++                                cv[0] = xs[r, c * _LANES + t]
 +                                if T.And(
-+                                    T.Or(
-+                                        xs[r, c * _LANES + t] < prev_v[0],
-+                                        T.And(
-+                                            xs[r, c * _LANES + t] == prev_v[0],
-+                                            c * _LANES + t > prev_i[0],
-+                                        ),
-+                                    ),
-+                                    T.Or(bi[0] < 0, xs[r, c * _LANES + t] > bv[0]),
++                                    T.Or(cv[0] < lv[0], T.And(cv[0] == lv[0], c * _LANES + t > li[0])),
++                                    T.Or(bi[0] < 0, cv[0] > bv[0]),
 +                                ):
-+                                    bv[0] = xs[r, c * _LANES + t]
++                                    bv[0] = cv[0]
 +                                    bi[0] = c * _LANES + t
 +                        pv[t] = bv[0]
 +                        pi[t] = bi[0]
 +                        T.tvm_storage_sync("shared")
++                        # Each stage reads its partner, syncs, then writes: a read and a write of
++                        # one shared buffer never share a sync interval.
 +                        for stage in T.unroll(6):
 +                            if t < (32 >> stage):
++                                cv[0] = pv[t + (32 >> stage)]
++                                ci[0] = pi[t + (32 >> stage)]
++                            T.tvm_storage_sync("shared")
++                            if t < (32 >> stage):
 +                                if T.And(
-+                                    pi[t + (32 >> stage)] >= 0,
++                                    ci[0] >= 0,
 +                                    T.Or(
-+                                        pi[t] < 0,
-+                                        T.Or(
-+                                            pv[t + (32 >> stage)] > pv[t],
-+                                            T.And(
-+                                                pv[t + (32 >> stage)] == pv[t],
-+                                                pi[t + (32 >> stage)] < pi[t],
-+                                            ),
-+                                        ),
++                                        bi[0] < 0,
++                                        T.Or(cv[0] > bv[0], T.And(cv[0] == bv[0], ci[0] < bi[0])),
 +                                    ),
 +                                ):
-+                                    pv[t] = pv[t + (32 >> stage)]
-+                                    pi[t] = pi[t + (32 >> stage)]
++                                    bv[0] = cv[0]
++                                    bi[0] = ci[0]
++                                pv[t] = bv[0]
++                                pi[t] = bi[0]
 +                            T.tvm_storage_sync("shared")
 +                        if t == 0:
-+                            vs[r, p] = T.if_then_else(pi[0] < 0, T.float32(LOWEST), pv[0])
-+                            ids[r, p] = pi[0]
-+                            if pi[0] >= 0:
-+                                prev_v[0] = pv[0]
-+                                prev_i[0] = pi[0]
++                            vs[r, p] = T.if_then_else(bi[0] < 0, T.float32(LOWEST), bv[0])
++                            ids[r, p] = bi[0]
++                            if bi[0] >= 0:
++                                prev_v[0] = bv[0]
++                                prev_i[0] = bi[0]
 +                        T.tvm_storage_sync("shared")
 +
 +    return op.tensor_ir_inplace_op(
@@ -5722,7 +5726,9 @@ index 00000000..c2be84e0
 +        bits = T.match_buffer(var_mask, (words,), "uint32")
 +        fl = T.match_buffer(var_flags, (1,), "int32")
 +        o = T.match_buffer(var_out, (n, 2), "float32")
-+        partial = T.sblock_alloc_buffer((3, _LANES), "float32", scope="shared")
++        p0 = T.sblock_alloc_buffer((_LANES,), "float32", scope="shared")
++        p1 = T.sblock_alloc_buffer((_LANES,), "float32", scope="shared")
++        p2 = T.sblock_alloc_buffer((_LANES,), "float32", scope="shared")
 +        stats = T.sblock_alloc_buffer((2,), "float32", scope="shared")
 +        acc = T.sblock_alloc_buffer((3,), "float32", scope="local")
 +        for row in T.thread_binding(_i32(n), thread="blockIdx.x"):
@@ -5750,17 +5756,17 @@ index 00000000..c2be84e0
 +                            ):
 +                                acc[0] = acc[0] + T.float32(1)
 +                                acc[1] = acc[1] + xs[r, v]
-+                    partial[0, t] = acc[0]
-+                    partial[1, t] = acc[1]
++                    p0[t] = acc[0]
++                    p1[t] = acc[1]
 +                    T.tvm_storage_sync("shared")
 +                    for stage in T.unroll(6):
 +                        if t < (32 >> stage):
-+                            partial[0, t] = partial[0, t] + partial[0, t + (32 >> stage)]
-+                            partial[1, t] = partial[1, t] + partial[1, t + (32 >> stage)]
++                            p0[t] = p0[t] + p0[t + (32 >> stage)]
++                            p1[t] = p1[t] + p1[t + (32 >> stage)]
 +                        T.tvm_storage_sync("shared")
 +                    if t == 0:
-+                        stats[0] = T.max(partial[0, 0], T.float32(1))
-+                        stats[1] = partial[1, 0] / T.max(partial[0, 0], T.float32(1))
++                        stats[0] = T.max(p0[0], T.float32(1))
++                        stats[1] = p1[0] / T.max(p0[0], T.float32(1))
 +                    T.tvm_storage_sync("shared")
 +                    acc[0] = T.float32(0)
 +                    acc[1] = T.float32(0)
@@ -5788,20 +5794,20 @@ index 00000000..c2be84e0
 +                                acc[2] = acc[2] + (xs[r, v] - stats[1]) * (xs[r, v] - stats[1]) * (
 +                                    xs[r, v] - stats[1]
 +                                ) * (xs[r, v] - stats[1])
-+                    partial[0, t] = acc[0]
-+                    partial[1, t] = acc[1]
-+                    partial[2, t] = acc[2]
++                    p0[t] = acc[0]
++                    p1[t] = acc[1]
++                    p2[t] = acc[2]
 +                    T.tvm_storage_sync("shared")
 +                    for stage in T.unroll(6):
 +                        if t < (32 >> stage):
-+                            partial[0, t] = partial[0, t] + partial[0, t + (32 >> stage)]
-+                            partial[1, t] = partial[1, t] + partial[1, t + (32 >> stage)]
-+                            partial[2, t] = partial[2, t] + partial[2, t + (32 >> stage)]
++                            p0[t] = p0[t] + p0[t + (32 >> stage)]
++                            p1[t] = p1[t] + p1[t + (32 >> stage)]
++                            p2[t] = p2[t] + p2[t + (32 >> stage)]
 +                        T.tvm_storage_sync("shared")
 +                    if t == 0:
-+                        acc[0] = T.max(partial[0, 0] / stats[0], T.float32(QUADRATIC_FLOOR))
-+                        o[r, 0] = (partial[1, 0] / stats[0]) / (acc[0] * T.sqrt(acc[0]))
-+                        o[r, 1] = (partial[2, 0] / stats[0]) / (acc[0] * acc[0])
++                        acc[0] = T.max(p0[0] / stats[0], T.float32(QUADRATIC_FLOOR))
++                        o[r, 0] = (p1[0] / stats[0]) / (acc[0] * T.sqrt(acc[0]))
++                        o[r, 1] = (p2[0] / stats[0]) / (acc[0] * acc[0])
 +
 +    return op.tensor_ir_op(_moments, "drowse_logit_moments", args=[logits, mask, flags],
 +                           out=Tensor.placeholder((n, 2), "float32"))
