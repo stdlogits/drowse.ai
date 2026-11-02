@@ -73,7 +73,10 @@ const appDefine = {
   __DROWSE_HOSTED_CHANNEL__: JSON.stringify(releaseBuild ? "release" : "preview"),
   __DROWSE_FITTING_WASM__: JSON.stringify(fittingWasm),
 };
+// Ledger's pre-paint theme step for the hosted pages (public-hosted/theme-init.js): served as a file
+// in dev, inlined at build with its digest in the CSP. It names the key lib/theme.ts's createTheme uses.
 const themeScript = await themeInitScript();
+const themeScriptTag = '<script src="/theme-init.js" data-ledger-theme-key="drowse.theme"></script>';
 // Each prerendered route: output file, the `data-prerendered` key main.ts checks, and its metadata.
 const guideByPath = new Map(guidePages.map((page) => [page.path, page]));
 const pageMetadata = new Map([...guidePages, ...sitePages].map((page) => [page.path, page]));
@@ -164,7 +167,7 @@ const releaseMetadata: Plugin = {
     }
     if (isBuild) {
       // Inline the pre-paint theme script; its digest is added to the CSP script-src.
-      transformed = transformed.replace('<script src="/theme-init.js"></script>', `<script>${themeScript.source}</script>`);
+      transformed = transformed.replace(themeScriptTag, `<script data-ledger-theme-key="drowse.theme">${themeScript.source}</script>`);
       if (!transformed.includes(themeScript.source)) throw new Error("Hosted index is missing the theme-init script tag");
     }
     if (landingBody) {
@@ -298,7 +301,7 @@ export default defineConfig({
       injectRegister: false,
       registerType: "prompt",
       includeAssets: [
-        "LICENSE-Martian-Mono.txt",
+        "LICENSE-Torph.txt",
         "LICENSE-Wix-Madefor.txt",
       ],
       manifest: {
@@ -315,7 +318,7 @@ export default defineConfig({
           { name: "Chats", short_name: "Chats", url: "/app", description: "Open your saved chats" },
           { name: "Models", short_name: "Models", url: "/app?choose=1", description: "Choose a model to run" },
         ],
-        background_color: "#0b0e17",
+        background_color: themeColors.light,
         theme_color: siteAccent,
         categories: ["developer", "productivity", "utilities"],
         icons: [
@@ -355,8 +358,7 @@ export default defineConfig({
           "assets/{workspaceTools,serviceTools,generation}-*.js",
           // Inlined into every document at build time.
           "theme-init.js",
-          // Hundreds of animated tab-icon frames and multi-megabyte SAE label tables load on demand.
-          "icons/tab-*.png",
+          // Multi-megabyte SAE label tables load on demand.
           "assets/gemma-*.json",
           // Non-Latin font subsets load by unicode-range only when a page needs them.
           "assets/*-cyrillic*.woff2", "assets/*-vietnamese*.woff2", "assets/*-latin-ext-*.woff2",
@@ -431,15 +433,6 @@ export default defineConfig({
             options: {
               cacheName: "drowse-hosted-on-demand-wasm-v2",
               expiration: { maxEntries: 6, purgeOnQuotaError: true },
-              cacheableResponse: { statuses: [200] },
-            },
-          },
-          {
-            urlPattern: /\/icons\/tab-[^/]+\.png(?:\?[^/]*)?$/,
-            handler: "StaleWhileRevalidate",
-            options: {
-              cacheName: "drowse-hosted-tab-icons-v1",
-              expiration: { maxEntries: 320, purgeOnQuotaError: true },
               cacheableResponse: { statuses: [200] },
             },
           },

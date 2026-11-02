@@ -1,42 +1,22 @@
+// The hosted pages' pre-paint script, inlined into every document (its digest is in the CSP).
+// It is Ledger's theme-preflight.js with the same key and semantics: a stored light or dark choice
+// sets data-theme before first paint, and with none (auto) nothing is set and the tokens follow the
+// system; createTheme (lib/theme.ts) owns the theme after. It also points the browser's theme colour
+// at the chosen paper, and keeps an aborted cross-document view transition out of the console.
 (function () {
-  if (document.activeViewTransition) document.activeViewTransition.ready.catch(function () {});
-  function handlePageTransition(event) {
-    if (event.viewTransition) event.viewTransition.ready.catch(function () {});
+  function quiet(transition) {
+    if (transition) transition.ready.catch(function () {});
   }
-  window.addEventListener("pageswap", handlePageTransition);
-  window.addEventListener("pagereveal", handlePageTransition);
-  var theme = null;
+  quiet(document.activeViewTransition);
+  window.addEventListener("pageswap", function (event) { quiet(event.viewTransition); });
+  window.addEventListener("pagereveal", function (event) { quiet(event.viewTransition); });
   try {
-    theme = window.localStorage.getItem("drowse.theme");
-    if (theme === null) {
-      theme = window.localStorage.getItem("polythetic.theme") || window.localStorage.getItem("saklas.theme");
-      if (theme !== null) {
-        window.localStorage.setItem("drowse.theme", theme);
-      }
-    }
-  } catch (_) {}
-  if (theme !== "light" && theme !== "dark") {
-    // No saved choice: follow the system appearance. theme.ts keeps following
-    // it until someone picks a theme with the toggle.
-    theme = "dark";
-    try {
-      if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) theme = "light";
-    } catch (_) {}
-  }
-  document.documentElement.dataset.theme = theme;
-  document.documentElement.style.colorScheme = theme;
-  var metas = document.querySelectorAll('meta[name="theme-color"]');
-  for (var metaIndex = 0; metaIndex < metas.length; metaIndex++) {
-    metas[metaIndex].content = theme === "light" ? "#f2f4f8" : "#0b0e17";
-  }
-  // Prerendered pages are rendered without knowing the theme. Controls that
-  // carry a label for each theme get the right one before the app mounts.
-  if (typeof document.addEventListener === "function") {
-    document.addEventListener("DOMContentLoaded", function () {
-      var controls = document.querySelectorAll("[data-theme-label-light][data-theme-label-dark]");
-      for (var index = 0; index < controls.length; index++) {
-        controls[index].setAttribute("aria-label", controls[index].getAttribute("data-theme-label-" + theme));
-      }
-    });
-  }
+    var script = document.currentScript;
+    var key = script && script.getAttribute("data-ledger-theme-key");
+    var mode = key && localStorage.getItem(key);
+    if (mode !== "light" && mode !== "dark") return;
+    document.documentElement.dataset.theme = mode;
+    var metas = document.querySelectorAll('meta[name="theme-color"]');
+    for (var i = 0; i < metas.length; i++) metas[i].content = mode === "light" ? "#ffffff" : "#0b0d12";
+  } catch (error) {}
 })();

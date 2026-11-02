@@ -2,9 +2,11 @@ export const siteName = "Drowse";
 export const siteTitle = "Drowse | Local LLM interpretability and activation steering";
 export const sourceRepository = "https://github.com/stdlogits/drowse";
 export const siteDescription = "Open-source, fully local LLM interpretability workbench in your browser. Inspect token predictions and steer a model's internal activity.";
-export const siteAccent = "#c5b3ff";
-// Browser chrome follows the page surface, not the accent: these match theme-init.js and tokens.css.
-export const themeColors = { dark: "#0b0e17", light: "#f2f4f8" };
+// The brand colour is Ledger's depth accent where the mark's ramp starts (--deep, light theme).
+export const siteAccent = "#6a4fe0";
+// Browser chrome follows the page surface, not the accent: Ledger's paper in each theme, as
+// theme-init.js and @stdlogits/ledger/tokens.css write it.
+export const themeColors = { dark: "#0b0d12", light: "#ffffff" };
 export const socialImagePath = "/social/drowse.jpg?v=shader-orb-workbench-jpeg";
 export const socialImageType = "image/jpeg";
 export const socialImageAlt = "Drowse in white with Interpretability Workbench underneath, beside a large glowing shader orb.";

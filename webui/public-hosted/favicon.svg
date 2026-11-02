@@ -1,1 +1,25 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 64 64" style="--tile:#5b3fbf;--ink:#ffffff"><path data-squircle="true" d="M32 2C8 2 2 8 2 32s6 30 30 30 30-6 30-30S56 2 32 2Z" fill="var(--tile)"/><style>@media(prefers-color-scheme:dark){svg{--tile:#c5b3ff!important;--ink:#141822!important}}</style><g style="color:var(--ink);--well:var(--tile)" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" transform="translate(10 10) scale(.6875)"><g data-fluent="home" transform="translate(4 4) scale(2.333333)" fill="currentColor" stroke="none"><path d="M13.45 2.533c-0.837-0.707-2.063-0.707-2.9 0L3.8 8.228C3.291 8.655 3 9.284 3 9.948v9.305c0 0.966 0.784 1.75 1.75 1.75h3c0.966 0 1.75-0.784 1.75-1.75V15.25c0-0.68 0.542-1.232 1.217-1.25h2.566c0.675 0.018 1.217 0.57 1.217 1.25v4.003c0 0.966 0.784 1.75 1.75 1.75h3c0.966 0 1.75-0.784 1.75-1.75V9.947c0-0.662-0.292-1.292-0.8-1.72l-6.75-5.694z"/></g></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- The mark: a closed eye cut from the depth ramp, in the paper's colour, one file for both themes.
+       Its geometry is drowse-mark-light.svg's and drowse-mark-dark.svg's; the ramp's stops are its
+       oklch mix from deep to late, as Ledger draws it, in each theme. -->
+  <style>
+    .s0 { stop-color: #6a4fe0 } .s1 { stop-color: #4c63dc } .s2 { stop-color: #2a73d0 } .s3 { stop-color: #007fbf } .s4 { stop-color: #0b87ad }
+    .eye { stroke: #ffffff }
+    @media (prefers-color-scheme: dark) {
+      .s0 { stop-color: #a08bff } .s1 { stop-color: #86a1ff } .s2 { stop-color: #69b6ff } .s3 { stop-color: #52c9ff } .s4 { stop-color: #4fd8f5 }
+      .eye { stroke: #0b0d12 }
+    }
+  </style>
+  <defs>
+    <linearGradient id="ramp" x1="0" x2="1" y1="0" y2="0">
+      <stop class="s0" offset="0" /><stop class="s1" offset=".25" /><stop class="s2" offset=".5" /><stop class="s3" offset=".75" /><stop class="s4" offset="1" />
+    </linearGradient>
+  </defs>
+  <rect class="tile" width="64" height="64" rx="16" fill="url(#ramp)" />
+  <g class="eye" fill="none" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M15 27c4.5 8 10.5 12 17 12s12.5-4 17-12" />
+    <path d="m21.5 34.5-3 4.5" />
+    <path d="M32 39v5.5" />
+    <path d="m42.5 34.5 3 4.5" />
+  </g>
+</svg>
