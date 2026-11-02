@@ -28,9 +28,11 @@ from tests.support.browser_units import (  # noqa: E402
     DECODE_STEPS,
     SHORT_TEXT,
     FixtureError,
+    _find,
     _greedy,
     fixture,
     rank_lists,
+    short_prompt_ids,
 )
 
 PUSH = "0.3 neuron/L2n7"
@@ -68,6 +70,11 @@ def ranked(call: Any, candidates: list[dict[str, int]], path: str, ties: list[di
     raise FixtureError(f"{path}: no knobs keep every boundary: {refusals}")
 
 
+def _pursuit(fx: Any, call: Any, path: str, ties: list[dict[str, Any]]) -> Any:
+    found = _find(fx, call, path, ties)
+    return {"knobs": {"k": found["k"]}, "result": jsonable(found["result"])}
+
+
 def around(name: str, value: int, **fixed: int) -> list[dict[str, int]]:
     return [{name: v, **fixed} for v in (value, value - 1, value + 1, value - 2, value + 2) if v > 0]
 
@@ -82,12 +89,15 @@ def main() -> None:
         model = NativeModel(session)
         build(model, runtime, out / "packs", KINDS, full_depth=False, words=["a", "e", "t"])
         session.lens.band = LensBand()
+        # The browser types the text and its completion prefix adds the family's BOS; the fixture
+        # tokenizer adds none, so drowse reads the BOS piece as its special (the goldens' way).
         text = SHORT_TEXT[arch]
+        native_text = fx.tokenizer.decode(short_prompt_ids(fx.tokenizer, arch))
         ties: list[dict[str, Any]] = []
 
         def generate(steering: str | None, *, steps: int = STEPS, stateless: bool = True) -> Any:
             session.tree.navigate(session.tree.root_id)
-            return session.generate(text, raw=True, stateless=stateless, steering=steering,
+            return session.generate(native_text, raw=True, stateless=stateless, steering=steering,
                                     sampling=_greedy(steps))
 
         generations: dict[str, Any] = {}
@@ -149,8 +159,9 @@ def main() -> None:
             vector = torch.from_numpy(decode(e["vector"]).copy())
             finds.append({
                 "vector": e["vector"], "layer": e["layer"],
-                "result": ranked(lambda k, v=vector, e=e: units.find(v, layer=e["layer"], k=k).to_dict(),
-                                 around("k", e["k"]), f"find[{len(finds)}]", ties),
+                # A greedy pursuit: its k is chosen by the picks' margins (the golden's `_find`).
+                "result": _pursuit(fx, lambda k, v=vector, e=e: units.find(v, layer=e["layer"], k=k).to_dict(),
+                                   f"find[{len(finds)}]", ties),
             })
 
         json.dump(jsonable({
