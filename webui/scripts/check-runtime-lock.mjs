@@ -654,6 +654,16 @@ export const UNITS_FIXTURE_LIBRARIES = Object.freeze([
   "qwen3-q4f32_1",
 ]);
 /** Golden files every units evidence run reports (worst |Δ| per file); a backend may add more. */
+// B1 §4.3 item 2, production q4 on a units library (validate_mlc_q4_parity.py, q4_unit_parity.py):
+// each measure's accepted range; all are null on a residual library.
+const Q4_UNIT_PARITY_LIMITS = Object.freeze({
+  maxActRelativeError: [0, 0.01],
+  maxZRelativeError: [0, 0.01],
+  maxMidRelativeError: [0, 0.01],
+  maxStaticReadRelativeError: [0, 1e-3],
+  minStaticReadTopOverlap: [7, 8],
+  minUnitActivityJaccard: [0.9, 1],
+});
 export const UNITS_GOLDEN_SUITES = Object.freeze([
   "attention-patterns",
   "block-sites",
@@ -794,12 +804,18 @@ export async function validateRuntimeGateResults(
         "maxProbeRelativeError",
         "maxCaptureRelativeError",
         "steeringDirectionCosine",
+        ...Object.keys(Q4_UNIT_PARITY_LIMITS),
       ],
       `${name} results`,
     );
     await validateFixtureBinding(results, name, fixtureRoot);
     if (!SHA256.test(results.runtimeIdentitySha256 ?? "")) {
       throw new Error(`${name} observed runtime identity is invalid`);
+    }
+    const unitValues = Object.keys(Q4_UNIT_PARITY_LIMITS).map((key) => results[key]);
+    const unitsLibrary = unitValues.every((value) => value !== null);
+    if (!unitsLibrary && unitValues.some((value) => value !== null)) {
+      throw new Error(`${name} reports some unit measures but not all`);
     }
     if (runtime !== null) {
       const model = runtime.models?.find((candidate) => candidate.id === results.modelId);
@@ -808,6 +824,20 @@ export async function validateRuntimeGateResults(
       }
       if (results.runtimeIdentitySha256 !== lockedRuntimeIdentitySha256(runtime, model)) {
         throw new Error(`${name} observed runtime identity does not match the locked model`);
+      }
+      // B1 §4.3: a units library's parity covers its sites, static reads and activity.
+      if (unitsLibrary !== (model.structuredHookProfile === "standard-v4")) {
+        throw new Error(`${name} unit measures do not match ${model.id}'s ${model.structuredHookProfile} profile`);
+      }
+    }
+    for (const [key, [minimum, maximum]] of Object.entries(Q4_UNIT_PARITY_LIMITS)) {
+      const value = results[key];
+      if (
+        unitsLibrary &&
+        (!Number.isFinite(value) || value < minimum || value > maximum ||
+          (key === "minStaticReadTopOverlap" && !Number.isInteger(value)))
+      ) {
+        throw new Error(`${name} does not satisfy the production q4 unit thresholds (${key})`);
       }
     }
     if (

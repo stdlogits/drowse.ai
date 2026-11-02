@@ -541,11 +541,71 @@ const productionQ4Parity = {
   maxProbeRelativeError: 0.01,
   maxCaptureRelativeError: 0.01,
   steeringDirectionCosine: 0.99,
+  // B1 §4.3 on a units library: sites, static reads, activity (null on a residual library).
+  maxActRelativeError: 0.004,
+  maxZRelativeError: 0.003,
+  maxMidRelativeError: 0.002,
+  maxStaticReadRelativeError: 2e-5,
+  minStaticReadTopOverlap: 8,
+  minUnitActivityJaccard: 0.94,
 };
 await runtimeLockValidators.validateRuntimeGateResults(
   "productionQ4Parity",
   productionQ4Parity,
   fixtureRepository,
+);
+const unitKeys = [
+  "maxActRelativeError", "maxZRelativeError", "maxMidRelativeError",
+  "maxStaticReadRelativeError", "minStaticReadTopOverlap", "minUnitActivityJaccard",
+];
+const unitless = Object.fromEntries(unitKeys.map((key) => [key, null]));
+const lockedQwen = filledRuntimeLock.models.find((model) => model.id === "qwen3-1.7b");
+const lockedQwenParity = {
+  ...productionQ4Parity,
+  runtimeIdentitySha256: runtimeLockValidators.lockedRuntimeIdentitySha256(filledRuntimeLock, lockedQwen),
+};
+await runtimeLockValidators.validateRuntimeGateResults(
+  "productionQ4Parity", lockedQwenParity, fixtureRepository, filledRuntimeLock,
+);
+await assert.rejects(
+  runtimeLockValidators.validateRuntimeGateResults(
+    "productionQ4Parity", { ...lockedQwenParity, ...unitless }, fixtureRepository, filledRuntimeLock,
+  ),
+  /unit measures do not match qwen3-1\.7b's standard-v4 profile/,
+);
+await assert.rejects(
+  runtimeLockValidators.validateRuntimeGateResults(
+    "productionQ4Parity", { ...productionQ4Parity, minUnitActivityJaccard: null }, fixtureRepository,
+  ),
+  /some unit measures but not all/,
+);
+for (const [key, value] of [
+  ["maxActRelativeError", 0.011], ["maxZRelativeError", 0.02], ["maxMidRelativeError", 0.5],
+  ["maxStaticReadRelativeError", 0.002], ["minStaticReadTopOverlap", 6],
+  ["minStaticReadTopOverlap", 7.5], ["minUnitActivityJaccard", 0.89],
+]) {
+  await assert.rejects(
+    runtimeLockValidators.validateRuntimeGateResults(
+      "productionQ4Parity", { ...productionQ4Parity, [key]: value }, fixtureRepository,
+    ),
+    new RegExp(`production q4 unit thresholds \\(${key}\\)`),
+  );
+}
+// A residual q4 library (Qwen3.5) reports no unit measures.
+const lockedResidual = filledRuntimeLock.models.find((model) => model.id === "qwen35-2b-base");
+const residualParity = {
+  ...productionQ4Parity, ...unitless, modelId: lockedResidual.id,
+  runtimeIdentitySha256: runtimeLockValidators.lockedRuntimeIdentitySha256(filledRuntimeLock, lockedResidual),
+};
+await runtimeLockValidators.validateRuntimeGateResults(
+  "productionQ4Parity", residualParity, fixtureRepository, filledRuntimeLock,
+);
+const unitValues = Object.fromEntries(unitKeys.map((key) => [key, productionQ4Parity[key]]));
+await assert.rejects(
+  runtimeLockValidators.validateRuntimeGateResults(
+    "productionQ4Parity", { ...residualParity, ...unitValues }, fixtureRepository, filledRuntimeLock,
+  ),
+  /standard-v4-residual profile/,
 );
 await assert.rejects(
   runtimeLockValidators.validateRuntimeGateResults(

@@ -93,6 +93,8 @@ const q4ParityClosure = Object.freeze([
   "webui/scripts/hosted-residual-capture.worker.ts",
   "browser-runtime/fixtures/production-q4-parity-input-v1.json",
   "browser-runtime/mlc_q4_torch.py",
+  "browser-runtime/q4_unit_parity.py",
+  "browser-runtime/forks/overlay_checks.py",
   "browser-runtime/validate_mlc_q4_parity.py",
 ]);
 

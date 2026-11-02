@@ -179,14 +179,35 @@ npm run publish:hosted:model -- MODEL_ID PUBLISH_DIR
 npm run publish:hosted:pack -- MODEL_ID core|sae|jlens|slens|units PACK_DIR
 ```
 
-The production-q4 comparator reports probe error against the activation scale:
-for each layer it divides the absolute scalar-projection difference by the
-larger residual norm times the probe-direction norm. This keeps the 1% gate
-well-defined when a valid probe projection is near zero. It separately requires
-the browser probe readback to reproduce the projection of its own captured
-residual and reports the cancellation-sensitive whole-trace ratio as a
-diagnostic only. Schema-v3 captures also run a disabled and enabled program
-through the same structured hook entry point and reject any pre-enabled-layer delta.
+The production-q4 comparator checks the unsteered residuals of every layer and
+position against the dequantized Transformers model, then the steered read on
+hook ABI v5 (capture schema 4): one drowse-structured-v4 program with linear
+probes on a fixed orthonormal sketch at every layer (the first direction the
+push of a rank-1 affine group at the middle layer), measured at every captured
+position with and without the group (`measurePreparedPositions`). Probe error
+is reported against the activation scale: the absolute projection difference
+over the larger residual norm times the probe-direction norm, so the 1% gate
+stays well-defined when a projection is near zero. It separately requires the
+control probes to reproduce the projection of the plain capture, rejects any
+pre-enabled-layer delta between the control and steered probes, and compares
+the steering delta's direction in the sketch.
+
+Capture schema 5 adds B1 §4.3's production measures for a units (`standard-v4`) library and
+refuses them for a residual one (`q4_unit_parity.py`). Its `capture.json` carries
+`units: {block: {d_ff, n_heads, head_dim}, sites_sha256, static_reads}`:
+
+- `sites.f32`, little-endian fp32 `[layers, positions, d_ff + H·hd + d]` at the capture's
+  `layer_map` and `positions`: `act` (the neuron site, down_proj's input), then `z` (the head
+  site, o_proj's input), then `mid` (`h + N_ao(attn_o)`), from the replay. Each site's per-layer
+  relative error against the dequantized model is at most 1%.
+- `static_reads`, 1 to 64 entries `{layer, neuron, ids, probabilities}`, at least one at every
+  captured layer: `vocabReadoutTopK(unitWeightRows("neuron_write", [unit]), 8)`, the softmax of
+  `W_U · N_f(s·γ_mo ⊙ W_down[:, n])` over the whole vocabulary. Python's fp64 top 8 must share at
+  least 7 ids, each shared probability within 1e-3 relative.
+- Unit activity, from the two sides' sites: the top 32 neurons by peak `|act|` and the top 32
+  heads by peak write norm `‖(γ_ao ⊙ W_O^h) z_h‖ · r_ao` (the tap value of B1 §2.2), ranked by
+  flat index on ties, each with Jaccard index at least 0.9. The ranking is unscaled (reading
+  scales come from the units pack and divide both sides alike).
 
 The repository lock carries every value a compile does not produce; each library-bound field
 stays null until a hook ABI v5 library fills it. `prepare-hosted-candidate-lock.mjs` fills one
@@ -531,7 +552,7 @@ Runtime evidence (`runtime-evidence.json`, `runtime-evidence.schema.json` schema
 | `cVmGoldens` | every units, replay and read golden (block sites, unit ablation incl. `mixed`, unit probes, attention patterns, token anatomy, unit activity, unit/lens/S reads, unit artifacts, neuron push) within its file's tolerance, plus the structured, geometry and readout goldens, on the C TVM VM | `browser-runtime/record-cvm-goldens.py` (runs `verify-mlc-hook.py` twice with the exact toolchain) | the four fixture libraries, one record |
 | `webGpuGoldens` | the same goldens through the vendored bridge on WebGPU (the record's bridge digest must be the lock archive's `package/lib/index.js`, so run it with `--webllm node_modules/@drowse/web-llm/lib/index.js`), and each library's schema-4 descriptor attested by the adapter (`attestCompiledStructuredHookProfile`, unit sites 1); each fixture library and model is recorded by digest | `webui/scripts/browser-units-goldens.mjs --report`, one argument set per library | the four fixture libraries, one record |
 | `productionLibrary` | the production library loaded by the physical harness: its descriptor attested at load against the lock's profile and block spec (a mismatch refuses the load), then every check of its profile, including `units` (an ablation that moves the next-token distribution, finite taps, one anatomy replay, one static read, the S readout) on `standard-v4` or `unit_refusal` (each unit call answers the lock's `unitRefusal`, no unit function exported) on `standard-v4-residual`, at an advertised context | `webui/scripts/browser-full-runtime.mjs` | each lock model (`libraries.<id>.productionLibrary`) |
-| `productionQ4Parity` | q4 against the source weights: hook-disabled greedy parity, probe and capture error ≤ 1%, steering direction cosine ≥ 0.99 | `capture-hosted-residuals.mjs` then `validate_mlc_q4_parity.py` | each q4f32_1 model (`libraries.<id>.productionQ4Parity`) |
+| `productionQ4Parity` | q4 against the source weights (B1 §4.3 item 2): hook-disabled greedy parity, probe and capture error ≤ 1%, steering direction cosine ≥ 0.99; on a `standard-v4` library also `act`, `z` and `mid` ≤ 1% per layer, neuron-write static reads ≤ 1e-3 relative with top-8 overlap ≥ 7/8, and top-32 unit activity Jaccard ≥ 0.9 (null on a residual library) | `capture-hosted-residuals.mjs` (capture schema 5) then `validate_mlc_q4_parity.py` | each q4f32_1 model (`libraries.<id>.productionQ4Parity`) |
 
 Offline, before any record: `assemble-hosted-model.mjs` requires each library's VM function
 surface (present and, for a residual library, absent) from the overlay's own lists, and

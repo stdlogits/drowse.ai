@@ -1277,7 +1277,13 @@
             "hookDisabledGreedyMatchesBaseline",
             "maxProbeRelativeError",
             "maxCaptureRelativeError",
-            "steeringDirectionCosine"
+            "steeringDirectionCosine",
+            "maxActRelativeError",
+            "maxZRelativeError",
+            "maxMidRelativeError",
+            "maxStaticReadRelativeError",
+            "minStaticReadTopOverlap",
+            "minUnitActivityJaccard"
           ],
           "properties": {
             "modelId": {
@@ -1306,6 +1312,84 @@
               "type": "number",
               "minimum": 0.99,
               "maximum": 1
+            },
+            "maxActRelativeError": {
+              "oneOf": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 0.01
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Units library: maximum per-layer relative error of the neuron site act (down_proj's input) against Python on the dequantized tensors (B1 4.3). Null on a standard-v4-residual library, which has no unit sites."
+            },
+            "maxZRelativeError": {
+              "oneOf": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 0.01
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Units library: the same for the head site z (o_proj's input). Null on a standard-v4-residual library, which has no unit sites."
+            },
+            "maxMidRelativeError": {
+              "oneOf": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 0.01
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Units library: the same for the mid site (h + N_ao(attn_o)). Null on a standard-v4-residual library, which has no unit sites."
+            },
+            "maxStaticReadRelativeError": {
+              "oneOf": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 0.001
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Units library: maximum relative error of a shared top-8 probability of a neuron-write vocabulary readout. Null on a standard-v4-residual library, which has no unit sites."
+            },
+            "minStaticReadTopOverlap": {
+              "oneOf": [
+                {
+                  "type": "integer",
+                  "minimum": 7,
+                  "maximum": 8
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Units library: least top-8 id overlap of a neuron-write vocabulary readout with Python's. Null on a standard-v4-residual library, which has no unit sites."
+            },
+            "minUnitActivityJaccard": {
+              "oneOf": [
+                {
+                  "type": "number",
+                  "minimum": 0.9,
+                  "maximum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Units library: least Jaccard index of the top-32 neurons by peak |act| and top-32 heads by peak write norm. Null on a standard-v4-residual library, which has no unit sites."
             }
           }
         }
