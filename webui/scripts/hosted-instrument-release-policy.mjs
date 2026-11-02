@@ -8,8 +8,6 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const COMMIT = /^[0-9a-f]{40}$/;
 const RELEASE_CORPUS_SCHEMA = "https://polythetic.ai/schemas/release-corpus-v1.json";
 const RELEASE_CORPUS_ALGORITHM = "drowse-release-corpus-v1";
-const MINIMUM_JLENS_PROMPTS = 100;
-const MINIMUM_JLENS_SEQUENCE = 128;
 const MINIMUM_SHARED_WORDS = 80;
 const MINIMUM_SAE_TOKENS = 50_000;
 const MINIMUM_SAE_SEQUENCE = 128;
@@ -30,6 +28,12 @@ export async function validateReleaseInstrumentPack({
       modelLock,
     );
   }
+  // R and S lenses and the units statistics are drowse's own artifacts, fitted natively on the
+  // browser weights over the pinned lens corpus (release-corpus/native-lens-corpus.json).
+  if (kind === "jlens" || kind === "slens") {
+    return validateNativeLens(kind, instrumentManifest, vocabularyManifest, modelLock);
+  }
+  if (kind === "units") return validateNativeUnits(instrumentManifest, modelLock);
   const root = resolve(directory, "packs", kind);
   const [
     releaseBytes,
@@ -58,9 +62,6 @@ export async function validateReleaseInstrumentPack({
   });
   if (kind === "sae") {
     return validateSae(instrumentManifest, release, modelLock);
-  }
-  if (kind === "jlens") {
-    return validateJlens(instrumentManifest, vocabularyManifest, release, modelLock);
   }
   throw new Error(`release policy does not support instrument kind ${String(kind)}`);
 }
@@ -331,48 +332,70 @@ function validateSae(manifest, release, modelLock) {
   };
 }
 
-function validateJlens(manifest, vocabulary, release, modelLock) {
-  const expectedLayers = modelLock.layerMap.slice(0, -1);
+const NATIVE_LENS_CORPUS = JSON.parse(await readFile(
+  resolve(repositoryRoot, "browser-runtime/release-corpus/native-lens-corpus.json"),
+  "utf8",
+));
+
+/** A full-depth native lens (PLAN.md): every layer of the family at both sites (R:out stops one
+ *  short of the last block, whose read is the logit lens), split-half recorded at each, fitted
+ *  by drowse over the pinned corpus. */
+function validateNativeLens(kind, manifest, vocabulary, modelLock) {
+  const family = kind === "jlens" ? "R" : "S";
+  const layers = modelLock.layerMap.map((_, index) => index);
+  const expected = { out: family === "R" ? layers.slice(0, -1) : layers, mid: layers };
+  const sites = manifest?.sites ?? {};
   if (
-    manifest?.raw_corpus_sha256 !== release.outputs.jlens.sha256 ||
-    manifest?.d_model !== modelLock.hiddenSize ||
-    manifest?.model_layer_count !== modelLock.layerMap.length ||
-    canonical(lensLayers(manifest)) !== canonical(expectedLayers)
-  ) throw new Error("the release R lens does not bind the approved corpus and complete layer map");
+    manifest?.format_version !== 7 || manifest.kind !== family || manifest.dtype !== "float32" ||
+    manifest.checkpoint !== false || manifest.corpus_spec !== NATIVE_LENS_CORPUS.corpusSpec ||
+    manifest.corpus_hash_kind !== "token_ids_v1" ||
+    manifest.d_model !== modelLock.hiddenSize || manifest.model_layer_count !== modelLock.layerMap.length ||
+    manifest.estimator_policy?.direction !== (family === "R" ? "output" : "input") ||
+    canonical(Object.keys(sites).sort()) !== canonical(["mid", "out"]) ||
+    Object.entries(expected).some(([site, wanted]) =>
+      canonical(sites[site]?.layers) !== canonical(wanted) ||
+      canonical(Object.keys(sites[site]?.split_half ?? {}).map(Number).sort((a, b) => a - b)) !== canonical(wanted))
+  ) {
+    throw new Error(`the release ${family} lens is not a full-depth native lens over the pinned lens corpus`);
+  }
+  const minimums = NATIVE_LENS_CORPUS.minimums;
   if (
-    !positiveInteger(manifest.n_prompts) || manifest.n_prompts < MINIMUM_JLENS_PROMPTS ||
-    !positiveInteger(manifest.raw_prompt_count) || manifest.raw_prompt_count < MINIMUM_JLENS_PROMPTS ||
-    !positiveInteger(manifest.usable_prompt_count) || manifest.usable_prompt_count < MINIMUM_JLENS_PROMPTS ||
-    !positiveInteger(manifest.seq_len) || manifest.seq_len < MINIMUM_JLENS_SEQUENCE
+    !positiveInteger(manifest.n_prompts) || manifest.n_prompts < minimums.prompts ||
+    !positiveInteger(manifest.usable_prompt_count) || manifest.usable_prompt_count < minimums.prompts ||
+    !positiveInteger(manifest.seq_len) || manifest.seq_len < minimums.sequenceLength
   ) {
     throw new Error(
-      `a release R lens requires at least ${MINIMUM_JLENS_PROMPTS} usable prompts ` +
-      `and ${MINIMUM_JLENS_SEQUENCE}-token sequences`,
+      `a release ${family} lens requires at least ${minimums.prompts} documents of ${minimums.sequenceLength} tokens`,
     );
   }
-  if (!vocabulary || !Array.isArray(vocabulary.words)) {
-    throw new Error("the release lens vocabulary manifest is unavailable");
-  }
-  const words = vocabulary.words.map((entry) => entry?.word);
-  const wordBytes = Buffer.from(JSON.stringify(words));
-  if (
-    words.length < MINIMUM_SHARED_WORDS ||
-    words.length !== release.outputs.words.count ||
-    wordBytes.byteLength !== release.outputs.words.bytes ||
-    sha256(wordBytes) !== release.outputs.words.sha256
-  ) throw new Error("the release lens vocabulary does not match the approved shared-word closure");
-  const tokenIds = release.outputs.words.tokenIds[modelLock.id];
-  if (vocabulary.words.some((entry, index) => entry.row !== index || entry.token_id !== tokenIds[index])) {
-    throw new Error("the release lens vocabulary does not match the approved token closure");
+  if (family === "R" && (!vocabulary || !Array.isArray(vocabulary.words) || vocabulary.words.length === 0)) {
+    throw new Error("the release R lens has no browser vocabulary");
   }
   return {
-    corpusSha256: release.outputs.jlens.sha256,
-    sourceRevision: release.source.revision,
+    source: "native",
+    family,
+    corpusSpec: manifest.corpus_spec,
+    attributionApproval: NATIVE_LENS_CORPUS.attributionApproval,
     prompts: manifest.usable_prompt_count,
     sequenceLength: manifest.seq_len,
-    layers: expectedLayers.length,
-    words: words.length,
+    layers: { out: expected.out.length, mid: expected.mid.length },
+    ...(family === "R" ? { words: vocabulary.words.length } : {}),
   };
+}
+
+/** A units pack covers every layer and binds the lenses, statistics and neutral pass it averages. */
+function validateNativeUnits(record, modelLock) {
+  const binding = record?.binding ?? {};
+  if (
+    record?.format !== "drowse-units-pack-v1" || record.model_layer_count !== modelLock.layerMap.length ||
+    record.d_model !== modelLock.hiddenSize ||
+    Object.keys(record.layers ?? {}).length !== modelLock.layerMap.length ||
+    [binding.r_lens_identity, binding.s_lens_identity, binding.embedding_statistics_sha256, binding.neutral?.sha256]
+      .some((digest) => typeof digest !== "string" || !SHA256.test(digest))
+  ) {
+    throw new Error("the release units pack does not cover every layer or bind its lenses and neutral pass");
+  }
+  return { source: "native", layers: modelLock.layerMap.length, nullRank: record.null?.rank };
 }
 
 function parseJson(bytes, label) {
@@ -429,8 +452,6 @@ function canonical(value) {
 }
 
 export const releaseInstrumentMinimums = Object.freeze({
-  jlensPrompts: MINIMUM_JLENS_PROMPTS,
-  jlensSequence: MINIMUM_JLENS_SEQUENCE,
   sharedWords: MINIMUM_SHARED_WORDS,
   saeTokens: MINIMUM_SAE_TOKENS,
   saeSequence: MINIMUM_SAE_SEQUENCE,

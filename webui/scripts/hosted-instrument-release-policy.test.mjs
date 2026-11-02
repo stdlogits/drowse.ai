@@ -139,12 +139,10 @@ await assert.rejects(
 );
 
 const saeDirectory = join(root, "sae");
-const jlensDirectory = join(root, "jlens");
 await Promise.all([
   mkdir(join(saeDirectory, "packs/sae"), { recursive: true }),
-  mkdir(join(jlensDirectory, "packs/jlens"), { recursive: true }),
 ]);
-for (const directory of [join(saeDirectory, "packs/sae"), join(jlensDirectory, "packs/jlens")]) {
+for (const directory of [join(saeDirectory, "packs/sae")]) {
   await Promise.all([
     writeFile(join(directory, "release-corpus.json"), releaseBytes),
     writeFile(join(directory, "release-corpus-source.json"), updatedSourceBytes),
@@ -176,63 +174,82 @@ await assert.rejects(
   /release SAE requires/,
 );
 
-const jlensManifest = {
-  raw_corpus_sha256: release.outputs.jlens.sha256,
-  d_model: modelLock.hiddenSize,
-  model_layer_count: modelLock.layerMap.length,
-  format_version: 7,
-  sites: { out: { layers: modelLock.layerMap.slice(0, -1) } },
-  n_prompts: 100,
-  raw_prompt_count: 100,
-  usable_prompt_count: 100,
-  seq_len: 128,
-};
-const vocabularyManifest = {
-  words: seedWords.map((word, row) => ({ word, row, token_id: row + 1 })),
-};
-assert.equal((await validateReleaseInstrumentPack({
-  directory: jlensDirectory,
+// Native R and S lenses: full depth at both sites, split-half at every layer, the pinned corpus.
+const nativeCorpus = JSON.parse(await readFile(
+  new URL("../../browser-runtime/release-corpus/native-lens-corpus.json", import.meta.url),
+  "utf8",
+));
+const depth = modelLock.layerMap.length;
+const every = (count) => Array.from({ length: count }, (_, layer) => layer);
+const site = (layers) => ({
+  layers,
+  split_half: Object.fromEntries(layers.map((layer) => [String(layer), 0.1])),
+});
+const nativeLens = (kind) => ({
+  format_version: 7, kind, dtype: "float32", checkpoint: false,
+  corpus_spec: nativeCorpus.corpusSpec, corpus_hash_kind: "token_ids_v1",
+  d_model: modelLock.hiddenSize, model_layer_count: depth,
+  estimator_policy: { direction: kind === "R" ? "output" : "input" },
+  sites: { out: site(every(kind === "R" ? depth - 1 : depth)), mid: site(every(depth)) },
+  n_prompts: 64, usable_prompt_count: 64, seq_len: 128,
+});
+assert.deepEqual(await validateReleaseInstrumentPack({
+  directory: join(root, "native-jlens"),
   kind: "jlens",
-  instrumentManifest: jlensManifest,
-  vocabularyManifest,
+  instrumentManifest: nativeLens("R"),
+  vocabularyManifest: { words: [{ word: "yes", row: 0, token_id: 1 }] },
   runtimeLock,
   modelLock,
-})).words, 80);
-for (const change of [{ token_id: 999 }, { row: 1 }]) {
+}), {
+  source: "native", family: "R", corpusSpec: nativeCorpus.corpusSpec, attributionApproval: null,
+  prompts: 64, sequenceLength: 128, layers: { out: depth - 1, mid: depth }, words: 1,
+});
+assert.equal((await validateReleaseInstrumentPack({
+  directory: join(root, "native-slens"), kind: "slens", instrumentManifest: nativeLens("S"), runtimeLock, modelLock,
+})).layers.out, depth);
+for (const [label, change] of [
+  ["an eight-layer pack", (manifest) => { manifest.sites.out = site([0, 1, 2, 3, 4, 5, 6, 7]); }],
+  ["no mid site", (manifest) => { delete manifest.sites.mid; }],
+  ["no split-half", (manifest) => { delete manifest.sites.mid.split_half; }],
+  ["another corpus", (manifest) => { manifest.corpus_spec = "hf:other"; }],
+  ["the S kind in an R pack", (manifest) => { manifest.kind = "S"; }],
+]) {
+  const manifest = nativeLens("R");
+  change(manifest);
   await assert.rejects(
     validateReleaseInstrumentPack({
-      directory: jlensDirectory,
-      kind: "jlens",
-      instrumentManifest: jlensManifest,
-      vocabularyManifest: { words: vocabularyManifest.words.map((word, index) =>
-        index === 0 ? { ...word, ...change } : word) },
-      runtimeLock,
-      modelLock,
+      directory: join(root, "native-jlens"), kind: "jlens", instrumentManifest: manifest,
+      vocabularyManifest: { words: [{ word: "yes", row: 0, token_id: 1 }] }, runtimeLock, modelLock,
     }),
-    /token.*closure/,
+    /full-depth native lens/,
+    label,
   );
 }
 await assert.rejects(
   validateReleaseInstrumentPack({
-    directory: jlensDirectory,
-    kind: "jlens",
-    instrumentManifest: { ...jlensManifest, sites: { out: { layers: [0] } } },
-    vocabularyManifest,
-    runtimeLock,
-    modelLock,
+    directory: join(root, "native-jlens"), kind: "jlens",
+    instrumentManifest: { ...nativeLens("R"), n_prompts: 32, usable_prompt_count: 32 },
+    vocabularyManifest: { words: [{ word: "yes", row: 0, token_id: 1 }] }, runtimeLock, modelLock,
   }),
-  /complete layer map/,
+  /at least 64 documents/,
 );
+const unitsRecord = {
+  format: "drowse-units-pack-v1", model_layer_count: depth, d_model: modelLock.hiddenSize,
+  layers: Object.fromEntries(every(depth).map((layer) => [String(layer), {}])), null: { rank: 6 },
+  binding: {
+    r_lens_identity: "a".repeat(64), s_lens_identity: "b".repeat(64),
+    embedding_statistics_sha256: "c".repeat(64), neutral: { sha256: "d".repeat(64) },
+  },
+};
+assert.deepEqual(await validateReleaseInstrumentPack({
+  directory: join(root, "native-units"), kind: "units", instrumentManifest: unitsRecord, runtimeLock, modelLock,
+}), { source: "native", layers: depth, nullRank: 6 });
 await assert.rejects(
   validateReleaseInstrumentPack({
-    directory: jlensDirectory,
-    kind: "jlens",
-    instrumentManifest: { ...jlensManifest, format_version: 6 },
-    vocabularyManifest,
-    runtimeLock,
-    modelLock,
+    directory: join(root, "native-units"), kind: "units",
+    instrumentManifest: { ...unitsRecord, binding: { ...unitsRecord.binding, neutral: {} } }, runtimeLock, modelLock,
   }),
-  /complete layer map/,
+  /bind its lenses/,
 );
 
 assert.deepEqual(await validateReleaseInstrumentPack({
@@ -306,7 +323,7 @@ for (const scenario of [
   else await assert.rejects(validate(), /token.*closure/);
 }
 
-console.log("Hosted instrument release-policy checks passed: scoped model identities, exact word token IDs, malformed closures, and provider packs");
+console.log("Hosted instrument release-policy checks passed: scoped model identities, exact word token IDs, malformed closures, native full-depth lenses and units, and provider packs");
 
 function output(path, bytes, documents) {
   return {

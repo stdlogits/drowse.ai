@@ -69,7 +69,7 @@ for (const marker of [
   "Create on this device",
   "drowse lens fit",
   "train_hosted_sae.py",
-  "fit_hosted_jlens.py",
+  "build_hosted_packs.py",
 ]) {
   if (source.includes(marker)) {
     throw new Error(`Python-only instrument authoring leaked into hosted build: ${marker}`);

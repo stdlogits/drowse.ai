@@ -104,7 +104,7 @@ let releaseQuality = null;
 if (release) {
   const instrumentManifest = JSON.parse(await readFile(resolve(
     directory,
-    manifest.files.find((file) => file.path.endsWith(`/${kind}/manifest.json`)).path,
+    manifest.files.find((file) => file.path.endsWith(`/${kind}/${RECORD[kind]}`)).path,
   ), "utf8"));
   const vocabularyEntry = kind === "jlens"
     ? manifest.files.find((file) => file.path.endsWith("/jlens/browser-vocabulary.json"))
