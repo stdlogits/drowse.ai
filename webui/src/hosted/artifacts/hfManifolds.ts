@@ -1,4 +1,5 @@
 import type { RemoteManifoldInfo } from "../../../../drowse/webui/src/lib/types";
+import { domainLabel } from "./authoring";
 import { DROWSE_ARCHIVE_MAX_TOTAL_BYTES } from "./types";
 import { drowseStorageRoot } from "../../../../drowse/webui/src/lib/brandMigration";
 import { randomUuid } from "../runtime/randomId";
@@ -231,7 +232,7 @@ export class BrowserHfManifoldClient implements BrowserHfManifoldClientPort {
       description: typeof value.description === "string" ? value.description : "",
       tags,
       node_count: value.nodes.length,
-      domain_label: domainLabel(value.domain, fitMode),
+      domain_label: remoteDomainLabel(value.domain, fitMode),
       fit_mode: fitMode,
       // The summary is the archived manifest, so its file map names exactly
       // the fitted tensors the archive carries; a pushed repo has no root
@@ -407,14 +408,10 @@ function requireAllowedResponseOrigin(response: Response, allowed: ReadonlySet<s
   if (!allowed.has(origin)) throw new Error(`Hugging Face redirected to untrusted origin ${origin}`);
 }
 
-function domainLabel(value: unknown, fitMode: string): string {
-  if (isRecord(value)) {
-    if (value.type === "box" && Array.isArray(value.axes)) return `box(${value.axes.length}d)`;
-    if (value.type === "sphere" && Number.isSafeInteger(value.dim)) return `sphere(${value.dim}d)`;
-    if (value.type === "custom" && Number.isSafeInteger(value.embed_dim)) {
-      return `custom(${value.embed_dim}d)`;
-    }
-  }
+/** A remote manifold's domain label: the schema's `domain_label`, or `discover-<mode>` for a
+ *  discover folder that carries no geometry yet. */
+function remoteDomainLabel(value: unknown, fitMode: string): string {
+  if (isRecord(value) && typeof value.type === "string") return domainLabel(value);
   return fitMode === "pca" || fitMode === "spectral" || fitMode === "auto"
     ? `discover-${fitMode}`
     : "?";

@@ -68,7 +68,9 @@ try {
     const affineRank2 = options.affineRank2 === true || options.nonPoised === true;
     const saeFit = options.saeFit === true;
     const nodeRole = options.role ?? null;
-    const labels = affineRank2 ? ["center", "east", "north"] : ["calm", "alert"];
+    const oneNode = options.oneNode === true;
+    const labels = affineRank2 ? ["center", "east", "north"]
+      : oneNode ? ["deceptive"] : ["calm", "alert"];
     const nodeRoles = options.nodeRoles ?? labels.map(() => nodeRole);
     const tensorName = saeFit
       ? "_zdGVzdC9tb2RlbA_sae-_zojswyzlbonss2yi.safetensors"
@@ -169,6 +171,14 @@ try {
         shape: [3, 2],
         data: new Float32Array([0, 0, 0, 3, 5, 0]),
       },
+    } : oneNode ? {
+      node_coords: { shape: [1, 1], data: new Float32Array([1]) },
+      "layer_0.mean": { shape: [2], data: new Float32Array([0.1, 0.2]) },
+      "layer_0.basis": { shape: [1, 2], data: new Float32Array([1, 0]) },
+      "layer_0.node_coords": { shape: [1, 1], data: new Float32Array([1]) },
+      "layer_1.mean": { shape: [2], data: new Float32Array([0.3, 0.4]) },
+      "layer_1.basis": { shape: [1, 2], data: new Float32Array([0, 1]) },
+      "layer_1.node_coords": { shape: [1, 1], data: new Float32Array([2]) },
     } : {
       node_coords: { shape: [2, 1], data: new Float32Array([-1, 1]) },
       "layer_0.mean": { shape: [2], data: new Float32Array([0.1, 0.2]) },
@@ -736,6 +746,53 @@ try {
     assert.deepEqual([...program.collapse], [0, 0]);
   });
 
+  test("honors a layer clause and refuses one naming an unfitted layer", async () => {
+    const { request } = await fixture({ withWhitener: true });
+    const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+    assert.deepEqual([...compiler.compile("0.5 alert").enabled], [1, 1]);
+    const scoped = compiler.compile("0.5 alert{1}");
+    assert.deepEqual([...scoped.enabled], [0, 1]);
+    assert.equal(scoped.steeringDepth, 2);
+    assert.equal(scoped.steeringTerms.length, 1);
+    assert.equal(scoped.steeringTerms[0].key, "local/demo%alert{1}");
+    assert.deepEqual(scoped.steeringTerms[0].fitted, [0, 1]);
+    assert.deepEqual(scoped.steeringTerms[0].layers, [1]);
+    assert.equal(scoped.steeringTerms[0].share.length, 2);
+    assert.ok(Math.abs(scoped.steeringTerms[0].share.reduce((a, b) => a + b, 0) - 2) < 1e-9);
+    assert.deepEqual([...compiler.compile("0.5 !alert{0}").enabled], [1, 0]);
+    assert.throws(
+      () => compiler.compile("0.5 alert{1,4-5}"),
+      (error) => error.status === 422 && error.message ===
+        "steering term 'local/demo%alert{1,4-5}' selects layer(s) 4-5 it is not fitted at; " +
+          "fitted layers: 0-1",
+    );
+    // One position under two clauses is two terms, each with its own trigger.
+    assert.deepEqual(
+      compiler.compile("0.5 alert{1} + 0.2 alert@response").steeringTerms.map((term) => term.key),
+      ["local/demo%alert{1}", "local/demo%alert"],
+    );
+  });
+
+  test("resolves a one-node concept through its label; the retired axis does not resolve", async () => {
+    const { request } = await fixture({ withWhitener: true, oneNode: true });
+    const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+    const toward = compiler.compile("0.5 deceptive");
+    assert.deepEqual([...toward.enabled], [1, 1]);
+    assert.equal(toward.steeringTerms[0].key, "local/demo%deceptive");
+    const away = compiler.compile("-0.5 deceptive");
+    assert.deepEqual([...away.enabled], [1, 1]);
+    assert.ok([...toward.target].every((value) => value > 0));
+    assertFloatArray(away.target, [...toward.target].map((value) => -value));
+    assertFloatArray(away.along, toward.along);
+    for (const retired of ["0.5 honest.deceptive", "0.5 honest", "0.5 demo"]) {
+      assert.throws(
+        () => compiler.compile(retired),
+        (error) => error.code === "CORE_PACK_SELECTOR_NOT_FOUND",
+        retired,
+      );
+    }
+  });
+
   test("caches immutable generation payloads and isolates public mutable programs", async () => {
     const { request } = await fixture({ withWhitener: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
@@ -1011,8 +1068,16 @@ try {
     const large = execute("0.9 alert@response");
     assert.ok(Math.abs(deltaNorm(large) / deltaNorm(small) - 9) < 1e-5);
 
-    const explicitStructuredCompiler = await BrowserFeasibilityCorePackCompiler.load(request);
-    const explicitStructured = explicitStructuredCompiler.compile("0.1 alert@both");
+    // `@both` is the bare form, so it lowers to the same program as the bare term.
+    const bareCompiler = await BrowserFeasibilityCorePackCompiler.load(request);
+    const bare = bareCompiler.compile("0.1 alert");
+    const both = bareCompiler.compile("0.1 alert@both");
+    assert.equal(both.format, bare.format);
+    assertFloatArray(both.target, bare.target);
+    assertFloatArray(both.along, bare.along);
+    // A probe forces the structured path without changing the steering: the same push as an
+    // explicitly phased term (the layer runner applies the compiled active flags).
+    const explicitStructured = bareCompiler.compile("0.1 alert@response");
     compiler.attachProbe({ selector: "demo", name: "demo" });
     const probeForcedStructured = compiler.compile("0.1 alert");
     assertFloatArray(
@@ -1064,7 +1129,7 @@ try {
     assert.equal(combined.curveActive.filter(Boolean).length, 2);
     assert.throws(
       () => compiler.compile("0.2 demo%alert@response + 0.3 demo%alert@prompt"),
-      (error) => error.code === "CORE_PACK_TRIGGER_CONFLICT",
+      (error) => error.code === "SteeringExprError" && /conflicting triggers/.test(error.message),
     );
 
     const flatFixture = await fixture({ withWhitener: true, withSecondManifold: true });
@@ -1082,8 +1147,62 @@ try {
     assertFloatArray(duplicateAblation.affineKappa, singleAblation.affineKappa);
     assert.throws(
       () => flat.compile("0.2 !alert@response + 0.3 !alert@prompt"),
-      (error) => error.code === "CORE_PACK_TRIGGER_CONFLICT",
+      (error) => error.code === "SteeringExprError" && /conflicting triggers/.test(error.message),
     );
+  });
+
+  test("folds by IR key: a label term and an explicit-position term stay two terms", async () => {
+    const { request } = await fixture({ withWhitener: true });
+    const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+    const input = new Float32Array([0.4, -0.2]);
+    const run = (program) => runStructuredHookLayer(
+      program, initialStructuredHookState(program), 0, input,
+    ).residual;
+    const split = compiler.compile("0.5 alert@response + 0.2 demo%alert@response");
+    assert.deepEqual(split.steeringTerms.map((term) => term.key), ["local/demo%alert", "demo%alert"]);
+    assert.deepEqual(split.steeringParts.map((part) => part.text), ["0.5 local/demo%alert@response", "0.2 demo%alert@response"]);
+    // The affine pushes sum linearly (synthesize_subspace), so two terms act as one.
+    assertFloatArray(run(split), run(compiler.compile("0.7 alert@response")), 1e-5);
+    // Different keys take different triggers, as drowse accepts them.
+    const phased = compiler.compile("0.5 alert@prompt + 0.2 demo%alert@response");
+    assert.equal(phased.steeringTerms.length, 2);
+    assert.equal(phased.steeringParts.length, 2);
+
+    const curved = await fixture({ curved: true, withWhitener: true });
+    const curvedCompiler = await BrowserFeasibilityCorePackCompiler.load(curved.request);
+    // Two curved terms on one manifold overlap, as drowse's OverlappingManifoldError.
+    assert.throws(
+      () => curvedCompiler.compile("0.2,0.1 alert + 0.3,0.2 demo%alert"),
+      (error) => error.code === "CORE_PACK_CURVED_OVERLAP",
+    );
+  });
+
+  test("lists a ~ projection as fitted only where it is not zero", async () => {
+    const { request } = await fixture({ withWhitener: true, withSae: true });
+    const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+    // Layer 1 only (the SAE's layer): alert's [0, 1] against decoder rows [1, 0] and [0, 1].
+    assert.deepEqual(compiler.compile("0.5 alert~sae/1").steeringTerms[0].fitted, [1]);
+    // M-orthogonal operands project to zero there, so project_profile drops the layer and, with
+    // none left, refuses the term before any clause is checked.
+    for (const expression of ["0.5 alert~sae/0", "0.5 alert~sae/0{1}"]) {
+      assert.throws(
+        () => compiler.compile(expression),
+        (error) => error.status === 422 && error.message ===
+          "project_profile: no layers produced for operator '~' (base layers: [0, 1], onto layers: [1])",
+        expression,
+      );
+    }
+  });
+
+  test("folds a plain term with its @both form", async () => {
+    const { request } = await fixture({ withWhitener: true, withSae: true });
+    const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+    const both = compiler.compile("0.5 sae/0 + 0.5 sae/0@both");
+    const single = compiler.compile("1 sae/0");
+    assert.equal(both.steeringExpression, "1 sae/0");
+    assert.deepEqual(both.steeringTerms.map((term) => term.key), ["sae/0"]);
+    assertFloatArray(both.affineTarget, single.affineTarget);
+    assertFloatArray(both.affineAlong, single.affineAlong);
   });
 
   test("matches Python bare-selector tier gating and canonicalization", async () => {
@@ -1257,6 +1376,23 @@ try {
     assert.ok(Number.isFinite(first.curveFeet[0]));
     assert.ok(Number.isFinite(second.curveFeet[0]));
     assert.notEqual(first.residual[0], Math.fround(0.2));
+  });
+
+  test("normalizes a layer-scoped curved term's share over its selected layers", async () => {
+    const { request } = await fixture({ curved: true, withWhitener: true });
+    const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+    const gains = (program) => [0, 1].map((layer) => {
+      const slot = layer * program.profile.maxCurves;
+      return [program.curveActive[slot], program.curveAlong[slot], program.curveOnto[slot]];
+    });
+    // Shares sqrt(2) and 2 sqrt(2): mean-1 over both layers is 2/3 and 4/3.
+    const full = gains(compiler.compile("0.3,0.5 demo%alert"));
+    assertFloatArray(full.map((row) => row[1]), [0.8, 1.6]);
+    assertFloatArray(full.map((row) => row[2]), [1 / 6, 1 / 3]);
+    // drowse's _manifold_layer_shares normalizes over the clause's layers only.
+    const scoped = gains(compiler.compile("0.3,0.5 demo%alert{0}"));
+    assert.equal(scoped[1][0], 0);
+    assertFloatArray([scoped[0][1], scoped[0][2]], [1.2, 0.25]);
   });
 
   test("rejects overlapping curved terms before generation", async () => {
@@ -2002,7 +2138,9 @@ try {
       },
     };
     const runtime = new BrowserInstrumentRuntime(compiler, resolver);
-    compiler.attachProbe({ selector: "jlens/hello", name: "watched hello" });
+    const watched = compiler.attachProbe({ selector: "jlens/hello", name: "watched hello" });
+    assert.equal(watched.family, "lens");
+    assert.equal(watched.namespace, "jlens");
     compiler.setInstrumentLive("lens", true, [1]);
 
     assert.equal(runtime.blocks()[1].capabilities.source_switch, true);
@@ -2720,7 +2858,21 @@ try {
         expression,
       );
     }
-    for (const expression of ["0.3 slens/#12", "0.2 neuron/L8n344", "0.2 head/L3h2"]) {
+    const whitened = await BrowserFeasibilityCorePackCompiler.load(
+      (await fixture({ withWhitener: true })).request,
+    );
+    for (const expression of [
+      "0.5 alert@when:neuron/L8n344>2", "0.5 alert@after&when:head/L3h2<=0.5",
+      "0.5 alert@when:slens/Owl>3",
+    ]) {
+      assert.throws(
+        () => whitened.compile(expression),
+        (error) => error.code === "CORE_PACK_EXPRESSION_UNAVAILABLE" &&
+          /instrument atoms are not available in the browser runtime/.test(error.message),
+        expression,
+      );
+    }
+    for (const expression of ["0.3 slens/#12", "0.3 slens/Owl", "0.2 neuron/L8n344", "!head/L3h2"]) {
       assert.throws(
         () => compiler.compile(expression),
         (error) => error.code === "CORE_PACK_EXPRESSION_UNAVAILABLE" &&

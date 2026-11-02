@@ -5,6 +5,7 @@ import {
   type Fp32SafetensorsReader,
   type VerifiedDrowseArchive,
 } from "../artifacts";
+import { domainLabel } from "../artifacts/authoring";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import type { BrowserModelArtifact, BrowserModelLoadRequest } from "./modelBackend";
@@ -36,6 +37,7 @@ import type {
   ProbeInfo,
   ProbeRequest,
   ProfileListResponse,
+  SteeringPartJSON,
   VectorInfo,
 } from "../../../../drowse/webui/src/lib/types";
 import {
@@ -65,9 +67,18 @@ import {
   type StructuredHookCapacityProfile,
 } from "./structuredHookProfile";
 import {
+  canonicalConceptName,
+  foldSteering,
+  formatLayerClause,
+  formatSteering,
+  normalizeTrigger,
   parseSteeringExpression,
   RESERVED_NAMESPACES,
+  selectTermLayers,
+  steeringParts,
+  type LayerScope,
   type SteeringAtom,
+  type SteeringManifoldEntry,
   type SteeringPhase,
   type SteeringExpressionTerm,
   type SteeringTrigger,
@@ -130,7 +141,30 @@ interface ResolvedCoreTerm {
   ablation: boolean;
   trigger: SteeringTrigger | null;
   manifoldPosition: readonly number[] | string | null;
+  /** The `{…}` clause's scope, and the canonical IR key the clause belongs to. */
+  layers: LayerScope;
+  irKey: string;
+  /** The layers the term acts on (`select_term_layers`), `null` for every fitted one. Set once
+   *  the expression is folded. */
+  actsAt: ReadonlySet<number> | null;
 }
+
+/** Where one validated term acts, as `POST .../steering/validate` reports it. */
+export interface BrowserSteeringTermLayers {
+  key: string;
+  fitted: number[];
+  share: number[];
+  layers: number[];
+}
+
+/** A compiled program, with what steering validation answers about its expression: the
+ *  canonical text, each term's fields, where each acts and the model's depth. */
+export type BrowserCompiledSteering = BrowserHookProgramBuffers & {
+  steeringExpression?: string;
+  steeringParts?: SteeringPartJSON[];
+  steeringTerms?: readonly BrowserSteeringTermLayers[];
+  steeringDepth?: number;
+};
 
 interface InstalledProbeProgram {
   slots: readonly StructuredMeasurementSlot[];
@@ -492,6 +526,7 @@ export class BrowserFeasibilityCorePackCompiler {
       const token = this.instruments.jlensToken(selector.slice("jlens/".length));
       probe = {
         family: "lens",
+        namespace: "jlens",
         name,
         layers: [...token.directions.keys()].sort((left, right) => left - right),
         intrinsic_dim: 1,
@@ -864,15 +899,19 @@ export class BrowserFeasibilityCorePackCompiler {
     }
   }
 
-  private compileCurrent(expression: string): BrowserHookProgramBuffers {
+  private compileCurrent(expression: string): BrowserCompiledSteering {
+    // The grammar's own fold first, so a malformed or ambiguous expression is refused exactly as
+    // drowse refuses it, before the compiler's narrower refusals.
     const parsed = expression.trim()
       ? parseSteeringExpression(expression)
       : { terms: [] };
+    const ir = foldSteering(parsed, { manifolds: this.steeringManifolds() });
     const resolved = this.foldResolvedTerms(
       parsed.terms.map((term) => this.resolveTerm(term)),
     );
+    const placements = this.placeTerms(resolved);
     const activeRole = this.activeRole(resolved);
-    let program: BrowserHookProgramBuffers;
+    let program: BrowserCompiledSteering;
     if (this.lensLive || this.saeLive || this.attachedProbes.size > 0 || resolved.length === 0 || resolved.some((term) =>
       term.trigger !== null || term.manifoldPosition !== null ||
       term.base.kind === "instrument" || term.projection?.onto.kind === "instrument"
@@ -886,6 +925,10 @@ export class BrowserFeasibilityCorePackCompiler {
       program = this.compileComposedPurePush(resolved);
     }
     program.activeRole = activeRole;
+    program.steeringExpression = formatSteering(ir);
+    program.steeringParts = steeringParts(ir);
+    program.steeringTerms = placements;
+    program.steeringDepth = this.layerMap.length;
     return program;
   }
 
@@ -1248,7 +1291,7 @@ export class BrowserFeasibilityCorePackCompiler {
       let ablationShare = 0;
 
       for (const term of terms) {
-        if (Math.abs(term.coefficient) < 1e-9) continue;
+        if (Math.abs(term.coefficient) < 1e-9 || !termActsAt(term, layer)) continue;
         if (term.ablation) {
           const direction = this.atomNodeDirection(term.base, layer);
           if (direction === null) continue;
@@ -1454,17 +1497,19 @@ export class BrowserFeasibilityCorePackCompiler {
       );
     }
     const domain = structuredCurveDomain(manifold.domain, this.structuredHookProfile);
-    const fitted = fittedLayerNumbers(manifold.tensors);
-    const rawShares = fitted.map((layer) => manifold.mahalanobisShares.get(layer) ?? 0);
+    // The mean-1 share normalizes over the layers the term acts at (a layer
+    // clause's selection, else every fitted layer), as _manifold_layer_shares.
+    const active = fittedLayerNumbers(manifold.tensors).filter((layer) => termActsAt(term, layer));
+    const rawShares = active.map((layer) => manifold.mahalanobisShares.get(layer) ?? 0);
     const shareMean = rawShares.reduce((sum, value) => sum + value, 0) / rawShares.length;
-    if (!(shareMean > 0)) {
+    if (!(shareMean > 0) || rawShares.some((value) => !(Number.isFinite(value) && value > 0))) {
       throw coreError("CORE_PACK_METRIC_INVALID", "Curved manifold shares are invalid");
     }
     const target = resolveCurvePosition(manifold, term.manifoldPosition, domain.axes);
     const onto = term.coefficients[1] ?? 0;
     const periodic = domain.axes.some((axis) => axis.periodic);
     const curves = new Map<number, StructuredCurve>();
-    for (const layer of fitted) {
+    for (const layer of active) {
       const programIndex = this.layerMap.indexOf(layer);
       if (programIndex < 0) {
         throw coreError(
@@ -1599,6 +1644,15 @@ export class BrowserFeasibilityCorePackCompiler {
         );
       }
       return { slots, geometry: null };
+    }
+    const namespace = name.includes("/") ? name.slice(0, name.indexOf("/")) : null;
+    if (attached === undefined && (namespace === "neuron" || namespace === "head" || namespace === "slens")) {
+      // Units and the S lens parse, but this runtime cannot read them yet: refuse rather than
+      // install a gate that would never fire.
+      throw coreError(
+        "CORE_PACK_EXPRESSION_UNAVAILABLE",
+        `${namespace}/ instrument atoms are not available in the browser runtime`,
+      );
     }
     let geometryTarget: {
       manifold: CoreManifold;
@@ -1976,6 +2030,7 @@ export class BrowserFeasibilityCorePackCompiler {
       throw coreError("CORE_PACK_TENSOR_INVALID", "The selected core manifold has no fitted layers");
     }
     for (const layer of fittedLayers) {
+      if (!termActsAt(resolved, layer)) continue;
       const programIndex = this.layerMap.indexOf(layer);
       if (programIndex < 0) {
         throw coreError(
@@ -2027,6 +2082,7 @@ export class BrowserFeasibilityCorePackCompiler {
       throw coreError("CORE_PACK_TENSOR_INVALID", "The selected core manifold has no fitted layers");
     }
     for (const layer of fittedLayers) {
+      if (!termActsAt(resolved, layer)) continue;
       const programIndex = this.layerMap.indexOf(layer);
       if (programIndex < 0) {
         throw coreError(
@@ -2060,8 +2116,12 @@ export class BrowserFeasibilityCorePackCompiler {
           `Core manifold layer ${layer} has no Mahalanobis share`,
         );
       }
-      const coordinateMean = nodeCoordinates.reduce((sum, value) => sum + value, 0) /
-        nodeCoordinates.length;
+      // A one-node concept is a monopolar fold (`fold_directions_to_subspace`): its node sits at
+      // ‖d‖ from the neutral anchor at coordinate 0 and its share is ‖d‖_M, so its spread is
+      // measured from the anchor rather than from the node mean.
+      const coordinateMean = nodeCoordinates.length === 1
+        ? 0
+        : nodeCoordinates.reduce((sum, value) => sum + value, 0) / nodeCoordinates.length;
       let coordinateSpreadSquared = 0;
       for (const value of nodeCoordinates) {
         coordinateSpreadSquared += (value - coordinateMean) ** 2;
@@ -2130,6 +2190,7 @@ export class BrowserFeasibilityCorePackCompiler {
       const whitener = this.whiteners.get(layer)!;
       const fragments: Array<{ coefficient: number; direction: Float64Array }> = [];
       for (const term of terms) {
+        if (!termActsAt(term, layer)) continue;
         const direction = this.termDirection(term, layer, whitener);
         if (direction !== null) fragments.push({ coefficient: term.coefficient, direction });
       }
@@ -2326,17 +2387,14 @@ export class BrowserFeasibilityCorePackCompiler {
         );
       }
     }
+    const clause = formatLayerClause(term.layers === "all" ? null : term.layers);
     return onto === null
-      ? `${term.ablation ? "!" : ""}${formatAtom(base)}`
-      : `${formatAtom(base)}${term.selector.projection}${formatAtom(onto)}`;
+      ? `${term.ablation ? "!" : ""}${formatAtom(base)}${clause}`
+      : `${formatAtom(base)}${term.selector.projection}${formatAtom(onto)}${clause}`;
   }
 
   private resolveTerm(term: SteeringExpressionTerm): ResolvedCoreTerm {
-    if (
-      (term.selector.manifoldPosition === null && term.coefficients.length !== 1) ||
-      (term.selector.manifoldPosition !== null && term.coefficients.length > 2) ||
-      (term.ablation && term.selector.projection !== null)
-    ) {
+    if (term.ablation && term.selector.projection !== null) {
       throw coreError(
         "CORE_PACK_EXPRESSION_UNAVAILABLE",
         "The browser GPU compiler cannot lower this steering expression",
@@ -2351,6 +2409,16 @@ export class BrowserFeasibilityCorePackCompiler {
           operator: term.selector.projection,
           onto: this.resolveAtom(term.selector.onto!),
         };
+    // A plain term on a manifold's label or 2-node name is a `%` term, so it takes `along,onto`.
+    const position = term.selector.manifoldPosition !== null ||
+      (projection === null && !term.ablation && base.kind === "manifold");
+    if (term.coefficients.length > (position ? 2 : 1)) {
+      throw coreError(
+        "CORE_PACK_EXPRESSION_UNAVAILABLE",
+        "The browser GPU compiler cannot lower this steering expression",
+      );
+    }
+    const layers: LayerScope = term.layers === null || term.layers === "all" ? null : term.layers;
     const manifoldPosition = term.selector.manifoldPosition === null &&
         projection === null && !term.ablation && base.kind === "manifold" &&
         base.labelAlias && manifoldLabelNeedsPosition(base.manifold)
@@ -2360,66 +2428,134 @@ export class BrowserFeasibilityCorePackCompiler {
       ? base.key
       : `${base.key}%${formatManifoldPosition(term.selector.manifoldPosition)}`;
     return {
-      key: projection === null
+      key: (projection === null
         ? `${term.ablation ? "!" : ""}${baseKey}`
-        : `${formatAtom(term.selector.base)}${projection.operator}${formatAtom(term.selector.onto!)}`,
+        : `${formatAtom(term.selector.base)}${projection.operator}${formatAtom(term.selector.onto!)}`) +
+        formatLayerClause(layers),
       base,
       projection,
       coefficient: term.coefficients[0],
       coefficients: term.coefficients,
       ablation: term.ablation,
-      trigger: term.trigger,
+      trigger: normalizeTrigger(term.trigger),
       manifoldPosition,
+      layers,
+      irKey: foldSteering({ terms: [term] }, { manifolds: this.steeringManifolds() }).terms[0].key,
+      actsAt: null,
     };
   }
 
+  /** The installed manifolds as the grammar's bare-atom ladder sees them, one per folder. */
+  private steeringManifolds(): SteeringManifoldEntry[] {
+    const entries = new Map<string, SteeringManifoldEntry>();
+    for (const manifold of this.manifolds) {
+      const key = `${manifold.namespace}/${manifold.name}`;
+      if (!entries.has(key)) {
+        entries.set(key, {
+          namespace: manifold.namespace,
+          name: manifold.name,
+          fitMode: manifold.fitMode,
+          labels: manifold.labels,
+        });
+      }
+    }
+    return [...entries.values()];
+  }
+
+  /** The layers a resolved term can act on: its atom's fitted layers (a `~` projection's where
+   *  both operands are fitted and the projection is not zero, as `project_profile` drops a
+   *  degenerate `onto`). */
+  private termFittedLayers(term: ResolvedCoreTerm): number[] {
+    const atomLayers = (atom: ResolvedCoreAtom): number[] => atom.kind === "instrument"
+      ? [...atom.directions.keys()]
+      : fittedLayerNumbers(atom.manifold.tensors);
+    const base = atomLayers(term.base);
+    if (term.projection?.operator !== "~") return [...base].sort((a, b) => a - b);
+    const ontoLayers = atomLayers(term.projection.onto);
+    const onto = new Set(ontoLayers);
+    const fitted = base.filter((layer) => {
+      if (!onto.has(layer)) return false;
+      // Without a whitener the term is refused at lowering, so the layer stays listed.
+      const whitener = this.whiteners.get(layer);
+      return whitener === undefined || this.termDirection(term, layer, whitener) !== null;
+    }).sort((a, b) => a - b);
+    if (fitted.length === 0) {
+      const list = (layers: number[]) => `[${[...layers].sort((a, b) => a - b).join(", ")}]`;
+      throw Object.assign(
+        coreError(
+          "STEERING_COMPOSITION",
+          `project_profile: no layers produced for operator '~' (base layers: ${list(base)}, ` +
+            `onto layers: ${list(ontoLayers)})`,
+        ),
+        { status: 422, recoverable: false },
+      );
+    }
+    return fitted;
+  }
+
+  /** Select each folded term's layers (`select_term_layers`: 422 on a clause naming an unfitted
+   *  layer) and report where each acts, weighed alone as composition weighs it (`term_layers`). */
+  private placeTerms(terms: ResolvedCoreTerm[]): BrowserSteeringTermLayers[] {
+    return terms.map((term, index) => {
+      const fitted = this.termFittedLayers(term);
+      let chosen: number[] | null;
+      try {
+        chosen = selectTermLayers(term.irKey, fitted, term.layers, this.layerMap.length);
+      } catch (error) {
+        throw Object.assign(
+          coreError("STEERING_COMPOSITION", error instanceof Error ? error.message : String(error)),
+          { status: 422, recoverable: false },
+        );
+      }
+      terms[index] = { ...term, actsAt: chosen === null ? null : new Set(chosen) };
+      const raw = fitted.map((layer) => this.termLayerShare(term, layer));
+      const total = raw.reduce((sum, value) => sum + value, 0);
+      const share = Number.isFinite(total) && total > 0
+        ? raw.map((value) => value / total * fitted.length)
+        : fitted.map(() => 1);
+      return { key: term.irKey, fitted, share, layers: chosen ?? fitted };
+    });
+  }
+
+  /** A term's raw weight at `layer`: an ablation's is even, a curved position's its baked
+   *  Mahalanobis share, a push's its whitened displacement. */
+  private termLayerShare(term: ResolvedCoreTerm, layer: number): number {
+    if (term.ablation) return 1;
+    if (
+      term.manifoldPosition !== null && term.base.kind === "manifold" &&
+      isCurvedManifold(term.base.manifold)
+    ) {
+      return Math.max(0, term.base.manifold.mahalanobisShares.get(layer) ?? 0);
+    }
+    const whitener = this.whiteners.get(layer);
+    if (whitener === undefined) return 0;
+    const fragment = this.structuredPushFragment(term, layer, whitener);
+    return fragment === null ? 0 : Math.max(0, mahalanobisNorm(whitener, fragment.direction));
+  }
+
+  /** Merge the terms that share an IR key, as the grammar's fold (which ran first and checked
+   *  their triggers and positions) merges them. A label term and an explicit-position term on one
+   *  node keep different keys (`local/demo%alert`, `demo%alert`), so they stay two terms. */
   private foldResolvedTerms(
     terms: readonly ResolvedCoreTerm[],
   ): ResolvedCoreTerm[] {
     const folded = new Map<string, ResolvedCoreTerm>();
     for (const term of terms) {
-      const foldKey = resolvedFoldKey(term);
-      const previous = folded.get(foldKey);
+      const previous = folded.get(term.irKey);
       if (previous === undefined) {
-        folded.set(foldKey, term);
+        folded.set(term.irKey, term);
         continue;
       }
-      const kind = resolvedTermKind(term);
-      if (resolvedTermKind(previous) !== kind) {
-        throw coreError(
-          "CORE_PACK_EXPRESSION_CONFLICT",
-          `Steering selector ${term.key} appears as incompatible term types`,
-        );
-      }
-      const previousTrigger = kind === "plain"
-        ? previous.trigger
-        : effectiveStructuredTrigger(previous.trigger);
-      const nextTrigger = kind === "plain"
-        ? term.trigger
-        : effectiveStructuredTrigger(term.trigger);
-      if (!steeringTriggersEqual(previousTrigger, nextTrigger)) {
-        throw coreError(
-          "CORE_PACK_TRIGGER_CONFLICT",
-          `Steering selector ${term.key} appears with conflicting triggers`,
-        );
-      }
       const coefficient = previous.coefficient + term.coefficient;
-      if (kind === "manifold") {
-        folded.set(foldKey, {
-          ...previous,
-          coefficient,
-          coefficients: [
-            coefficient,
-            (previous.coefficients[1] ?? 0) + (term.coefficients[1] ?? 0),
-          ],
-        });
-      } else {
-        folded.set(foldKey, {
-          ...previous,
-          coefficient,
-          coefficients: [coefficient],
-        });
-      }
+      const manifold = !term.ablation && term.projection === null &&
+        (term.manifoldPosition !== null || term.base.kind === "manifold");
+      folded.set(term.irKey, {
+        ...previous,
+        coefficient,
+        coefficients: manifold
+          ? [coefficient, (previous.coefficients[1] ?? 0) + (term.coefficients[1] ?? 0)]
+          : [coefficient],
+      });
     }
     return [...folded.values()];
   }
@@ -2748,7 +2884,7 @@ async function loadVerifiedManifold(
     fit_mode: fitMode,
     is_discover: fitMode === "pca" || fitMode === "spectral" || fitMode === "auto",
     domain: structuredClone(domain) as ManifoldInfo["domain"],
-    domain_label: coreDomainLabel(domain),
+    domain_label: domainLabel(domain),
     intrinsic_dim: intrinsicDimension,
     min_nodes: intrinsicDimension > 0 ? 2 * intrinsicDimension + 1 : null,
     node_count: labels.length,
@@ -2993,18 +3129,6 @@ function domainIntrinsicDimension(domain: Record<string, unknown>, key: string):
     return domain.embed_dim as number;
   }
   throw coreError("CORE_PACK_MANIFOLD_INVALID", `Manifold ${key} has an invalid domain`);
-}
-
-function coreDomainLabel(domain: Record<string, unknown>): string {
-  if (domain.type === "box" && Array.isArray(domain.axes)) {
-    const names = domain.axes.map((axis, index) =>
-      isRecord(axis) && typeof axis.name === "string" ? axis.name : `axis ${index + 1}`
-    );
-    return names.join(" × ");
-  }
-  if (domain.type === "sphere") return `sphere S${String(domain.dim)}`;
-  if (domain.type === "custom") return `${String(domain.embed_dim)}D custom`;
-  return "unknown";
 }
 
 function mergedManifoldInfo(variants: readonly CoreManifold[]): ManifoldInfo {
@@ -3341,55 +3465,8 @@ function groupAffineTermsByTrigger(
   return [...groups.values()];
 }
 
-function resolvedTermKind(
-  term: ResolvedCoreTerm,
-): "plain" | "projection" | "ablation" | "manifold" {
-  if (term.ablation) return "ablation";
-  if (term.projection !== null) return "projection";
-  if (term.manifoldPosition !== null || term.base.kind === "manifold") {
-    return "manifold";
-  }
-  return "plain";
-}
-
-function resolvedFoldKey(term: ResolvedCoreTerm): string {
-  return term.projection === null
-    ? term.key
-    : `${term.base.key}${term.projection.operator}${term.projection.onto.key}`;
-}
-
-function canonicalConceptName(value: string): string {
-  const slug = (part: string) => part.trim().toLowerCase()
-    .replace(/[^a-z0-9]+/gu, "_")
-    .replace(/^_+|_+$/gu, "");
-  const separator = value.indexOf(".");
-  return separator < 0
-    ? slug(value)
-    : `${slug(value.slice(0, separator))}.${slug(value.slice(separator + 1))}`;
-}
-
-function effectiveStructuredTrigger(
-  trigger: SteeringTrigger | null,
-): SteeringTrigger {
-  return trigger ?? { phase: { kind: "both" }, gate: null };
-}
-
-function steeringTriggersEqual(
-  left: SteeringTrigger | null,
-  right: SteeringTrigger | null,
-): boolean {
-  if (left === null || right === null) return left === right;
-  if (left.phase.kind !== right.phase.kind) return false;
-  if (
-    (left.phase.kind === "first" || left.phase.kind === "after") &&
-    (right.phase.kind !== left.phase.kind || right.phase.tokens !== left.phase.tokens)
-  ) {
-    return false;
-  }
-  if (left.gate === null || right.gate === null) return left.gate === right.gate;
-  return left.gate.probe === right.gate.probe &&
-    left.gate.operator === right.gate.operator &&
-    left.gate.threshold === right.gate.threshold;
+function termActsAt(term: ResolvedCoreTerm, layer: number): boolean {
+  return term.actsAt === null || term.actsAt.has(layer);
 }
 
 function structuredTriggerKey(trigger: SteeringTrigger | null): string {
