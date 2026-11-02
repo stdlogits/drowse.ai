@@ -3297,6 +3297,7 @@ export function encodeStructuredUnitTables(
     if (slots.has(tap.slot) || tapped.has(key)) {
       throw new StructuredUnitProgramError("UNIT_DUPLICATE", `${key} or its slot is tapped twice`);
     }
+    validateUnitTapScale(tap);
     slots.add(tap.slot);
     tapped.add(key);
   }
@@ -3377,7 +3378,12 @@ export function structuredTapGramHeads(
     program.layerCount,
     program.unitShape.headDim,
   );
-  return csrEntries(program.unitMeta, layout.meta.tapHeadOffsets.offset, program.layerCount).map(
+  return csrEntries(
+    program.unitMeta,
+    layout.meta.tapHeadOffsets.offset,
+    program.layerCount,
+    layout.meta.tapHeadIndex.length,
+  ).map(
     ({ layer, entry }) => ({
       layer,
       index: program.unitMeta![layout.meta.tapHeadIndex.offset + entry],
@@ -3475,14 +3481,14 @@ export function decodeStructuredUnitTables(
     if (!tables.has(key)) tables.set(key, { layer, site, group, rows: [] });
     return tables.get(key)!.rows;
   };
-  for (const { layer, entry } of csrEntries(unitMeta, meta.neuronOffsets.offset, program.layerCount)) {
+  for (const { layer, entry } of csrEntries(unitMeta, meta.neuronOffsets.offset, program.layerCount, meta.neuronIndex.length)) {
     row(layer, "act", unitMeta[meta.neuronGroup.offset + entry]).push([
       unitMeta[meta.neuronIndex.offset + entry],
       unitCoeff[coeff.neuronKeep.offset + entry],
       unitCoeff[coeff.neuronBias.offset + entry],
     ]);
   }
-  for (const { layer, entry } of csrEntries(unitMeta, meta.headOffsets.offset, program.layerCount)) {
+  for (const { layer, entry } of csrEntries(unitMeta, meta.headOffsets.offset, program.layerCount, meta.headIndex.length)) {
     const head = unitMeta[meta.headIndex.offset + entry];
     const keep = unitCoeff[coeff.headKeep.offset + entry];
     const rows = row(layer, "z", unitMeta[meta.headGroup.offset + entry]);
@@ -3618,12 +3624,9 @@ function validateStructuredUnitSection(
     [meta.tapHeadOffsets, meta.tapHeadIndex, meta.tapHeadSlot, shape.nHeads],
   ];
   const units = new Set<string>();
-  const slots = new Set<number>();
+  const slots = new Map<number, { kind: StructuredUnitKind; layer: number; index: number }>();
   tables.forEach(([offsets, index, second, bound], table) => {
-    const entries = csrEntries(unitMeta, offsets.offset, program.layerCount);
-    if (entries.length > index.length) {
-      throw new TypeError("Structured hook unit table exceeds its capacity");
-    }
+    const entries = csrEntries(unitMeta, offsets.offset, program.layerCount, index.length);
     for (const { layer, entry } of entries) {
       const unit = unitMeta[index.offset + entry];
       if (unit >= bound) throw new TypeError("Structured hook unit index is out of range");
@@ -3639,7 +3642,7 @@ function validateStructuredUnitSection(
         if (value >= profile.maxUnitTaps || slots.has(value)) {
           throw new TypeError("Structured hook unit tap slot is out of range or repeated");
         }
-        slots.add(value);
+        slots.set(value, { kind: table === 2 ? "neuron" : "head", layer, index: unit });
       }
     }
     for (let entry = entries.length; entry < index.length; entry += 1) {
@@ -3648,8 +3651,10 @@ function validateStructuredUnitSection(
       }
     }
   });
-  const controls = program.controls?.units;
-  if (controls !== undefined && controls.length !== profile.maxUnitGroups) {
+  if (
+    program.controls !== undefined &&
+    program.controls.units?.length !== profile.maxUnitGroups
+  ) {
     throw new TypeError("Structured hook unit controls must have one slot per unit group");
   }
   const schema = program.measurementSchema?.unitTaps;
@@ -3658,14 +3663,43 @@ function validateStructuredUnitSection(
       throw new TypeError("Structured hook unit tap schema must have one entry per tap slot");
     }
     schema.forEach((tap, slot) => {
+      const tapped = slots.get(slot);
       if (tap === null) {
-        if (slots.has(slot)) throw new TypeError("Structured hook unit tap slot has no schema entry");
+        if (tapped !== undefined) throw new TypeError("Structured hook unit tap slot has no schema entry");
         return;
       }
-      if (tap.slot !== slot || !slots.has(slot)) {
+      if (
+        tapped === undefined ||
+        tap.slot !== slot ||
+        tap.kind !== tapped.kind ||
+        tap.layer !== tapped.layer ||
+        tap.index !== tapped.index ||
+        tap.unit !== structuredUnitName(tapped.kind, tapped.layer, tapped.index)
+      ) {
         throw new TypeError("Structured hook unit tap schema does not match the tap tables");
       }
+      validateUnitTapScale(tap);
     });
+  }
+}
+
+/** A tap's reading scale: a `[+, −]` pole pair for a neuron, one value for a head; the scale
+ *  the host divides by is finite and positive (native floors it at 1e-6). */
+function validateUnitTapScale(tap: StructuredUnitTap): void {
+  const scale = tap.scale;
+  const shaped = (value: unknown): value is number | [number, number] =>
+    tap.kind === "neuron"
+      ? Array.isArray(value) && value.length === 2 && value.every((v) => typeof v === "number")
+      : typeof value === "number";
+  if (
+    scale?.source !== "neutral" ||
+    typeof scale.detail !== "string" ||
+    !shaped(scale.top) ||
+    !shaped(scale.value) ||
+    [scale.top].flat().some((value) => !Number.isFinite(value)) ||
+    [scale.value].flat().some((value) => !Number.isFinite(value) || value <= 0)
+  ) {
+    throw new TypeError(`${tap.unit} has no usable reading scale`);
   }
 }
 
@@ -3716,18 +3750,28 @@ function writeOffsets(
   }
 }
 
+/** The entries of one CSR table, after checking every offset (start 0, non-decreasing, within
+ *  `capacity`) so a corrupt table is refused before anything is enumerated. */
 function csrEntries(
   meta: Uint32Array,
   at: number,
   layerCount: number,
+  capacity: number,
 ): Array<{ layer: number; entry: number }> {
   if (meta[at] !== 0) throw new TypeError("Structured hook unit offsets must start at zero");
+  for (let layer = 0; layer < layerCount; layer += 1) {
+    if (meta[at + layer + 1] < meta[at + layer]) {
+      throw new TypeError("Structured hook unit offsets must not decrease");
+    }
+  }
+  if (meta[at + layerCount] > capacity) {
+    throw new TypeError("Structured hook unit table exceeds its capacity");
+  }
   const out: Array<{ layer: number; entry: number }> = [];
   for (let layer = 0; layer < layerCount; layer += 1) {
-    const first = meta[at + layer];
-    const last = meta[at + layer + 1];
-    if (last < first) throw new TypeError("Structured hook unit offsets must not decrease");
-    for (let entry = first; entry < last; entry += 1) out.push({ layer, entry });
+    for (let entry = meta[at + layer]; entry < meta[at + layer + 1]; entry += 1) {
+      out.push({ layer, entry });
+    }
   }
   return out;
 }

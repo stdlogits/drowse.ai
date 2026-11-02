@@ -307,8 +307,10 @@ export interface BlockSitesForwardReadback {
  *  absolute positions (the first segment at 0, a fresh sequence) under one control state. The
  *  bridge runs a segment as consecutive chunks of at most `prefillChunkSize` rows with the
  *  controls held constant; the KV cache, curve feet, activity state, traces and pattern keys
- *  persist across chunks and segments. Position-targeted spans are split into segments by the
- *  caller (controls zeroed outside a span). */
+ *  persist across chunks and segments. The host evaluates each segment's controls from the
+ *  previous segment's readback, as native `drive_segments` does (a gated decode run is one
+ *  position per segment). Position-targeted spans are split into segments by the caller
+ *  (controls zeroed outside a span). */
 export interface BlockSitesReplaySegment {
   readonly tokenIds: Int32Array;
   readonly controls: StructuredHookControlState;
@@ -344,10 +346,10 @@ export interface BlockSitesActivityRequest {
   readonly populationRow: number | null;
 }
 
+/** What a replay captures; its segments are fed one by one through `BrowserBlockSitesReplay`. */
 export interface BlockSitesReplayRequest {
   /** The bound program the node ran under; null replays unsteered (empty tables). */
   readonly program: StructuredHookProgramBuffers | null;
-  readonly segments: readonly BlockSitesReplaySegment[];
   /** Absolute position whose anatomy taps to capture, or null (B1 §2.3). */
   readonly anatomyPosition: number | null;
   readonly activity: BlockSitesActivityRequest | null;
@@ -369,8 +371,18 @@ export interface BlockSitesReplayResult {
   } | null;
   /** Keys and queries kept resident for `attentionRows`; the caller releases it. */
   readonly patterns: BlockSitesResident<"pattern_capture"> | null;
-  /** The last forward's probe slots and unit taps. */
-  readonly last: BlockSitesForwardReadback;
+}
+
+/** One replay in progress (B1 §2.3, §3.4): a fresh KV sequence and the capture buffers, held
+ *  until `finish` or `cancel`. Calls are sequential; another replay or a generation waits. */
+export interface BrowserBlockSitesReplay {
+  /** Feed one logical segment (chunked at `prefillChunkSize`) and return its last forward's
+   *  probe slots and unit taps, from which the host evaluates the next segment's controls. */
+  forward(segment: BlockSitesReplaySegment): Promise<BlockSitesForwardReadback>;
+  /** Read the captures back and drop the sequence. */
+  finish(): Promise<BlockSitesReplayResult>;
+  /** Drop the sequence and every capture buffer without reading them. */
+  cancel(): Promise<void>;
 }
 
 // --------------------------------------------------------------- static reads ---
@@ -412,9 +424,9 @@ export interface BrowserBlockSitesBackend {
   release(resident: BlockSitesResident): Promise<void>;
 
   // ---- replay (§2.3, §3.4, §6) ----
-  /** §2.3/§3.4 `drowse_replay_batch_prefill`: run every segment as KV-continuing prefill chunks
-   *  of at most `prefillChunkSize` rows with the anatomy, activity and pattern taps asked for. */
-  replay(request: BlockSitesReplayRequest, signal?: AbortSignal): Promise<BlockSitesReplayResult>;
+  /** §2.3/§3.4 `drowse_replay_batch_prefill`: open a KV-continuing replay with the anatomy,
+   *  activity and pattern taps asked for; the host feeds its segments one by one. */
+  openReplay(request: BlockSitesReplayRequest, signal?: AbortSignal): Promise<BrowserBlockSitesReplay>;
   /** §6: `a_j = softmax_j(q_p·k_j·scaling)` over `j = 0…p` (`j > p` and, on a local layer,
    *  `j ≤ p − W` masked to 0) for each `(layer, head)` of the capture → `[n, p + 1]`. */
   attentionRows(
@@ -543,7 +555,7 @@ export const BLOCK_SITES_BACKEND_MEMBERS = Object.freeze([
   "uploadLensLayer",
   "uploadEmbeddingStatistics",
   "release",
-  "replay",
+  "openReplay",
   "attentionRows",
   "unitWeightRows",
   "headWriteGrams",
@@ -573,7 +585,7 @@ export const BLOCK_SITES_BACKEND_MEMBERS = Object.freeze([
 export const BLOCK_SITES_UNIT_MEMBERS = Object.freeze([
   "residentHeadGrams",
   "uploadUnitScales",
-  "replay",
+  "openReplay",
   "attentionRows",
   "unitWeightRows",
   "headWriteGrams",
@@ -742,14 +754,24 @@ export const REPLAY_FLAG_ANATOMY = 1;
 export const REPLAY_FLAG_ACTIVITY = 2;
 export const REPLAY_FLAG_PATTERNS = 4;
 
-/** Pack a replay request's metadata for `drowse_replay_batch_prefill`, checking capacities. */
+/** Pack a replay request's metadata for `drowse_replay_batch_prefill`, checking every value
+ *  against the profile's capacities and the model (positions and rows below the compiled context,
+ *  unit indices below `dFF` or `nHeads`), so nothing wraps in the int32 table. */
 export function encodeReplayMeta(
   input: StructuredHookCapacityProfile,
-  layerCount: number,
+  model: {
+    readonly layerCount: number;
+    readonly contextTokens: number;
+    readonly blockSpec: BlockSpec;
+  },
   request: Pick<BlockSitesReplayRequest, "anatomyPosition" | "activity" | "patternLayers">,
 ): Int32Array {
   const profile = validateBlockSitesProfile(input);
   const layout = replayMetaLayout(profile);
+  const { layerCount, contextTokens, blockSpec } = model;
+  if (!Number.isSafeInteger(contextTokens) || contextTokens < 1 || contextTokens >= 2 ** 24) {
+    throw new RangeError("Replay context must be a positive count below 2^24");
+  }
   const meta = new Int32Array(layout.length).fill(-1);
   const index = (value: number, bound: number, label: string): number => {
     if (!Number.isSafeInteger(value) || value < 0 || value >= bound) {
@@ -760,7 +782,7 @@ export function encodeReplayMeta(
   let flags = 0;
   meta[layout.anatomyPosition] = -1;
   if (request.anatomyPosition !== null) {
-    meta[layout.anatomyPosition] = index(request.anatomyPosition, 2 ** 24, "anatomy position");
+    meta[layout.anatomyPosition] = index(request.anatomyPosition, contextTokens, "anatomy position");
     flags |= REPLAY_FLAG_ANATOMY;
   }
   const activity = request.activity;
@@ -773,15 +795,23 @@ export function encodeReplayMeta(
     if (activity.traces.length > profile.maxActivityTraces) {
       throw new RangeError(`Unit activity traces at most ${profile.maxActivityTraces} units`);
     }
+    if (
+      !Number.isSafeInteger(activity.rowCount) || activity.rowCount < 1 ||
+      activity.rowCount > contextTokens
+    ) {
+      throw new RangeError("Unit activity rows must fit the compiled context");
+    }
     meta[layout.spanCount] = activity.spans.length;
     activity.spans.forEach((span, at) => {
       if (
         !Number.isSafeInteger(span.firstRow) || span.firstRow < 0 ||
         !Number.isSafeInteger(span.rows) || span.rows < 1 ||
         span.firstRow + span.rows > activity.rowCount ||
-        !Number.isSafeInteger(span.firstPosition) || Math.abs(span.firstPosition) >= 2 ** 24
+        !Number.isSafeInteger(span.firstPosition) ||
+        span.firstPosition <= -contextTokens ||
+        span.firstPosition + span.rows > contextTokens
       ) {
-        throw new RangeError("Unit activity span is outside the node's rows");
+        throw new RangeError("Unit activity span is outside the node's rows or the context");
       }
       const base = layout.spans + 4 * at;
       meta[base] = span.firstRow;
@@ -796,8 +826,13 @@ export function encodeReplayMeta(
     activity.traces.forEach((unit, at) => {
       const base = layout.traces + 3 * at;
       meta[base] = index(unit.layer, layerCount, "trace layer");
+      if (unit.kind !== "neuron" && unit.kind !== "head") throw new RangeError("Replay trace kind is invalid");
       meta[base + 1] = unit.kind === "neuron" ? 0 : 1;
-      meta[base + 2] = index(unit.index, 2 ** 24, "trace unit");
+      meta[base + 2] = index(
+        unit.index,
+        unit.kind === "neuron" ? blockSpec.dFF : blockSpec.nHeads,
+        "trace unit",
+      );
     });
     flags |= REPLAY_FLAG_ACTIVITY;
   }

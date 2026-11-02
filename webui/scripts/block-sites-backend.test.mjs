@@ -117,7 +117,8 @@ try {
     traces: 20, patternLayerCount: 116, patternLayers: 117, flags: 125,
   });
   assert.throws(() => backend.replayMetaLayout(residual), /no replay entry point/);
-  const meta = backend.encodeReplayMeta(v4, 36, {
+  const qwenModel = { layerCount: 36, contextTokens: 4096, blockSpec: spec };
+  const meta = backend.encodeReplayMeta(v4, qwenModel, {
     anatomyPosition: 41,
     activity: {
       spans: [{ firstRow: 0, rows: 3, firstPosition: -1 }, { firstRow: 3, rows: 5, firstPosition: 30 }],
@@ -134,22 +135,57 @@ try {
   ]);
   assert.deepEqual(Array.from(meta.subarray(18, 27)), [2, 2, 8, 0, 344, 20, 1, 3, -1]);
   assert.deepEqual(Array.from(meta.subarray(116, 126)), [3, 6, 10, 35, -1, -1, -1, -1, -1, 7]);
-  const none = backend.encodeReplayMeta(v4, 36, { anatomyPosition: null, activity: null, patternLayers: null });
+  const none = backend.encodeReplayMeta(v4, qwenModel, { anatomyPosition: null, activity: null, patternLayers: null });
   assert.deepEqual([none[0], none[1], none[18], none[19], none[116], none[125]], [-1, 0, -1, 0, 0, 0]);
   assert.throws(
-    () => backend.encodeReplayMeta(v4, 36, { anatomyPosition: null, activity: null, patternLayers: [1] }),
+    () => backend.encodeReplayMeta(v4, qwenModel, { anatomyPosition: null, activity: null, patternLayers: [1] }),
     /query at the anatomy position/,
   );
   assert.throws(
-    () => backend.encodeReplayMeta(v4, 36, { anatomyPosition: 1, activity: null, patternLayers: [3, 2] }),
+    () => backend.encodeReplayMeta(v4, qwenModel, { anatomyPosition: 1, activity: null, patternLayers: [3, 2] }),
     /must ascend/,
   );
   assert.throws(
-    () => backend.encodeReplayMeta(v4, 36, {
+    () => backend.encodeReplayMeta(v4, qwenModel, {
       anatomyPosition: 1, activity: null, patternLayers: Array.from({ length: 9 }, (_, i) => i),
     }),
     /1 to 8 layers/,
   );
+  // Nothing wraps in the int32 table: rows, positions and units are bounded by the model.
+  const activityAt = (change) => ({
+    anatomyPosition: null,
+    patternLayers: null,
+    activity: {
+      spans: [{ firstRow: 0, rows: 1, firstPosition: 1 }], rowCount: 1,
+      scales: { kind: "unit_scales", id: "s", bytes: 0, shape: [36, 19488] },
+      traces: [], populationRow: null, ...change,
+    },
+  });
+  assert.throws(
+    () => backend.encodeReplayMeta(v4, qwenModel, activityAt({
+      rowCount: 4294967297, spans: [{ firstRow: 4294967296, rows: 1, firstPosition: 1 }],
+    })),
+    /fit the compiled context/,
+  );
+  assert.throws(
+    () => backend.encodeReplayMeta(v4, qwenModel, activityAt({ spans: [{ firstRow: 0, rows: 1, firstPosition: 4096 }] })),
+    /outside the node's rows or the context/,
+  );
+  assert.throws(
+    () => backend.encodeReplayMeta(v4, qwenModel, activityAt({ traces: [{ kind: "neuron", layer: 0, index: 9728 }] })),
+    /trace unit 9728 is out of range/,
+  );
+  assert.throws(
+    () => backend.encodeReplayMeta(v4, qwenModel, activityAt({ traces: [{ kind: "head", layer: 0, index: 32 }] })),
+    /trace unit 32 is out of range/,
+  );
+  assert.throws(
+    () => backend.encodeReplayMeta(v4, qwenModel, { anatomyPosition: 4096, activity: null, patternLayers: null }),
+    /anatomy position 4096/,
+  );
+  // An authored first turn's unproduced first row (a one-row span at column −1) is valid.
+  const unproduced = backend.encodeReplayMeta(v4, qwenModel, activityAt({ spans: [{ firstRow: 0, rows: 1, firstPosition: -1 }] }));
+  assert.deepEqual(Array.from(unproduced.subarray(2, 6)), [0, 1, -1, 1]);
 
   // ------------------------------------------- buffer sizes against B1 §2.3, §3.1, §6 ---
   const MiB = 2 ** 20;

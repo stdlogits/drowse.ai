@@ -359,6 +359,18 @@ try {
   const dirty = Uint32Array.from(withUnits.unitMeta);
   dirty[layout.meta.neuronIndex.offset + 200] = 1;
   assert.throws(() => hooks.validateStructuredHookProgram({ ...withUnits, unitMeta: dirty }), /zero past their last entry/);
+  const overflowing = Uint32Array.from(withUnits.unitMeta);
+  overflowing.fill(0xffffffff, layout.meta.neuronOffsets.offset + 1, layout.meta.neuronOffsets.offset + 5);
+  assert.throws(
+    () => hooks.validateStructuredHookProgram({ ...withUnits, unitMeta: overflowing }),
+    /exceeds its capacity/,
+    "a corrupt offset is refused before any entry is enumerated",
+  );
+  const { units: _unitControls, ...withoutUnitControls } = withUnits.controls;
+  assert.throws(
+    () => hooks.validateStructuredHookProgram({ ...withUnits, controls: withoutUnitControls }),
+    /one slot per unit group/,
+  );
   const decreasing = Uint32Array.from(withUnits.unitMeta);
   decreasing[layout.meta.neuronOffsets.offset + 2] = 0;
   assert.throws(() => hooks.validateStructuredHookProgram({ ...withUnits, unitMeta: decreasing }), /must not decrease/);
@@ -375,6 +387,29 @@ try {
     ["neuron/L1n5", "head/L2h1", "neuron/L3n9"],
   );
   assert.equal(measured.measurementSchema.unitTaps[3], null);
+  const relabel = (slot, change) => {
+    const unitTaps = [...measured.measurementSchema.unitTaps];
+    unitTaps[slot] = { ...unitTaps[slot], ...change };
+    return { ...measured, measurementSchema: { ...measured.measurementSchema, unitTaps } };
+  };
+  assert.throws(
+    () => hooks.validateStructuredHookProgram(relabel(0, { unit: "head/L3h3", kind: "head", layer: 3, index: 3 })),
+    /does not match the tap tables/,
+  );
+  assert.throws(
+    () => hooks.validateStructuredHookProgram(relabel(0, { scale: { ...measured.measurementSchema.unitTaps[0].scale, value: [1, 0] } })),
+    /no usable reading scale/,
+  );
+  assert.throws(
+    () => hooks.validateStructuredHookProgram(relabel(1, { scale: { ...measured.measurementSchema.unitTaps[1].scale, value: [1, 1] } })),
+    /no usable reading scale/,
+  );
+  assert.throws(
+    () => hooks.encodeStructuredUnitTables(v4, 4, shape, {
+      ...units, taps: [{ ...tap("neuron", 1, 5, 0), scale: { source: "neutral", detail: "", top: 1, value: 1 } }],
+    }),
+    /no usable reading scale/,
+  );
 
   // ---------------------------------------- triggers: `unit_active` per forward (§3.1) ---
   const triggered = hooks.withStructuredUnitSection(programV4, shape, {

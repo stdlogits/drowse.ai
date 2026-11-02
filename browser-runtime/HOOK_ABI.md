@@ -287,11 +287,14 @@ ropeGlobalScale, ropeInGraph, slidingWindow, slidingPattern`; booleans for the f
 
 ## 7. Replay (§2.3)
 
-One entry point runs every replay forward. The host drives native's `replay_segments`: one
-cacheless forward when every open term is `Trigger.BOTH`, otherwise prefill then decode runs, one
-position per forward under a probe gate. `BrowserBlockSitesBackend.replay` takes the logical
-segments, each with its tokens and one control state (`affineActive`, `curveActive`,
-`unitActive`), on a fresh sequence starting at position 0.
+One entry point runs every replay forward. The host drives native's `replay_segments` and
+`drive_segments`: one cacheless forward when every open term is `Trigger.BOTH`, otherwise prefill
+then decode runs, one position per forward under a probe gate, each forward's controls evaluated
+from the previous forward's readback. `BrowserBlockSitesBackend.openReplay` opens a fresh sequence
+at position 0 with the captures asked for; the host feeds logical segments one by one
+(`forward(segment)`: tokens and one control state, `affineActive`, `curveActive`, `unitActive`),
+reads each segment's last probe slots and unit taps back for the next gate, then `finish()` reads
+the captures and drops the sequence (`cancel()` drops it unread).
 
 - **Chunking.** No forward carries more than `PREFILL_CHUNK_SIZE` rows. A longer segment runs as
   consecutive chunks with its controls held constant. The KV cache, curve feet, activity state,
