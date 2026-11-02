@@ -86,6 +86,18 @@ test("every release gate and benchmark has a pinned executable producer", () => 
   );
 });
 
+test("every producer binds its whole checked-in closure", async () => {
+  // The WebGPU goldens closure carries the vendored WebLLM archive (over 4 MiB); every closure
+  // file must be readable by the binding, or no record of that type could be bound or recorded.
+  for (const evidenceType of evidenceTypes) {
+    assert.match(
+      await releaseEvidenceProducerToolVersion(evidenceType, repositoryRoot, producerConfig),
+      /^[a-z0-9-]+-v[0-9]+\+sha256\.[0-9a-f]{64}$/,
+      evidenceType,
+    );
+  }
+});
+
 test("producer tool identity covers its exact checked-in source closure", async () => {
   const first = await releaseEvidenceProducerToolVersion(
     "cVmGoldens",

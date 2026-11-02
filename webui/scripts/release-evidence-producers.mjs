@@ -8,6 +8,10 @@ const execFileAsync = promisify(execFile);
 const locallyExecutedReceiptCandidates = new WeakSet();
 
 const PRODUCER_EXECUTABLE = "webui/scripts/hosted-release-evidence-producer.mjs";
+// A producer config is a small JSON document; closure files include the vendored WebLLM archive
+// (about 4.6 MB for 0.2.84-drowse.41), so they get a larger bound.
+const MAX_CONFIG_BYTES = 4 * 1024 * 1024;
+const MAX_CLOSURE_FILE_BYTES = 64 * 1024 * 1024;
 const COMMON_CLOSURE = Object.freeze([
   PRODUCER_EXECUTABLE,
   "webui/scripts/release-evidence-producers.mjs",
@@ -333,6 +337,7 @@ export async function releaseEvidenceProducerBinding(
     resolve(repositoryRoot, ...relativeConfig.split("/")),
     repositoryRoot,
     "producer config",
+    MAX_CONFIG_BYTES,
   );
   const digest = createHash("sha256");
   for (const path of producer.closure) {
@@ -340,6 +345,7 @@ export async function releaseEvidenceProducerBinding(
       resolve(repositoryRoot, ...path.split("/")),
       repositoryRoot,
       "release evidence producer source",
+      MAX_CLOSURE_FILE_BYTES,
     );
     digest.update(`${path}\0${bytes.byteLength}\0`);
     digest.update(bytes);
@@ -492,7 +498,7 @@ function repositoryRelativePath(repositoryRoot, path, label) {
   return value.split(sep).join("/");
 }
 
-async function readRegularContainedFile(path, root, label) {
+async function readRegularContainedFile(path, root, label, maxBytes) {
   const [rootRealPath, parentRealPath, info] = await Promise.all([
     realpath(root),
     realpath(dirname(path)),
@@ -504,9 +510,11 @@ async function readRegularContainedFile(path, root, label) {
     parentRelative.startsWith(`..${sep}`) ||
     info.isSymbolicLink() ||
     !info.isFile() ||
-    info.size > 4 * 1024 * 1024
+    info.size > maxBytes
   ) {
-    throw new Error(`${label} must be a regular file inside the Drowse repository`);
+    throw new Error(
+      `${label} must be a regular file inside the Drowse repository, at most ${maxBytes} bytes`,
+    );
   }
   return readFile(path);
 }
