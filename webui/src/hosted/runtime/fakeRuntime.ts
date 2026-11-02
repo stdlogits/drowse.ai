@@ -627,8 +627,12 @@ export class DeterministicFakeRuntime implements RuntimeClient {
     const saeBlock = this.instrumentBlock("sae");
     const lensLive = lensBlock.live.enabled;
     const saeLive = saeBlock.live.enabled;
+    // Native's per-token payload: attached lens and SAE probe readings ride a token only while
+    // their family is live; the reply's aggregate carries them always.
+    const lensProbesRead = scope === "aggregate" || lensLive ? lensProbes : [];
+    const saeProbesRead = scope === "aggregate" || saeLive ? saeProbes : [];
     if (
-      geometryProbes.length === 0 && lensProbes.length === 0 && saeProbes.length === 0 &&
+      geometryProbes.length === 0 && lensProbesRead.length === 0 && saeProbesRead.length === 0 &&
       !lensLive && !saeLive
     ) return undefined;
 
@@ -668,16 +672,16 @@ export class DeterministicFakeRuntime implements RuntimeClient {
       };
     }
 
-    if (lensBlock.source && (lensLive || lensProbes.length > 0)) {
+    if (lensBlock.source && (lensLive || lensProbesRead.length > 0)) {
       const value = Math.min(0.96, 0.58 + index * 0.025);
       const readings: Record<string, ScalarReadingJSON> = {};
-      for (const probe of lensProbes) {
+      for (const probe of lensProbesRead) {
         readings[probe.name] = fixtureScalarReading(value, "mean_token_probability");
         envelope.scores![probe.name] = roundReading(value);
       }
       envelope.instruments.lens = {
         binding: { sources: { R: lensBlock.source }, steering: null },
-        ...(lensProbes.length > 0 ? { readings } : {}),
+        ...(lensProbesRead.length > 0 ? { readings } : {}),
         ...(lensLive ? {
           readout: {
             layers: [0, 1].map((layer) => ({
@@ -696,10 +700,10 @@ export class DeterministicFakeRuntime implements RuntimeClient {
       };
     }
 
-    if (saeBlock.source && (saeLive || saeProbes.length > 0)) {
+    if (saeBlock.source && (saeLive || saeProbesRead.length > 0)) {
       const value = Math.min(0.95, 0.42 + index * 0.035);
       const readings: Record<string, ScalarReadingJSON> = {};
-      for (const probe of saeProbes) {
+      for (const probe of saeProbesRead) {
         readings[probe.name] = fixtureScalarReading(value, "activation_over_max");
         envelope.scores![probe.name] = roundReading(value);
       }
@@ -707,7 +711,7 @@ export class DeterministicFakeRuntime implements RuntimeClient {
       const featureIds = [...new Set([...pinnedFeatureIds, 7, 12])];
       envelope.instruments.sae = {
         binding: { source: saeBlock.source, steering: null, layer: 1 },
-        ...(saeProbes.length > 0 ? { readings } : {}),
+        ...(saeProbesRead.length > 0 ? { readings } : {}),
         ...(saeLive ? {
           readout: {
             features: featureIds.map((id, featureIndex) => ({

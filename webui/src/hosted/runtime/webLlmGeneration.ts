@@ -574,7 +574,11 @@ export async function streamWebLlmGeneration(
             const gateScores = channels.gateScores === undefined
               ? envelopeScores
               : { ...envelopeScores, ...channels.gateScores };
-            const envelope = withLiveChannels(capturedEnvelope, channels.token, plan.steeringExpression ?? null);
+            const envelope = withLiveChannels(
+              tokenMeasurementEnvelope(capturedEnvelope, plan.hookProgram),
+              channels.token,
+              plan.steeringExpression ?? null,
+            );
             const aggregateSource: AggregateSource = {
               envelope: withLiveChannels(capturedEnvelope, channels.aggregate, plan.steeringExpression ?? null),
               ...(channels.deferredHidden === undefined ? {} : { hidden: channels.deferredHidden }),
@@ -1566,6 +1570,42 @@ export function measurementEnvelope(
   };
   measurementGateScoreCache.set(envelope, Object.freeze({ ...gateScores }));
   return envelope;
+}
+
+/** A forward's token envelope from its captured measurements (native's per-token payload,
+ *  `session/engine.py`): attached R-lens and SAE probe readings ride a token only while their
+ *  family is live (native merges the live readout step's `last_step_readings`), so with the lens
+ *  or SAE family off they reach the reply's aggregate only. The captured envelope keeps every
+ *  reading: gates read it (`measurementGateScores`) and the aggregate pools it. */
+export function tokenMeasurementEnvelope(
+  captured: MeasurementsEnvelopeJSON | undefined,
+  hookProgram: StructuredHookProgramBuffers | null | undefined,
+): MeasurementsEnvelopeJSON | undefined {
+  if (captured === undefined) return undefined;
+  const schema = hookProgram?.measurementSchema;
+  const instruments = { ...captured.instruments };
+  const offFamilyProbes = new Set<string>();
+  for (const [family, live] of [
+    ["lens", schema?.lensReadout === true],
+    ["sae", schema?.saeReadout === true],
+  ] as const) {
+    const block = instruments[family];
+    if (live || block?.readings === undefined) continue;
+    for (const name of Object.keys(block.readings)) offFamilyProbes.add(name);
+    const { readings: _readings, ...rest } = block;
+    if ("readout" in rest && rest.readout !== undefined) {
+      (instruments as Record<string, unknown>)[family] = rest;
+    } else {
+      delete instruments[family];
+    }
+  }
+  if (offFamilyProbes.size === 0) return captured;
+  const scores = Object.fromEntries(
+    Object.entries(captured.scores ?? {}).filter(([name]) => !offFamilyProbes.has(name)),
+  );
+  if (Object.keys(instruments).length === 0 && Object.keys(scores).length === 0) return undefined;
+  const { scores: _scores, ...envelope } = captured;
+  return { ...envelope, instruments, ...(Object.keys(scores).length > 0 ? { scores } : {}) };
 }
 
 /** A replayed forward's geometry gate scores from its `[L, maxGeometryProbes, stride]` readout:
