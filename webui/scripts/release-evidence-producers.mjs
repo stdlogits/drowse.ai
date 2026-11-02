@@ -9,7 +9,7 @@ const locallyExecutedReceiptCandidates = new WeakSet();
 
 const PRODUCER_EXECUTABLE = "webui/scripts/hosted-release-evidence-producer.mjs";
 // A producer config is a small JSON document; closure files include the vendored WebLLM archive
-// (about 4.6 MB for 0.2.84-drowse.46), so they get a larger bound.
+// (about 4.6 MB for 0.2.84-drowse.48), so they get a larger bound.
 const MAX_CONFIG_BYTES = 4 * 1024 * 1024;
 const MAX_CLOSURE_FILE_BYTES = 64 * 1024 * 1024;
 const COMMON_CLOSURE = Object.freeze([
@@ -60,7 +60,7 @@ const webGpuGoldensClosure = Object.freeze([
   "webui/src/hosted/runtime/webLlmStaticReads.ts",
   "browser-runtime/forks/manifest.json",
   "browser-runtime/forks/web-llm-drowse.patch",
-  "browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.46.tgz",
+  "browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.48.tgz",
   ...UNITS_GOLDENS,
 ]);
 

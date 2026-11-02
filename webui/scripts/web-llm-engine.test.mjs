@@ -197,11 +197,11 @@ try {
     }
     async supportsDrowseResidualCapture() { return this.capture; }
     async prepareDrowseCaptureRows(rows, specialTokenIds) {
-      (this.captureRowCalls ??= []).push({ rows: structuredClone(rows), specialTokenIds: [...specialTokenIds] });
-      // A row ending in an empty assistant turn renders its separator (4) after the header.
-      return rows.map((row, index) => (row.messages.at(-1).content === ""
-        ? { inputIds: [index, 9, 4], position: 1 }
-        : { inputIds: [index, 9], position: 1 }));
+      return rows.map((_row, index) => ({ inputIds: [index, 9], position: 1 }));
+    }
+    async prepareDrowseGenerationInputIds(request) {
+      (this.promptRequests ??= []).push(structuredClone(request));
+      return "prompt" in request ? [...request.prompt].map((c) => c.codePointAt(0)) : [request.messages.length, 9];
     }
     async captureDrowseResiduals(inputIds, positions) {
       if (positions.length > 1) {
@@ -318,32 +318,25 @@ try {
   assert.equal(runtime.vocabularySize(), 16);
   assert.equal(await runtime.decodeTokens([115, 117, 98]), "sub");
   assert.deepEqual(await runtime.tokenTexts([115, 117, 115]), ["s", "u", "s"]);
-  // The ids a plan prefills: a raw prompt's own ids (this chat model has no completion prefix);
-  // a chat prompt through WebLLM's capture renderer, the reply header an empty assistant turn
-  // whose separator the renderer cuts (`position`).
+  // The ids a plan prefills come from the bridge, which renders the same prompt request a
+  // generation sends (its messages, seat, role and thinking switch; a completion's prompt).
   assert.deepEqual(await runtime.renderPromptTokenIds({ input: { kind: "raw", prompt: "hi" } }), [104, 105]);
+  assert.deepEqual(runtime.requireEngine().promptRequests.at(-1), { prompt: "hi" });
   assert.deepEqual(await runtime.renderPromptTokenIds({
-    input: { kind: "chat", messages: [{ role: "system", content: "S" }, { role: "user", content: "u", name: "Ann" }] },
+    input: { kind: "chat", messages: [{ role: "system", content: "S" }, { role: "user", content: "u", name: "ann" }] },
     thinking: null,
-    generationRoleName: "Bot",
-  }), [0, 9]);
-  assert.deepEqual(runtime.requireEngine().captureRowCalls.at(-1), {
-    rows: [{
-      system: "S",
-      messages: [{ role: "user", content: "u", roleName: "Ann" }, { role: "assistant", content: "", roleName: "Bot" }],
-    }],
-    specialTokenIds: [],
+    generationRoleName: "bot",
+  }), [2, 9]);
+  assert.deepEqual(runtime.requireEngine().promptRequests.at(-1), {
+    messages: [{ role: "system", content: "S" }, { role: "user", content: "u", name: "ann" }],
+    extra_body: { drowse_generation_role: "bot" },
   });
-  await runtime.renderPromptTokenIds({ input: { kind: "chat", messages: [{ role: "user", content: "u" }] } });
-  assert.equal(runtime.requireEngine().captureRowCalls.at(-1).rows[0].system, "", "the template's own system message");
-  await assert.rejects(
-    runtime.renderPromptTokenIds({ input: { kind: "chat", messages: [{ role: "assistant", content: "a" }] }, generationSeat: "user" }),
-    { code: "TOKEN_REPLAY_UNAVAILABLE", status: 409 },
-  );
-  await assert.rejects(
-    runtime.renderPromptTokenIds({ input: { kind: "chat", messages: [{ role: "user", content: "u" }, { role: "system", content: "late" }] } }),
-    { code: "TOKEN_REPLAY_UNAVAILABLE" },
-  );
+  // A user-seat generation's prompt renders like any other (native renders either seat).
+  assert.deepEqual(await runtime.renderPromptTokenIds({
+    input: { kind: "chat", messages: [{ role: "user", content: "u" }, { role: "assistant", content: "a" }] },
+    generationSeat: "user",
+  }), [2, 9]);
+  assert.deepEqual(runtime.requireEngine().promptRequests.at(-1).extra_body, { drowse_generation_seat: "user" });
   assert.deepEqual(runtime.hookCapabilities(), {
     multi_term: true,
     projection: true,

@@ -36,7 +36,7 @@ import {
   structuredGeometryPayloadLayout,
   WEB_LLM_RUNTIME_MIN_STORAGE_BUFFERS_PER_SHADER_STAGE,
 } from "./structuredHookProfile";
-import { prepareVerifiedWebLlmArtifacts, type WebLlmPromptRendering } from "./verifiedArtifactCache";
+import { prepareVerifiedWebLlmArtifacts } from "./verifiedArtifactCache";
 import type { WebLlmBlockSitesDevice, WebLlmBlockSitesRequest } from "./webLlmBlockSites";
 import {
   assertHookFeaturesSupported,
@@ -49,11 +49,13 @@ import {
   streamWebLlmGeneration,
   readWebLlmRuntimeCapabilities,
   tokenizeWebLlmText,
+  webLlmPromptRequest,
   type WebLlmJlensTopTokenReadout,
   type WebLlmGeneratedToken,
   type WebLlmGenerationEngine,
   type WebLlmGenerationPlan,
   type WebLlmGenerationResult,
+  type WebLlmPromptPlan,
   type WebLlmSaeTopFeatureReadout,
   type WebLlmThinkingProfile,
   type WebLlmRuntimeCapabilities,
@@ -121,6 +123,8 @@ export interface DrowseWebLlmEngineInstance extends WebLlmGenerationEngine {
     specialTokenIds: number[],
     modelId?: string,
   ): Promise<DrowsePreparedCaptureRow[]>;
+  /** The ids a generation of `request` prefills (bridge .48), rendered as its prefill renders them. */
+  prepareDrowseGenerationInputIds(request: any): Promise<number[]>;
   captureDrowseResiduals(
     inputIds: number[],
     positions: number[],
@@ -292,14 +296,10 @@ typeof STRUCTURED_HOOK_FORMAT;
   descriptor?: Int32Array;
 }
 
-/** WebLLM's reply header for a generation with thinking off (`appendEmptyThinkingReplyHeader`). */
-const EMPTY_THINKING_BLOCK = "<think>\n\n</think>\n\n";
-
 export class DrowseWebLlmRuntime {
   private engine: DrowseWebLlmEngineInstance | null = null;
   private blockSites: BlockSitesCapabilities | null = null;
   private captureSpecialTokenIds: number[] | null = null;
-  private promptRendering: WebLlmPromptRendering | null = null;
   private vocabSize: number | null = null;
   private generating = false;
   private reusablePlainChatPrefix = false;
@@ -536,7 +536,6 @@ export class DrowseWebLlmRuntime {
         );
       }
       this.captureSpecialTokenIds = [...prepared.captureSpecialTokenIds];
-      this.promptRendering = prepared.promptRendering;
       this.vocabSize = prepared.vocabSize;
       this.blockSites = blockSitesCapabilitiesFor(
         this.structuredHookProfile,
@@ -547,8 +546,7 @@ export class DrowseWebLlmRuntime {
       return { prefillTokensPerSecond: null, decodeTokensPerSecond: null };
     } catch (error) {
       this.captureSpecialTokenIds = null;
-      this.promptRendering = null;
-      this.vocabSize = null;
+        this.vocabSize = null;
       this.structuredHooks = false;
       this.curvedHooks = false;
       this.saeHooks = false;
@@ -584,7 +582,6 @@ export class DrowseWebLlmRuntime {
     this.engine = null;
     this.reusablePlainChatPrefix = false;
     this.captureSpecialTokenIds = null;
-    this.promptRendering = null;
     this.vocabSize = null;
     this.structuredHooks = false;
     this.curvedHooks = false;
@@ -741,52 +738,20 @@ export class DrowseWebLlmRuntime {
 
   /**
    * The token ids WebLLM prefills for a generation plan's input, so a loom node replays on the
-   * block sites exactly as it ran. A raw prompt is the completion prefix and the prompt's ids. A
-   * chat prompt goes through WebLLM's own conversation renderer (the capture rows) with the reply
-   * header as an empty assistant turn, its separator cut: exact when the template renders the
-   * header that way (`replyHeaderIsEmptyTurn`), as every units template does. A user-seat
-   * generation's header is a user turn, which that renderer does not end on; it is refused.
+   * block sites exactly as it ran: the bridge renders the plan's prompt request (the messages,
+   * the generated seat and its role, the thinking switch; or a completion's prompt) through the
+   * conversation, reply header and encoding its prefill uses, for either seat.
    */
   async renderPromptTokenIds(
-    plan: Pick<WebLlmGenerationPlan, "input" | "thinking" | "generationSeat" | "generationRoleName">,
+    plan: Pick<WebLlmPromptPlan, "input" | "thinking" | "generationSeat" | "generationRoleName">,
   ): Promise<number[]> {
     const engine = this.requireEngine();
-    const rendering = this.promptRendering;
-    if (rendering === null) throw runtimeError("MODEL_NOT_LOADED", "No browser model runtime is loaded");
-    if (plan.input.kind === "raw") {
-      return [...rendering.completionPrefixTokenIds, ...await this.tokenizeText(plan.input.prompt)];
+    if (this.runtimeCapabilities().baseModel && plan.input.kind !== "raw") {
+      throw runtimeError("BASE_MODEL_RAW_INPUT_REQUIRED", "This base model requires a plain text completion prompt");
     }
-    const refuse = (message: string) =>
-      Object.assign(runtimeError("TOKEN_REPLAY_UNAVAILABLE", message), { status: 409, recoverable: true });
-    if ((plan.generationSeat ?? "assistant") !== "assistant") {
-      throw refuse("The browser cannot render a user-seat generation's prompt for a replay");
-    }
-    if (!rendering.replyHeaderIsEmptyTurn) {
-      throw refuse("This model's chat template renders its reply header unlike an empty turn, so the browser cannot name its prompt tokens");
-    }
-    const [first, ...rest] = plan.input.messages;
-    const leading = first?.role === "system";
-    const messages = leading ? rest : plan.input.messages;
-    if (messages.some((message) => message.role === "system")) {
-      throw refuse("A system message after the first turn has no prompt tokens to replay");
-    }
-    const header = this.thinkingProfile !== null && plan.thinking === false ? EMPTY_THINKING_BLOCK : "";
-    const [row] = await engine.prepareDrowseCaptureRows([{
-      system: leading ? first.content : rendering.systemMessage,
-      messages: [
-        ...messages.map((message) => ({
-          role: message.role as "user" | "assistant",
-          content: message.content,
-          ...(message.name === undefined ? {} : { roleName: message.name }),
-        })),
-        {
-          role: "assistant",
-          content: header,
-          ...(plan.generationRoleName ? { roleName: plan.generationRoleName } : {}),
-        },
-      ],
-    }], []);
-    return row.inputIds.slice(0, row.position + 1);
+    return engine.prepareDrowseGenerationInputIds(
+      webLlmPromptRequest({ ...plan, thinkingProfile: this.thinkingProfile }),
+    );
   }
 
   hookCapabilities(): DrowseHookCapabilities {

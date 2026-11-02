@@ -874,10 +874,39 @@ async function assertWebLlmGenerationCapabilities(
   if (missing) throw generationError(missing.code, missing.message);
 }
 
-function buildRequest(plan: WebLlmGenerationPlan): Record<string, unknown> {
+/** What a generation plan prefills from: a chat's messages with the generated seat, its role
+ *  and thinking switch (WebLLM renders the reply header from them), or a completion's prompt.
+ *  Generation's request carries exactly this; a node replay asks the bridge for the ids it
+ *  renders (`prepareDrowseGenerationInputIds`). */
+export type WebLlmPromptPlan = Pick<
+  WebLlmGenerationPlan,
+  "input" | "generationSeat" | "generationRoleName" | "thinking" | "thinkingProfile"
+>;
+
+export function webLlmPromptRequest(plan: WebLlmPromptPlan): Record<string, unknown> {
   validateInput(plan.input);
   validateGenerationRole(plan);
   validateGenerationSeat(plan);
+  if (plan.input.kind !== "chat") return { prompt: plan.input.prompt };
+  const extraBody = {
+    ...(plan.generationSeat === null || plan.generationSeat === undefined
+      ? {}
+      : { drowse_generation_seat: plan.generationSeat }),
+    ...(plan.thinkingProfile == null || plan.thinking === null || plan.thinking === undefined
+      ? {}
+      : { enable_thinking: plan.thinking }),
+    ...(plan.generationRoleName === null || plan.generationRoleName === undefined
+      ? {}
+      : { drowse_generation_role: plan.generationRoleName }),
+  };
+  return {
+    messages: plan.input.messages.map((message) => ({ ...message })),
+    ...(Object.keys(extraBody).length > 0 ? { extra_body: extraBody } : {}),
+  };
+}
+
+function buildRequest(plan: WebLlmGenerationPlan): Record<string, unknown> {
+  const prompt = webLlmPromptRequest(plan);
   validateReplay(plan.replay);
   const sampling = applyOutputTokenLimit(
     plan,
@@ -896,28 +925,11 @@ function buildRequest(plan: WebLlmGenerationPlan): Record<string, unknown> {
     ...(plan.measurementStartRawIndex === undefined ? {} : { drowse_readout_start_index: plan.measurementStartRawIndex }),
     ...(plan.measurementTargetRawIndex === undefined ? {} : { drowse_readout_target_index: plan.measurementTargetRawIndex }),
   };
-  if (plan.input.kind === "chat") {
-    request.messages = plan.input.messages.map((message) => ({ ...message }));
-    const extraBody = {
-      ...replayExtraBody,
-      ...(plan.generationSeat === null || plan.generationSeat === undefined
-        ? {}
-        : { drowse_generation_seat: plan.generationSeat }),
-      ...(plan.thinkingProfile == null || plan.thinking === null || plan.thinking === undefined
-        ? {}
-        : { enable_thinking: plan.thinking }),
-      ...(plan.generationRoleName === null || plan.generationRoleName === undefined
-        ? {}
-        : { drowse_generation_role: plan.generationRoleName }),
-    };
-    if (Object.keys(extraBody).length > 0) {
-      request.extra_body = extraBody;
-    }
-  } else {
-    request.prompt = plan.input.prompt;
-    if (Object.keys(replayExtraBody).length > 0) {
-      request.extra_body = replayExtraBody;
-    }
+  const { extra_body: promptExtraBody, ...promptFields } = prompt as { extra_body?: Record<string, unknown> };
+  Object.assign(request, promptFields);
+  const extraBody = { ...replayExtraBody, ...promptExtraBody };
+  if (Object.keys(extraBody).length > 0) {
+    request.extra_body = extraBody;
   }
   return request;
 }
