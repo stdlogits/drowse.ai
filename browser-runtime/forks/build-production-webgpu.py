@@ -133,6 +133,14 @@ def parse_args() -> argparse.Namespace:
     )
     rebind_parser.add_argument("--model", required=True, type=Path)
     rebind_parser.add_argument(
+        "--model-id", required=True,
+        help="the runtime lock's model id: binds the published conversion to the lock",
+    )
+    rebind_parser.add_argument(
+        "--runtime-lock", type=Path,
+        default=Path(__file__).resolve().parents[1] / "runtime-lock.json",
+    )
+    rebind_parser.add_argument(
         "--architecture", required=True, choices=PRODUCTION_ARCHITECTURES
     )
     rebind_parser.add_argument(
@@ -227,9 +235,11 @@ def convert(args, mlc_repository: Path, tvm_repository: Path) -> None:
 
 def rebind(args) -> None:
     """The weights do not depend on the hook ABI, so a published conversion moves to a new runtime
-    ABI by its manifest alone: every file its drowse-build.json lists is verified and copied
-    unchanged, and the manifest takes the current ABI names, profile and toolchain, recording the
-    manifest it came from."""
+    ABI by its manifest alone: the conversion must be the runtime lock's (its tensor-cache.json is
+    the lock's `manifestSha256`, its architecture and quantization the lock's and its chat
+    config's), every file its drowse-build.json lists is verified and copied unchanged, and the
+    manifest takes the current ABI names, profile and toolchain, recording the manifest and
+    conversion toolchain it came from."""
     source = args.model.resolve(strict=True)
     output = args.output.resolve()
     validate_new_output(output, directory=True)
@@ -237,6 +247,17 @@ def rebind(args) -> None:
     previous = json.loads(previous_bytes)
     if previous.get("architecture") != args.architecture or previous.get("quantization") != args.quantization:
         raise SystemExit("rebind keeps the conversion's architecture and quantization")
+    locked = [entry for entry in json.loads(args.runtime_lock.read_text(encoding="utf-8"))["models"]
+              if entry.get("id") == args.model_id]
+    if len(locked) != 1:
+        raise SystemExit(f"the runtime lock has no single model {args.model_id}")
+    if (locked[0].get("architecture"), locked[0].get("quantization")) != (args.architecture, args.quantization):
+        raise SystemExit("the runtime lock names another architecture or quantization for this model")
+    if sha256(source / "tensor-cache.json") != locked[0].get("manifestSha256"):
+        raise SystemExit("tensor-cache.json is not the runtime lock's published conversion")
+    chat = json.loads((source / "mlc-chat-config.json").read_text(encoding="utf-8"))
+    if (chat.get("model_type"), chat.get("quantization")) != (args.architecture, args.quantization):
+        raise SystemExit("mlc-chat-config.json names another architecture or quantization")
     files = previous.get("files")
     if not isinstance(files, list) or not files:
         raise SystemExit("model build manifest lists no files")
@@ -260,10 +281,12 @@ def rebind(args) -> None:
             "thinkingProfile": derive_thinking_profile(stage, args.architecture),
             "toolchain": toolchain_manifest(args.architecture),
             "rebind": {
+                "modelId": args.model_id,
                 "fromBuildSha256": hashlib.sha256(previous_bytes).hexdigest(),
                 "fromRuntimeAbi": previous.get("runtimeAbi"),
                 "fromHookAbi": previous.get("hookAbi"),
                 "fromStructuredHookProfile": previous.get("structuredHookProfile"),
+                "fromToolchain": previous.get("toolchain"),
             },
         }
         listed = sorted(files, key=lambda file: file["path"])

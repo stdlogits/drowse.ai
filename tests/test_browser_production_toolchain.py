@@ -532,7 +532,8 @@ def test_rebind_carries_a_published_conversion_to_the_current_abi_byte_for_byte(
     source.mkdir()
     files = []
     # Published manifests are not always in path order (qwen3-1.7b's is not).
-    for name, payload in (("tensor-cache.json", b"{\"records\": []}"), ("mlc-chat-config.json", b"{}"),
+    chat = json.dumps({"model_type": "gemma3_text", "quantization": "q4f32_1"}).encode()
+    for name, payload in (("tensor-cache.json", b"{\"records\": []}"), ("mlc-chat-config.json", chat),
                           ("params_shard_0.bin", b"\x01\x02\x03")):
         (source / name).write_bytes(payload)
         files.append({"path": name, "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()})
@@ -543,9 +544,15 @@ def test_rebind_carries_a_published_conversion_to_the_current_abi_byte_for_byte(
         "quantization": "q4f32_1", "contextWindowSize": 4096, "prefillChunkSize": 2048,
         "source": {"repository": "unsloth/gemma-3-1b-it", "revision": "a" * 40}, "files": files,
     }
+    previous["toolchain"] = {"mlcLlmBaseCommit": "old"}
     (source / "drowse-build.json").write_text(json.dumps(previous))
+    lock = tmp_path / "runtime-lock.json"
+    entry = {"id": "gemma3-1b-instruct", "architecture": "gemma3_text", "quantization": "q4f32_1",
+             "manifestSha256": hashlib.sha256(b"{\"records\": []}").hexdigest()}
+    lock.write_text(json.dumps({"models": [entry]}))
     args = SimpleNamespace(model=source, output=tmp_path / "rebound", architecture="gemma3_text",
-                           quantization="q4f32_1", structured_hook_profile="standard-v4")
+                           quantization="q4f32_1", structured_hook_profile="standard-v4",
+                           model_id="gemma3-1b-instruct", runtime_lock=lock)
 
     TOOL.rebind(args)
     rebound = tmp_path / "rebound"
@@ -558,6 +565,8 @@ def test_rebind_carries_a_published_conversion_to_the_current_abi_byte_for_byte(
         TOOL.RUNTIME_ABI, TOOL.HOOK_ABI, "standard-v4")
     assert manifest["toolchain"] == TOOL.toolchain_manifest("gemma3_text")
     assert manifest["rebind"]["fromHookAbi"] == "post-block-residual-v4"
+    assert manifest["rebind"]["fromToolchain"] == {"mlcLlmBaseCommit": "old"}
+    assert manifest["rebind"]["modelId"] == "gemma3-1b-instruct"
     assert manifest["rebind"]["fromBuildSha256"] == hashlib.sha256(
         (source / "drowse-build.json").read_bytes()).hexdigest()
     TOOL.verify_build_manifest(rebound, "gemma3_text", "q4f32_1")
@@ -566,6 +575,17 @@ def test_rebind_carries_a_published_conversion_to_the_current_abi_byte_for_byte(
         TOOL.rebind(args)
     with pytest.raises(SystemExit, match="architecture and quantization"):
         TOOL.rebind(SimpleNamespace(**{**vars(args), "output": tmp_path / "other", "quantization": "q4f16_1"}))
+    with pytest.raises(SystemExit, match="no single model"):
+        TOOL.rebind(SimpleNamespace(**{**vars(args), "output": tmp_path / "other", "model_id": "qwen3-4b"}))
+    lock.write_text(json.dumps({"models": [{**entry, "manifestSha256": "0" * 64}]}))
+    with pytest.raises(SystemExit, match="not the runtime lock's published conversion"):
+        TOOL.rebind(SimpleNamespace(**{**vars(args), "output": tmp_path / "other"}))
+    lock.write_text(json.dumps({"models": [entry]}))
+    (source / "mlc-chat-config.json").write_text(json.dumps({"model_type": "qwen3", "quantization": "q4f32_1"}))
+    with pytest.raises(SystemExit, match="mlc-chat-config.json names another"):
+        TOOL.rebind(SimpleNamespace(**{**vars(args), "output": tmp_path / "other"}))
+    (source / "mlc-chat-config.json").write_bytes(chat)
+    assert not (tmp_path / "other").exists()
     (source / "params_shard_0.bin").write_bytes(b"\x01\x02\x04")
     with pytest.raises(SystemExit, match="does not match its build manifest: params_shard_0.bin"):
         TOOL.rebind(SimpleNamespace(**{**vars(args), "output": tmp_path / "tampered"}))

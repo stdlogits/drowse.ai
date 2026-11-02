@@ -66,9 +66,17 @@ def main() -> None:
     chat = json.loads((model_dir / "mlc-chat-config.json").read_text())
     build = json.loads((model_dir / "drowse-build.json").read_text())
     arch = chat["model_type"]
+    # The CPU checks run the graph the model's own config and conversion produce (the C TVM VM
+    # cannot run the WGSL); these digests bind the report to the library and model it checked.
     report: dict = {"model": str(model_dir), "library": str(library), "architecture": arch,
                     "quantization": chat["quantization"],
-                    "structuredHookProfile": build["structuredHookProfile"], "checks": {}}
+                    "structuredHookProfile": build["structuredHookProfile"],
+                    "sha256": {name: file_sha256(path) for name, path in (
+                        ("model.wasm", library),
+                        ("drowse-build.json", model_dir / "drowse-build.json"),
+                        ("mlc-chat-config.json", model_dir / "mlc-chat-config.json"),
+                        ("tensor-cache.json", model_dir / "tensor-cache.json"))},
+                    "checks": {}}
     started = time.time()
 
     verify_library_shaders(library.read_bytes(), required_functions(arch))
@@ -91,7 +99,8 @@ def main() -> None:
     require_llvm(tvm)
     env = environment(tvm, relax, nn, op)
     report["descriptor"] = library_descriptor(env, chat)
-    report["checks"]["descriptor"] = {"passed": True, "fields": len(report["descriptor"])}
+    report["checks"]["descriptor"] = {"passed": True, "fields": len(report["descriptor"]),
+                                      "source": "the model class's drowse_hook_profile on the C TVM VM"}
 
     failures: list[str] = []
     if args.parity:
@@ -457,15 +466,33 @@ def rms(x: np.ndarray, eps: float) -> np.ndarray:
     return 1.0 / np.sqrt(np.mean(np.asarray(x, np.float64) ** 2, axis=-1) + eps)
 
 
+def file_sha256(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def relative(actual: np.ndarray, expected: np.ndarray) -> float:
+    """‖a − e‖ / ‖e‖; infinite (so every gate fails) on a shape mismatch or any non-finite value."""
     actual = np.asarray(actual, np.float64)
     expected = np.asarray(expected, np.float64)
+    if actual.shape != expected.shape or not (np.isfinite(actual).all() and np.isfinite(expected).all()):
+        return float("inf")
     return float(np.linalg.norm(actual - expected) / max(np.linalg.norm(expected), 1e-12))
 
 
 def top_overlap(actual: np.ndarray, expected: np.ndarray) -> int:
-    a = set(np.argsort(-np.asarray(actual, np.float64).reshape(-1), kind="stable")[:TOP_K].tolist())
-    e = set(np.argsort(-np.asarray(expected, np.float64).reshape(-1), kind="stable")[:TOP_K].tolist())
+    """Shared ids among the two top-8 sets; 0 on a shape mismatch or any non-finite value."""
+    actual = np.asarray(actual, np.float64).reshape(-1)
+    expected = np.asarray(expected, np.float64).reshape(-1)
+    if actual.shape != expected.shape or not (np.isfinite(actual).all() and np.isfinite(expected).all()):
+        return 0
+    a = set(np.argsort(-actual, kind="stable")[:TOP_K].tolist())
+    e = set(np.argsort(-expected, kind="stable")[:TOP_K].tolist())
     return len(a & e)
 
 
