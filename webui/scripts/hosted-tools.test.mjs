@@ -144,13 +144,31 @@ const [runtimeToolchainLock, forkManifestBytes, compilerRecipeBytes] = await Pro
   readFile(join(repositoryRoot, "browser-runtime", "compiler", "Dockerfile")),
 ]);
 const forkManifest = JSON.parse(forkManifestBytes.toString("utf8"));
+// The repository lock is hook ABI v5 with the library-bound fields W4 fills still pending: a
+// verified status names exactly those, and a lock with them filled has no blockers.
+const pendingFields = ["convertedRevision", "manifestSha256", "librarySha256"];
 assert.deepEqual(
   runtimeLockValidators.browserRuntimeReleaseBlockers({ ...runtimeToolchainLock, status: "verified" }),
+  runtimeToolchainLock.models.flatMap((model) => pendingFields
+    .filter((field) => model[field] === null)
+    .map((field) => `models.${model.id}.${field} is unresolved`)),
+);
+const filledRuntimeLock = {
+  ...runtimeToolchainLock,
+  models: runtimeToolchainLock.models.map((model, index) => ({
+    ...model,
+    convertedRevision: model.convertedRevision ?? String(index + 1).repeat(40),
+    manifestSha256: model.manifestSha256 ?? "a".repeat(64),
+    librarySha256: model.librarySha256 ?? "b".repeat(64),
+  })),
+};
+assert.deepEqual(
+  runtimeLockValidators.browserRuntimeReleaseBlockers({ ...filledRuntimeLock, status: "verified" }),
   [],
 );
 assert.deepEqual(
   runtimeLockValidators.browserRuntimeReleaseBlockers({
-    ...runtimeToolchainLock,
+    ...filledRuntimeLock,
     status: "verified",
     toolchain: {
       ...runtimeToolchainLock.toolchain,
@@ -172,7 +190,7 @@ assert.deepEqual(
         digest: `sha256:${"3".repeat(64)}`,
       },
     },
-    models: runtimeToolchainLock.models.map((model, index) => ({
+    models: filledRuntimeLock.models.map((model, index) => ({
       ...model,
       convertedRevision: String(index + 4).repeat(40),
     })),
@@ -239,6 +257,79 @@ assert.throws(
   ),
   /source commit differs from the fork commit/,
 );
+// Hook ABI v5 lock structure (runtime-lock-document.mjs, shared by every release tool).
+{
+  const { validateRuntimeLock } = await import("./runtime-lock-document.mjs");
+  const lock = structuredClone(runtimeToolchainLock);
+  assert.doesNotThrow(() => validateRuntimeLock(lock));
+  const withModel = (id, edit) => {
+    const candidate = structuredClone(lock);
+    edit(candidate.models.find((model) => model.id === id));
+    return candidate;
+  };
+  assert.throws(() => validateRuntimeLock({ ...lock, hookAbi: "post-block-residual-v4" }), /unsupported schema or ABI/);
+  assert.throws(() => validateRuntimeLock({ ...lock, schemaVersion: 1 }), /unsupported schema or ABI/);
+  assert.throws(
+    () => validateRuntimeLock(withModel("qwen3-1.7b", (model) => {
+      model.structuredHookProfile = "standard-v4-residual";
+      delete model.blockSpec;
+      model.unitRefusal = "refused";
+    })),
+    /qwen3 libraries attest standard-v4, not standard-v4-residual/,
+  );
+  assert.throws(
+    () => validateRuntimeLock(withModel("gpt2-base", (model) => {
+      model.structuredHookProfile = "standard-v4";
+      delete model.unitRefusal;
+      model.blockSpec = structuredClone(lock.models.find((entry) => entry.id === "qwen3-1.7b").blockSpec);
+    })),
+    /gpt2 libraries attest standard-v4-residual, not standard-v4/,
+  );
+  assert.throws(
+    () => validateRuntimeLock(withModel("gemma3-270m-instruct", (model) => { model.unitRefusal = "x"; })),
+    /unknown or missing fields/,
+  );
+  assert.throws(
+    () => validateRuntimeLock(withModel("pythia-70m-base", (model) => { model.unitRefusal = ""; })),
+    /no unit refusal text/,
+  );
+  assert.throws(
+    () => validateRuntimeLock(withModel("gemma3-1b-instruct", (model) => { model.blockSpec.slidingPattern = null; })),
+    /block spec is invalid/,
+  );
+  assert.throws(
+    () => validateRuntimeLock(withModel("qwen3-4b", (model) => { model.blockSpec.extra = 1; })),
+    /block spec has unknown or missing fields/,
+  );
+  assert.throws(
+    () => validateRuntimeLock({
+      ...lock,
+      toolchain: { ...lock.toolchain, llvmSourceBuild: { ...lock.toolchain.llvmSourceBuild, tag: "llvmorg-19.1.7" } },
+    }),
+    /LLVM source build is invalid/,
+  );
+  assert.throws(
+    () => runtimeLockValidators.validateToolchainBindings(
+      {
+        ...lock.toolchain,
+        llvmSourceBuild: { ...lock.toolchain.llvmSourceBuild, commit: "1".repeat(40) },
+      },
+      forkManifest,
+      forkManifestBytes,
+      compilerRecipeBytes,
+    ),
+    /LLVM source build differs from the compiler overlay manifest/,
+  );
+  assert.throws(
+    () => runtimeLockValidators.validateToolchainBindings(
+      lock.toolchain,
+      forkManifest,
+      forkManifestBytes,
+      Buffer.from(compilerRecipeBytes.toString("utf8").replace(/ARG LLVM_SOURCE_COMMIT_AMD64=.*\n/u, "")),
+    ),
+    /exact compiler recipe/,
+  );
+}
 assert.doesNotThrow(() => runtimeLockValidators.validateAuthoringIntegrationState({
   implementationIntegrated: false,
   capabilityIntegrated: false,
