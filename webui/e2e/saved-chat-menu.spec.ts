@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { resolve } from "node:path";
+import { settle } from "./workbench-navigation";
 
 const modules = {
   home: `/@fs${resolve("src/hosted/ui/HostedHome.svelte")}`,
@@ -82,6 +83,7 @@ test("chat options fit phone, desktop, and enlarged text layouts", async ({ page
   await trigger(page).click();
   await expect(menu(page).getByRole("menuitem", { name: "Delete", exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await settle(page);
   expect((await new AxeBuilder({ page }).include(".chat-card").analyze()).violations).toEqual([]);
   expect(errors).toEqual([]);
 });
@@ -113,7 +115,8 @@ test("options support keyboard, outside dismissal, one open menu, and viewport-e
   await expect(trigger(page)).toHaveAttribute("aria-expanded", "false");
   await trigger(page).click();
   const second = page.locator('[data-saved-conversation="chat-1"] .chat-menu-trigger');
-  await second.click();
+  await second.focus();
+  await page.keyboard.press("Enter");
   await expect(page.getByRole("menu")).toHaveCount(1);
   await expect(trigger(page)).toHaveAttribute("aria-expanded", "false");
   await page.keyboard.press("Escape");
