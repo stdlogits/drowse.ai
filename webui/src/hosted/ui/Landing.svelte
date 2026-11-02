@@ -362,4 +362,5 @@
     main { padding-top: var(--s4); }
     .demo-panel { padding: var(--s4); }
   }
+  @media (forced-colors: active) { .primary-action { border: 1px solid ButtonText; } }
 </style>

@@ -274,4 +274,5 @@
   @media (prefers-reduced-transparency: reduce), (prefers-contrast: more) { .recorded-token-panel { background: var(--paper); } }
   .recorded-token-panel.fallback-open { display: block; z-index: 1000; }
   @supports not selector(:popover-open) { .recorded-token-panel:not(.fallback-open) { display: none; } }
+  @media (forced-colors: active) { .recorded-token-panel { border: 1px solid CanvasText; } }
 </style>

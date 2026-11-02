@@ -357,4 +357,5 @@
     .pwa-notice { inset-inline: var(--s4); bottom: calc(var(--s4) + env(safe-area-inset-bottom, 0px)); width: auto; padding: var(--s4); }
     .pwa-actions button { flex: 1 1 auto; height: 44px; }
   }
+  @media (forced-colors: active) { .pwa-notice { border: 1px solid CanvasText; } }
 </style>

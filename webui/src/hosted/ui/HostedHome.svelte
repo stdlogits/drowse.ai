@@ -1198,7 +1198,9 @@
 
   .undo-region { position: fixed; z-index: 40; inset: auto var(--s4) max(var(--s4), env(safe-area-inset-bottom)) auto; display: grid; gap: var(--s2); justify-items: end; pointer-events: none; }
   .undo-toast { display: flex; align-items: center; gap: var(--s4); max-width: min(480px, calc(100vw - var(--s4) * 2)); padding: var(--s2) var(--s2) var(--s2) var(--s4); border-radius: var(--r-pill); background: var(--ink); color: var(--paper); font: var(--type-small); pointer-events: auto; }
-  .undo-toast button { background: var(--paper); color: var(--ink); }
+  /* A long chat name wraps inside the toast so Undo stays on screen. */
+  .undo-toast > span { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+  .undo-toast button { flex: none; background: var(--paper); color: var(--ink); }
 
   @media (max-width: 720px) {
     main { gap: var(--s5); padding-top: var(--s4); }
@@ -1211,4 +1213,5 @@
     .undo-region { inset-inline-start: var(--s4); justify-items: stretch; }
     .undo-toast { max-width: none; border-radius: var(--r-box); }
   }
+  @media (forced-colors: active) { .undo-toast { border: 1px solid CanvasText; } }
 </style>

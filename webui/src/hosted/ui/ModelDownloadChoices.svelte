@@ -220,4 +220,12 @@
     .pause-download:hover:not(:disabled) { background: var(--wash); }
   }
   @media (max-width: 720px) { .pause-download { height: 44px; } }
+  /* Forced colours flatten the paper and the washes: keep each choice, the armed or installed one
+     and the download bar distinct with system colours. */
+  @media (forced-colors: active) {
+    .model-choice { border: 1px solid CanvasText; }
+    .model-choice.armed, .model-choice.active, .model-choice.installed { border: 2px solid Highlight; }
+    .progress-track { border: 1px solid CanvasText; }
+    .progress-track span { background: Highlight; forced-color-adjust: none; }
+  }
 </style>

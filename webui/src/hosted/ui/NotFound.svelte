@@ -48,4 +48,5 @@
     .primary-action:hover { opacity: 0.86; }
     .secondary-action:hover { background: var(--wash2); }
   }
+  @media (forced-colors: active) { .primary-action { border: 1px solid ButtonText; } }
 </style>

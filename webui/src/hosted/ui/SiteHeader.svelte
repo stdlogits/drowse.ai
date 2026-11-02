@@ -89,4 +89,5 @@
     nav a { position: relative; }
     nav a::after { content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: 44px; translate: -50% -50%; }
   }
+  @media (forced-colors: active) { .open-action { border: 1px solid ButtonText; } }
 </style>
