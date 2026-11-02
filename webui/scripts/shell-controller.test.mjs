@@ -413,6 +413,37 @@ try {
     shell.dispose();
   });
 
+  test("the lenses units bring count against the combined instrument memory budget", async () => {
+    // Units and the S pack each fit alone; together (with the R pack units also bring) they do not,
+    // so choosing units is refused and the selection stays as it was.
+    const document = catalogFixture();
+    document.models[0].modelType = "base";
+    const variant = document.models[0].variants[0];
+    const share = Math.floor(OPTIONAL_PACK_RESIDENT_BUDGET_BYTES * 0.6);
+    variant.packs.push(
+      optionalInstrumentPack(variant, "big-slens", "slens", share, "b".repeat(64)),
+      optionalInstrumentPack(variant, "big-units", "units", share, "c".repeat(64)),
+    );
+    const shell = createShellController(createBundle({
+      async check() {
+        const device = capabilities();
+        device.webGpu.limits.maxBufferSize = 64 * 1024 * 1024;
+        device.webGpu.limits.maxStorageBufferBindingSize = 64 * 1024 * 1024;
+        return device;
+      },
+    }, document).bundle);
+    await shell.check();
+    const selection = () => Object.fromEntries(
+      shell.current().models[0].firstRunPacks.map((pack) => [pack.kind, pack.selected]),
+    );
+    assert.deepEqual(selection(), { jlens: false, slens: false, units: false });
+    assert.throws(() => shell.setOptionalPackSelected(variant.id, "big-units", true), /graphics memory/);
+    assert.deepEqual(selection(), { jlens: false, slens: false, units: false }, "nothing was chosen");
+    shell.setOptionalPackSelected(variant.id, "big-slens", true);
+    assert.deepEqual(selection(), { jlens: false, slens: true, units: false }, "the S pack alone fits");
+    shell.dispose();
+  });
+
   test("base models cannot bypass the combined instrument memory budget", async () => {
     const document = catalogFixture();
     document.models[0].modelType = "base";

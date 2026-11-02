@@ -553,7 +553,16 @@ export function createShellController(
           candidate.id === pack.id ? { ...candidate, selected: false } : candidate
         );
       }
-      nextPacks = withUnitsCompanions(nextPacks, pack, selected);
+      const withCompanions = withUnitsCompanions(nextPacks, pack, selected);
+      if (withCompanions !== nextPacks) {
+        // The lenses a units pack brings join the budget the units pack was checked against.
+        const chosen = variant.packs.filter((candidate) =>
+          withCompanions.some((next) => next.id === candidate.id && next.selected));
+        const [first, ...rest] = chosen;
+        const block = first === undefined ? null : optionalPackHardwareBlock(first, variant, checkedCapabilities, rest);
+        if (block !== null) throw new Error(block.message);
+      }
+      nextPacks = withCompanions;
       const nextModel = finalizeModelSetup({ ...model, firstRunPacks: nextPacks });
       // Another model's paused or failed download keeps its state and kept files.
       const ownsDownloadState = snapshot.download.modelVariantId === undefined ||
