@@ -207,6 +207,9 @@ export class HostedRuntimeWorker {
   private readonly sessionCoordinatorFactory: SessionCoordinatorFactory;
   private readonly clearRuntimeStorage: () => Promise<void>;
   private acceptedCatalog: VerifiedCatalog | null = null;
+  /** On-demand pack files are fetched one at a time: each fetch rewrites its pack's install
+   *  record from the record it reads, so two at once would drop one's object from the record. */
+  private packFileFetches: Promise<unknown> = Promise.resolve();
   private checkedCapabilities: RuntimeCapabilities | null = null;
   private admittedDownloadRequestId: string | null = null;
   private cancelAdmittedDownload = false;
@@ -2258,69 +2261,80 @@ export class HostedRuntimeWorker {
     modelVariantId: string,
     pack: CatalogInstrumentPack,
   ): (manifest: BrowserModelArtifact["manifest"], signal: AbortSignal) => Promise<File> {
-    return async (manifest, signal) => {
-      signal.throwIfAborted();
-      if (!pack.files.some((file) => file.path === manifest.path && file.sha256 === manifest.sha256)) {
-        throw runtimeFailure(
-          "INSTRUMENT_PACK_ARTIFACT_MISMATCH",
-          `${manifest.path} is not in ${pack.displayName}'s verified closure`,
-          false,
-          409,
-        );
-      }
-      const install = (await this.contentStore.listInstalls()).find((candidate) =>
-        candidate.kind === "pack" && candidate.id === pack.id
-      );
-      if (!install) {
-        throw runtimeFailure(
-          "INSTRUMENT_PACK_NOT_INSTALLED",
-          `Instrument pack ${pack.displayName} is no longer installed`,
-          true,
-          409,
-        );
-      }
-      const stored = await this.contentStore.verifiedFile(manifest.sha256);
-      if (stored && stored.size === manifest.bytes && install.objectHashes.includes(manifest.sha256)) {
-        return stored;
-      }
-      const catalog = this.acceptedCatalog;
-      if (catalog === null || this.downloader.downloadPackFile === undefined) {
-        throw runtimeFailure(
-          "CATALOG_UNAVAILABLE",
-          `Reconnect to fetch ${manifest.path} of ${pack.displayName}`,
-          true,
-          503,
-        );
-      }
-      await this.downloader.downloadPackFile(
-        catalog,
-        modelVariantId,
-        pack.id,
-        manifest.path,
-        install.objectHashes,
-        {
-          signal,
-          withCatalogAuthorization: (operation, authorizationSignal) =>
-            this.catalogRepository.withDownloadAuthorization(catalog, operation, authorizationSignal),
-          checkQuota: async ({ remainingManifestBytes }) => {
-            if (remainingManifestBytes === 0) return true;
-            const estimate = await this.storageEstimator();
-            return estimate.availableBytes !== null &&
-              estimate.availableBytes >= remainingManifestBytes + 64 * MEBIBYTE;
-          },
-        },
-      );
-      const fetched = await this.contentStore.verifiedFile(manifest.sha256);
-      if (!fetched || fetched.size !== manifest.bytes) {
-        throw runtimeFailure(
-          "VERIFIED_PACK_OBJECT_MISSING",
-          `${manifest.path} of ${pack.displayName} is missing after its download`,
-          true,
-          409,
-        );
-      }
-      return fetched;
+    return (manifest, signal) => {
+      const fetch = this.packFileFetches.then(() => this.fetchPackFile(modelVariantId, pack, manifest, signal));
+      this.packFileFetches = fetch.catch(() => undefined);
+      return fetch;
     };
+  }
+
+  private async fetchPackFile(
+    modelVariantId: string,
+    pack: CatalogInstrumentPack,
+    manifest: BrowserModelArtifact["manifest"],
+    signal: AbortSignal,
+  ): Promise<File> {
+    signal.throwIfAborted();
+    if (!pack.files.some((file) => file.path === manifest.path && file.sha256 === manifest.sha256)) {
+      throw runtimeFailure(
+        "INSTRUMENT_PACK_ARTIFACT_MISMATCH",
+        `${manifest.path} is not in ${pack.displayName}'s verified closure`,
+        false,
+        409,
+      );
+    }
+    const install = (await this.contentStore.listInstalls()).find((candidate) =>
+      candidate.kind === "pack" && candidate.id === pack.id
+    );
+    if (!install) {
+      throw runtimeFailure(
+        "INSTRUMENT_PACK_NOT_INSTALLED",
+        `Instrument pack ${pack.displayName} is no longer installed`,
+        true,
+        409,
+      );
+    }
+    const stored = await this.contentStore.verifiedFile(manifest.sha256);
+    if (stored && stored.size === manifest.bytes && install.objectHashes.includes(manifest.sha256)) {
+      return stored;
+    }
+    const catalog = this.acceptedCatalog;
+    if (catalog === null || this.downloader.downloadPackFile === undefined) {
+      throw runtimeFailure(
+        "CATALOG_UNAVAILABLE",
+        `Reconnect to fetch ${manifest.path} of ${pack.displayName}`,
+        true,
+        503,
+      );
+    }
+    await this.downloader.downloadPackFile(
+      catalog,
+      modelVariantId,
+      pack.id,
+      manifest.path,
+      install.objectHashes,
+      {
+        signal,
+        withCatalogAuthorization: (operation, authorizationSignal) =>
+          this.catalogRepository.withDownloadAuthorization(catalog, operation, authorizationSignal),
+        checkQuota: async ({ remainingManifestBytes }) => {
+          if (remainingManifestBytes === 0) return true;
+          const estimate = await this.storageEstimator();
+          return estimate.availableBytes !== null &&
+            estimate.availableBytes >= remainingManifestBytes + 64 * MEBIBYTE;
+        },
+      },
+    );
+    const fetched = await this.contentStore.verifiedFile(manifest.sha256);
+    if (!fetched || fetched.size !== manifest.bytes) {
+      throw runtimeFailure(
+        "VERIFIED_PACK_OBJECT_MISSING",
+        `${manifest.path} of ${pack.displayName} is missing after its download`,
+        true,
+        409,
+      );
+    }
+    return fetched;
   }
 
   private async reopenVerifiedArtifacts(
