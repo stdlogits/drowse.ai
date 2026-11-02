@@ -478,7 +478,10 @@ an immutable revision. Model directories contain `hosted-artifacts.json`; each
 core or optional-instrument directory contains `hosted-pack-artifacts.json`
 with exact relative paths, byte sizes, and SHA-256 digests. The builder rehashes
 every file, closes all runtime-lock context profiles, derives runtime/context
-identity digests, and validates the completed catalog with the browser parser:
+identity digests, derives each variant's `maxBufferSize` and
+`maxStorageBufferBindingSize` from its library (`libraryBindingBytes`,
+HOOK_ABI.md §10; the spec's `requirements` name only features and the other
+limits), and validates the completed catalog with the browser parser:
 
 ```bash
 npm run build:hosted:catalog -- RELEASE_SPEC.json catalog.json
