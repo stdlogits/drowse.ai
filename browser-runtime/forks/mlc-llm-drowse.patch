@@ -4621,10 +4621,10 @@ index 00000000..d67ebc61
 +    return op.tensor_expr_op(_take, name_hint=name, args=[values])
 diff --git a/python/mlc_llm/model/drowse_units.py b/python/mlc_llm/model/drowse_units.py
 new file mode 100644
-index 00000000..57e4fe4c
+index 00000000..f010092f
 --- /dev/null
 +++ b/python/mlc_llm/model/drowse_units.py
-@@ -0,0 +1,1327 @@
+@@ -0,0 +1,1337 @@
 +"""Drowse hook ABI v5 (`block-sites-v5`): in-block unit sites for dense blocks.
 +
 +Every eligible model's decoder layer runs `drowse_block(hidden, cache, layer_id, sites)`. With
@@ -5197,6 +5197,12 @@ index 00000000..57e4fe4c
 +    return T.floormod(T.floordiv(value, bit), 2) == 1
 +
 +
++def _i32(extent):
++    """A symbolic extent (int64 when the exporter makes it so) as int32, for comparisons with the
++    int32 positions and tables."""
++    return extent if isinstance(extent, int) else tirx.Cast("int32", extent)
++
++
 +class ReplaySites(UnitSites):
 +    """The units forward plus the replay taps (B1 §2.3, §6): anatomy stores at one absolute
 +    position, the per-layer unit-activity reduction into a state threaded through the replay's
@@ -5278,6 +5284,7 @@ index 00000000..57e4fe4c
 +    meta = replay_meta_layout()
 +    meta_len, at, flags = meta["length"], meta["anatomy_position"], meta["flags"]
 +    blocks = (width + _LANES - 1) // _LANES
++    rows32, length32 = _i32(total), _i32(sequence_length)
 +
 +    @T.prim_func(private=True, s_tir=True)
 +    def _store(var_x: T.handle, var_positions: T.handle, var_meta: T.handle, var_taps: T.handle):
@@ -5297,13 +5304,13 @@ index 00000000..57e4fe4c
 +                        T.And(_flag(replay_meta[flags], REPLAY_FLAG_ANATOMY), replay_meta[at] >= 0),
 +                        column < width,
 +                    ):
-+                        if T.And(row >= 0, row < total):
++                        if T.And(row >= 0, row < rows32):
 +                            if positions[row] == replay_meta[at]:
 +                                taps[layer_id, offset + column] = T.Cast(
 +                                    "float32",
 +                                    values[
-+                                        T.floordiv(row, sequence_length),
-+                                        T.floormod(row, sequence_length),
++                                        T.floordiv(row, length32),
++                                        T.floormod(row, length32),
 +                                        column,
 +                                    ],
 +                                )
@@ -5327,6 +5334,7 @@ index 00000000..57e4fe4c
 +        "scale_stride": 2 * d_ff + heads,
 +        "population_stride": d_ff + heads,
 +        "context": sites.traces.shape[1],
++        "context32": _i32(sites.traces.shape[1]),
 +        "meta": replay_meta_layout(),
 +    }
 +
@@ -5428,7 +5436,7 @@ index 00000000..57e4fe4c
 +                                    best[0] = best[3]
 +                                    best[1] = T.Cast("float32", node[0])
 +                                    best[2] = best[4]
-+                                if T.And(slot[0] >= 0, node[0] < sh["context"]):
++                                if T.And(slot[0] >= 0, node[0] < sh["context32"]):
 +                                    traces[slot[0], node[0]] = best[3]
 +                                if node[0] == replay_meta[meta["population_row"]]:
 +                                    population[layer_id, n] = best[3]
@@ -5642,7 +5650,7 @@ index 00000000..57e4fe4c
 +                                    best[0] = best[3]
 +                                    best[1] = T.Cast("float32", node[0])
 +                                    best[2] = best[4]
-+                                if T.And(slot[0] >= 0, node[0] < sh["context"]):
++                                if T.And(slot[0] >= 0, node[0] < sh["context32"]):
 +                                    traces[slot[0], node[0]] = best[3]
 +                                if node[0] == replay_meta[meta["population_row"]]:
 +                                    population[layer_id, d_ff + h] = best[3]
@@ -5680,6 +5688,7 @@ index 00000000..57e4fe4c
 +    theta = float(block["rope_theta"])
 +    half = head_dim // 2
 +    context = sites.pattern_keys.shape[2]
++    context32 = _i32(context)
 +    meta = replay_meta_layout()
 +    width = (heads + kv_heads) * head_dim
 +    steps = (width + _LANES - 1) // _LANES
@@ -5732,7 +5741,7 @@ index 00000000..57e4fe4c
 +                            slot[0] = i
 +                    if T.And(
 +                        T.And(_flag(replay_meta[meta["flags"]], REPLAY_FLAG_PATTERNS), slot[0] >= 0),
-+                        T.And(positions[r] >= 0, positions[r] < context),
++                        T.And(positions[r] >= 0, positions[r] < context32),
 +                    ):
 +                        for step in T.serial(steps):
 +                            if step * _LANES + t < width:
@@ -5779,7 +5788,8 @@ index 00000000..57e4fe4c
 +    window = int(block.get("sliding_window") or 0)
 +    pattern = int(block.get("sliding_pattern") or 0)
 +    rows = UNIT_MAX_PATTERN_HEADS
-+    steps = (context + _LANES - 1) // _LANES
++    context32 = _i32(context)
++    steps = _i32((context + _LANES - 1) // _LANES)
 +
 +    @T.prim_func(private=True, s_tir=True)
 +    def _rows(var_keys: T.handle, var_q: T.handle, var_meta: T.handle, var_out: T.handle):
@@ -5802,7 +5812,7 @@ index 00000000..57e4fe4c
 +                            T.And(meta[i, 0] >= 0, meta[i, 0] < slots),
 +                            T.And(
 +                                T.And(meta[i, 2] >= 0, meta[i, 2] < heads),
-+                                T.And(meta[i, 3] >= 0, meta[i, 3] < context),
++                                T.And(meta[i, 3] >= 0, meta[i, 3] < context32),
 +                            ),
 +                        )
 +                    )
@@ -5812,7 +5822,7 @@ index 00000000..57e4fe4c
 +                            lo[0] = meta[i, 3] - window + 1
 +                    acc[0] = T.float32(_FLOAT32_LOWEST)
 +                    for step in T.serial(steps):
-+                        if step * _LANES + t < context:
++                        if step * _LANES + t < context32:
 +                            out[i, step * _LANES + t] = T.float32(0)
 +                            if T.And(
 +                                valid,
@@ -5837,7 +5847,7 @@ index 00000000..57e4fe4c
 +                    T.tvm_storage_sync("shared")
 +                    acc[0] = T.float32(0)
 +                    for step in T.serial(steps):
-+                        if step * _LANES + t < context:
++                        if step * _LANES + t < context32:
 +                            if T.And(
 +                                valid,
 +                                T.And(step * _LANES + t >= lo[0], step * _LANES + t <= meta[i, 3]),
@@ -5856,7 +5866,7 @@ index 00000000..57e4fe4c
 +                        reduced[1] = partial[0]
 +                    T.tvm_storage_sync("shared")
 +                    for step in T.serial(steps):
-+                        if step * _LANES + t < context:
++                        if step * _LANES + t < context32:
 +                            if T.And(
 +                                valid,
 +                                T.And(step * _LANES + t >= lo[0], step * _LANES + t <= meta[i, 3]),

@@ -116,15 +116,24 @@ drowse_replay_batch_prefill(
   replay_meta i32 [REPLAY_META_LEN],
   unit_scales f32 [L, 2·d_ff + H],
   head_grams f32 [L, H, hd, hd],                # resident, built once per model
-  activity_state f32 [L, 3·d_ff + 3·H], traces f32 [32, context], population f32 [L, d_ff + H],
-  pattern_keys f32 [8, KV, context, hd],        # or eight [KV, context, hd] slot outputs (§10)
+  activity_state f32 [L, 3·d_ff + 3·H], traces f32 [32, trace_rows], population f32 [L, d_ff + H],
+  pattern_keys f32 [8, KV, pattern_tokens, hd],
 ) -> (logits, paged_kv_cache, measurements, next_feet, jlens_hidden, unit_taps,
       anatomy_taps [L, STRIDE], activity_state', traces', population',
       pattern_keys', pattern_q [8, H, hd])
+
+drowse_attention_rows(pattern_keys [8, KV, pattern_tokens, hd], pattern_q [8, H, hd],
+                      rows_meta i32 [16, 4]) -> rows f32 [16, pattern_tokens]
+drowse_head_write_grams() -> head_grams f32 [L, H, hd, hd]
 ```
 
-`context` is the compiled context window (descriptor `CONTEXT_TOKENS`), a compile-time bound like
-`jlens_layers`.
+`trace_rows` and `pattern_tokens` are symbolic: the caller sizes `traces` to the node's rows and
+`pattern_keys` to the positions the replay feeds (1 when not asked), both at most the context
+window, so a replay holds only what it reads (a 4B model's keys at full context would be 128 MiB).
+`activity_state`, `traces`, `population` and `pattern_keys` are written in place and returned
+(the outputs alias the inputs), so they thread through the replay's forwards; `anatomy_taps` and
+`pattern_q` are fresh per forward, and the caller keeps the ones of the forward holding the
+anatomy position. `rows_meta` rows are `(slot, layer, head, p)`, slot −1 unused.
 
 ## 4. `drowse-structured-v4` (§3.1, §3.4)
 
@@ -323,14 +332,31 @@ the captures and drops the sequence (`cancel()` drops it unread).
   the requested units; `population [L, d_ff + H]` the values at one row. The host ranks the state
   (top per kind over native's flat order, value descending, flat index ascending; rank −1 drops).
 - **Head grams** `head_grams [L, H, hd, hd]` for every head are built once per loaded model
-  (`residentHeadGrams`), kept resident and read per layer at a compile-time offset (zero-copy,
-  B40 §7.4); dropped with the model. 18 MiB (270m) to 72 MiB (qwen3-4b).
+  (`residentHeadGrams`, `drowse_head_write_grams`: one TIR kernel per layer over the dequantized
+  `W_O`, `γ_ao` applied on a sandwich block; a Relax matmul there trips MLC's dequantize-matmul
+  fusion), kept resident and read per layer at a compile-time offset (zero-copy, B40 §7.4);
+  dropped with the model. 18 MiB (270m) to 72 MiB (qwen3-4b).
+- **Peaks, as built.** One thread per unit walks the forward's rows in order with a strict `>`,
+  so within a forward the first maximum wins and across forwards the earlier one keeps a tie:
+  native's `rank.max(dim=0)` then `best > held` exactly.
 - **`replay_meta`** (i32, `replayMetaLayout`/`encodeReplayMeta`, 126 values under `standard-v4`):
   `[0]` anatomy position (−1 none), `[1]` span count, `[2..18)` four spans of
   `(first_row, rows, first_position, unproduced)`, `[18]` population row (−1 none), `[19]` trace
   count, `[20..116)` 32 traces of `(layer, kind 0 neuron | 1 head, index)`, `[116]` pattern layer
   count, `[117..125)` eight pattern layers ascending, `[125]` flags (1 anatomy, 2 activity,
-  4 patterns). Unused entries are −1.
+  4 patterns). Unused entries are −1. Patterns need the anatomy flag (queries are captured there).
+- **Bridge (B4).** The vendored WebLLM takes one request per call, `drowseBlockSites(request)`
+  (one worker message kind): `headGrams`, `uploadUnitScales`, `release`, `openReplay`
+  (`replayMeta`, `unitScales` resident id, `rowCount`, `tokenCount`), `replayForward` (tokens and
+  one control state), `finishReplay`, `cancelReplay`, `attentionRows`. `openReplay` needs a
+  drowse-structured-v4 program with a unit section installed (the adapter installs the node's,
+  adding an empty unit section, or an empty program for an unsteered replay), validates the meta
+  fail-closed, resets the KV cache and allocates the threaded buffers; a forward is chunked at
+  `PREFILL_CHUNK_SIZE` and reads back its last chunk's probe slots and unit taps in one sync;
+  `finishReplay` reads the captures in one sync, keeps the pattern capture resident and resets the
+  KV cache. Generation and capture refuse (`REPLAY_BUSY`) while a replay is open. The adapter is
+  `webui/src/hosted/runtime/webLlmBlockSites.ts`; `BlockSitesReplayRequest.tokenCount` (optional,
+  default the context) sizes the pattern keys.
 
 ## 8. Static reads and `exact-readout-v2` (§4)
 
@@ -388,12 +414,17 @@ s_j = q_p·k_j · scaling,  masked where j > p, and on a local layer where j ≤
 a_j = exp(s_j − max) / Σ exp(s_j − max)       fp32, j = 0…p (no softcap on these models)
 ```
 
+**As built.** `drowse_attention_rows` runs one workgroup per row: scores `q·k · scaling` (the
+library's `ATTN_SCALING`) for `lo ≤ j ≤ p`, `lo = p − W + 1` on a local layer
+(`(layer + 1) % SLIDING_PATTERN ≠ 0`) and 0 otherwise, then the max, `exp(s − max)` and the sum by
+shared-memory reductions; masked entries read 0. GQA maps head `h` to KV head `h / (H / KV)`.
+
 **RoPE.** Gemma3 rotates in the graph (`_gemma3_rotary`, KV cache `RopeMode.NONE`), so its
 captured `k` is post-RoPE. Qwen3 rotates **inside the paged KV cache** (B40 §7.2:
 `RopeMode.NORMAL`; `f_split_rotary` runs `llama_rope_with_position_map` before
 `f_transpose_append_mha` writes the pages, which therefore hold post-RoPE K), so its in-graph `k` is
 pre-RoPE and the capture applies the same rotation (`rope_freq_default`, θ from the descriptor,
-`rope_scale = 1`). The bridge asserts the cache runs in `kNormal`: a cache created with sliding
+`rope_scale = 1`), rounded to the `qkv` dtype as the cache stores it. The bridge asserts the cache runs in `kNormal`: a cache created with sliding
 window support switches to `kInline` and stores un-rotated K. `attention_kv_cache_debug_get_kv`
 is a debugging oracle only (every layer, K and V, and it refuses Gemma3's sliding layers).
 
@@ -416,12 +447,14 @@ keeps every unit kernel within 8:
 | `drowse_head_ablate_L` (before `o_proj`) | `z` in/out, `positions`, `unit_meta`, `unit_coeff`, `unit_active` = 5 (in place) |
 | `drowse_neuron_ablate_L` (before `down_proj`) | `act` in/out, `positions`, `unit_meta`, `unit_coeff`, `unit_active` = 5 (in place) |
 | `drowse_unit_tap_L` (after the ablations) | `z`, `attn_o`, `act`, `unit_meta`, `tap_grams`, `unit_taps` in/out = 6 (both families; Qwen3 binds `attn_o` without reading it) |
-| anatomy store (per site) | `x`, `positions`, `replay_meta`, `anatomy_taps` in/out = 4 |
+| anatomy store (per site; 8 per layer) | `x`, `positions`, `replay_meta`, `anatomy_taps` in/out = 4 |
 | activity, neurons | `act`, `positions`, `replay_meta`, `unit_scales`, `activity_state`, `traces`, `population` = 7 |
-| activity, heads A (values) | `z`, `attn_o`, `head_grams`, `unit_scales`, `head_values` out = 5 (Qwen3 4) |
+| activity, heads A (values) | `z`, `attn_o`, `head_grams`, `unit_scales`, `replay_meta`, `head_values` out = 6 (as built: `replay_meta` lets an anatomy-only replay skip the quadratic forms; one workgroup per row, heads looped, barriers in uniform control flow) |
 | activity, heads B (reduce) | `head_values`, `positions`, `replay_meta`, `activity_state`, `traces`, `population` = 6 |
 | pattern K capture | `qkv`, `positions`, `replay_meta`, `pattern_keys`, `pattern_q` = 5 |
 | `drowse_slens_probes` | hidden, means, `K` chunk, layer ids, `ẽ`, `Σ_E`, output = 7 |
+| `drowse_attention_rows` | `pattern_keys`, `pattern_q`, `rows_meta`, rows out = 4 |
+| `drowse_head_write_gram_L` | dequantized `W_O` (γ applied), `head_grams` in/out = 2 |
 
 As built (B4, stage 1): three dispatches per layer in the units pair. The neuron and head taps
 share one kernel run after both ablations, so it reads the ablated `z` and `act` and the
@@ -431,8 +464,9 @@ whose position is below `UNIT_POSITIONS_FROM` is untouched. The upstream graph i
 unchanged: every v4 kernel is byte-identical in a v5 library (binding names aside).
 
 Largest buffers (`blockSitesBufferElements`): `head_grams` 72 MiB and a pattern key slot 16 MiB
-(qwen3-4b, 4096 tokens: `pattern_keys` whole is 128 MiB, the default binding limit, so the bridge
-either requires the adapter's larger limit or writes eight slot outputs); `tap_grams` 4 MiB at
+(qwen3-4b, 4096 tokens: `pattern_keys` whole is 128 MiB, exactly the default binding limit, and
+one buffer as built; it is sized to the positions a replay feeds, so only a full-context pattern
+replay reaches it, and WebLLM asks the adapter for its maximum); `tap_grams` 4 MiB at
 `hd = 256`; the unit tables under 100 KiB. A replay chunk's transient `act` is
 `prefill_chunk_size × d_ff`, never larger than ordinary prefill's.
 
