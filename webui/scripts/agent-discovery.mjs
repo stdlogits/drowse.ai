@@ -85,7 +85,7 @@ Keep existing human edits, authentication, download choices, file pickers, and d
         representativeQueries: [
           "How can an agent inspect and steer a local language model in Drowse?",
           "How do I compare baseline and steered generations without overwriting existing settings?",
-          "How can I inspect SAE features and Jacobian-lens predictions in Drowse?",
+          "How can I read SAE features and the R and S lenses in Drowse?",
         ],
         metadata: { skillDigest: index.skills[0].digest },
       }],
