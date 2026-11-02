@@ -666,6 +666,7 @@ function node(id, parentId, role, text) {
     role_label: null,
     thinking_text: null,
     aggregate_readings: {},
+    aggregate_measurements: null,
     applied_steering: null,
     finish_reason: null,
     starred: false,
@@ -679,6 +680,7 @@ function node(id, parentId, role, text) {
     tokens: null,
     thinking_tokens: null,
     raw_token_ids: null,
+    prompt_capture: null,
   };
 }
 

@@ -371,12 +371,12 @@ try {
   )).model, "fixture-model");
   assert.equal(session.instruments.every((item) => item.capabilities.token_readout === true), true);
   const capturedLens = {
-    version: 1,
+    version: 2,
     scope: "token",
     provenance: "captured",
     instruments: {
       lens: {
-        binding: { source: "fixture-jlens", steering: null },
+        binding: { sources: { R: "fixture-jlens" }, steering: null },
         readout: { layers: [], aggregate: [] },
       },
     },
@@ -413,18 +413,18 @@ try {
     assert.equal(options.layers, "1");
     assert.deepEqual(instrumentCompiler.instrumentLiveState().lensLayers, [1]);
     return {
-      version: 1,
+      version: 2,
       scope: "token",
       provenance: "captured",
       instruments: {
         lens: {
-          binding: { source: "fixture-jlens", steering: null },
+          binding: { sources: { R: "fixture-jlens" }, steering: null },
           readout: {
             layers: [{
               layer: 1,
               tokens: [{ token: "yes", id: 7, logprob: Math.log(0.75) }],
             }],
-            aggregate: [{ token: "yes", strength: 0.75, com: 1, spread: 0 }],
+            aggregate: [{ token: "yes", id: 7, strength: 0.75, com: 1, spread: 0 }],
           },
         },
       },
@@ -463,12 +463,12 @@ try {
       logprob: -index - 0.25,
     }));
     return {
-      version: 1,
+      version: 2,
       scope: "token",
       provenance: "captured",
       instruments: {
         lens: {
-          binding: { source: "fixture-jlens", steering: null },
+          binding: { sources: { R: "fixture-jlens" }, steering: null },
           readout: {
             layers: [0, 1].map((layer) => ({
               layer,
@@ -476,6 +476,7 @@ try {
             })),
             aggregate: tokens.map((token, index) => ({
               token: token.token,
+              id: token.id,
               strength: 1 / (index + 1),
               com: 0.5,
               spread: 0.5,

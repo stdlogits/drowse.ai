@@ -67,6 +67,12 @@ try {
   const { DrowseWebLlmRuntime } = await server.ssrLoadModule(
     "/src/hosted/runtime/webLlmEngine.ts",
   );
+  const {
+    aggregateMeasurements,
+    roundReading,
+    summaryMeasurements,
+    tokenRowMeasurements,
+  } = await server.ssrLoadModule("/src/hosted/runtime/measurementRows.ts");
   const { compileStructuredHookProgram } = await server.ssrLoadModule(
     "/src/hosted/runtime/structuredHookProgram.ts",
   );
@@ -1035,9 +1041,9 @@ try {
       depth: { center: [1], spread: [0], basis: "single_layer" },
     },
   });
-  assert.deepEqual(measuredTokens[0].measurements.per_layer_scores, {
-    "7": { "sae/3": 0.75 },
-  });
+  // Envelope v2: a reading carries its own trace; there is no layer-major copy.
+  assert.equal(Object.hasOwn(measuredTokens[0].measurements, "per_layer_scores"), false);
+  assert.equal(measuredTokens[0].measurements.version, 2);
   assert.equal(measuredTokens[0].measurements.scope, "token");
   assert.equal(measuredResult.measurements.scope, "aggregate");
   assert.equal(measuredTokens[0].measurements.scope, "token");
@@ -1261,7 +1267,7 @@ try {
   );
   assert.equal(splitStopResult.text, "answer");
   assert.equal(splitStopResult.tokens, 2);
-  assert.equal(splitStopResult.finishReason, "stop");
+  assert.equal(splitStopResult.finishReason, "stop_sequence");
   assert.equal(splitStopResult.terminalReason, "stop_sequence");
   assert.ok(Math.abs(splitStopResult.measurements.scores["sae/3"] - 0.2) < 1e-6);
 
@@ -1479,10 +1485,7 @@ try {
       saeSource: "fixture-sae",
     },
   }, Float32Array.of(0.125, 0.25, 0.375, 0.5, 0.625, 0.75), null);
-  assert.deepEqual(oriented.per_layer_scores, {
-    "4": { "calm.focused": 0.125, "jlens/calm": 0.25, "sae/8": 0.375 },
-    "9": { "calm.focused": 0.5, "jlens/calm": 0.625, "sae/8": 0.75 },
-  });
+  assert.equal(Object.hasOwn(oriented, "per_layer_scores"), false);
   assert.deepEqual(oriented.instruments.lens.readings, {
     "jlens/calm": {
       value: 0.4375,
@@ -1525,12 +1528,40 @@ try {
   const preciseValues = Float32Array.of(1e-8, 1.2345678, 3e-8, 2.3456789);
   const precise = measurementEnvelope(preciseProgram, preciseValues, null);
   for (const [index, family, name] of [[0, "lens", "jlens/rare"], [1, "sae", "sae/8"]]) {
+    // The wire rounds scores and scalar readings to 6 significant digits (drowse's
+    // `round_reading`); gates read the exact value.
     const expected = (preciseValues[index] + preciseValues[index + 2]) / 2;
-    assert.equal(precise.scores[name], expected, "stored scores retain measured precision");
-    assert.equal(precise.instruments[family].readings[name].value, expected);
-    assert.equal(precise.instruments[family].readings[name].per_layer["0"], preciseValues[index]);
-    assert.equal(precise.per_layer_scores["0"][name], preciseValues[index]);
+    assert.equal(precise.scores[name], roundReading(expected));
+    assert.equal(measurementGateScores(precise)[name], expected);
+    assert.equal(precise.instruments[family].readings[name].value, roundReading(expected));
+    assert.equal(precise.instruments[family].readings[name].per_layer["0"], roundReading(preciseValues[index]));
   }
+  // Scalar meta: drowse rounds every float (its producers write only floats), so an
+  // integral 1234567.0 persists as 1234570.0; strings pass through.
+  const metaSummary = summaryMeasurements({
+    version: 2,
+    scope: "token",
+    provenance: precise.provenance,
+    instruments: {
+      sae: {
+        binding: precise.instruments.sae.binding,
+        readings: {
+          "sae/8": {
+            value: 0.5,
+            unit: "activation_over_max",
+            per_layer: {},
+            depth: null,
+            meta: { activation: 1234567, write_norm: 0.123456789, scale: "catalog" },
+          },
+        },
+      },
+    },
+  }, false);
+  assert.deepEqual(metaSummary.instruments.sae.readings["sae/8"].meta, {
+    activation: 1234570,
+    write_norm: 0.123457,
+    scale: "catalog",
+  });
   for (const [index, invalid] of [[0, NaN], [2, Infinity], [1, -Infinity], [0, -0.1], [2, 1.1], [3, -0.1]]) {
     const invalidValues = preciseValues.slice();
     invalidValues[index] = invalid;
@@ -1540,7 +1571,10 @@ try {
   const inactiveProgram = { ...preciseProgram, probeKind: Uint32Array.of(0, 2, 3, 2) };
   const inactiveValues = preciseValues.slice();
   inactiveValues[0] = NaN;
-  assert.equal(measurementEnvelope(inactiveProgram, inactiveValues, null).scores["jlens/rare"], preciseValues[2]);
+  assert.equal(
+    measurementEnvelope(inactiveProgram, inactiveValues, null).scores["jlens/rare"],
+    roundReading(preciseValues[2]),
+  );
 
   const exactReadoutProgram = compileStructuredHookProgram(
     1,
@@ -1706,7 +1740,9 @@ try {
       exactTokens[0].measurements.instruments.lens.readout.layers.map((row) => row.tokens.length),
       [width, width],
     );
-    assert.equal(exactResult.measurements.instruments.lens.readout.aggregate.length, width);
+    // The aggregate carries the attached probes' readings only (drowse's `finalize`): a
+    // readout alone leaves the reply without one.
+    assert.equal(exactResult.measurements, undefined);
   }
 
   let targetedBundleReads = 0;
@@ -1777,7 +1813,8 @@ try {
   assert.deepEqual(continuationTokens.map((token) => token.text), targetedTokens.map((token) => token.text));
   assert.deepEqual(continuationTokens.map((token) => token.logprob), targetedTokens.map((token) => token.logprob));
   assert.equal(continuationTokens[0].measurements, undefined);
-  assert.ok(continuationResult.measurements.instruments.lens.readout);
+  assert.ok(continuationTokens.at(-1).measurements.instruments.lens.readout);
+  assert.equal(continuationResult.measurements, undefined, "a readout is no aggregate reading");
 
   const replayGateUpdates = [];
   let replayGateReads = 0;
@@ -1986,7 +2023,7 @@ try {
   );
 
   const sharedMeasurementFixture = JSON.parse(await readFile(
-    new URL("../../drowse/tests/fixtures/browser/measurement-envelope-v1.json", import.meta.url),
+    new URL("../../drowse/tests/fixtures/browser/measurement-envelope-v2.json", import.meta.url),
     "utf8",
   ));
   const sharedGeometry = sharedMeasurementFixture.geometry;
@@ -2128,10 +2165,38 @@ try {
     1,
     true,
   );
+  // Envelope v2 as the browser reads it: the R lens alone (no S lens, no units
+  // yet), so the golden's S reading, S source and units channel drop out.
+  const browserView = (envelope) => {
+    const view = structuredClone(envelope);
+    const lens = view.instruments.lens;
+    if (lens) {
+      delete lens.readings?.[sharedMeasurementFixture.slens.name];
+      delete lens.binding.sources.S;
+    }
+    delete view.instruments.units;
+    if (view.scores) {
+      delete view.scores[sharedMeasurementFixture.slens.name];
+      delete view.scores[sharedMeasurementFixture.units.name];
+    }
+    return view;
+  };
   assertParity(
     sharedEnvelope,
-    sharedMeasurementFixture.expected,
+    browserView(sharedMeasurementFixture.expected),
     sharedMeasurementFixture.tolerance,
+  );
+  // The loom row and the node's aggregate, exactly (6 significant digits).
+  assert.deepEqual(
+    tokenRowMeasurements(sharedEnvelope),
+    browserView(sharedMeasurementFixture.expectedRow),
+  );
+  const sharedAggregate = { ...structuredClone(sharedEnvelope), scope: "aggregate" };
+  delete sharedAggregate.instruments.lens.readout;
+  delete sharedAggregate.instruments.sae.readout;
+  assert.deepEqual(
+    aggregateMeasurements(sharedAggregate),
+    browserView(sharedMeasurementFixture.expectedNodeAggregate),
   );
   const sharedGateScores = measurementGateScores(sharedEnvelope);
   assert.ok(`${sharedGeometry.name}:fraction` in sharedGateScores);
@@ -2188,7 +2253,10 @@ try {
   ]) {
     assert.deepEqual(Object.keys(persisted.scores), ["local/trail"]);
     assert.equal("local/trail:fraction" in persisted.scores, false);
-    assert.deepEqual(Object.keys(persisted.per_layer_scores["4"]), ["local/trail"]);
+    assert.deepEqual(
+      Object.keys(persisted.instruments.geometry.readings["local/trail"].fraction_per_layer),
+      ["4"],
+    );
   }
 
   const insufficientAnchorProgram = trailProgram([
@@ -2367,7 +2435,7 @@ try {
     { "4": [0.2, 0.4], "9": [0.8, 0.6] },
   );
   assert.ok(geometryGateScores["local/demo~alert"] > 0.5);
-  assert.deepEqual(Object.keys(geometryEnvelope.per_layer_scores["4"]), ["local/demo"]);
+  assert.equal(Object.hasOwn(geometryEnvelope, "per_layer_scores"), false);
 
   const thinkingProgram = compileStructuredHookProgram(1, [{
     affineGroups: [{

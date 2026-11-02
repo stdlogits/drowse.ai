@@ -72,10 +72,12 @@ import {
   type SessionCoordinatorPersistencePort,
 } from "./sessionCoordinator";
 import { BrowserSessionPersistence } from "../../../../drowse/webui/src/lib/sessionPersistence";
+import { LegacyStashingSessionStateStore } from "../../lib/runtime/legacyAutosaves";
 import {
   isFittingLifecycleRequest,
   runtimeServiceOperationPolicy,
   runtimeServiceRoute,
+  unavailableRuntimeMethod,
 } from "./operationPolicy";
 import { BrowserDrowseArchiveService } from "../artifacts/service";
 import { optionalPackHardwareBlock } from "./optionalPackCompatibility";
@@ -249,7 +251,10 @@ export class HostedRuntimeWorker {
     this.artifactService = dependencies.artifactService ?? new BrowserDrowseArchiveService();
     this.activationSpool = dependencies.activationSpool ?? new BrowserActivationSpool();
     this.modelBackend = dependencies.modelBackend ?? new UnavailableBrowserModelBackend();
-    this.sessionPersistence = dependencies.sessionPersistence ?? new BrowserSessionPersistence();
+    // Autosaves this version cannot open are stashed for the old-chats export, not deleted.
+    this.sessionPersistence = dependencies.sessionPersistence ?? new BrowserSessionPersistence({
+      store: new LegacyStashingSessionStateStore(),
+    });
     this.sessionCoordinatorFactory = dependencies.sessionCoordinatorFactory ?? (
       (persistence, execute, options) =>
         new BrowserSessionCoordinator(persistence, execute, options)
@@ -1323,6 +1328,7 @@ export class HostedRuntimeWorker {
         400,
       );
     }
+    if (route === "unavailable") throw unavailableRuntimeMethod(request);
     const policy = runtimeServiceOperationPolicy(request);
     if (route === "hybrid_manifold_read") {
       if (!this.artifactService.handles(request)) {
@@ -1555,7 +1561,9 @@ export class HostedRuntimeWorker {
           if (queuedFailure !== null) return;
           try {
             await this.emitModelMessage(
-              request.request_id === undefined ? message : { ...message, request_id: request.request_id },
+              request.request_id === undefined || message.type === "resync"
+                ? message
+                : { ...message, request_id: request.request_id },
               requestId, protocol,
             );
           } catch (error) {
@@ -1614,6 +1622,11 @@ export class HostedRuntimeWorker {
   ): Promise<void> {
     if (message.type === "request_complete") {
       throw generationProtocolViolation("Request completion belongs to the transport");
+    }
+    if (message.type === "resync") {
+      // A server's outbound queue drops frames for a slow reader; the
+      // in-process model backend has no such queue and never drops one.
+      throw generationProtocolViolation("The browser runtime never drops a frame to resync");
     }
     if (message.type === "error") {
       protocol.terminalError = true;

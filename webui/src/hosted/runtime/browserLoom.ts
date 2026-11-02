@@ -8,8 +8,11 @@ import { SAMPLING_TEMPERATURE_MAX } from "../../../../drowse/webui/src/lib/runti
 import { normalizeSteeringPositions, type SteeringPositionSpan, type SteeringPositionSelection } from "../../../../drowse/webui/src/lib/runtime/steeringPositions";
 import type {
   ChatRole,
+  FinishReason,
   LoomNodeJSON,
+  LoomTokenRowJSON,
   LoomTreeJSON,
+  MeasurementsEnvelopeJSON,
   ProbeRequest,
   RecipeJSON,
   RecipeSamplingJSON,
@@ -59,6 +62,17 @@ import {
 } from "./webLlmGeneration";
 import { randomUuid } from "./randomId";
 import { isRoleSlug } from "../../../../drowse/webui/src/lib/roleSlug";
+import { aggregateEnvelope, aggregateMeasurements, rowMeasurements } from "./measurementRows";
+import { wholeEnvelope } from "../../../../drowse/webui/src/lib/tokenRows";
+
+/** Below this many seconds a reply reports `tok_per_sec = 0` (drowse's `finalize`). */
+const MIN_ELAPSED_FOR_RATE = 0.1;
+
+/** Whether a reply node holds any of its output (drowse keeps such a node after an engine error). */
+function holdsTokens(node: LoomNodeJSON): boolean {
+  return (node.tokens?.length ?? 0) > 0 || (node.thinking_tokens?.length ?? 0) > 0 ||
+    node.text !== "" || (node.thinking_text ?? "") !== "";
+}
 
 type BrowserHookProgram = RankOneHookProgramBuffers | StructuredHookProgramBuffers;
 
@@ -69,7 +83,6 @@ interface GenerationReservation {
 
 interface ContinuationContext {
   node: LoomNodeJSON;
-  original: LoomNodeJSON;
   parentId: string;
   forcedPrefix: number[];
 }
@@ -510,6 +523,7 @@ export class BrowserLoomRuntime {
             text: "",
             thinking_text: null,
             aggregate_readings: {},
+            aggregate_measurements: null,
             applied_steering: null,
             finish_reason: null,
             mean_logprob: null,
@@ -518,6 +532,7 @@ export class BrowserLoomRuntime {
             tokens: [],
             thinking_tokens: [],
             raw_token_ids: null,
+            prompt_capture: null,
           };
       if (prefix !== null) {
         node.text = prefix.text;
@@ -571,6 +586,8 @@ export class BrowserLoomRuntime {
         break;
       }
       let result: WebLlmGenerationResult;
+      const startedAt = performance.now();
+      let lastEnvelope: MeasurementsEnvelopeJSON | undefined;
       try {
         const plan: WebLlmGenerationPlan = {
           signal: this.generationController!.signal,
@@ -608,7 +625,8 @@ export class BrowserLoomRuntime {
           },
         };
         result = await this.generation.streamGeneration(plan, async (token) => {
-          const row = {
+          // The row keeps the generated projection; the token frame the whole envelope.
+          const row: LoomTokenRowJSON = {
             text: token.text,
             logprob: token.logprob,
             ...(token.samplerEntropy === undefined
@@ -619,9 +637,10 @@ export class BrowserLoomRuntime {
             ...(token.rawIndex !== null ? { raw_index: token.rawIndex } : {}),
             ...(token.topAlts ? { top_alts: token.topAlts } : {}),
             ...(token.measurements ? {
-              measurements: clone(token.measurements),
-              probes: clone(token.measurements.scores ?? {}),
-              per_layer_scores: clone(token.measurements.per_layer_scores ?? {}),
+              measurements: rowMeasurements(
+                token.measurements,
+                siblingSampling.persist_per_layer_scores === true,
+              ),
             } : {}),
           };
           if (token.rawIndex !== null && token.rawIndex < (prefix?.length ?? 0)) {
@@ -642,6 +661,7 @@ export class BrowserLoomRuntime {
             node.tokens ??= [];
           }
           (token.thinking ? node.thinking_tokens! : node.tokens!).push(row);
+          if (token.measurements) lastEnvelope = token.measurements;
           await emit({
             type: "token",
             text: token.text,
@@ -665,6 +685,7 @@ export class BrowserLoomRuntime {
               node,
               rawTokenCount,
               partialUsage?.promptTokens ?? 0,
+              lastEnvelope,
             ),
             "cancelled",
             rawTokenIds,
@@ -675,19 +696,25 @@ export class BrowserLoomRuntime {
             siblingIndex,
             siblingCount,
             emit,
+            (performance.now() - startedAt) / 1000,
           );
           break;
         }
         if (!stateless && this.tree.nodes.some((candidate) => candidate.id === node.id)) {
-          if (continuation !== null) {
-            this.tree.active_node_id = continuation.original.id;
-            this.replaceNodeWithoutActivation(continuation.original);
+          if (continuation !== null || holdsTokens(node)) {
+            // drowse's `_discard_unanswered`: a continuation is never removed and a
+            // reply cut after some tokens keeps them. Neither is finalized, so the
+            // node stays as streamed: no finish reason, raw ids or applied steering.
+            node.raw_token_ids = null;
+            node.applied_steering = null;
+            const kept = this.replaceGeneratedNode(node);
             await emit(this.updatedMutation(
               "finalize_assistant",
-              continuation.original,
-              continuation.original.id,
+              kept,
+              continuation !== null ? kept.id : null,
             ));
           } else {
+            // An engine error before the first token leaves no empty assistant node.
             this.removeLeaf(node.id);
             await emit({
               type: "tree_mutated",
@@ -706,7 +733,7 @@ export class BrowserLoomRuntime {
       const externallyStopped = this.stopRequested || result.terminalReason === "external_stop";
       const finishReason = externallyStopped ? "cancelled" : result.finishReason;
       if (externallyStopped && prefix !== null && rawTokenCount < prefix.length) {
-        result = cancelledGenerationResult(node, rawTokenCount, result.usage.promptTokens);
+        result = cancelledGenerationResult(node, rawTokenCount, result.usage.promptTokens, lastEnvelope);
       }
       await this.finalizeGeneration(
         node,
@@ -720,6 +747,7 @@ export class BrowserLoomRuntime {
         siblingIndex,
         siblingCount,
         emit,
+        (performance.now() - startedAt) / 1000,
       );
       if (this.stopRequested) break;
     }
@@ -728,7 +756,7 @@ export class BrowserLoomRuntime {
   private async finalizeGeneration(
     node: LoomNodeJSON,
     result: WebLlmGenerationResult,
-    finishReason: string,
+    finishReason: FinishReason,
     rawTokenIds: readonly number[],
     sawRawToken: boolean,
     rawTokenIdentityComplete: boolean,
@@ -737,6 +765,7 @@ export class BrowserLoomRuntime {
     siblingIndex: number,
     siblingCount: number,
     emit: (message: WSServerMessage) => void | Promise<void>,
+    elapsed = 0,
   ): Promise<void> {
     node.raw_token_ids = sawRawToken && rawTokenIdentityComplete
       ? [...rawTokenIds]
@@ -746,6 +775,9 @@ export class BrowserLoomRuntime {
     node.mean_logprob = result.meanLogprob;
     node.mean_surprise = result.meanSurprise;
     node.aggregate_readings = clone(result.measurements?.scores ?? {});
+    node.aggregate_measurements = result.measurements
+      ? aggregateMeasurements(result.measurements)
+      : null;
     if (!stateless) {
       const finalized = this.replaceGeneratedNode(node);
       await emit(this.updatedMutation("finalize_assistant", finalized));
@@ -767,6 +799,9 @@ export class BrowserLoomRuntime {
         },
         mean_logprob: result.meanLogprob,
         mean_surprise: result.meanSurprise,
+        // The engine's own rate (drowse's `finalize`: none under 0.1 s).
+        tok_per_sec: elapsed > MIN_ELAPSED_FOR_RATE ? result.tokens / elapsed : 0,
+        elapsed,
         ...(result.measurements ? { measurements: clone(result.measurements) } : {}),
       },
       node_id: wireNodeId,
@@ -1537,11 +1572,13 @@ export class BrowserLoomRuntime {
   private tokenMeasurements(
     nodeId: string,
     rawIndex: number,
-  ): import("../../../../drowse/webui/src/lib/types").MeasurementsEnvelopeJSON | null {
+  ): MeasurementsEnvelopeJSON | null {
+    // Only a row kept whole is a readout; a generated row's projection replays.
     const node = this.requireNode(nodeId);
     for (const row of [...(node.thinking_tokens ?? []), ...(node.tokens ?? [])]) {
-      if (row.raw_index === rawIndex && row.measurements !== undefined) {
-        return clone(row.measurements);
+      if (row.raw_index === rawIndex) {
+        const whole = wholeEnvelope(row.measurements);
+        return whole === null ? null : clone(whole);
       }
     }
     return null;
@@ -1607,6 +1644,7 @@ export class BrowserLoomRuntime {
           recipe: clone(turn.recipe),
         });
         node.aggregate_readings = clone(turn.readings);
+        node.finish_reason = turn.finishReason;
         node.tokens = null;
         node.thinking_tokens = null;
         if (firstImportedId === null && guards.length > 0) {
@@ -1697,8 +1735,10 @@ export class BrowserLoomRuntime {
     }
     node.tokens = null;
     node.thinking_tokens = null;
+    node.prompt_capture = null;
     node.recipe = null;
     node.aggregate_readings = {};
+    node.aggregate_measurements = null;
     node.applied_steering = null;
     node.finish_reason = "stop";
     node.mean_logprob = null;
@@ -1765,7 +1805,6 @@ export class BrowserLoomRuntime {
     }
     return {
       node: candidate,
-      original: clone(candidate),
       parentId: candidate.parent_id,
       forcedPrefix: [...forcedPrefix],
     };
@@ -1788,6 +1827,7 @@ export class BrowserLoomRuntime {
       role_label: input.roleLabel,
       thinking_text: input.thinkingText,
       aggregate_readings: {},
+      aggregate_measurements: null,
       applied_steering: input.steering,
       finish_reason: null,
       starred: false,
@@ -1801,6 +1841,7 @@ export class BrowserLoomRuntime {
       tokens: [],
       thinking_tokens: [],
       raw_token_ids: null,
+      prompt_capture: null,
     };
   }
 
@@ -2097,6 +2138,7 @@ function cancelledGenerationResult(
   node: LoomNodeJSON,
   rawTokenCount: number,
   promptTokens = 0,
+  lastEnvelope?: MeasurementsEnvelopeJSON,
 ): WebLlmGenerationResult {
   const responseRows = node.tokens ?? [];
   const logprobs = responseRows
@@ -2106,8 +2148,7 @@ function cancelledGenerationResult(
     ? null
     : logprobs.reduce((sum, value) => sum + value, 0) / logprobs.length;
   const allRows = [...(node.thinking_tokens ?? []), ...responseRows];
-  const latestMeasurements = allRows.findLast((row) => row.measurements !== undefined)
-    ?.measurements;
+  const measurements = lastEnvelope === undefined ? undefined : aggregateEnvelope(lastEnvelope);
   const tokens = rawTokenCount > 0 ? rawTokenCount : allRows.length;
   return {
     text: node.text,
@@ -2124,14 +2165,7 @@ function cancelledGenerationResult(
     meanSurprise: meanLogprob === null ? null : -meanLogprob,
     prefillTokensPerSecond: null,
     decodeTokensPerSecond: null,
-    ...(latestMeasurements === undefined
-      ? {}
-      : {
-          measurements: {
-            ...clone(latestMeasurements),
-            scope: "aggregate" as const,
-          },
-        }),
+    ...(measurements === undefined ? {} : { measurements }),
   };
 }
 
@@ -2298,6 +2332,7 @@ function rootNode(id: string, createdAt: number): LoomNodeJSON {
     role_label: null,
     thinking_text: null,
     aggregate_readings: {},
+    aggregate_measurements: null,
     applied_steering: null,
     finish_reason: null,
     starred: false,
@@ -2311,6 +2346,7 @@ function rootNode(id: string, createdAt: number): LoomNodeJSON {
     tokens: null,
     thinking_tokens: null,
     raw_token_ids: null,
+    prompt_capture: null,
   };
 }
 
@@ -2479,13 +2515,94 @@ interface PartialRecipe {
   seed: number | null;
 }
 
-/** drowse/loom/recipe.py `compose_call`: the one composition rule. Tiers,
- *  weakest first: the cast member's standing recipe, the call, the regen
- *  anchor, and the regen modifier. At each tier a set field wins (steering
- *  and thinking when not null, the system prompt when not inherited), and
- *  sampling merges field by field, so a tier cannot reset a field to its
- *  default. Observation knobs always come from the call, and the seed
- *  resolves modifier > call > anchor > cast. */
+/** One tier of `composeCall` below the call: a cast member's standing recipe,
+ *  a regen anchor's, or a regen modifier. */
+export interface ComposeTier {
+  steering: string | null;
+  thinking: boolean | null;
+  /** Absent: inherit. */
+  system_prompt?: string | null;
+  sampling: RecipeSamplingJSON | null;
+  seed?: number | null;
+}
+
+export interface ComposedCall {
+  steering: string | null;
+  thinking: boolean | null;
+  /** Absent: inherit the session's. */
+  systemPrompt?: string | null;
+  /** The merged sampling with the call's observation knobs and the resolved seed, or null when
+   *  no tier set any. */
+  sampling: WSSampling | null;
+}
+
+/** drowse/loom/recipe.py `compose_call`: the one composition rule (golden:
+ *  `recipe-compose-v1.json`). Steering, thinking and the system prompt rank
+ *  cast < call < anchor < modifier: a set field wins (steering and thinking
+ *  when not null, the system prompt when not inherited). Sampling ranks cast <
+ *  anchor < call < modifier and merges field by field, so a tier cannot reset
+ *  a field to its default: a field the call sets is what this generation
+ *  asked for, and a regenerate that sends no sampling reproduces its anchor.
+ *  Observation knobs always come from the call, and the seed resolves
+ *  modifier > call > anchor > cast. */
+export function composeCall(input: {
+  steering: string | null;
+  thinking: boolean | null;
+  systemPrompt?: string | null;
+  sampling: WSSampling | null;
+  cast: ComposeTier | null;
+  anchor: ComposeTier | null;
+  modifier: ComposeTier | null;
+}): ComposedCall {
+  const { cast, anchor, modifier } = input;
+  const call = input.sampling;
+  let steering = input.steering;
+  let thinking = input.thinking;
+  let systemPrompt = input.systemPrompt;
+  let promptSet = Object.hasOwn(input, "systemPrompt") && input.systemPrompt !== undefined;
+  if (cast !== null) {
+    steering ??= cast.steering;
+    thinking ??= cast.thinking;
+    if (!promptSet && cast.system_prompt !== undefined) {
+      systemPrompt = cast.system_prompt;
+      promptSet = true;
+    }
+  }
+  for (const layer of [anchor, modifier]) {
+    if (layer === null) continue;
+    if (layer.steering !== null) steering = layer.steering;
+    if (layer.thinking !== null) thinking = layer.thinking;
+    if (layer.system_prompt !== undefined) {
+      systemPrompt = layer.system_prompt;
+      promptSet = true;
+    }
+  }
+  const tierSampling = (tier: ComposeTier | null): WSSampling | null =>
+    tier === null || tier.sampling === null ? null : recipeSampling(tier.sampling);
+  let sampling: WSSampling | null = null;
+  for (const tier of [tierSampling(cast), tierSampling(anchor), call, tierSampling(modifier)]) {
+    sampling = mergeSampling(sampling, tier);
+  }
+  if (sampling !== null) {
+    const seed = [seedOf(modifier), call?.seed ?? null, seedOf(anchor), seedOf(cast)]
+      .find((value) => value !== null) ?? null;
+    sampling = {
+      ...sampling,
+      return_top_k: call?.return_top_k ?? 0,
+      return_probe_readings: call?.return_probe_readings ?? true,
+      persist_per_layer_scores: call?.persist_per_layer_scores ?? false,
+      persist_subspace_coords: call?.persist_subspace_coords ?? false,
+      seed,
+    };
+  }
+  return {
+    steering,
+    thinking,
+    ...(promptSet ? { systemPrompt: systemPrompt ?? null } : {}),
+    sampling,
+  };
+}
+
 function resolveGenerationSettings(
   request: WSSubmitRequest | WSGenerateRequest,
   session: SessionInfo,
@@ -2498,32 +2615,17 @@ function resolveGenerationSettings(
   const override = request.recipe_override;
   const anchor = override === null || override === undefined ? null : anchorRecipe(tree, parentId);
   const modifier = anchor === null ? null : recipeModifier(override!, anchor);
-
-  let steering: string | null = request.steering ?? null;
-  let thinking: boolean | null = request.thinking ?? null;
-  let systemPrompt: string | null | undefined = request.system_prompt;
-  let sampling: WSSampling | null = call;
-  if (cast !== null) {
-    steering ??= cast.steering;
-    thinking ??= cast.thinking;
-    if (systemPrompt === undefined) systemPrompt = cast.system_prompt;
-    sampling = mergeSampling(cast.sampling === null ? null : recipeSampling(cast.sampling), sampling);
-  }
-  for (const layer of [anchor, modifier]) {
-    if (layer === null) continue;
-    if (layer.steering !== null) steering = layer.steering;
-    if (layer.thinking !== null) thinking = layer.thinking;
-    if (layer.system_prompt !== undefined) systemPrompt = layer.system_prompt;
-    sampling = mergeSampling(sampling, layer.sampling === null ? null : recipeSampling(layer.sampling));
-  }
-  const seed = [seedOf(modifier), call?.seed ?? null, seedOf(anchor), seedOf(cast)]
-    .find((value) => value !== null) ?? null;
-  const observation: WSSampling = {
-    return_top_k: call?.return_top_k ?? 0,
-    return_probe_readings: call?.return_probe_readings ?? true,
-    persist_per_layer_scores: call?.persist_per_layer_scores ?? false,
-    persist_subspace_coords: call?.persist_subspace_coords ?? false,
-  };
+  const composed = composeCall({
+    steering: request.steering ?? null,
+    thinking: request.thinking ?? null,
+    ...(request.system_prompt === undefined ? {} : { systemPrompt: request.system_prompt }),
+    // A call always samples (drowse's engine passes its `SamplingConfig`): an absent block is
+    // one with every field unset, so the seed and the observation knobs always resolve.
+    sampling: call ?? {},
+    cast,
+    anchor,
+    modifier,
+  });
 
   const positionSpans = modifier !== null
     ? normalizeSteeringPositions(modifier.position_spans !== undefined ? modifier : anchor!)
@@ -2532,15 +2634,17 @@ function resolveGenerationSettings(
         ? request : cast ?? {},
     );
   return {
-    steering: resolveSteering(steering, session.default_steering),
-    sampling: effectiveSampling(session, { ...sampling, ...observation, seed }, maxOutputTokens),
-    thinking: thinking ?? session.config.thinking ?? session.supports_thinking,
-    systemPrompt: systemPrompt === undefined ? session.config.system_prompt : systemPrompt,
+    steering: resolveSteering(composed.steering, session.default_steering),
+    sampling: effectiveSampling(session, composed.sampling!, maxOutputTokens),
+    thinking: composed.thinking ?? session.config.thinking ?? session.supports_thinking,
+    systemPrompt: composed.systemPrompt === undefined
+      ? session.config.system_prompt
+      : composed.systemPrompt,
     positionSpans,
   };
 }
 
-function seedOf(recipe: Pick<PartialRecipe, "seed" | "sampling"> | null): number | null {
+function seedOf(recipe: Pick<ComposeTier, "seed" | "sampling"> | null): number | null {
   if (recipe === null) return null;
   return recipe.seed ?? recipe.sampling?.seed ?? null;
 }
@@ -2613,7 +2717,7 @@ function anchorRecipe(tree: LoomTreeJSON, parentId: string): PartialRecipe {
   return { steering: null, sampling: null, thinking: null, seed: null };
 }
 
-function recipeModifier(
+export function recipeModifier(
   value: NonNullable<
     WSGenerateRequest["recipe_override"] | WSSubmitRequest["recipe_override"]
   >,

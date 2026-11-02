@@ -616,6 +616,7 @@ function probeRefreshRequest(probe: ProbeInfo): ProbeRequest {
   if (probe.family === "lens") {
     return { selector: `jlens/${probe.word}`, name: probe.name };
   }
+  if (probe.family === "units") return { selector: probe.unit, name: probe.name };
   return { selector: `sae/${probe.feature_id}`, name: probe.name };
 }
 
@@ -642,13 +643,14 @@ function replayEnvelope(
   const cloned = structuredClone(instrument);
   if (family === "lens") {
     const lens = cloned as NonNullable<MeasurementsEnvelopeJSON["instruments"]["lens"]>;
-    if (!lens.readout) {
+    if (!lens.readout?.layers) {
       throw instrumentError(
         "TOKEN_REPLAY_UNAVAILABLE",
         "The browser replay produced no J-lens readout for this token",
       );
     }
-    const actualLayers = lens.readout.layers.map((row) => row.layer);
+    const readout = lens.readout as Required<typeof lens.readout>;
+    const actualLayers = readout.layers.map((row) => row.layer);
     if (
       selectedLensLayers !== null &&
       (actualLayers.length !== selectedLensLayers.length ||
@@ -662,19 +664,19 @@ function replayEnvelope(
     const width = options.topK ?? Number.POSITIVE_INFINITY;
     if (
       options.topK !== undefined &&
-      (lens.readout.aggregate.length !== options.topK ||
-        lens.readout.layers.some((row) => row.tokens.length !== options.topK))
+      (readout.aggregate.length !== options.topK ||
+        readout.layers.some((row) => row.tokens.length !== options.topK))
     ) {
       throw instrumentError(
         "TOKEN_REPLAY_UNAVAILABLE",
         `The browser replay did not honor the requested exact top-${options.topK} J-lens width`,
       );
     }
-    lens.readout.layers = lens.readout.layers.map((row) => ({
+    readout.layers = readout.layers.map((row) => ({
       ...row,
       tokens: row.tokens.slice(0, width),
     }));
-    lens.readout.aggregate = lens.readout.aggregate.slice(0, width);
+    readout.aggregate = readout.aggregate.slice(0, width);
   } else if (family === "sae") {
     const sae = cloned as NonNullable<MeasurementsEnvelopeJSON["instruments"]["sae"]>;
     if (options.layers !== undefined) {
@@ -700,19 +702,12 @@ function replayEnvelope(
   }
   const readingNames = new Set(Object.keys(cloned.readings ?? {}));
   const scores = filterScores(value.scores, readingNames);
-  const perLayerScores = Object.fromEntries(
-    Object.entries(value.per_layer_scores ?? {}).flatMap(([layer, row]) => {
-      const filtered = filterScores(row, readingNames);
-      return Object.keys(filtered).length > 0 ? [[layer, filtered]] : [];
-    }),
-  );
   return {
     version: value.version,
     scope: "replay",
     provenance: "replayed",
     instruments: { [family]: cloned },
     ...(Object.keys(scores).length > 0 ? { scores } : {}),
-    ...(Object.keys(perLayerScores).length > 0 ? { per_layer_scores: perLayerScores } : {}),
   };
 }
 
@@ -833,6 +828,13 @@ function tokenReadoutOptions(value: unknown): TokenReadoutOptions {
 }
 
 function instrumentFamily(value: unknown): "geometry" | "lens" | "sae" {
+  if (value === "units") {
+    // In the contract (`InstrumentFamily`); neurons and heads are not read here yet.
+    throw instrumentError(
+      "INSTRUMENT_FAMILY_UNAVAILABLE",
+      "The browser runtime does not read neurons and heads yet",
+    );
+  }
   if (value !== "geometry" && value !== "lens" && value !== "sae") {
     throw instrumentError("INVALID_INSTRUMENT_REQUEST", "Instrument family is invalid");
   }
