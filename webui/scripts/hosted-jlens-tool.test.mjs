@@ -2,8 +2,9 @@
 
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { createServer } from "vite";
 import { selectHostedJlensLayers } from "./hosted-instrument-layers.mjs";
@@ -49,12 +50,72 @@ const vite = await createServer({
   optimizeDeps: { noDiscovery: true, include: [] },
   server: { middlewareMode: true, watch: null },
 });
+const python = process.env.PYTHON ?? "python3";
+const pythonEnv = { ...process.env, PYTHONPATH: resolve(repositoryRoot, "drowse") };
 try {
   const transformed = await vite.transformRequest("/scripts/hosted-jlens-capture.worker.ts");
   assert.ok(transformed?.code.includes("structuredHookProfile: event.data.structuredHookProfile"));
   assert.ok(transformed.code.includes("thinkingProfile: event.data.thinkingProfile"));
   assert.ok(transformed.code.includes("maxComputeWorkgroupSizeX"));
   assert.ok(transformed.code.includes("maxComputeInvocationsPerWorkgroup"));
+
+  // The lens v7 reader rule, against a manifest drowse itself writes: an R
+  // lens at out and mid, with the fit's split-half differences.
+  const { lensManifestSites } = await vite.ssrLoadModule(
+    "/src/hosted/runtime/browserInstrumentPacks.ts",
+  );
+  const stage = await mkdtemp(join(tmpdir(), "drowse-lens-v7-"));
+  try {
+    await exec(python, ["-c", `
+import sys, torch
+from pathlib import Path
+from drowse.lens.jlens import JacobianLens
+from drowse.lens.key import LensKey
+from drowse.lens.store import LensProvenance, save_lens_at
+lens = JacobianLens(
+    {0: torch.eye(2), 1: torch.eye(2)}, mid={1: torch.eye(2)},
+    n_prompts=4, d_model=2, key=LensKey("R"),
+)
+save_lens_at(lens, Path(sys.argv[1]), LensProvenance(
+    corpus_spec="fixture", corpus_sha256="1" * 64, seq_len=32, dim_batch=8,
+), split_half={"out": {0: 0.25, 1: 0.5}, "mid": {1: 0.125}})
+`, stage], { cwd: repositoryRoot, env: pythonEnv });
+    const manifest = JSON.parse(await readFile(join(stage, "manifest.json"), "utf8"));
+    const sites = lensManifestSites(manifest);
+    assert.deepEqual([...sites.keys()], ["out", "mid"]);
+    assert.deepEqual(sites.get("out").layers, [0, 1]);
+    assert.deepEqual(sites.get("out").splitHalf, { 0: 0.25, 1: 0.5 });
+    assert.deepEqual(sites.get("mid").layers, [1]);
+    assert.deepEqual(sites.get("mid").splitHalf, { 1: 0.125 });
+
+    const withSite = (site, entry) => ({
+      ...manifest,
+      sites: { ...manifest.sites, [site]: { ...manifest.sites[site], ...entry } },
+    });
+    const withoutSplitHalf = structuredClone(manifest);
+    delete withoutSplitHalf.sites.out.split_half;
+    delete withoutSplitHalf.sites.mid;
+    assert.equal(lensManifestSites(withoutSplitHalf).get("out").splitHalf, null);
+    const odd = {
+      tensor_files: { 0: "out.odd.partial.layer-0.safetensors", 1: "out.odd.partial.layer-1.safetensors" },
+      tensor_sha256: { 0: "a".repeat(64), 1: "b".repeat(64) },
+    };
+    for (const [label, malformed] of [
+      ["odd shards outside a checkpoint", withSite("out", { odd })],
+      ["split_half missing a layer", withSite("out", { split_half: { 0: 0.25 } })],
+      ["negative split_half", withSite("out", { split_half: { 0: 0.25, 1: -1 } })],
+      ["non-finite split_half", withSite("mid", { split_half: { 1: null } })],
+      ["unknown site", { ...manifest, sites: { ...manifest.sites, in: manifest.sites.out } }],
+      ["unknown site key", withSite("mid", { source_layers: [1] })],
+      ["digest keys off the layers", withSite("out", { tensor_sha256: { 0: "a".repeat(64) } })],
+      ["unsafe shard name", withSite("out", { tensor_files: { 0: "../x", 1: "y" } })],
+      ["no sites", { ...manifest, sites: {} }],
+    ]) {
+      assert.equal(lensManifestSites(malformed), null, label);
+    }
+  } finally {
+    await rm(stage, { recursive: true, force: true });
+  }
 } finally {
   await vite.close();
 }
@@ -68,12 +129,14 @@ await assert.rejects(
   /source layers must be a comma-separated integer list/,
 );
 
-const python = process.env.PYTHON ?? "python3";
 const pythonHelp = await exec(python, [fitter, "--help"], {
   cwd: repositoryRoot,
-  env: { ...process.env, PYTHONPATH: resolve(repositoryRoot, "drowse") },
+  env: pythonEnv,
 });
+assert.match(pythonHelp.stdout, /R-family lens pack/);
+assert.match(pythonHelp.stdout, /--kind \{R,J\}/);
 assert.match(pythonHelp.stdout, /--dim-batch/);
 assert.match(pythonHelp.stdout, /--source-layers/);
+assert.match(pythonHelp.stdout, /--max-residual-error/);
 
-console.log("Hosted J-lens production-tool checks passed");
+console.log("Hosted lens production-tool and v7 reader checks passed");
