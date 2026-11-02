@@ -1585,6 +1585,33 @@ try {
   assert.equal(invalidTreeValidation.valid, false);
   assert.deepEqual(validationRuntime.snapshot().tree, validationTreeBefore);
   assert.equal(validationEngine.plans.length, 0);
+  // drowse's parse_expr folds against the installed manifolds before its lock, so conflicting
+  // triggers and an ambiguous bare label answer in-band without the compiler.
+  const foldCompiles = [];
+  const foldRuntime = new BrowserLoomRuntime({
+    session: session(),
+    generation: generation(),
+    createId: ids("fold"),
+    compileSteering(expression) {
+      foldCompiles.push(expression);
+      return hookProgram;
+    },
+    steeringManifolds: () => [
+      { namespace: "local", name: "animals", fitMode: "discover", labels: ["deer", "owl"] },
+      { namespace: "local", name: "forest", fitMode: "discover", labels: ["deer", "oak"] },
+    ],
+  });
+  for (const [expression, message] of [
+    ["0.5 x + 0.25 x@response", /^concept 'x' appears with conflicting triggers/],
+    ["0.5 deer", /^ambiguous manifold label 'deer'/],
+  ]) {
+    const result = await foldRuntime.request({
+      service: "sessions", method: "validateSteering", args: [expression],
+    });
+    assert.equal(result.valid, false, expression);
+    assert.match(result.error, message, expression);
+  }
+  assert.deepEqual(foldCompiles, []);
 
   const activeRoleEngine = generation();
   const activeRoleRuntime = new BrowserLoomRuntime({

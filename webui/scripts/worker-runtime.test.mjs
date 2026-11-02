@@ -4089,6 +4089,15 @@ try {
       async fit() { return { status: "completed" }; },
       async stop() {},
       async unload() {},
+      // The loaded compiler's manifolds, which drowse's parse_expr resolves bare atoms against
+      // before its lock: `calm` names one manifold, `deer` two.
+      steeringManifolds() {
+        return [
+          { namespace: "default", name: "emotions", fitMode: "pca", labels: ["calm", "angry"] },
+          { namespace: "local", name: "animals", fitMode: "discover", labels: ["deer", "owl"] },
+          { namespace: "local", name: "forest", fitMode: "discover", labels: ["deer", "oak"] },
+        ];
+      },
     };
     const scope = harness({
       async download() { return result; },
@@ -4134,6 +4143,23 @@ try {
     assert.equal(syntax.valid, false);
     assert.equal(syntax.expression, "0.5 calm +");
     assert.match(syntax.error, /col \d+/);
+    // parse_expr folds and resolves before the lock too: conflicting triggers on one concept
+    // (drowse's words, from parse_expr in the venv) and an ambiguous bare label answer in-band.
+    validate("busy-fold", "0.5 x + 0.25 x@response");
+    assert.deepEqual((await response(scope, "busy-fold")).result, {
+      valid: false,
+      expression: "0.5 x + 0.25 x@response",
+      error: "concept 'x' appears with conflicting triggers; merge triggers explicitly or split " +
+        "into separate Steering entries",
+    });
+    validate("busy-ambiguous", "0.5 deer");
+    assert.deepEqual((await response(scope, "busy-ambiguous")).result, {
+      valid: false,
+      expression: "0.5 deer",
+      error: "ambiguous manifold label 'deer': matches local/animals (label 'deer'), local/forest " +
+        "(label 'deer'). Specify the manifold explicitly as <ns>/<name>%deer. (disambiguate with " +
+        "namespace/name)",
+    });
     assert.equal(requested.includes("sessions.validateSteering"), false);
 
     releaseService({ id: "fixture-session" });

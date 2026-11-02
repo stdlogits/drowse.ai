@@ -840,11 +840,13 @@ export class BrowserLoomRuntime {
     if (method === "validateSteering") {
       // `POST .../steering/validate`: parse, resolve and dry-compile, then answer in-band. The
       // checks that need no model answer first (preflightSteeringValidation), as drowse answers
-      // the empty expression and a syntax error before taking its lock; past them, a model
+      // the empty expression and a parse or fold error before taking its lock; past them, a model
       // operation in flight answers busy (drowse's EngineBusyError, 409) instead of a verdict,
       // and the dashboard asks again. The worker refuses the same way, without queueing, while
       // it has a generation or a fit admitted.
-      const preflight = preflightSteeringValidation(args, this.session.model_id);
+      const preflight = preflightSteeringValidation(
+        args, this.session.model_id, this.installedSteeringManifolds(),
+      );
       if ("response" in preflight) return preflight.response;
       const { expression, syntax, probeRequests } = preflight;
       type Compiled = {
@@ -888,6 +890,16 @@ export class BrowserLoomRuntime {
       }
     }
     throw loomError("BROWSER_SERVICE_UNAVAILABLE", `sessions.${method} is not implemented`);
+  }
+
+  /** The compiler's installed manifolds, or `null` when there is no compiler to ask. */
+  installedSteeringManifolds(): readonly SteeringManifoldEntry[] | null {
+    if (this.steeringManifolds === undefined) return null;
+    try {
+      return this.steeringManifolds();
+    } catch {
+      return null;
+    }
   }
 
   private async treeRequest(method: string, args: unknown[]): Promise<unknown> {
@@ -3274,13 +3286,20 @@ function clampSessionOutputTokens(
 }
 
 /** What `sessions.validateSteering` decides before it needs the model: a non-string expression
- *  throws; malformed options, a tree for another model and a syntax error answer in-band
- *  (`valid: false`); the empty expression without a probe roster answers valid. Anything else
- *  needs the compiler (`expression`, its syntax tree, the staged probe roster). Pure, so the
- *  worker can answer a validation that arrives during a generation or fit without queueing it. */
+ *  throws; malformed options, a tree for another model, a syntax error and a fold error answer
+ *  in-band (`valid: false`); the empty expression without a probe roster answers valid. Anything
+ *  else needs the compiler (`expression`, its syntax tree, the staged probe roster). Pure, so the
+ *  worker can answer a validation that arrives during a generation or fit without queueing it.
+ *
+ *  drowse's `parse_expr` runs before the session lock and folds as it parses, resolving bare
+ *  atoms against the installed manifolds, so conflicting triggers on one concept or an ambiguous
+ *  bare label answer `valid: false` even while a model operation holds the lock. `manifolds` is
+ *  the compiler's installed list; `null` (no compiler to ask) leaves the fold to the compiler,
+ *  since folding against an empty registry would refuse what the real one resolves. */
 export function preflightSteeringValidation(
   args: readonly unknown[],
   modelId: string,
+  manifolds: readonly SteeringManifoldEntry[] | null = null,
 ):
   | { response: SteeringValidationResponse }
   | {
@@ -3303,7 +3322,10 @@ export function preflightSteeringValidation(
         throw loomError("LOOM_SESSION_MISMATCH", "Restored conversation belongs to another model");
       }
     }
-    if (expression) syntax = parseSteeringExpression(expression);
+    if (expression) {
+      syntax = parseSteeringExpression(expression);
+      if (manifolds !== null) foldSteering(syntax, { manifolds });
+    }
   } catch (error) {
     return { response: invalidSteeringValidation(expression, error) };
   }

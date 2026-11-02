@@ -242,6 +242,10 @@ export class DrowseWebLlmBackend implements BrowserModelBackend {
     return this.loom.stop(reason === "user");
   }
 
+  steeringManifolds(): readonly SteeringManifoldEntry[] | null {
+    return this.loom?.installedSteeringManifolds() ?? null;
+  }
+
   private requireLoom(): BrowserLoomRuntime {
     if (!this.loom) {
       throw backendError("MODEL_NOT_LOADED", "No browser model session is loaded");

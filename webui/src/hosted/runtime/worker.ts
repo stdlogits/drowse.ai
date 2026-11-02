@@ -1330,15 +1330,18 @@ export class HostedRuntimeWorker {
   }
 
   /** `sessions.validateSteering` during an admitted generation or fit: the checks that need no
-   *  model answer in-band (the empty expression, a syntax error, malformed options), as drowse
-   *  answers them before its lock; anything that needs the compiler answers 409 ENGINE_BUSY. */
+   *  model answer in-band (the empty expression, a parse or fold error, malformed options), as
+   *  drowse answers them before its lock; anything that needs the compiler answers 409
+   *  ENGINE_BUSY. */
   private answerBusySteeringValidation(
     requestId: string,
     args: readonly unknown[],
     modelId: string,
   ): void {
     try {
-      const preflight = preflightSteeringValidation(args, modelId);
+      const preflight = preflightSteeringValidation(
+        args, modelId, this.modelBackend.steeringManifolds?.() ?? null,
+      );
       if ("response" in preflight) {
         this.success(requestId, preflight.response);
         return;
