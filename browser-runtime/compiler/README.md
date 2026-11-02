@@ -9,8 +9,16 @@ docker build \
   browser-runtime
 ```
 
-The recipe supports `linux/amd64` and `linux/arm64` builds with separately pinned
-official LLVM archives, so TVM and LLVM compile natively on each platform.
+The recipe supports `linux/amd64` and `linux/arm64` builds. `linux/arm64` links TVM against the
+pinned official LLVM 18.1.8 archive. `linux/amd64` builds LLVM from tag `llvmorg-18.1.8`
+(commit `3b5b5c1e`, `forks/manifest.json` `llvmSourceBuild`) with the pinned x86_64 archive's own
+clang, configured like the archive (Release, its 19 targets, assertions/RTTI/EH off): that
+archive's libraries were compiled against GCC 7's libstdc++, whose `std::optional` ABI no C++20
+libstdc++ shares, so a TVM linked against them segfaults on import. The lock binds the tag and
+commit (`toolchain.llvmSourceBuild`) and `check-runtime-lock.mjs` requires the Dockerfile's
+`LLVM_SOURCE_*_AMD64` arguments to match. The jobe toolchain the hook ABI v5 libraries were
+compiled with is the same build (parity handoff `B40-toolchain.md` §3, §8); the image itself has
+not been rebuilt since.
 Emscripten 3.1.56 does not publish Linux ARM64 binaries, so the ARM64 image runs only
 the pinned Emscripten tools through AMD64 translation. On Apple silicon with Colima,
 use Rosetta for that narrow compatibility layer:
@@ -20,10 +28,12 @@ colima stop
 colima start --vm-type vz --vz-rosetta
 ```
 
-The build pins the Ubuntu base digest, LLVM archive, Emscripten SDK commit,
-TVM/TVM-FFI sources, MLC source, and both Drowse overlays. Its final build gate
-runs the C VM hook golden and LLVM fp16-capture golden, then compiles fp32 and
-production-q4f16 Qwen3 and Llama WebGPU fixture libraries.
+The build pins the Ubuntu base digest, LLVM archives and source, Emscripten SDK commit,
+TVM/TVM-FFI sources, MLC source, and both Drowse overlays. Its final build gate runs the C VM
+structured, geometry and readout goldens, then compiles fp32 and q4 Qwen3, Llama and Gemma 3
+WebGPU fixture libraries under the v5 export check. The units goldens need the fixture models
+`forks/build-units-fixtures.py` makes from drowse's checkpoints; they run outside the image
+(`browser-runtime/record-cvm-goldens.py`, README "Release evidence").
 
 The local image ID is feasibility evidence only. A production runtime lock must
 name an immutable registry reference and manifest digest for the published
@@ -47,27 +57,26 @@ runtime lock until either the compiler output is canonicalized reproducibly or
 the release process records and physically validates one immutable emitted
 library per model variant.
 
-For an exact upstream MLC closure, first rewrite its browser-unsafe capacity
-defaults and bind it to the Drowse build manifest. The source metadata directory
-must be the immutable source-model snapshot containing the tokenizer files:
+Every hook ABI v5 library is converted from its pinned source snapshot and compiled with this
+overlay (no upstream MLC closure is adopted): `convert` records `drowse-web-runtime-v2`,
+`block-sites-v5` and the architecture's profile (`standard-v4` for Gemma 3 and Qwen3,
+`standard-v4-residual` otherwise) in `drowse-build.json`, and `compile` refuses a manifest from
+another ABI:
 
 ```bash
-npm --prefix webui run adopt:hosted:mlc-model -- \
-  qwen3-4b mlc-ai/Qwen3-4B-q4f16_1-MLC UPSTREAM_COMMIT \
-  /absolute/mlc-snapshot /absolute/qwen3-source-metadata \
-  /absolute/output/qwen3-4b-converted
-
-docker run --rm \
-  -v /absolute/output/qwen3-4b-converted:/model:ro \
-  -v /absolute/output:/output \
+docker run --rm -v /absolute/snapshot:/source:ro -v /absolute/output:/output \
   drowse-browser-compiler:feasibility \
   'python /opt/drowse/build-production-webgpu.py \
+    --mlc-repository /opt/mlc-llm --tvm-repository /opt/tvm convert \
+    --source /source --source-repository Qwen/Qwen3-4B --source-revision SOURCE_REVISION \
+    --architecture qwen3 --quantization q4f32_1 \
+    --context-window-size 4096 --prefill-chunk-size 2048 --output /output/qwen3-4b \
+  && python /opt/drowse/build-production-webgpu.py \
     --mlc-repository /opt/mlc-llm --tvm-repository /opt/tvm compile \
-    --model /model --architecture qwen3 --quantization q4f16_1 \
-    --structured-hook-profile standard-v3 \
-    --output /output/qwen3-4b-model.wasm'
+    --model /output/qwen3-4b --architecture qwen3 --quantization q4f32_1 \
+    --output /output/qwen3-4b/qwen3-4b-webgpu.wasm'
 ```
 
-The adoption step fixes the production closure at context 4096, prefill chunk
-2048, and batch size 1. The converter remains available when no exact upstream
-MLC tensor closure exists.
+The compile runs the export check (the overlay's v5 function sets, `overlay_checks.py`) and
+the shader checks. The production recipe per model (architecture, quantization, conversation
+template) and its gates are in the parity handoff (`lanes/B4.md`, "Production compile recipe").

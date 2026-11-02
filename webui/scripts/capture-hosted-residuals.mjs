@@ -97,7 +97,7 @@ validateBrowserFullRuntimeModelClosure({
   contextTokens: Math.min(...lock.contextProfiles),
 });
 await validatePublishDirectory(modelDirectory, lock, runtimeLock, {
-  allowLegacyBranding: true, allowStaleToolchain: true,
+  allowStaleToolchain: true,
 });
 const executionProfiles = lockedModelExecutionProfiles(lock, artifactsManifest);
 if (

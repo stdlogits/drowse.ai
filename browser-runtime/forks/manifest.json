@@ -24,6 +24,14 @@
       "sha256": "dcaa1bebbfbb86953fdfbdc7f938800229f75ad26c5c9375ef242edad737d999"
     }
   ],
+  "llvmSourceBuild": {
+    "platform": "linux/amd64",
+    "repository": "https://github.com/llvm/llvm-project.git",
+    "tag": "llvmorg-18.1.8",
+    "tagObject": "76caf4176cd7877ad5952737d56da6f515ee4602",
+    "commit": "3b5b5c1ec4a3095ab096dd780e84d7ab81f3d7ff",
+    "bootstrapArchive": "clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz"
+  },
   "overlays": [
     {
       "id": "tvm-webgpu-readonly",

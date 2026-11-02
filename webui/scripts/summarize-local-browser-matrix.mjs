@@ -3,7 +3,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { REQUIRED_BROWSER_FULL_RUNTIME_CHECKS } from "./browser-full-runtime-contract.mjs";
+import { requiredBrowserFullRuntimeChecks } from "./browser-full-runtime-contract.mjs";
 import { lockedRuntimeIdentitySha256 } from "./check-runtime-lock.mjs";
 
 const repositoryRoot = resolve(import.meta.dirname, "../..");
@@ -80,6 +80,9 @@ function validateReport(report, runtimeLock) {
   if (!model || !model.contextProfiles.includes(environment.contextTokens)) {
     throw new Error("browser report model or context is outside the runtime lock");
   }
+  if (report.structuredHookProfile !== model.structuredHookProfile) {
+    throw new Error("browser report profile differs from the runtime lock");
+  }
   const identity = lockedRuntimeIdentitySha256(runtimeLock, model);
   if (identity === null || environment.runtimeIdentitySha256 !== identity) {
     throw new Error("browser report runtime identity differs from the runtime lock");
@@ -96,10 +99,11 @@ function validateReport(report, runtimeLock) {
       throw new Error(`browser report audit ${name} is not empty`);
     }
   }
+  const roster = requiredBrowserFullRuntimeChecks(report.structuredHookProfile);
   if (
     !record(report.checks) ||
-    Object.keys(report.checks).length !== REQUIRED_BROWSER_FULL_RUNTIME_CHECKS.length ||
-    REQUIRED_BROWSER_FULL_RUNTIME_CHECKS.some((name) => report.checks[name]?.passed !== true)
+    Object.keys(report.checks).length !== roster.length ||
+    roster.some((name) => report.checks[name]?.passed !== true)
   ) throw new Error("browser report does not pass the complete E2E check roster");
   const generation = report.checks.ordinary_generation.measurements;
   if (
@@ -123,7 +127,7 @@ function validateReport(report, runtimeLock) {
     diagnosticPrefillTokensPerSecond: generation.prefillTokensPerSecond,
     diagnosticDecodeTokensPerSecond: generation.decodeTokensPerSecond,
     producedAt: report.producedAt,
-    checksPassed: REQUIRED_BROWSER_FULL_RUNTIME_CHECKS.length,
+    checksPassed: roster.length,
     offlineNetworkRequests: report.checks.offline_reuse.measurements.networkRequests,
   };
 }

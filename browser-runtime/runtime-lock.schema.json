@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:drowse:schema:browser-runtime-lock-v1",
+  "$id": "urn:drowse:schema:browser-runtime-lock-v2",
   "title": "Drowse browser runtime lock",
   "type": "object",
   "additionalProperties": false,
@@ -15,15 +15,27 @@
     "models"
   ],
   "properties": {
-    "$schema": { "const": "./runtime-lock.schema.json" },
-    "schemaVersion": { "const": 1 },
-    "status": { "enum": ["feasibility-required", "verified"] },
-    "runtimeAbi": {
-      "type": "string",
-      "pattern": "^drowse-web-runtime-v[0-9]+$"
+    "$schema": {
+      "const": "./runtime-lock.schema.json"
     },
-    "hookAbi": { "const": "post-block-residual-v4" },
-    "exactReadoutAbi": { "const": "exact-readout-v1" },
+    "schemaVersion": {
+      "const": 2
+    },
+    "status": {
+      "enum": [
+        "feasibility-required",
+        "verified"
+      ]
+    },
+    "runtimeAbi": {
+      "const": "drowse-web-runtime-v2"
+    },
+    "hookAbi": {
+      "const": "block-sites-v5"
+    },
+    "exactReadoutAbi": {
+      "const": "exact-readout-v2"
+    },
     "toolchain": {
       "type": "object",
       "additionalProperties": false,
@@ -41,6 +53,7 @@
         "emccPlatform",
         "llvmVersion",
         "llvmArtifacts",
+        "llvmSourceBuild",
         "compilerImage"
       ],
       "properties": {
@@ -48,8 +61,12 @@
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         },
-        "mlcLlmFork": { "$ref": "#/$defs/repositoryPin" },
-        "webLlmFork": { "$ref": "#/$defs/repositoryPin" },
+        "mlcLlmFork": {
+          "$ref": "#/$defs/repositoryPin"
+        },
+        "webLlmFork": {
+          "$ref": "#/$defs/repositoryPin"
+        },
         "webLlmPackage": {
           "type": "object",
           "additionalProperties": false,
@@ -66,8 +83,13 @@
               "type": "string",
               "pattern": "^browser-runtime/vendor/drowse-web-llm-[0-9A-Za-z.-]+\\.tgz$"
             },
-            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-            "name": { "const": "@drowse/web-llm" },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "name": {
+              "const": "@drowse/web-llm"
+            },
             "version": {
               "type": "string",
               "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+-drowse\\.[0-9]+$"
@@ -76,7 +98,10 @@
               "const": "https://github.com/a9lim/web-llm-polythetic"
             },
             "sourceCommit": {
-              "type": ["string", "null"],
+              "type": [
+                "string",
+                "null"
+              ],
               "pattern": "^[0-9a-f]{40}$"
             }
           }
@@ -85,7 +110,10 @@
           "const": "https://github.com/apache/tvm.git"
         },
         "tvmCommit": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "pattern": "^[0-9a-f]{40}$"
         },
         "tvmFfiCommit": {
@@ -104,28 +132,48 @@
           "type": "string",
           "pattern": "^[0-9a-f]{40}$"
         },
-        "emccPlatform": { "enum": ["linux/amd64"] },
+        "emccPlatform": {
+          "enum": [
+            "linux/amd64"
+          ]
+        },
         "llvmVersion": {
           "type": "string",
           "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
         },
         "llvmArtifacts": {
           "type": "array",
-          "minItems": 1,
+          "minItems": 2,
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/llvmArtifact" }
+          "items": {
+            "$ref": "#/$defs/llvmArtifact"
+          },
+          "maxItems": 2
+        },
+        "llvmSourceBuild": {
+          "$ref": "#/$defs/llvmSourceBuild"
         },
         "compilerImage": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["reference", "digest", "recipeSha256"],
+          "required": [
+            "reference",
+            "digest",
+            "recipeSha256"
+          ],
           "properties": {
             "reference": {
-              "type": ["string", "null"],
+              "type": [
+                "string",
+                "null"
+              ],
               "pattern": "^[a-z0-9.-]+(?::[1-9][0-9]{0,4})?/[a-z0-9]+(?:[._/-][a-z0-9]+)*(?::[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?$"
             },
             "digest": {
-              "type": ["string", "null"],
+              "type": [
+                "string",
+                "null"
+              ],
               "pattern": "^sha256:[0-9a-f]{64}$"
             },
             "recipeSha256": {
@@ -139,27 +187,93 @@
     "models": {
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "#/$defs/modelPin" }
+      "items": {
+        "$ref": "#/$defs/modelPin"
+      }
     }
   },
   "$defs": {
     "llvmArtifact": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["platform", "archive", "sha256"],
+      "required": [
+        "platform",
+        "archive",
+        "sha256"
+      ],
       "properties": {
-        "platform": { "enum": ["linux/amd64", "linux/arm64"] },
-        "archive": { "type": "string", "minLength": 1 },
-        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        "platform": {
+          "enum": [
+            "linux/amd64",
+            "linux/arm64"
+          ]
+        },
+        "archive": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "llvmSourceBuild": {
+      "description": "linux/amd64 builds LLVM from the release tag with the release archive's own clang (bootstrapArchive): the archive's libraries carry GCC 7's std::optional ABI, which TVM's C++20 build cannot link (parity handoff B40-toolchain.md §3).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "repository",
+        "tag",
+        "tagObject",
+        "commit",
+        "bootstrapArchive"
+      ],
+      "properties": {
+        "platform": {
+          "const": "linux/amd64"
+        },
+        "repository": {
+          "const": "https://github.com/llvm/llvm-project.git"
+        },
+        "tag": {
+          "type": "string",
+          "pattern": "^llvmorg-[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "tagObject": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "bootstrapArchive": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "repositoryPin": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository", "commit"],
+      "required": [
+        "repository",
+        "commit"
+      ],
       "properties": {
-        "repository": { "type": "string", "format": "uri" },
-        "commit": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" }
+        "repository": {
+          "type": "string",
+          "format": "uri"
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{40}$"
+        }
       }
     },
     "modelPin": {
@@ -184,58 +298,211 @@
         "contextProfiles"
       ],
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "architecture": { "enum": ["qwen3", "llama", "gemma3_text", "gpt2", "gpt_neox", "qwen3_5"] },
-        "modelType": { "enum": ["chat", "base"] },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "architecture": {
+          "enum": [
+            "gemma3_text",
+            "qwen3",
+            "gpt2",
+            "gpt_neox",
+            "qwen3_5"
+          ]
+        },
+        "modelType": {
+          "enum": [
+            "chat",
+            "base"
+          ]
+        },
         "structuredHookProfile": {
-          "enum": ["standard-v1", "standard-v2", "standard-v3"]
+          "enum": [
+            "standard-v4",
+            "standard-v4-residual"
+          ]
         },
         "thinkingProfile": {
-          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/thinkingProfile" }]
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/thinkingProfile"
+            }
+          ]
         },
-        "sourceRepository": { "type": "string", "minLength": 1 },
-        "sourceRevision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-        "convertedRepository": { "type": "string", "minLength": 1 },
+        "sourceRepository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceRevision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "convertedRepository": {
+          "type": "string",
+          "minLength": 1
+        },
         "convertedRevision": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "pattern": "^[0-9a-f]{40}$"
         },
         "manifestSha256": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "pattern": "^[0-9a-f]{64}$"
         },
         "librarySha256": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "pattern": "^[0-9a-f]{64}$"
         },
         "tokenizerSha256": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "pattern": "^[0-9a-f]{64}$"
         },
         "chatTemplateSha256": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "pattern": "^[0-9a-f]{64}$"
         },
-        "hiddenSize": { "type": ["integer", "null"], "minimum": 1 },
+        "hiddenSize": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
         "layerMap": {
           "oneOf": [
-            { "type": "null" },
+            {
+              "type": "null"
+            },
             {
               "type": "array",
               "minItems": 1,
-              "items": { "type": "integer", "minimum": 0 },
+              "items": {
+                "type": "integer",
+                "minimum": 0
+              },
               "uniqueItems": true
             }
           ]
         },
-        "quantization": { "enum": ["q4f16_1", "q4f32_1", "q0f32"] },
+        "quantization": {
+          "enum": [
+            "q4f16_1",
+            "q4f32_1",
+            "q0f32"
+          ]
+        },
         "contextProfiles": {
           "type": "array",
           "minItems": 1,
-          "items": { "enum": [1024, 2048, 4096] },
+          "items": {
+            "enum": [
+              1024,
+              2048,
+              4096
+            ]
+          },
           "uniqueItems": true
+        },
+        "blockSpec": {
+          "$ref": "#/$defs/blockSpec"
+        },
+        "unitRefusal": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "Native drowse's UnsupportedBlockError text for this model, which every unit call, the token anatomy and any mid read answer with (422)."
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "structuredHookProfile": {
+                "const": "standard-v4"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "blockSpec"
+            ],
+            "not": {
+              "required": [
+                "unitRefusal"
+              ]
+            },
+            "properties": {
+              "architecture": {
+                "enum": [
+                  "gemma3_text",
+                  "qwen3"
+                ]
+              }
+            }
+          },
+          "else": {
+            "required": [
+              "unitRefusal"
+            ],
+            "not": {
+              "required": [
+                "blockSpec"
+              ]
+            },
+            "properties": {
+              "architecture": {
+                "enum": [
+                  "gpt2",
+                  "gpt_neox",
+                  "qwen3_5"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "architecture": {
+                "enum": [
+                  "gpt2",
+                  "gpt_neox",
+                  "qwen3_5"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "modelType"
+            ],
+            "properties": {
+              "modelType": {
+                "const": "base"
+              }
+            }
+          }
+        }
+      ]
     },
     "thinkingProfile": {
       "type": "object",
@@ -248,20 +515,156 @@
         "endTokenIds"
       ],
       "properties": {
-        "start": { "type": "string", "minLength": 1, "maxLength": 256 },
-        "end": { "type": "string", "minLength": 1, "maxLength": 256 },
-        "startsInThinking": { "type": "boolean" },
+        "start": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "end": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "startsInThinking": {
+          "type": "boolean"
+        },
         "startTokenIds": {
           "type": "array",
           "minItems": 1,
           "maxItems": 32,
-          "items": { "type": "integer", "minimum": 0 }
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
         },
         "endTokenIds": {
           "type": "array",
           "minItems": 1,
           "maxItems": 32,
-          "items": { "type": "integer", "minimum": 0 }
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "blockSpec": {
+      "description": "The block constants the library's schema-4 descriptor attests (B1 §8.2), in its order; floats compare as float32. Mirrors the MLC overlay's _drowse_block_spec over the converted mlc-chat-config.json.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dFF",
+        "nHeads",
+        "nKvHeads",
+        "headDim",
+        "sandwich",
+        "normOffset",
+        "activation",
+        "embedScale",
+        "rmsEps",
+        "qkNorm",
+        "attnScaling",
+        "attnLogitSoftcap",
+        "finalLogitSoftcap",
+        "ropeTheta",
+        "ropeLocalTheta",
+        "ropeGlobalScale",
+        "ropeInGraph",
+        "slidingWindow",
+        "slidingPattern"
+      ],
+      "properties": {
+        "dFF": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "nHeads": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "nKvHeads": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "headDim": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sandwich": {
+          "type": "boolean"
+        },
+        "normOffset": {
+          "enum": [
+            0,
+            1
+          ]
+        },
+        "activation": {
+          "enum": [
+            "silu",
+            "gelu_tanh"
+          ]
+        },
+        "embedScale": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "rmsEps": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "qkNorm": {
+          "type": "boolean"
+        },
+        "attnScaling": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "attnLogitSoftcap": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "finalLogitSoftcap": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "ropeTheta": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "ropeLocalTheta": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "ropeGlobalScale": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "ropeInGraph": {
+          "type": "boolean"
+        },
+        "slidingWindow": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "slidingPattern": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
         }
       }
     }

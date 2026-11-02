@@ -26,7 +26,7 @@ const executionProfiles = lockedModelExecutionProfiles(qwen4b, {
   quantization: qwen4b.quantization,
 });
 assert.deepEqual(executionProfiles, {
-  structuredHookProfile: "standard-v3",
+  structuredHookProfile: "standard-v4",
   thinkingProfile: qwen4b.thinkingProfile,
   quantization: "q4f32_1",
   requiredFeatures: [],
@@ -52,7 +52,7 @@ for (const [profile, extra] of [
 }
 assert.throws(
   () => lockedModelExecutionProfiles(qwen4b, {
-    structuredHookProfile: "standard-v1",
+    structuredHookProfile: "standard-v4-residual",
     thinkingProfile: qwen4b.thinkingProfile,
     quantization: qwen4b.quantization,
   }),

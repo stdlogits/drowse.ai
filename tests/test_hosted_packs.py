@@ -18,6 +18,9 @@ sys.path.insert(0, str(ROOT / "browser-runtime"))
 sys.path.insert(0, str(ROOT / "drowse"))
 
 from build_hosted_packs import (  # noqa: E402
+    ATTRIBUTION,
+    NATIVE_CORPUS,
+    corpus_attribution,
     KINDS,
     NativeModel,
     PackBuildError,
@@ -228,3 +231,18 @@ def test_release_packs_refuse_a_lens_short_of_full_depth(built, tmp_path) -> Non
     with pytest.raises(PackBuildError, match="every layer|shape"):
         build(model, runtime, tmp_path / "packs", ["jlens"])
     assert not list(tmp_path.iterdir())
+
+
+def test_lens_and_units_packs_carry_the_approved_corpus_attribution(built, tmp_path) -> None:
+    _, _, _, _, out, _ = built
+    corpus = json.loads(NATIVE_CORPUS.read_text())
+    for kind in ("jlens", "slens", "units"):
+        text = (out / kind / "packs" / kind / ATTRIBUTION).read_text()
+        assert text == corpus_attribution()
+        for required in (corpus["attributionApproval"]["attribution"], corpus["dataset"]["url"],
+                         corpus["dataset"]["license"], corpus["corpusSpec"]):
+            assert required in text
+    pending = tmp_path / "corpus.json"
+    pending.write_text(json.dumps({**corpus, "attributionApproval": None}))
+    with pytest.raises(PackBuildError, match="not approved"):
+        corpus_attribution(pending)

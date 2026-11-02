@@ -260,6 +260,8 @@ def test_build_transformers_model_binds_exact_special_token_ids(
         LlamaForCausalLM=FakeModel,
         Qwen3Config=FakeConfig,
         Qwen3ForCausalLM=FakeModel,
+        Qwen3_5ForCausalLM=FakeModel,
+        Qwen3_5TextConfig=FakeConfig,
     )
     monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
     monkeypatch.setattr(
@@ -351,6 +353,90 @@ def test_gemma_reference_preserves_local_geometry_and_materializes_rope(tmp_path
     input_ids = torch.tensor([[2, 3, 4, 5, 6, 8, 9, 10]])
     with torch.inference_mode():
         torch.testing.assert_close(model(input_ids).logits, reference(input_ids).logits, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("tied", [True, False])
+def test_qwen35_reference_matches_transformers_on_mlc_tensors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tied: bool,
+) -> None:
+    """The q4 parity reference for `qwen35-2b-base`: built from the tensor cache MLC writes (fused
+    c_attn and gate_up_proj, `1 + w` RMSNorm gains, the gated norm unshifted), it computes what
+    Transformers' Qwen3.5 computes from the source weights."""
+    from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
+
+    torch.manual_seed(5)
+    common = {
+        "vocab_size": 32, "hidden_size": 16, "intermediate_size": 24,
+        "num_hidden_layers": 4, "num_attention_heads": 2, "num_key_value_heads": 1,
+        "head_dim": 8, "rms_norm_eps": 1e-6, "tie_word_embeddings": tied,
+        "bos_token_id": 2, "eos_token_id": [1, 7], "pad_token_id": 0,
+    }
+    linear = {
+        "linear_conv_kernel_dim": 4, "linear_key_head_dim": 8, "linear_value_head_dim": 8,
+        "linear_num_key_heads": 2, "linear_num_value_heads": 2,
+    }
+    reference = Qwen3_5ForCausalLM(Qwen3_5TextConfig(
+        **common, **linear, max_position_embeddings=128,
+        layer_types=["linear_attention", "full_attention"] * 2,
+        rope_parameters={"rope_type": "default", "rope_theta": 10_000_000, "partial_rotary_factor": 0.25},
+    )).eval()
+    reference.config._attn_implementation = "eager"
+    with torch.no_grad():
+        for name, parameter in reference.named_parameters():
+            parameter.add_(torch.randn_like(parameter) * 0.05 if "norm" in name else 0)
+    state = reference.state_dict()
+    shifted = ("input_layernorm.weight", "post_attention_layernorm.weight", "q_norm.weight",
+               "k_norm.weight")
+
+    class Cache:
+        def __init__(self, directory: Path):
+            assert directory == tmp_path
+
+        def q4(self, name: str):
+            if name.endswith(".gate_up_proj"):
+                base = name.removesuffix("gate_up_proj")
+                return torch.cat([state[base + "gate_proj.weight"], state[base + "up_proj.weight"]])
+            if name.endswith(".c_attn"):
+                base = name.removesuffix("c_attn")
+                return torch.cat([state[base + f"{p}_proj.weight"] for p in "qkv"])
+            return state[name + ".weight"]
+
+        def tensor(self, name: str):
+            value = state[name.replace("conv1d_weight", "conv1d.weight")]
+            if name.endswith(shifted) or name == "model.norm.weight":
+                value = value + 1
+            return value.numpy()
+
+    (tmp_path / "mlc-chat-config.json").write_text(json.dumps({
+        "model_type": "qwen3_5", "quantization": "q4f32_1",
+        "bos_token_id": 2, "eos_token_id": [1, 7], "pad_token_id": 0,
+        "model_config": {
+            **{key: value for key, value in common.items() if not key.endswith("token_id")},
+            **linear, "full_attention_interval": 2, "rope_theta": 10_000_000,
+            "partial_rotary_factor": 0.25, "context_window_size": 128,
+            "attention_bias": False, "hidden_act": "silu",
+        },
+    }))
+    monkeypatch.setattr(_MODULE, "MlcTensorCache", Cache)
+    model = _MODULE.build_transformers_model(tmp_path)
+    assert type(model).__name__ == "Qwen3_5ForCausalLM"
+    assert model.config.layer_types == reference.config.layer_types
+    input_ids = torch.tensor([[2, 3, 4, 5, 6, 8, 9, 10, 11]])
+    with torch.inference_mode():
+        torch.testing.assert_close(model(input_ids).logits, reference(input_ids).logits, rtol=1e-5, atol=1e-6)
+
+
+def test_q4_reference_refuses_an_architecture_it_does_not_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_MODULE, "transformers_state_dict", lambda _directory: ({}, {
+        "architecture": "gpt2", "quantization": "q4f32_1", "vocab_size": 8, "hidden_size": 4,
+        "intermediate_size": 8, "num_hidden_layers": 1, "num_attention_heads": 1,
+        "num_key_value_heads": 1, "head_dim": 4, "rms_norm_eps": 1e-6,
+        "bos_token_id": 0, "eos_token_id": 0, "pad_token_id": 0,
+    }))
+    with pytest.raises(ValueError, match="no Transformers reference"):
+        _MODULE.build_transformers_model(tmp_path)
 
 
 def test_browser_residual_correction_preserves_gradient_and_replaces_value() -> None:

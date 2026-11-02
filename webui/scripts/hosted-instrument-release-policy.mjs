@@ -7,15 +7,18 @@ import { nativeFitModel } from "./hosted-native-models.mjs";
 const repositoryRoot = resolve(import.meta.dirname, "../..");
 const SHA256 = /^[0-9a-f]{64}$/;
 const COMMIT = /^[0-9a-f]{40}$/;
-const RELEASE_CORPUS_SCHEMA = "https://polythetic.ai/schemas/release-corpus-v1.json";
+const RELEASE_CORPUS_SCHEMA = "https://polythetic.ai/schemas/release-corpus-v2.json";
 const RELEASE_CORPUS_ALGORITHM = "drowse-release-corpus-v1";
-const MINIMUM_SHARED_WORDS = 80;
 const MINIMUM_SAE_TOKENS = 50_000;
 const MINIMUM_SAE_SEQUENCE = 128;
 const NATIVE_LENS_CORPUS = JSON.parse(await readFile(
   resolve(repositoryRoot, "browser-runtime/release-corpus/native-lens-corpus.json"),
   "utf8",
 ));
+
+/** Instrument kinds whose publication and catalog admission run this policy (`--release`): the
+ *  lenses and units drowse fits natively, and a provider R lens for a model it cannot fit. */
+export const RELEASE_POLICY_KINDS = Object.freeze(["jlens", "slens", "units"]);
 
 export async function validateReleaseInstrumentPack({
   directory,
@@ -47,6 +50,7 @@ export async function validateReleaseInstrumentPack({
   // Their release closure is the pinned corpus and its approved attribution review.
   if (kind === "jlens" || kind === "slens" || kind === "units") {
     const corpus = validateNativeLensCorpus(nativeLensCorpus);
+    await validateCorpusAttribution(directory, kind, nativeLensCorpus);
     return kind === "units"
       ? validateNativeUnits(instrumentManifest, modelLock, corpus)
       : validateNativeLens(kind, instrumentManifest, vocabularyManifest, modelLock, corpus);
@@ -57,13 +61,11 @@ export async function validateReleaseInstrumentPack({
     sourceBytes,
     licenseEvidenceBytes,
     generatorBytes,
-    wordSeedBytes,
   ] = await Promise.all([
     readRequired(resolve(root, "release-corpus.json"), "release corpus manifest"),
     readRequired(resolve(root, "release-corpus-source.json"), "release corpus source manifest"),
     readRequired(resolve(root, "release-license-evidence"), "release license evidence"),
     readFile(resolve(repositoryRoot, "webui/scripts/prepare_hosted_release_corpus.py")),
-    readFile(resolve(repositoryRoot, "browser-runtime/release-corpus/jlens-word-seeds.txt")),
   ]);
   const release = parseJson(releaseBytes, "release corpus manifest");
   const source = parseJson(sourceBytes, "release corpus source manifest");
@@ -72,10 +74,7 @@ export async function validateReleaseInstrumentPack({
     source,
     sourceBytes,
     generatorBytes,
-    wordSeedBytes,
     licenseEvidenceBytes,
-    runtimeLock,
-    modelLock,
   });
   if (kind === "sae") {
     return validateSae(instrumentManifest, release, modelLock);
@@ -133,28 +132,24 @@ function validateProviderInstrument(kind, manifest, vocabulary, modelLock) {
   };
 }
 
+/** The SAE builder's corpus closure: the approved release corpus manifest, its source manifest
+ *  and license evidence, and the exact SAE corpus bytes. */
 export async function validateReleaseCorpusInputs({
   releaseManifestPath,
   sourceManifestPath,
   licenseEvidencePath,
-  kind,
   corpusBytes,
-  wordsBytes = null,
-  runtimeLock,
-  modelLock,
 }) {
   const [
     releaseBytes,
     sourceBytes,
     licenseEvidenceBytes,
     generatorBytes,
-    wordSeedBytes,
   ] = await Promise.all([
     readFile(releaseManifestPath),
     readFile(sourceManifestPath),
     readFile(licenseEvidencePath),
     readFile(resolve(repositoryRoot, "webui/scripts/prepare_hosted_release_corpus.py")),
-    readFile(resolve(repositoryRoot, "browser-runtime/release-corpus/jlens-word-seeds.txt")),
   ]);
   const release = parseJson(releaseBytes, "release corpus manifest");
   const source = parseJson(sourceBytes, "release corpus source manifest");
@@ -163,42 +158,31 @@ export async function validateReleaseCorpusInputs({
     source,
     sourceBytes,
     generatorBytes,
-    wordSeedBytes,
     licenseEvidenceBytes,
-    runtimeLock,
-    modelLock,
   });
-  const output = release.outputs[kind];
+  const output = release.outputs.sae;
   if (corpusBytes.byteLength !== output.bytes || sha256(corpusBytes) !== output.sha256) {
-    throw new Error(`release ${kind} corpus bytes differ from the approved manifest`);
-  }
-  if (kind === "jlens") {
-    if (
-      wordsBytes === null ||
-      wordsBytes.byteLength !== release.outputs.words.bytes ||
-      sha256(wordsBytes) !== release.outputs.words.sha256
-    ) throw new Error("release lens word bytes differ from the approved manifest");
+    throw new Error("release sae corpus bytes differ from the approved manifest");
   }
   return { releaseBytes, sourceBytes, licenseEvidenceBytes };
 }
 
+/** The SAE release corpus (prepare_hosted_release_corpus.py, schema 2): an approved, immutably
+ *  identified source, its license review and evidence, and the generator that wrote it. */
 function validateReleaseCorpus({
   release,
   source,
   sourceBytes,
   generatorBytes,
-  wordSeedBytes,
   licenseEvidenceBytes,
-  runtimeLock,
-  modelLock,
 }) {
   exactKeys(release, [
     "$schema", "schemaVersion", "algorithm", "generatorSha256",
-    "sourceManifestSha256", "source", "license", "wordSeeds", "selection", "outputs",
+    "sourceManifestSha256", "source", "license", "selection", "outputs",
   ], "release corpus manifest");
   if (
     release.$schema !== RELEASE_CORPUS_SCHEMA ||
-    release.schemaVersion !== 1 ||
+    release.schemaVersion !== 2 ||
     release.algorithm !== RELEASE_CORPUS_ALGORITHM
   ) throw new Error("release corpus manifest identity is invalid");
   digest(release.generatorSha256, "release corpus generator digest");
@@ -211,11 +195,10 @@ function validateReleaseCorpus({
   }
 
   exactKeys(source, [
-    "$schema", "schemaVersion", "status", "blockers", "source", "license",
-    "wordSeeds", "tokenizers", "selection",
+    "$schema", "schemaVersion", "status", "blockers", "source", "license", "selection",
   ], "release corpus source manifest");
   if (
-    source.schemaVersion !== 1 || source.status !== "approved" ||
+    source.schemaVersion !== 2 || source.status !== "approved" ||
     !Array.isArray(source.blockers) || source.blockers.length !== 0
   ) throw new Error("release corpus source is not approved");
   exactKeys(source.source, [
@@ -253,75 +236,20 @@ function validateReleaseCorpus({
   if (
     canonical(source.source) !== canonical(release.source) ||
     canonical(source.license) !== canonical(release.license) ||
-    canonical(source.wordSeeds) !== canonical(release.wordSeeds) ||
     canonical(source.selection) !== canonical(release.selection)
   ) throw new Error("release corpus provenance differs from its approved source manifest");
 
-  exactKeys(source.wordSeeds, ["path", "sha256", "bytes", "license"], "word seeds");
-  if (
-    source.wordSeeds.path !== "browser-runtime/release-corpus/jlens-word-seeds.txt" ||
-    source.wordSeeds.bytes !== wordSeedBytes.byteLength ||
-    source.wordSeeds.sha256 !== sha256(wordSeedBytes)
-  ) throw new Error("release corpus word seeds differ from the checked-in closure");
-  validateTokenizerClosure(source.tokenizers, runtimeLock, modelLock);
-  exactKeys(release.outputs, ["sae", "jlens", "words"], "release corpus outputs");
-  for (const [name, output] of Object.entries(release.outputs)) {
-    exactKeys(
-      output,
-      name === "words"
-        ? ["path", "sha256", "bytes", "count", "candidateCount", "tokenIds"]
-        : ["path", "sha256", "bytes", "documents", "characters"],
-      `release corpus ${name} output`,
-    );
-    digest(output.sha256, `release corpus ${name} digest`);
-  }
-  exactKeys(release.outputs.words.tokenIds, source.tokenizers.map(tokenizer => tokenizer.id),
-    "release word token closure");
-  for (const tokenIds of Object.values(release.outputs.words.tokenIds)) {
-    if (!Array.isArray(tokenIds) || tokenIds.length !== release.outputs.words.count ||
-        tokenIds.some(id => !Number.isSafeInteger(id) || id < 0) ||
-        new Set(tokenIds).size !== tokenIds.length) {
-      throw new Error("release word token closure is invalid");
-    }
-  }
+  exactKeys(release.outputs, ["sae"], "release corpus outputs");
+  exactKeys(release.outputs.sae, ["path", "sha256", "bytes", "documents", "characters"], "release corpus sae output");
+  digest(release.outputs.sae.sha256, "release corpus sae digest");
   if (
     release.selection?.algorithm !== RELEASE_CORPUS_ALGORITHM ||
-    !positiveInteger(release.selection.saeDocuments) ||
-    !positiveInteger(release.selection.jlensDocuments) ||
-    release.selection.minimumSharedWords < MINIMUM_SHARED_WORDS ||
-    release.outputs.words.count < MINIMUM_SHARED_WORDS
+    !positiveInteger(release.selection.saeDocuments)
   ) throw new Error("release corpus selection does not meet instrument minimums");
   if (
     release.outputs.sae.path !== "sae-corpus.json" ||
-    release.outputs.sae.documents !== release.selection.saeDocuments ||
-    release.outputs.jlens.path !== "jlens-corpus.json" ||
-    release.outputs.jlens.documents !== release.selection.jlensDocuments ||
-    release.outputs.words.path !== "jlens-words.json"
+    release.outputs.sae.documents !== release.selection.saeDocuments
   ) throw new Error("release corpus outputs do not close the approved selection");
-}
-
-function validateTokenizerClosure(value, runtimeLock, modelLock) {
-  if (!Array.isArray(value) || value.length === 0 ||
-      new Set(value.map(tokenizer => tokenizer?.id)).size !== value.length) {
-    throw new Error("release corpus tokenizer closure must name unique models");
-  }
-  if (!modelLock || !value.some(tokenizer => tokenizer?.id === modelLock.id)) {
-    throw new Error("release corpus tokenizer closure does not cover the target model");
-  }
-  for (const tokenizer of value) {
-    const model = runtimeLock.models.find(model => model.id === tokenizer?.id);
-    if (!model) throw new Error("release corpus tokenizer closure names an unlocked model");
-    exactKeys(tokenizer, [
-      "id", "sourceRepository", "sourceRevision", "tokenizerSha256", "tokenizerConfigSha256",
-    ], `release tokenizer ${model.id}`);
-    if (
-      tokenizer.id !== model.id ||
-      tokenizer.sourceRepository !== model.sourceRepository ||
-      tokenizer.sourceRevision !== model.sourceRevision ||
-      tokenizer.tokenizerSha256 !== model.tokenizerSha256 ||
-      tokenizer.tokenizerConfigSha256 !== model.chatTemplateSha256
-    ) throw new Error(`release corpus tokenizer closure differs for ${model.id}`);
-  }
 }
 
 function validateSae(manifest, release, modelLock) {
@@ -349,6 +277,26 @@ function validateSae(manifest, release, modelLock) {
   };
 }
 
+
+/** Every published native lens and units pack carries the approved corpus attribution beside
+ *  its record (`packs/<kind>/ATTRIBUTION.md`, written by build_hosted_packs.py): the review's text,
+ *  the dataset's URL and its license, so the notice travels with the pack to Hugging Face. */
+async function validateCorpusAttribution(directory, kind, record) {
+  const text = (await readRequired(
+    resolve(directory, "packs", kind, "ATTRIBUTION.md"),
+    `${kind} pack corpus attribution`,
+  )).toString("utf8");
+  for (const required of [
+    record.attributionApproval.attribution,
+    record.dataset.url,
+    record.dataset.license,
+    record.corpusSpec,
+  ]) {
+    if (!text.includes(required)) {
+      throw new Error(`the ${kind} pack's ATTRIBUTION.md does not carry the approved corpus attribution`);
+    }
+  }
+}
 
 /** A full-depth native lens (PLAN.md): every layer of the family at both sites (R:out stops one
  *  short of the last block, whose read is the logit lens), split-half recorded at each, fitted
@@ -498,7 +446,6 @@ function canonical(value) {
 }
 
 export const releaseInstrumentMinimums = Object.freeze({
-  sharedWords: MINIMUM_SHARED_WORDS,
   saeTokens: MINIMUM_SAE_TOKENS,
   saeSequence: MINIMUM_SAE_SEQUENCE,
 });

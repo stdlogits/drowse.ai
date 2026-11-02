@@ -55,6 +55,10 @@ CORE_STATISTICS = "neutral-statistics"
 NEUTRAL_ROWS = "neutral-rows.safetensors"
 VOCABULARY_FORMAT = "drowse-jlens-vocabulary-v2"
 WORD_SEEDS = Path(__file__).resolve().parent / "release-corpus" / "jlens-word-seeds.txt"
+# The corpus every native R and S lens is fitted on, and its approved attribution: each lens and
+# units pack carries the notice (``ATTRIBUTION.md``) wherever it is published.
+NATIVE_CORPUS = Path(__file__).resolve().parent / "release-corpus" / "native-lens-corpus.json"
+ATTRIBUTION = "ATTRIBUTION.md"
 # population_artifacts keys whose last axis is the vocabulary (or the head-read
 # vocabulary): the contrast statistics ``hide_hubs`` needs, shipped apart from the
 # per-unit scalars every unit read needs.
@@ -66,6 +70,26 @@ class PackBuildError(RuntimeError):
 
 
 # --------------------------------------------------------------------------- utilities
+
+def corpus_attribution(path: Path = NATIVE_CORPUS) -> str:
+    """The attribution notice a native lens or units pack ships, from the approved corpus record;
+    an unapproved record builds no pack."""
+    record = json.loads(path.read_text(encoding="utf-8"))
+    approval = record.get("attributionApproval")
+    if not isinstance(approval, dict) or approval.get("reviewStatus") != "approved" or not approval.get("attribution"):
+        raise PackBuildError(f"{path.name}: the corpus attribution is not approved")
+    dataset = record["dataset"]
+    return (
+        "# Corpus attribution\n\n"
+        "The lenses this pack was built from are drowse's own fits on the corpus below, over the\n"
+        "weights the browser runs. The pack holds fitted matrices and statistics, not corpus text.\n\n"
+        f"{approval['attribution']}\n\n"
+        f"- Dataset: {dataset['url']} ({dataset['config']}, revision {dataset['revision']})\n"
+        f"- License: {dataset['license']}\n"
+        f"- Corpus: `{record['corpusSpec']}`\n"
+    )
+
+
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -298,6 +322,7 @@ def build_lens_pack(
         summary["vocabulary"] = build_browser_vocabulary(model, pack, identity["hiddenSize"], words)
     else:
         summary["embedding_statistics"] = build_embedding_statistics(model, pack, runtime)
+    (pack / ATTRIBUTION).write_text(corpus_attribution(), encoding="utf-8")
     write_json(pack / "pack.json", summary)
     return summary
 
@@ -466,6 +491,7 @@ def build_units_pack(
         "layers": entries,
     }
     write_json(pack / "units.json", record)
+    (pack / ATTRIBUTION).write_text(corpus_attribution(), encoding="utf-8")
     return {
         "layers": len(entries),
         "reads_bytes": sum((pack / e["reads"]["file"]).stat().st_size for e in entries.values()),

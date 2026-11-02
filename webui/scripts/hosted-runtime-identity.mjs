@@ -12,6 +12,13 @@ import { fileURLToPath } from "node:url";
 export function lockedRuntimeIdentity(runtimeLock, modelId) {
   const lock = runtimeLock?.models?.find((entry) => entry.id === modelId);
   if (!lock) throw new Error(`unknown runtime-lock model ${String(modelId)}`);
+  // A pending lock (hook ABI v5 before W4 fills a library) has no identity to bind packs to:
+  // build against a candidate lock from prepare-hosted-candidate-lock.mjs instead.
+  const pending = ["manifestSha256", "librarySha256", "tokenizerSha256", "chatTemplateSha256", "hiddenSize", "layerMap"]
+    .filter((field) => lock[field] == null);
+  if (pending.length > 0) {
+    throw new Error(`${modelId}'s runtime identity is pending (${pending.join(", ")}); pass a candidate lock`);
+  }
   return {
     sourceModel: lock.sourceRepository,
     sourceRevision: lock.sourceRevision,

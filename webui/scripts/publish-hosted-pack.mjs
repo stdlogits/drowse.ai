@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { validatePackDirectory } from "./build-hosted-catalog.mjs";
+import { RELEASE_POLICY_KINDS } from "./hosted-instrument-release-policy.mjs";
 import { uploadCommitRevision } from "./hugging-face-upload.mjs";
 
 const exec = promisify(execFile);
@@ -13,20 +14,47 @@ const runtimeLockUrl = new URL("../../browser-runtime/runtime-lock.json", import
 const coreValidatorUrl = new URL("./validate-hosted-core-pack.mjs", import.meta.url);
 const instrumentValidatorUrl = new URL("./validate-hosted-instrument-pack.mjs", import.meta.url);
 
+const USAGE =
+  "usage: node publish-hosted-pack.mjs MODEL_ID core|sae|jlens|slens|units DIRECTORY " +
+  "[--with PACK_DIR]... [--core-statistics DIR] [--runtime-lock CANDIDATE.json] [--upload]\n" +
+  "  a units pack is validated through the R and S packs it binds (--with) and the core pack's " +
+  "neutral statistics (--core-statistics)";
+
 export function parseArguments(args) {
-  const upload = args.includes("--upload");
-  const values = args.filter((value) => value !== "--upload");
-  if (
-    values.length !== 3 ||
-    !["core", "sae", "jlens"].includes(values[1]) ||
-    args.some((value) => value.startsWith("--") && value !== "--upload")
-  ) {
-    throw new Error("usage: node publish-hosted-pack.mjs MODEL_ID core|sae|jlens DIRECTORY [--upload]");
+  const values = [];
+  const companions = [];
+  let coreStatistics = null;
+  let runtimeLock = null;
+  let upload = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === "--upload") {
+      upload = true;
+    } else if (argument === "--with" || argument === "--core-statistics" || argument === "--runtime-lock") {
+      const value = args[++index];
+      if (!value || value.startsWith("--")) throw new Error(USAGE);
+      if (argument === "--with") companions.push(resolve(value));
+      else if (argument === "--core-statistics") coreStatistics = resolve(value);
+      else runtimeLock = resolve(value);
+    } else if (argument.startsWith("--")) {
+      throw new Error(USAGE);
+    } else {
+      values.push(argument);
+    }
+  }
+  if (values.length !== 3 || !["core", "sae", "jlens", "slens", "units"].includes(values[1])) {
+    throw new Error(USAGE);
+  }
+  if ((values[1] === "units") !== (companions.length > 0 || coreStatistics !== null)) {
+    throw new Error(`${USAGE}\n  --with and --core-statistics belong to a units pack`);
   }
   return {
     modelId: values[0],
     kind: values[1],
     directory: resolve(values[2]),
+    companions,
+    coreStatistics,
+    runtimeLock,
     upload,
   };
 }
@@ -38,20 +66,30 @@ export function targetRepository(model, kind) {
     : `${model.convertedRepository}-instruments`;
 }
 
-export function semanticValidationArguments(modelId, kind, directory) {
+/** The validator a pack must pass before upload: the core validator, or the instrument
+ *  validator, under the release policy (`--release`: full depth, the pinned corpus and its
+ *  attribution) for the lens and units packs drowse fits natively or a provider's R lens. */
+export function semanticValidationArguments(
+  modelId, kind, directory, companions = [], coreStatistics = null, runtimeLock = null,
+) {
+  const lock = runtimeLock === null ? [] : ["--runtime-lock", runtimeLock];
   return kind === "core"
-    ? [fileURLToPath(coreValidatorUrl), modelId, directory]
+    ? [fileURLToPath(coreValidatorUrl), modelId, directory, ...lock]
     : [
         fileURLToPath(instrumentValidatorUrl),
         modelId,
         kind,
         directory,
+        ...(RELEASE_POLICY_KINDS.includes(kind) ? ["--release"] : []),
+        ...companions.flatMap((companion) => ["--with", companion]),
+        ...(coreStatistics === null ? [] : ["--core-statistics", coreStatistics]),
+        ...lock,
       ];
 }
 
 async function main() {
   const options = parseArguments(process.argv.slice(2));
-  const runtimeLock = JSON.parse(await readFile(runtimeLockUrl, "utf8"));
+  const runtimeLock = JSON.parse(await readFile(options.runtimeLock ?? runtimeLockUrl, "utf8"));
   const model = runtimeLock.models?.find((candidate) => candidate.id === options.modelId);
   if (!model) throw new Error(`unknown runtime model: ${options.modelId}`);
   const manifest = await validatePackDirectory(options.directory);
@@ -59,6 +97,9 @@ async function main() {
     options.modelId,
     options.kind,
     options.directory,
+    options.companions,
+    options.coreStatistics,
+    options.runtimeLock,
   ));
   const repository = targetRepository(model, options.kind);
   const info = await modelInfo(repository);

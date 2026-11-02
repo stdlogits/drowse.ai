@@ -45,15 +45,23 @@ export async function collectEvidenceAttestationSubjects(
 ) {
   const browserRuntimeRoot = resolve(repositoryRoot, "browser-runtime");
   const [runtime, authoring, benchmark] = await Promise.all([
-    readJson(resolve(browserRuntimeRoot, "runtime-feasibility-evidence.json")),
+    readJson(resolve(browserRuntimeRoot, "runtime-evidence.json")),
     readJson(resolve(browserRuntimeRoot, "authoring-evidence.json")),
     readJson(resolve(browserRuntimeRoot, "benchmark-evidence.json")),
   ]);
   const subjects = [];
-  for (const [kind, revision, entries] of [
-    ["runtime", runtime.drowseRevision, runtime.gates],
-    ["authoring", authoring.drowseRevision, authoring.evidence],
-  ]) {
+  // Runtime gates, authoring gates, then each production library's records (keyed by model id).
+  const groups = [
+    ["runtime", runtime.drowseRevision, runtime.gates, null],
+    ["authoring", authoring.drowseRevision, authoring.evidence, null],
+  ];
+  if (!runtime.libraries || typeof runtime.libraries !== "object" || Array.isArray(runtime.libraries)) {
+    throw new Error("runtime library evidence references are invalid");
+  }
+  for (const [modelId, entries] of Object.entries(runtime.libraries)) {
+    groups.push(["runtime", runtime.drowseRevision, entries, modelId]);
+  }
+  for (const [kind, revision, entries, modelId] of groups) {
     if (!entries || typeof entries !== "object" || Array.isArray(entries)) {
       throw new Error(`${kind} evidence references are invalid`);
     }
@@ -82,7 +90,8 @@ export async function collectEvidenceAttestationSubjects(
       const record = parseJson(bytes, `${evidenceType} evidence record`);
       if (
         record.evidenceType !== evidenceType ||
-        record.drowseRevision !== revision
+        record.drowseRevision !== revision ||
+        (modelId !== null && record.results?.modelId !== modelId)
       ) {
         throw new Error(`${evidenceType} evidence source binding is invalid`);
       }

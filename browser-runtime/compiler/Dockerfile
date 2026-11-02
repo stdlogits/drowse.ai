@@ -11,10 +11,15 @@ ARG LLVM_ARCHIVE_AMD64=clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz
 ARG LLVM_SHA256_AMD64=54ec30358afcc9fb8aa74307db3046f5187f9fb89fb37064cdde906e062ebf36
 ARG LLVM_ARCHIVE_ARM64=clang+llvm-18.1.8-aarch64-linux-gnu.tar.xz
 ARG LLVM_SHA256_ARM64=dcaa1bebbfbb86953fdfbdc7f938800229f75ad26c5c9375ef242edad737d999
+# linux/amd64 builds LLVM from the release tag with the archive's own clang: the x86_64 archive's
+# libraries were compiled against GCC 7's libstdc++, whose std::optional ABI no C++20 libstdc++
+# shares, so TVM linked against them segfaults on import (parity handoff B40-toolchain.md §3).
+ARG LLVM_SOURCE_TAG_AMD64=llvmorg-18.1.8
+ARG LLVM_SOURCE_COMMIT_AMD64=3b5b5c1ec4a3095ab096dd780e84d7ab81f3d7ff
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential ca-certificates cmake curl git libtinfo-dev libtinfo5 ninja-build \
-    pkg-config python3 python3-dev python3-pip python3-venv xz-utils \
+    pkg-config python3 python3-dev python3-pip python3-venv xz-utils zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN COMPILER_ARCH="${TARGETARCH:-$(dpkg --print-architecture)}" \
@@ -27,9 +32,35 @@ RUN COMPILER_ARCH="${TARGETARCH:-$(dpkg --print-architecture)}" \
       "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/${LLVM_ARCHIVE}" \
       --output /tmp/llvm.tar.xz \
     && echo "${LLVM_SHA256}  /tmp/llvm.tar.xz" | sha256sum --check --strict \
-    && mkdir /opt/llvm \
-    && tar --extract --xz --file /tmp/llvm.tar.xz --strip-components=1 --directory /opt/llvm \
+    && mkdir /opt/llvm-release \
+    && tar --extract --xz --file /tmp/llvm.tar.xz --strip-components=1 --directory /opt/llvm-release \
     && rm /tmp/llvm.tar.xz \
+    && test "$(/opt/llvm-release/bin/llvm-config --version)" = "18.1.8" \
+    && if [ "${COMPILER_ARCH}" = "arm64" ]; then \
+      mv /opt/llvm-release /opt/llvm; \
+    else \
+      git clone --filter=blob:none --no-checkout --depth 1 --branch "${LLVM_SOURCE_TAG_AMD64}" \
+        https://github.com/llvm/llvm-project.git /tmp/llvm-project \
+      && git -C /tmp/llvm-project sparse-checkout set --cone llvm cmake third-party \
+      && git -C /tmp/llvm-project checkout \
+      && test "$(git -C /tmp/llvm-project rev-parse HEAD)" = "${LLVM_SOURCE_COMMIT_AMD64}" \
+      && cmake -G Ninja -S /tmp/llvm-project/llvm -B /tmp/llvm-project/build \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/llvm \
+        -DCMAKE_C_COMPILER=/opt/llvm-release/bin/clang \
+        -DCMAKE_CXX_COMPILER=/opt/llvm-release/bin/clang++ \
+        -DLLVM_TARGETS_TO_BUILD="AArch64;AMDGPU;ARM;AVR;BPF;Hexagon;Lanai;LoongArch;Mips;MSP430;NVPTX;PowerPC;RISCV;Sparc;SystemZ;VE;WebAssembly;X86;XCore" \
+        -DLLVM_ENABLE_ASSERTIONS=OFF -DLLVM_ENABLE_RTTI=OFF -DLLVM_ENABLE_EH=OFF \
+        -DLLVM_ENABLE_THREADS=ON -DLLVM_ENABLE_TERMINFO=ON -DLLVM_ENABLE_ZLIB=FORCE_ON \
+        -DLLVM_ENABLE_ZSTD=OFF -DLLVM_ENABLE_LIBXML2=OFF -DLLVM_ENABLE_LIBEDIT=OFF \
+        -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF \
+        -DLLVM_INCLUDE_DOCS=OFF -DLLVM_ENABLE_BINDINGS=OFF -DLLVM_BUILD_TOOLS=OFF \
+        -DLLVM_PARALLEL_LINK_JOBS=2 -DCMAKE_CXX_FLAGS="-include cstdint" \
+      && ninja -C /tmp/llvm-project/build -j 8 \
+      && ninja -C /tmp/llvm-project/build -j 8 llvm-config \
+      && ninja -C /tmp/llvm-project/build install \
+      && install -m 0755 /tmp/llvm-project/build/bin/llvm-config /opt/llvm/bin/llvm-config \
+      && rm -rf /tmp/llvm-project /opt/llvm-release; \
+    fi \
     && test "$(/opt/llvm/bin/llvm-config --version)" = "18.1.8"
 
 RUN if [ "$(dpkg --print-architecture)" = "arm64" ]; then \

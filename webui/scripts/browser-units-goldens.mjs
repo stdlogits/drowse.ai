@@ -3,7 +3,11 @@
 //
 //   node scripts/browser-units-goldens.mjs --webllm WEB_LLM/lib/index.js \
 //     --fixtures DIR --arch qwen3|gemma3 --quantization q0f32|q4f32_1 [--suite all|units|replay|reads]
-//     [--headed]
+//     [--headed] [--report]
+//
+// `--report` prints nothing but one release-evidence observation for `webGpuGoldens`
+// (record-hosted-evidence.mjs): the library's attested descriptor and every golden file's worst
+// |Δ|; the evidence config runs it once per fixture library.
 //
 // DIR holds build-units-fixtures.py's model directory `units-<arch>-<quantization>` and its
 // library `libs/units-<arch>-<quantization>-v5.wasm`. The bridge's schema-4 descriptor is attested
@@ -16,6 +20,7 @@
 // positions 2, 5, 8), token-anatomy (taps, write norms, the chosen heads' rows) and unit-activity
 // (every unit's device peak, the host ranking, traces, the float16 population). The reads suite
 // runs every static-read member of the adapter (browser-units-reads.mjs).
+import { createHash } from "node:crypto";
 import { createServer as createHttpServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { basename, extname, resolve } from "node:path";
@@ -33,8 +38,9 @@ const libraryPath = resolve(options.fixtures, "libs", `units-${options.arch}-${o
 const golden = async (name) => JSON.parse(await readFile(resolve(goldens, `${name}-${options.arch}-v1.json`), "utf8"));
 const tiny = JSON.parse(await readFile(resolve(goldens, "units-tiny-models-v1.json"), "utf8")).arches[options.arch];
 const chatConfig = JSON.parse(await readFile(resolve(modelDirectory, "mlc-chat-config.json"), "utf8"));
+const tensorCacheBytes = await readFile(resolve(modelDirectory, "tensor-cache.json"));
 const modelFiles = ["mlc-chat-config.json", "tensor-cache.json", "tokenizer.json",
-  ...JSON.parse(await readFile(resolve(modelDirectory, "tensor-cache.json"), "utf8")).records.map((shard) => shard.dataPath)];
+  ...JSON.parse(tensorCacheBytes.toString("utf8")).records.map((shard) => shard.dataPath)];
 
 const vite = await createViteServer({
   root: webui, configFile: false, appType: "custom", logLevel: "silent",
@@ -495,7 +501,9 @@ const http = createHttpServer(async (request, response) => {
     if (url.pathname.startsWith("/model/")) {
       const name = basename(url.pathname);
       if (!modelFiles.includes(name)) return send("not found", "text/plain", 404);
-      return send(await readFile(resolve(modelDirectory, name)), extname(name) === ".json" ? "application/json" : "application/octet-stream");
+      // tensor-cache.json is the recorded model identity, so the page gets those exact bytes.
+      const body = name === "tensor-cache.json" ? tensorCacheBytes : await readFile(resolve(modelDirectory, name));
+      return send(body, extname(name) === ".json" ? "application/json" : "application/octet-stream");
     }
     // The adapter's own modules (webLlmBlockSites.ts and what it imports), served by Vite.
     if (url.pathname.startsWith("/src/") || url.pathname.startsWith("/@") || url.pathname.startsWith("/node_modules/")) {
@@ -512,6 +520,11 @@ const browser = await chromium.launch(releaseToolBrowserOptions({
   headless: !options.headed, args: releaseToolGpuArgs({ headless: !options.headed }),
 }));
 let failures = 0;
+// The report mode's observation: stdout carries it alone, so progress lines are dropped.
+const log = options.report ? () => {} : console.log;
+const suites = {};
+const worstOf = (name, value) => { suites[name] = Math.max(suites[name] ?? 0, value); };
+let descriptorRecord = null;
 try {
   const page = await browser.newPage();
   page.setDefaultTimeout(300_000);
@@ -532,12 +545,14 @@ try {
   });
   // The adapter's own attestation: the library's descriptor against the lock-shaped model.
   const attested = engineModule.attestCompiledStructuredHookProfile(profileValue.profile, { variant, blockSpec }, "block-sites-v5");
-  console.log(`descriptor attested: ${attested.descriptor.length} fields, unit sites ${attested.unitSites}, units pair ${profileValue.units}`);
+  descriptorRecord = { schema: 4, fields: attested.descriptor.length, unitSites: attested.unitSites, unitsPair: profileValue.units };
+  log(`descriptor attested: ${attested.descriptor.length} fields, unit sites ${attested.unitSites}, units pair ${profileValue.units}`);
   if (options.suite === "units" || options.suite === "all") {
     for (const item of cases) {
       const result = await page.evaluate(runCase, { item, textIds: gemma ? prompt.slice(1) : prompt });
       const worst = checkCase(item, result);
-      console.log(`${item.name}: ${result.forwards.length} forwards, worst |Δ| ${worst.toExponential(2)}`);
+      worstOf(item.name.split(":")[0], worst);
+      log(`${item.name}: ${result.forwards.length} forwards, worst |Δ| ${worst.toExponential(2)}`);
     }
   }
   if (options.suite === "reads" || options.suite === "all") {
@@ -556,7 +571,8 @@ try {
       L, d, dFF: blockSpec.dFF, H: blockSpec.nHeads, KV: blockSpec.nKvHeads, hd, V: chatConfig.vocab_size,
       sandwich: gemma, eps: config.rms_norm_eps, embedScale: blockSpec.embedScale,
     });
-    console.log(`reads ${options.arch} ${options.quantization}: ${Object.entries(worst).map(([k, v]) => `${k} ${v.toExponential(2)}`).join(", ")}`);
+    for (const [name, value] of Object.entries(worst)) worstOf(name, value);
+    log(`reads ${options.arch} ${options.quantization}: ${Object.entries(worst).map(([k, v]) => `${k} ${v.toExponential(2)}`).join(", ")}`);
   }
   if (options.suite === "replay" || options.suite === "all") {
     const capabilities = engineModule.blockSitesCapabilitiesFor(attested, { variant, blockSpec, unitRefusal: null }, chatConfig.vocab_size);
@@ -567,9 +583,10 @@ try {
       const worst = checkReplay(item, result);
       const key = item.name.split(":")[0];
       worstByGolden[key] = Math.max(worstByGolden[key] ?? 0, worst);
-      console.log(`${item.name}: ${item.pieces.length} forwards, worst |Δ| ${worst.toExponential(2)}`);
+      log(`${item.name}: ${item.pieces.length} forwards, worst |Δ| ${worst.toExponential(2)}`);
     }
-    console.log(`replay ${options.arch} ${options.quantization}: ${Object.entries(worstByGolden).map(([k, v]) => `${k} ${v.toExponential(2)}`).join(", ")}`);
+    for (const [name, value] of Object.entries(worstByGolden)) worstOf(name, value);
+    log(`replay ${options.arch} ${options.quantization}: ${Object.entries(worstByGolden).map(([k, v]) => `${k} ${v.toExponential(2)}`).join(", ")}`);
   }
 } catch (error) {
   failures += 1;
@@ -578,6 +595,34 @@ try {
   await browser.close();
   http.close();
   await vite.close();
+}
+if (failures === 0 && options.report) {
+  if (options.suite !== "all" || descriptorRecord === null) {
+    console.error("--report covers the whole suite (--suite all)");
+    process.exit(1);
+  }
+  // The bytes that ran: read once before the browser started and served from memory.
+  const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
+  process.stdout.write(`${JSON.stringify({
+    schemaVersion: 1,
+    evidenceType: "webGpuGoldens",
+    fixturePath: "drowse/tests/fixtures/browser/units-tiny-models-v1.json",
+    passed: true,
+    producedAt: new Date().toISOString(),
+    results: {
+      backend: "webgpu",
+      // What actually ran: the bridge bundle served to the page, each fixture library and model.
+      bridgeSha256: digest(webllm),
+      libraries: {
+        [`${options.arch}-${options.quantization}`]: {
+          descriptor: descriptorRecord,
+          librarySha256: digest(libraryBytes),
+          modelSha256: digest(tensorCacheBytes),
+          suites: Object.fromEntries(Object.entries(suites).sort(([a], [b]) => a.localeCompare(b))),
+        },
+      },
+    },
+  })}\n`);
 }
 process.exit(failures === 0 ? 0 : 1);
 
@@ -917,10 +962,11 @@ async function loadTensorCache(directory) {
 }
 
 function parseArguments(args) {
-  const result = { headed: false, port: 0, suite: "all" };
+  const result = { headed: false, port: 0, suite: "all", report: false };
   for (let i = 0; i < args.length; i += 1) {
     const key = args[i];
     if (key === "--headed") result.headed = true;
+    else if (key === "--report") result.report = true;
     else if (["--webllm", "--fixtures", "--arch", "--quantization", "--port", "--suite"].includes(key)) result[key.slice(2)] = args[++i];
     else throw new Error(`unknown argument ${key}`);
   }

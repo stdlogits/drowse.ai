@@ -10,37 +10,13 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import {
-  structuredHookProfile,
+  HOOK_ABI,
+  RUNTIME_ABI,
+  architectureStructuredHookProfile,
   thinkingProfile,
 } from "./hosted-model-profiles.mjs";
+import { requireLibraryVmFunctions } from "./overlay-vm-functions.mjs";
 
-const STANDARD_V3_VM_FUNCTIONS = [
-  "drowse_hook_profile",
-  "drowse_prefill",
-  "drowse_decode",
-  "drowse_batch_prefill",
-  "drowse_batch_decode",
-  "drowse_capture_prefill",
-  "drowse_capture_decode",
-  "drowse_capture_batch_prefill",
-  "drowse_capture_batch_decode",
-  "drowse_rank_one_capture_prefill_v1",
-  "drowse_rank_one_capture_decode_v1",
-  "drowse_rank_one_capture_batch_prefill_v1",
-  "drowse_rank_one_capture_batch_decode_v1",
-  "drowse_structured_batch_prefill",
-  "drowse_structured_batch_decode",
-  "drowse_geometry_batch_prefill",
-  "drowse_geometry_batch_decode",
-  "drowse_curved_batch_prefill",
-  "drowse_curved_batch_decode",
-  "drowse_jlens_probabilities",
-  "drowse_jlens_readout_accumulate",
-  "drowse_jlens_readout_topk",
-  "drowse_jlens_directions",
-  "drowse_sae_readout_accumulate",
-  "drowse_sae_jump_relu_readout_accumulate",
-];
 const REQUIRED_PROVENANCE_FILES = [
   "LICENSE.model",
   "MODEL-LICENSE.json",
@@ -78,7 +54,13 @@ const tensorCache = parseJson(
 const modelConfig = config.model_config?.text_config ?? config.model_config;
 const buildFiles = validateBuildManifest(build);
 await verifyBuildFiles(converted, buildFiles);
-const hookProfile = structuredHookProfile(build.structuredHookProfile);
+if (build.hookAbi !== HOOK_ABI || build.runtimeAbi !== RUNTIME_ABI) {
+  throw new Error(`drowse-build.json predates hook ABI ${HOOK_ABI} (${RUNTIME_ABI})`);
+}
+const hookProfile = architectureStructuredHookProfile(
+  text(build.architecture, "architecture"),
+  build.structuredHookProfile,
+);
 const artifacts = [
   ...await runtimeArtifacts(
     converted,
@@ -200,18 +182,9 @@ async function runtimeArtifacts(root, wasm, config, tensorCache, hookProfile) {
   if (!wasmBytes.subarray(0, 4).equals(Buffer.from([0, 97, 115, 109]))) {
     throw new Error("model library is not a WebAssembly module");
   }
-  if (hookProfile === "standard-v3") {
-    for (const name of STANDARD_V3_VM_FUNCTIONS) {
-      const encoded = Buffer.from(name);
-      const length = Buffer.alloc(8);
-      length.writeBigUInt64LE(BigInt(encoded.byteLength));
-      if (!wasmBytes.includes(Buffer.concat([length, encoded]))) {
-        throw new Error(
-          `standard-v3 model library lacks required VM function ${name}`,
-        );
-      }
-    }
-  }
+  // Hook ABI v5's surface, from the overlay's own lists: every required function, and the unit
+  // functions exactly when the profile is standard-v4 (their absence attests the residual one).
+  requireLibraryVmFunctions(wasmBytes, hookProfile);
   result.push(await artifact(wasm, "model.wasm", "model_library"));
   return result;
 }
