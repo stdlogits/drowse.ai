@@ -83,6 +83,7 @@ import {
   type SteeringExpressionTerm,
   type SteeringTrigger,
 } from "./steeringExpression";
+import { instrumentAtomUnavailable } from "./hookCapabilities";
 
 interface CoreManifold {
   key: string;
@@ -1649,10 +1650,7 @@ export class BrowserFeasibilityCorePackCompiler {
     if (attached === undefined && (namespace === "neuron" || namespace === "head" || namespace === "slens")) {
       // Units and the S lens parse, but this runtime cannot read them yet: refuse rather than
       // install a gate that would never fire.
-      throw coreError(
-        "CORE_PACK_EXPRESSION_UNAVAILABLE",
-        `${namespace}/ instrument atoms are not available in the browser runtime`,
-      );
+      throw instrumentAtomUnavailable(namespace);
     }
     let geometryTarget: {
       manifold: CoreManifold;
@@ -2611,10 +2609,7 @@ export class BrowserFeasibilityCorePackCompiler {
       };
     }
     if (atom.namespace !== null && RESERVED_NAMESPACES.has(atom.namespace)) {
-      throw coreError(
-        "CORE_PACK_EXPRESSION_UNAVAILABLE",
-        `${atom.namespace}/ instrument atoms are not available in the browser runtime`,
-      );
+      throw instrumentAtomUnavailable(atom.namespace);
     }
     if (
       atom.namespace === null && atom.variant === "raw" &&

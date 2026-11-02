@@ -2861,24 +2861,24 @@ try {
     const whitened = await BrowserFeasibilityCorePackCompiler.load(
       (await fixture({ withWhitener: true })).request,
     );
-    for (const expression of [
-      "0.5 alert@when:neuron/L8n344>2", "0.5 alert@after&when:head/L3h2<=0.5",
-      "0.5 alert@when:slens/Owl>3",
+    // The same words hook-capabilities pins for the library check (instrumentAtomUnavailable).
+    const unavailable = (namespace) => (error) =>
+      error.code === "CORE_PACK_EXPRESSION_UNAVAILABLE" &&
+      error.message === `${namespace}/ instrument atoms are not available in the browser runtime`;
+    for (const [expression, namespace] of [
+      ["0.5 alert@when:neuron/L8n344>2", "neuron"],
+      ["0.5 alert@after&when:head/L3h2<=0.5", "head"],
+      ["0.5 alert@when:slens/Owl>3", "slens"],
     ]) {
-      assert.throws(
-        () => whitened.compile(expression),
-        (error) => error.code === "CORE_PACK_EXPRESSION_UNAVAILABLE" &&
-          /instrument atoms are not available in the browser runtime/.test(error.message),
-        expression,
-      );
+      assert.throws(() => whitened.compile(expression), unavailable(namespace), expression);
     }
-    for (const expression of ["0.3 slens/#12", "0.3 slens/Owl", "0.2 neuron/L8n344", "!head/L3h2"]) {
-      assert.throws(
-        () => compiler.compile(expression),
-        (error) => error.code === "CORE_PACK_EXPRESSION_UNAVAILABLE" &&
-          /instrument atoms are not available in the browser runtime/.test(error.message),
-        expression,
-      );
+    for (const [expression, namespace] of [
+      ["0.3 slens/#12", "slens"],
+      ["0.3 slens/Owl", "slens"],
+      ["0.2 neuron/L8n344", "neuron"],
+      ["!head/L3h2", "head"],
+    ]) {
+      assert.throws(() => compiler.compile(expression), unavailable(namespace), expression);
     }
   });
 
