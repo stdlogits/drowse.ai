@@ -137,7 +137,7 @@ const vite = await createViteServer({
   root: webui, configFile: false, appType: "custom", logLevel: "silent",
   // The fitting worker loads its kernel from /wasm/ (the hosted public directory).
   publicDir: resolve(webui, "public-hosted"),
-  server: { middlewareMode: true, watch: null },
+  server: { middlewareMode: true, hmr: false, watch: null },
 });
 const http = createHttpServer(async (request, response) => {
   for (const [name, value] of Object.entries({
@@ -196,7 +196,10 @@ try {
   const page = await browser.newPage();
   page.setDefaultTimeout(600_000);
   page.on("console", (message) => {
-    if (message.type() === "error") process.stderr.write(`browser console: ${message.text()}\n`);
+    // The Vite client's dev-server socket is not served here; its complaints are noise.
+    if (message.type() === "error" && !/vite|Vite server/.test(message.text())) {
+      process.stderr.write(`browser console: ${message.text()}\n`);
+    }
   });
   await page.goto(origin);
 
@@ -275,13 +278,45 @@ try {
       onDeviceLost() {},
     });
     const positions = ids.map((_, index) => index);
-    const result = await runtime.capturePreparedPositions({ inputIds: ids, position: ids.length - 1 }, positions);
+    const row = { inputIds: ids, position: ids.length - 1 };
+    const result = await runtime.capturePreparedPositions(row, positions);
     const blockSites = runtime.blockSitesCapabilities();
+    // The q4 gate's steered capture (hosted-residual-capture.worker.ts): probes e_0, e_1 at every
+    // layer, with and without a rank-1 group on e_0 at layer 1.
+    const { compileStructuredHookProgram } = await import("/src/hosted/runtime/structuredHookProgram.ts");
+    const d = request.runtimeIdentity.hiddenSize;
+    const axis = (k) => Float32Array.from({ length: d }, (_, index) => (index === k ? 1 : 0));
+    const probes = [0, 1].map((k) => ({ kind: "linear", direction: axis(k), bias: 0 }));
+    const program = compileStructuredHookProgram(d, request.runtimeIdentity.layerMap.map((layer) => ({
+      probes,
+      ...(layer === 1
+        ? { affineGroups: [{ active: true, basis: [axis(0)], neutral: new Float32Array(d), target: [1.25], along: 0.4, kappa: [0.3] }] }
+        : {}),
+    })), blockSites.profile);
+    const control = await runtime.measurePreparedPositions(row, positions,
+      { ...program, affineActive: new Uint32Array(program.affineActive.length) });
+    const steered = await runtime.measurePreparedPositions(row, positions, program);
+    // browser-app-runtime's injection-arithmetic oracle (browser-steering-positions.ts).
+    const { verifySteeringPositions } = await import("/scripts/browser-steering-positions.ts");
+    let arithmetic;
+    try {
+      arithmetic = await verifySteeringPositions(runtime, {
+        hiddenSize: d, layerMap: request.runtimeIdentity.layerMap,
+        structuredHookProfile: request.structuredHookProfile, quantization: request.quantization,
+        source: request.runtimeIdentity.sourceModel,
+      }, { arithmeticOnly: true });
+    } catch (error) {
+      arithmetic = { passed: false, error: String(error?.stack ?? error) };
+    }
     await runtime.unload();
     return {
       layerCount: result.layerCount, hiddenSize: result.hiddenSize, positionCount: result.positionCount,
       values: Array.from(result.values),
       profile: blockSites?.profile.id ?? null,
+      probeCount: control.probeCount,
+      control: Array.from(control.values),
+      steered: Array.from(steered.values),
+      arithmetic,
     };
   }, { artifacts, request: buildRequest, ids: goldenIds });
   check("hosted runtime attests the library as standard-v4", capture.profile === "standard-v4", String(capture.profile));
@@ -296,6 +331,37 @@ try {
   }
   check("plain residual capture matches drowse's block-sites out [L, T, d]", shapeOk && outside === 0,
     `${goldenOut.length} values, worst |Δ| ${worst.toExponential(2)}, ${outside} outside atol ${tolerance.atol} + rtol ${tolerance.rtol}`);
+
+  // 3. The structured measurement the q4 gate's steered capture reads: [position, layer, probe].
+  const K = capture.probeCount;
+  const probe = (values, p, l, k) => values[(p * layerCount + l) * K + k];
+  let readback = 0;
+  let preHook = 0;
+  let hook = 0;
+  for (let p = 0; p < goldenIds.length; p += 1) {
+    for (let l = 0; l < layerCount; l += 1) {
+      for (let k = 0; k < 2; k += 1) {
+        const plain = capture.values[(l * goldenIds.length + p) * hiddenSize + k];
+        readback = Math.max(readback, Math.abs(probe(capture.control, p, l, k) - plain));
+        if (l < 1) preHook = Math.max(preHook, Math.abs(probe(capture.steered, p, l, k) - probe(capture.control, p, l, k)));
+      }
+      if (l === 1) {
+        const before = probe(capture.control, p, l, 0);
+        const expected = before + 0.4 * (1.25 - 0.3 * before);
+        hook = Math.max(hook, Math.abs(probe(capture.steered, p, l, 0) - expected),
+          Math.abs(probe(capture.steered, p, l, 1) - probe(capture.control, p, l, 1)));
+      }
+    }
+  }
+  check("structured probes read the plain capture's residual (control program)", readback <= 1e-5,
+    `worst |Δ| ${readback.toExponential(2)}`);
+  check("steered probes equal the control's before the hook layer", preHook === 0, `max |Δ| ${preHook}`);
+  check("the hook layer's probes move by along·(target − kappa·h·u) on u only", hook <= 1e-5,
+    `worst |Δ| ${hook.toExponential(2)}`);
+  check("browser-steering-positions injection arithmetic (arithmeticOnly)", capture.arithmetic.passed === true,
+    capture.arithmetic.passed
+      ? capture.arithmetic.checks.map((entry) => `${entry.label}: ${entry.maxInjectionError.toExponential(2)}`).join("; ")
+      : capture.arithmetic.error);
 } finally {
   await browser.close();
   await new Promise((ok) => http.close(ok));

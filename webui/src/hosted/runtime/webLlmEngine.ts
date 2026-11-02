@@ -108,6 +108,8 @@ export interface DrowseWebLlmEngineInstance extends WebLlmGenerationEngine {
   unload(): Promise<void>;
   interruptGenerate(): Promise<void> | void;
   resetChat(): Promise<void>;
+  /** Prefill `inputIds` (chunked) under the installed program and sample the next token. */
+  forwardTokensAndSample(inputIds: number[], isPrefill: boolean, modelId?: string): Promise<number>;
   supportsDrowseStructuredHooks(modelId?: string): Promise<boolean>;
   supportsDrowseCurvedHooks(modelId?: string): Promise<boolean>;
   supportsDrowseResidualCapture(modelId?: string): Promise<boolean>;
@@ -203,6 +205,14 @@ export interface DrowseResidualCapture {
   layerCount: number;
   positionCount: number;
   hiddenSize: number;
+  positions: number[];
+  values: Float32Array;
+}
+
+/** `values[position][layer][probe]`, row-major. */
+export interface DrowseStructuredMeasurementCapture {
+  layerCount: number;
+  probeCount: number;
   positions: number[];
   values: Float32Array;
 }
@@ -1076,27 +1086,7 @@ export class DrowseWebLlmRuntime {
     row: DrowsePreparedCaptureRow,
     positions: number[],
   ): Promise<DrowseResidualCapture> {
-    if (
-      !Number.isSafeInteger(row.position) || row.position < 0 ||
-      row.position >= row.inputIds.length
-    ) {
-      throw runtimeError(
-        "INVALID_CAPTURE_ROW",
-        "The prepared Drowse capture row has an invalid pooling position",
-      );
-    }
-    if (
-      positions.length === 0 || positions.some((position, index) =>
-        !Number.isSafeInteger(position) || position < 0 ||
-        position >= row.inputIds.length ||
-        (index > 0 && position <= positions[index - 1])
-      )
-    ) {
-      throw runtimeError(
-        "INVALID_CAPTURE_POSITIONS",
-        "Drowse capture positions must be sorted unique token positions in the prepared row",
-      );
-    }
+    validatePreparedCaptureRequest(row, positions);
     this.reusablePlainChatPrefix = false;
     const capture = await this.requireEngine().captureDrowseResiduals(
       row.inputIds,
@@ -1117,6 +1107,53 @@ export class DrowseWebLlmRuntime {
       ...capture,
       positions: [...capture.positions],
       values: new Float32Array(capture.values),
+    };
+  }
+
+  /** The structured program's probe slots at each position (`[positions, L, maxProbes]`): the
+   *  program's last-row measurement of a fresh prefill of the row's tokens through that
+   *  position, so a probe reads the residual after the hook at every layer. The release
+   *  tools' steered capture on hook ABI v5 (a block-sites library has no other steered read
+   *  of a position on every profile). */
+  async measurePreparedPositions(
+    row: DrowsePreparedCaptureRow,
+    positions: number[],
+    program: StructuredHookProgramBuffers,
+  ): Promise<DrowseStructuredMeasurementCapture> {
+    validatePreparedCaptureRequest(row, positions);
+    if (program.position_spans != null || program.position_indices != null) {
+      throw runtimeError(
+        "INVALID_CAPTURE_PROGRAM",
+        "A measured capture runs its program at every position",
+      );
+    }
+    const engine = this.requireEngine();
+    const slots = program.layerCount * program.profile.maxProbes;
+    const values = new Float32Array(positions.length * slots);
+    this.reusablePlainChatPrefix = false;
+    await this.installHookProgram(program);
+    try {
+      for (const [index, position] of positions.entries()) {
+        await engine.resetChat();
+        await engine.forwardTokensAndSample(row.inputIds.slice(0, position + 1), true);
+        const measured = await engine.readDrowseMeasurements();
+        if (measured === undefined || measured.length !== slots || !measured.every(Number.isFinite)) {
+          throw runtimeError(
+            "INVALID_CAPTURE_RESULT",
+            "The Drowse WebLLM runtime returned malformed structured measurements",
+          );
+        }
+        values.set(measured, index * slots);
+      }
+    } finally {
+      await engine.clearDrowseProgram();
+      await engine.resetChat();
+    }
+    return {
+      layerCount: program.layerCount,
+      probeCount: program.profile.maxProbes,
+      positions: [...positions],
+      values,
     };
   }
 
