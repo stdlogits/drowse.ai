@@ -47,7 +47,7 @@ try {
     {
       unitSites: 1, maxUnitGroups: 4, maxNeuronAblations: 256, maxHeadAblations: 64,
       maxUnitTaps: 64, maxHeadTaps: 16, maxActivityTraces: 32, maxActivitySpans: 4,
-      maxPatternLayers: 8, maxPatternHeads: 16, maxLensReadTopK: 256, maxAnatomyUnits: 64,
+      maxPatternLayers: 16, maxPatternHeads: 16, maxLensReadTopK: 256, maxAnatomyUnits: 64,
     },
   );
   assert.deepEqual(
@@ -165,7 +165,7 @@ try {
   assert.deepEqual(Object.values(qwen).slice(31), [
     1, 96, 4, 2, 16, 0, 0, 1, 0x3f800000, profiles.float32Bits(1e-6), 1,
     profiles.float32Bits(0.25), 0, 0, profiles.float32Bits(10000), 0, 0x3f800000, 0, 0, 0, 2048,
-    4, 256, 64, 64, 16, 32, 4, 8, 16, 544, 1, 256, 64, 8, 4096,
+    4, 256, 64, 64, 16, 32, 4, 16, 16, 544, 1, 256, 64, 8, 4096,
   ]);
   const gemma = named(profiles.expectedHookProfileDescriptor(v4, model("gemma3")));
   assert.deepEqual(

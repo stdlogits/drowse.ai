@@ -148,7 +148,7 @@ export const STANDARD_STRUCTURED_HOOK_PROFILE_V4: BlockSitesCapacityProfile = Ob
   maxHeadTaps: 16,
   maxActivityTraces: 32,
   maxActivitySpans: 4,
-  maxPatternLayers: 8,
+  maxPatternLayers: 16,
   maxPatternHeads: 16,
   maxLensReadTopK: 256,
   maxAnatomyUnits: 64,

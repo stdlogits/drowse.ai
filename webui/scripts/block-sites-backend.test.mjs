@@ -113,8 +113,8 @@ try {
 
   const metaLayout = backend.replayMetaLayout(v4);
   assert.deepEqual(metaLayout, {
-    length: 126, anatomyPosition: 0, spanCount: 1, spans: 2, populationRow: 18, traceCount: 19,
-    traces: 20, patternLayerCount: 116, patternLayers: 117, flags: 125,
+    length: 134, anatomyPosition: 0, spanCount: 1, spans: 2, populationRow: 18, traceCount: 19,
+    traces: 20, patternLayerCount: 116, patternLayers: 117, flags: 133,
   });
   assert.throws(() => backend.replayMetaLayout(residual), /no replay entry point/);
   const qwenModel = { layerCount: 36, contextTokens: 4096, blockSpec: spec };
@@ -129,14 +129,14 @@ try {
     },
     patternLayers: [6, 10, 35],
   });
-  assert.equal(meta.length, 126);
+  assert.equal(meta.length, 134);
   assert.deepEqual(Array.from(meta.subarray(0, 18)), [
     41, 2, 0, 3, -1, 1, 3, 5, 30, 0, -1, -1, -1, -1, -1, -1, -1, -1,
   ]);
   assert.deepEqual(Array.from(meta.subarray(18, 27)), [2, 2, 8, 0, 344, 20, 1, 3, -1]);
-  assert.deepEqual(Array.from(meta.subarray(116, 126)), [3, 6, 10, 35, -1, -1, -1, -1, -1, 7]);
+  assert.deepEqual(Array.from(meta.subarray(116, 134)), [3, 6, 10, 35, ...Array(13).fill(-1), 7]);
   const none = backend.encodeReplayMeta(v4, qwenModel, { anatomyPosition: null, activity: null, patternLayers: null });
-  assert.deepEqual([none[0], none[1], none[18], none[19], none[116], none[125]], [-1, 0, -1, 0, 0, 0]);
+  assert.deepEqual([none[0], none[1], none[18], none[19], none[116], none[133]], [-1, 0, -1, 0, 0, 0]);
   assert.throws(
     () => backend.encodeReplayMeta(v4, qwenModel, { anatomyPosition: null, activity: null, patternLayers: [1] }),
     /query at the anatomy position/,
@@ -147,9 +147,9 @@ try {
   );
   assert.throws(
     () => backend.encodeReplayMeta(v4, qwenModel, {
-      anatomyPosition: 1, activity: null, patternLayers: Array.from({ length: 9 }, (_, i) => i),
+      anatomyPosition: 1, activity: null, patternLayers: Array.from({ length: 17 }, (_, i) => i),
     }),
-    /1 to 8 layers/,
+    /1 to 16 layers/,
   );
   // Nothing wraps in the int32 table: rows, positions and units are bounded by the model.
   const activityAt = (change) => ({
@@ -194,12 +194,14 @@ try {
   });
   assert.equal(qwen4b.headGrams * 4 / MiB, 72);
   assert.equal(qwen4b.patternKeysSlot * 4 / MiB, 16);
+  // Sixteen slots at the full context: 256 MiB, within the 1 GiB binding every units model needs.
+  assert.equal(qwen4b.patternKeysSlot * v4.maxPatternLayers * 4 / MiB, 256);
   assert.equal(qwen4b.traces * 4 / MiB, 0.5);
   assert.ok(Math.abs(qwen4b.activityState * 4 / MiB - 4.0) < 0.05);
   assert.equal(qwen4b.anatomyTaps, 36 * 29184);
   assert.equal(qwen4b.unitMeta, 4 * 37 + 2 * (256 + 64 + 64 + 16));
   assert.equal(qwen4b.unitCoeff, 2 * 256 + 64 + 64 * 128);
-  assert.equal(qwen4b.replayMeta, 126);
+  assert.equal(qwen4b.replayMeta, 134);
   const gemma270m = backend.blockSitesBufferElements(v4, {
     layerCount: 18, hiddenSize: 640, contextTokens: 4096, prefillChunkSize: 2048,
     blockSpec: { ...spec, dFF: 2048, nHeads: 4, nKvHeads: 1, headDim: 256 },

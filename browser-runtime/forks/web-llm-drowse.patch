@@ -170,7 +170,7 @@ index 0070bde..2b279d6 100644
        "version": "9.3.0",
        "resolved": "https://registry.npmjs.org/v8-to-istanbul/-/v8-to-istanbul-9.3.0.tgz",
 diff --git a/package.json b/package.json
-index cabfc3d..970f86b 100644
+index cabfc3d..d1de6ae 100644
 --- a/package.json
 +++ b/package.json
 @@ -1,12 +1,12 @@
@@ -178,7 +178,7 @@ index cabfc3d..970f86b 100644
 -  "name": "@mlc-ai/web-llm",
 -  "version": "0.2.84",
 +  "name": "@drowse/web-llm",
-+  "version": "0.2.84-drowse.41",
++  "version": "0.2.84-drowse.42",
    "description": "Hardware accelerated language model chats on browsers",
    "main": "lib/index.js",
    "types": "lib/index.d.ts",
@@ -914,7 +914,7 @@ index 0000000..74d754a
 +}
 diff --git a/src/drowse.ts b/src/drowse.ts
 new file mode 100644
-index 0000000..d711c01
+index 0000000..29cb122
 --- /dev/null
 +++ b/src/drowse.ts
 @@ -0,0 +1,1742 @@
@@ -1137,7 +1137,7 @@ index 0000000..d711c01
 +/** Replay capacities of `standard-v4` (B1 §2.3, §6; HOOK_ABI.md §7). */
 +export const DROWSE_UNIT_MAX_ACTIVITY_TRACES = 32;
 +export const DROWSE_UNIT_MAX_ACTIVITY_SPANS = 4;
-+export const DROWSE_UNIT_MAX_PATTERN_LAYERS = 8;
++export const DROWSE_UNIT_MAX_PATTERN_LAYERS = 16;
 +export const DROWSE_UNIT_MAX_PATTERN_HEADS = 16;
 +export const DROWSE_REPLAY_FLAG_ANATOMY = 1;
 +export const DROWSE_REPLAY_FLAG_ACTIVITY = 2;
@@ -11254,7 +11254,7 @@ index 0000000..2ca10a4
 +});
 diff --git a/tests/drowse.test.ts b/tests/drowse.test.ts
 new file mode 100644
-index 0000000..2e8f6ec
+index 0000000..15e30ba
 --- /dev/null
 +++ b/tests/drowse.test.ts
 @@ -0,0 +1,931 @@
@@ -12131,8 +12131,8 @@ index 0000000..2e8f6ec
 +    return out;
 +  };
 +
-+  test("is laid out as drowse.ai's replayMetaLayout (126 values under standard-v4)", () => {
-+    expect(m.length).toBe(126);
++  test("is laid out as drowse.ai's replayMetaLayout (134 values under standard-v4)", () => {
++    expect(m.length).toBe(134);
 +    expect([
 +      m.populationRow,
 +      m.traceCount,
@@ -12140,7 +12140,7 @@ index 0000000..2e8f6ec
 +      m.patternLayerCount,
 +      m.patternLayers,
 +      m.flags,
-+    ]).toEqual([18, 19, 20, 116, 117, 125]);
++    ]).toEqual([18, 19, 20, 116, 117, 133]);
 +  });
 +
 +  test("accepts anatomy, activity and patterns within the model", () => {
