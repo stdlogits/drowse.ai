@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { devUrl, waitForReply } from "./workbench-navigation";
+import { devUrl, sourceUrl, waitForReply } from "./workbench-navigation";
 
 test("base completion colours match inspection, survive an unsaved edit, and follow scrolling", async ({ page }) => {
   await page.setViewportSize({ width: 1100, height: 898 });
@@ -38,12 +38,16 @@ test("base completion colours match inspection, survive an unsaved edit, and fol
     await page.getByRole("option", { name: option, exact: true }).click();
     await expect(picker).toContainText(option);
   };
-  // The fixture's entropy and surprisal tint alike, so the switch is told by the picker and by No color.
+  // The fixture's entropy and surprisal tint alike, so the switch is told by the colour target the
+  // picker sets (what the mirror tints by) and by No color.
+  const target = () => page.evaluate(async url => (await import(url)).highlightState.target, sourceUrl("lib/stores/probes.svelte.ts"));
   await pick("Sampler entropy");
+  await expect.poll(target).toBe("__entropy__");
   await expect.poll(async () => (await colors()).length).toBe(editColors.length);
   await pick("No color");
   await expect(mirror.locator("span[style*='background-']")).toHaveCount(0);
   await pick("Token surprisal");
+  await expect.poll(target).toBe("__surprise__");
   await expect.poll(colors).toEqual(editColors);
   await colorsToggle.click();
   await expect(colorsToggle).toHaveAttribute("aria-expanded", "false");

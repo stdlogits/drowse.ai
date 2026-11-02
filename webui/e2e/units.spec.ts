@@ -160,14 +160,14 @@ test("without a catalog the units carry no labels and the Artifacts room says so
     return {
       catalog: [catalog.available, catalog.bound],
       labels: [labels.catalog.bound, labels.labels.length, labels.catalog.reason],
-      find: [find.target, Object.keys(find.layers), find.layers["1"].neurons.every((hit: { unit: string; label: unknown }) =>
+      find: [find.target, Object.keys(find.layers), find.layers["1"].neurons.length > 0, find.layers["1"].neurons.every((hit: { unit: string; label: unknown }) =>
         /^neuron\/L1n\d+$/.test(hit.unit) && hit.label === null)],
     };
   }, registryUrl);
   expect(answers.catalog).toEqual([false, false]);
   expect(answers.labels.slice(0, 2)).toEqual([false, 0]);
   expect(answers.labels[2]).toMatch(/^no neuron-lens catalog for this model/);
-  expect(answers.find).toEqual(["vector", ["1"], true]);
+  expect(answers.find).toEqual(["vector", ["1"], true, true]);
 });
 
 test("a token's anatomy and a unit's activity show in the Token view", async ({ page }) => {

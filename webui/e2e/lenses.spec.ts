@@ -34,11 +34,14 @@ test("the Lens room reads each layer through the S and R lenses", async ({ page 
     expect([l2[1], l3[1], l2[2]]).toEqual(["–", "–", "–"]);
   };
   await check();
+  const last = await layerRows(page);
 
-  // At a token: the same reads, of that token.
+  // At a token: the same reads, of that token (the fixture replays a reply as bytes, so another
+  // position reads differently).
   await page.getByRole("region", { name: "Tokens", exact: true }).getByRole("button", { name: /^deterministic \(token \d+\)$/ }).click();
   await expect(page.getByRole("region", { name: "At deterministic", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Whole reply", exact: true })).toHaveAttribute("aria-pressed", "false");
+  await expect.poll(() => layerRows(page)).not.toEqual(last);
   await check();
 });
 
