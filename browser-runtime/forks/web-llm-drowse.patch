@@ -275,7 +275,7 @@ index 6bf8d4f..69bf5db 100644
  }
  
 diff --git a/src/config.ts b/src/config.ts
-index 6c45add..13aff98 100644
+index 6c45add..3db69db 100644
 --- a/src/config.ts
 +++ b/src/config.ts
 @@ -1,3 +1,5 @@
@@ -397,19 +397,27 @@ index 6c45add..13aff98 100644
    }
    // If only one of frequency or presence penatly is set, make the other one 0.0
    if (
-@@ -235,9 +300,8 @@ export function postInitAndCheckGenerationConfigValues(
+@@ -235,9 +300,16 @@ export function postInitAndCheckGenerationConfigValues(
      if (!config.logprobs) {
        throw new DependencyError("top_logprobs", "logprobs", true);
      }
 -    // top_logprobs should be in range [0,5]
 -    if (config.top_logprobs! < 0 || config.top_logprobs! > 5) {
 -      throw new RangeError("top_logprobs", 0, 5, "Got " + config.top_logprobs);
-+    if (!Number.isSafeInteger(config.top_logprobs) || config.top_logprobs! < 0) {
-+      throw new RangeError("top_logprobs", 0, Number.MAX_SAFE_INTEGER, "Got " + config.top_logprobs);
++    if (
++      !Number.isSafeInteger(config.top_logprobs) ||
++      config.top_logprobs! < 0
++    ) {
++      throw new RangeError(
++        "top_logprobs",
++        0,
++        Number.MAX_SAFE_INTEGER,
++        "Got " + config.top_logprobs,
++      );
      }
    }
    // If defined logprobs but not top_logprobs, simply make it 0
-@@ -305,6 +369,14 @@ export interface ModelRecord {
+@@ -305,6 +377,14 @@ export interface ModelRecord {
   * - "sync": require OPFS sync access handles.
   * - "auto": use sync access handles when available and fall back to async OPFS otherwise.
   *
@@ -424,7 +432,7 @@ index 6c45add..13aff98 100644
   * @note Note that the Cache API is the most well-tested in WebLLM as of now.
   */
  export type CacheBackend = "cache" | "indexeddb" | "cross-origin" | "opfs";
-@@ -314,6 +386,9 @@ export interface AppConfig {
+@@ -314,6 +394,9 @@ export interface AppConfig {
    model_list: Array<ModelRecord>;
    cacheBackend?: CacheBackend;
    opfsAccessMode?: OPFSAccessMode;
@@ -906,10 +914,10 @@ index 0000000..74d754a
 +}
 diff --git a/src/drowse.ts b/src/drowse.ts
 new file mode 100644
-index 0000000..0a53894
+index 0000000..f75baa1
 --- /dev/null
 +++ b/src/drowse.ts
-@@ -0,0 +1,1880 @@
+@@ -0,0 +1,1760 @@
 +export const DROWSE_HOOK_ABI = "block-sites-v5" as const;
 +export const DROWSE_EXACT_READOUT_ABI = "exact-readout-v2" as const;
 +
@@ -1070,25 +1078,8 @@ index 0000000..0a53894
 +  maxSaeFeaturesPerChunk: number;
 +}
 +
-+export interface DrowseRankOneProgram extends DrowsePositionSelection {
-+  hookAbi: typeof DROWSE_HOOK_ABI;
-+  hiddenSize: number;
-+  layerCount: number;
-+  enabled: Uint32Array;
-+  basis: Float32Array;
-+  neutral: Float32Array;
-+  target: Float32Array;
-+  along: Float32Array;
-+  collapse: Float32Array;
-+  probeBasis: Float32Array;
-+  probeNeutral: Float32Array;
-+}
-+
-+export const DROWSE_STRUCTURED_HOOK_FORMAT_V2 = "drowse-structured-v2" as const;
 +export const DROWSE_STRUCTURED_HOOK_FORMAT = "drowse-structured-v4" as const;
-+export type DrowseStructuredHookFormat =
-+  | typeof DROWSE_STRUCTURED_HOOK_FORMAT_V2
-+  | typeof DROWSE_STRUCTURED_HOOK_FORMAT;
++export type DrowseStructuredHookFormat = typeof DROWSE_STRUCTURED_HOOK_FORMAT;
 +export const DROWSE_STRUCTURED_MAX_AFFINE_GROUPS = 4;
 +export const DROWSE_STRUCTURED_MAX_RANK = 8;
 +export const DROWSE_STRUCTURED_MAX_PROBES = 8;
@@ -1943,11 +1934,6 @@ index 0000000..0a53894
 +  values: Float32Array;
 +}
 +
-+export interface DrowseRankOneResidualCaptureV1 extends DrowseResidualCapture {
-+  abiVersion: 1;
-+  measurements: Float32Array;
-+}
-+
 +export interface DrowseCaptureMessage {
 +  role: "system" | "user" | "assistant";
 +  content: string;
@@ -2033,95 +2019,6 @@ index 0000000..0a53894
 +      );
 +    }
 +    previous = position;
-+  }
-+}
-+
-+export function validateDrowseRankOneProgram(
-+  program: DrowseRankOneProgram,
-+  expectedHiddenSize: number,
-+  expectedLayerCount: number,
-+): void {
-+  normalizeDrowsePositionSelection(program);
-+  if (program.hookAbi !== DROWSE_HOOK_ABI) {
-+    throw new TypeError(
-+      `Unsupported Drowse hook ABI ${String(program.hookAbi)}`,
-+    );
-+  }
-+  if (
-+    program.hiddenSize !== expectedHiddenSize ||
-+    program.layerCount !== expectedLayerCount
-+  ) {
-+    throw new TypeError(
-+      `Drowse hook program targets ${program.layerCount}x${program.hiddenSize}; ` +
-+        `the model requires ${expectedLayerCount}x${expectedHiddenSize}`,
-+    );
-+  }
-+  const vectorLength = expectedHiddenSize * expectedLayerCount;
-+  requireTypedLength(
-+    program.enabled,
-+    Uint32Array,
-+    expectedLayerCount,
-+    "enabled",
-+  );
-+  requireTypedLength(program.basis, Float32Array, vectorLength, "basis");
-+  requireTypedLength(program.neutral, Float32Array, vectorLength, "neutral");
-+  requireTypedLength(
-+    program.target,
-+    Float32Array,
-+    expectedLayerCount,
-+    "target",
-+  );
-+  requireTypedLength(program.along, Float32Array, expectedLayerCount, "along");
-+  requireTypedLength(
-+    program.collapse,
-+    Float32Array,
-+    expectedLayerCount,
-+    "collapse",
-+  );
-+  requireTypedLength(
-+    program.probeBasis,
-+    Float32Array,
-+    vectorLength,
-+    "probeBasis",
-+  );
-+  requireTypedLength(
-+    program.probeNeutral,
-+    Float32Array,
-+    vectorLength,
-+    "probeNeutral",
-+  );
-+
-+  for (const value of program.enabled) {
-+    if (value !== 0 && value !== 1) {
-+      throw new TypeError("Drowse enabled values must be zero or one");
-+    }
-+  }
-+  for (const [label, values] of [
-+    ["basis", program.basis],
-+    ["neutral", program.neutral],
-+    ["target", program.target],
-+    ["along", program.along],
-+    ["collapse", program.collapse],
-+    ["probeBasis", program.probeBasis],
-+    ["probeNeutral", program.probeNeutral],
-+  ] as const) {
-+    for (const value of values) {
-+      if (!Number.isFinite(value)) {
-+        throw new TypeError(`Drowse ${label} values must be finite`);
-+      }
-+    }
-+  }
-+  for (let layer = 0; layer < expectedLayerCount; layer += 1) {
-+    if (program.enabled[layer] === 1) {
-+      requireUnitLayer(program.basis, layer, expectedHiddenSize, "basis");
-+    }
-+    requireUnitLayer(
-+      program.probeBasis,
-+      layer,
-+      expectedHiddenSize,
-+      "probeBasis",
-+      true,
-+    );
 +  }
 +}
 +
@@ -2255,8 +2152,7 @@ index 0000000..0a53894
 +  normalizeDrowsePositionSelection(program);
 +  if (
 +    program.hookAbi !== DROWSE_HOOK_ABI ||
-+    (program.format !== DROWSE_STRUCTURED_HOOK_FORMAT &&
-+      program.format !== DROWSE_STRUCTURED_HOOK_FORMAT_V2)
++    program.format !== DROWSE_STRUCTURED_HOOK_FORMAT
 +  ) {
 +    throw new TypeError("Unsupported Drowse structured hook program identity");
 +  }
@@ -2583,14 +2479,6 @@ index 0000000..0a53894
 +    "geometryCurveNodeValues",
 +    "geometryFeet",
 +  ] as const;
-+  if (program.format === DROWSE_STRUCTURED_HOOK_FORMAT_V2) {
-+    if (geometryFields.some((field) => program[field] !== undefined)) {
-+      throw new TypeError(
-+        "Drowse structured-v2 programs cannot contain geometry buffers",
-+      );
-+    }
-+    return;
-+  }
 +  for (const field of geometryFields) {
 +    if (program[field] === undefined) {
 +      throw new TypeError(`Drowse structured-v3 program is missing ${field}`);
@@ -2791,18 +2679,16 @@ index 0000000..0a53894
 +  }
 +}
 diff --git a/src/engine.ts b/src/engine.ts
-index 1934771..a0b6b4f 100644
+index 1934771..633784e 100644
 --- a/src/engine.ts
 +++ b/src/engine.ts
-@@ -76,11 +76,46 @@ import {
+@@ -76,11 +76,44 @@ import {
  } from "./cache_util";
  import { EmbeddingPipeline } from "./embedding";
  import { verifyIntegrity } from "./integrity";
 +import {
 +  DrowseCaptureRow,
 +  DrowsePreparedCaptureRow,
-+  DrowseRankOneProgram,
-+  DrowseRankOneResidualCaptureV1,
 +  DrowseStructuredProgram,
 +  DrowseResidualCapture,
 +  DrowseRuntimeCapabilities,
@@ -2841,7 +2727,7 @@ index 1934771..a0b6b4f 100644
  /**
   * Creates `MLCEngine`, and loads `modelId` onto WebGPU.
   *
-@@ -135,6 +170,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -135,6 +168,7 @@ export class MLCEngine implements MLCEngineInterface {
     * each model only processes one request at at time.
     */
    private loadedModelIdToLock: Map<string, CustomLock>;
@@ -2849,7 +2735,7 @@ index 1934771..a0b6b4f 100644
  
    // Others
    private logger: (msg: string) => void = log.info;
-@@ -144,6 +180,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -144,6 +178,7 @@ export class MLCEngine implements MLCEngineInterface {
  
    // Signals and flags
    private interruptSignal = false;
@@ -2857,7 +2743,7 @@ index 1934771..a0b6b4f 100644
    private deviceLostIsError = true; // whether device.lost is due to actual error or model reload
    private reloadController: AbortController | undefined;
  
-@@ -155,6 +192,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -155,6 +190,7 @@ export class MLCEngine implements MLCEngineInterface {
      this.loadedModelIdToChatConfig = new Map<string, ChatConfig>();
      this.loadedModelIdToModelType = new Map<string, ModelType>();
      this.loadedModelIdToLock = new Map<string, CustomLock>();
@@ -2865,7 +2751,7 @@ index 1934771..a0b6b4f 100644
      this.appConfig = engineConfig?.appConfig || prebuiltAppConfig;
      this.setLogLevel(engineConfig?.logLevel || DefaultLogLevel);
      this.setInitProgressCallback(engineConfig?.initProgressCallback);
-@@ -307,7 +345,13 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -307,7 +343,13 @@ export class MLCEngine implements MLCEngineInterface {
        throw new MissingModelWasmError(modelRecord.model_id);
      }
      const fetchWasmSource = async () => {
@@ -2880,7 +2766,7 @@ index 1934771..a0b6b4f 100644
          // do not cache wasm on local host as we might update code frequently
          return (await fetch(wasmUrl)).arrayBuffer();
        } else if (!wasmUrl.startsWith("http")) {
-@@ -345,7 +389,9 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -345,7 +387,9 @@ export class MLCEngine implements MLCEngineInterface {
      }
  
      // detect GPU
@@ -2891,7 +2777,7 @@ index 1934771..a0b6b4f 100644
      if (gpuDetectOutput == undefined) {
        throw new WebGPUNotAvailableError();
      }
-@@ -374,11 +420,14 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -374,11 +418,14 @@ export class MLCEngine implements MLCEngineInterface {
      let deviceLostInReload = false;
      gpuDetectOutput.device.lost.then((info: any) => {
        if (this.deviceLostIsError) {
@@ -2907,7 +2793,7 @@ index 1934771..a0b6b4f 100644
          deviceLostInReload = true;
        }
      });
-@@ -408,6 +457,11 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -408,6 +455,11 @@ export class MLCEngine implements MLCEngineInterface {
          tokenizer,
          curModelConfig,
          logitProcessor,
@@ -2919,7 +2805,7 @@ index 1934771..a0b6b4f 100644
        );
      }
      await newPipeline.asyncLoadWebGPUPipelines();
-@@ -430,24 +484,38 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -430,24 +482,38 @@ export class MLCEngine implements MLCEngineInterface {
    }
  
    async unload() {
@@ -2967,7 +2853,7 @@ index 1934771..a0b6b4f 100644
    }
  
    //---------------------------------------------------
-@@ -462,7 +530,6 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -462,7 +528,6 @@ export class MLCEngine implements MLCEngineInterface {
      chatConfig: ChatConfig,
      genConfig: GenerationConfig,
    ): Promise<string> {
@@ -2975,7 +2861,7 @@ index 1934771..a0b6b4f 100644
      if (genConfig !== undefined) {
        postInitAndCheckGenerationConfigValues(genConfig);
      }
-@@ -535,41 +602,39 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -535,41 +600,39 @@ export class MLCEngine implements MLCEngineInterface {
      const created = getUnixTimestampSeconds();
      const id = crypto.randomUUID();
      this.interruptSignal = false;
@@ -3043,7 +2929,7 @@ index 1934771..a0b6b4f 100644
        if (isChatCompletion) {
          const chunk: ChatCompletionChunk = {
            id: id,
-@@ -577,6 +642,9 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -577,6 +640,9 @@ export class MLCEngine implements MLCEngineInterface {
              {
                delta: { content: deltaMessage, role: "assistant" },
                finish_reason: null, // not finished yet
@@ -3053,7 +2939,7 @@ index 1934771..a0b6b4f 100644
                index: 0,
                logprobs: logprobs,
              },
-@@ -593,6 +661,9 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -593,6 +659,9 @@ export class MLCEngine implements MLCEngineInterface {
              {
                text: deltaMessage,
                finish_reason: null, // not finished yet
@@ -3063,7 +2949,7 @@ index 1934771..a0b6b4f 100644
                index: 0,
                logprobs: logprobs,
              },
-@@ -615,7 +686,12 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -615,7 +684,12 @@ export class MLCEngine implements MLCEngineInterface {
        throw err;
      }
      if (curChunk) {
@@ -3077,7 +2963,7 @@ index 1934771..a0b6b4f 100644
      }
  
      while (!pipeline.stopped()) {
-@@ -633,7 +709,12 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -633,7 +707,12 @@ export class MLCEngine implements MLCEngineInterface {
          throw err;
        }
        if (curChunk) {
@@ -3091,7 +2977,7 @@ index 1934771..a0b6b4f 100644
        }
      }
  
-@@ -645,6 +726,13 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -645,6 +724,13 @@ export class MLCEngine implements MLCEngineInterface {
      // 3. Last chunk empty marking the end
      // If function calling, use the last chunk to return tool_calls
      let finish_reason = pipeline.getFinishReason()!;
@@ -3105,7 +2991,7 @@ index 1934771..a0b6b4f 100644
      let tool_calls:
        | Array<ChatCompletionChunk.Choice.Delta.ToolCall>
        | undefined;
-@@ -675,6 +763,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -675,6 +761,7 @@ export class MLCEngine implements MLCEngineInterface {
                  }
                : {},
              finish_reason: finish_reason,
@@ -3113,7 +2999,7 @@ index 1934771..a0b6b4f 100644
              index: 0,
            },
          ],
-@@ -690,6 +779,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -690,6 +777,7 @@ export class MLCEngine implements MLCEngineInterface {
            {
              text: "",
              finish_reason: finish_reason,
@@ -3121,7 +3007,7 @@ index 1934771..a0b6b4f 100644
              index: 0,
            },
          ],
-@@ -706,7 +796,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -706,7 +794,7 @@ export class MLCEngine implements MLCEngineInterface {
          "response_format" in request &&
          (request.response_format?.type === "grammar" ||
            request.response_format?.type === "json_object");
@@ -3130,7 +3016,7 @@ index 1934771..a0b6b4f 100644
        const prompt_tokens = pipeline.getCurRoundPrefillTotalTokens();
        const prefill_tokens_per_s = pipeline.getCurRoundPrefillTokensPerSec();
        const decode_tokens_per_s = pipeline.getCurRoundDecodingTokensPerSec();
-@@ -814,6 +904,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -814,6 +902,7 @@ export class MLCEngine implements MLCEngineInterface {
        max_tokens: request.max_tokens,
        stop: request.stop,
        top_p: request.top_p,
@@ -3138,7 +3024,7 @@ index 1934771..a0b6b4f 100644
        temperature: request.temperature,
        logit_bias: request.logit_bias,
        logprobs: request.logprobs,
-@@ -822,6 +913,15 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -822,6 +911,15 @@ export class MLCEngine implements MLCEngineInterface {
        ignore_eos: request.ignore_eos,
        enable_thinking: request.extra_body?.enable_thinking,
        enable_latency_breakdown: request.extra_body?.enable_latency_breakdown,
@@ -3154,7 +3040,7 @@ index 1934771..a0b6b4f 100644
      };
  
      // 0.5 Block wait until this pipeline finishes all previous requests
-@@ -842,6 +942,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -842,6 +940,7 @@ export class MLCEngine implements MLCEngineInterface {
  
      // Big try-finally to release lock in case of errors
      try {
@@ -3162,7 +3048,7 @@ index 1934771..a0b6b4f 100644
        if (request.seed !== null && request.seed !== undefined) {
          selectedPipeline.setSeed(request.seed);
        }
-@@ -889,12 +990,14 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -889,12 +988,14 @@ export class MLCEngine implements MLCEngineInterface {
  
          choices.push({
            finish_reason: finish_reason,
@@ -3182,7 +3068,7 @@ index 1934771..a0b6b4f 100644
            message: isFunctionCalling
              ? {
                  content: null,
-@@ -906,7 +1009,8 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -906,7 +1007,8 @@ export class MLCEngine implements MLCEngineInterface {
                  role: "assistant",
                },
          });
@@ -3192,7 +3078,7 @@ index 1934771..a0b6b4f 100644
          prompt_tokens += selectedPipeline.getCurRoundPrefillTotalTokens();
          prefill_time += selectedPipeline.getCurRoundPrefillTotalTime();
          decode_time += selectedPipeline.getCurRoundDecodingTotalTime();
-@@ -997,11 +1101,20 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -997,11 +1099,20 @@ export class MLCEngine implements MLCEngineInterface {
        max_tokens: request.max_tokens,
        stop: request.stop,
        top_p: request.top_p,
@@ -3213,7 +3099,7 @@ index 1934771..a0b6b4f 100644
      };
  
      // 0.5 Block wait until this pipeline finishes all previous requests
-@@ -1022,6 +1135,7 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -1022,6 +1133,7 @@ export class MLCEngine implements MLCEngineInterface {
  
      // Big try-finally to release lock in case of errors
      try {
@@ -3221,7 +3107,7 @@ index 1934771..a0b6b4f 100644
        if (request.seed !== null && request.seed !== undefined) {
          selectedPipeline.setSeed(request.seed);
        }
-@@ -1051,15 +1165,18 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -1051,15 +1163,18 @@ export class MLCEngine implements MLCEngineInterface {
  
          choices.push({
            finish_reason: finish_reason,
@@ -3246,24 +3132,10 @@ index 1934771..a0b6b4f 100644
          prompt_tokens += selectedPipeline.getCurRoundPrefillTotalTokens();
          prefill_time += selectedPipeline.getCurRoundPrefillTotalTime();
          decode_time += selectedPipeline.getCurRoundDecodingTotalTime();
-@@ -1302,6 +1419,494 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -1302,6 +1417,425 @@ export class MLCEngine implements MLCEngineInterface {
      return selectedPipeline.forwardTokensAndSample(inputIds, isPrefill);
    }
  
-+  async supportsDrowseRankOneHooks(modelId?: string): Promise<boolean> {
-+    const [selectedModelId, selectedPipeline] = this.getLLMStates(
-+      "supportsDrowseRankOneHooks",
-+      modelId,
-+    );
-+    const lock = this.loadedModelIdToLock.get(selectedModelId)!;
-+    await lock.acquire();
-+    try {
-+      return selectedPipeline.supportsDrowseRankOneHooks();
-+    } finally {
-+      await lock.release();
-+    }
-+  }
-+
 +  async supportsDrowseStructuredHooks(modelId?: string): Promise<boolean> {
 +    const [selectedModelId, selectedPipeline] = this.getLLMStates(
 +      "supportsDrowseStructuredHooks",
@@ -3315,22 +3187,6 @@ index 1934771..a0b6b4f 100644
 +    await lock.acquire();
 +    try {
 +      return selectedPipeline.supportsDrowseResidualCapture();
-+    } finally {
-+      await lock.release();
-+    }
-+  }
-+
-+  async supportsDrowseRankOneResidualCaptureV1(
-+    modelId?: string,
-+  ): Promise<boolean> {
-+    const [selectedModelId, selectedPipeline] = this.getLLMStates(
-+      "supportsDrowseRankOneResidualCaptureV1",
-+      modelId,
-+    );
-+    const lock = this.loadedModelIdToLock.get(selectedModelId)!;
-+    await lock.acquire();
-+    try {
-+      return selectedPipeline.supportsDrowseRankOneResidualCaptureV1();
 +    } finally {
 +      await lock.release();
 +    }
@@ -3438,46 +3294,6 @@ index 1934771..a0b6b4f 100644
 +    }
 +  }
 +
-+  async captureDrowseRankOneResidualsV1(
-+    inputIds: number[],
-+    positions: number[],
-+    program: DrowseRankOneProgram,
-+    modelId?: string,
-+  ): Promise<DrowseRankOneResidualCaptureV1> {
-+    const [selectedModelId, selectedPipeline] = this.getLLMStates(
-+      "captureDrowseRankOneResidualsV1",
-+      modelId,
-+    );
-+    const lock = this.loadedModelIdToLock.get(selectedModelId)!;
-+    await lock.acquire();
-+    try {
-+      return await selectedPipeline.captureDrowseRankOneResidualsV1(
-+        inputIds,
-+        positions,
-+        program,
-+      );
-+    } finally {
-+      await lock.release();
-+    }
-+  }
-+
-+  async setDrowseRankOneProgram(
-+    program: DrowseRankOneProgram,
-+    modelId?: string,
-+  ): Promise<void> {
-+    const [selectedModelId, selectedPipeline] = this.getLLMStates(
-+      "setDrowseRankOneProgram",
-+      modelId,
-+    );
-+    const lock = this.loadedModelIdToLock.get(selectedModelId)!;
-+    await lock.acquire();
-+    try {
-+      selectedPipeline.setDrowseRankOneProgram(program);
-+    } finally {
-+      await lock.release();
-+    }
-+  }
-+
 +  async setDrowseStructuredProgram(
 +    program: DrowseStructuredProgram,
 +    modelId?: string,
@@ -3544,20 +3360,6 @@ index 1934771..a0b6b4f 100644
 +    }
 +  }
 +
-+  async clearDrowseRankOneProgram(modelId?: string): Promise<void> {
-+    const [selectedModelId, selectedPipeline] = this.getLLMStates(
-+      "clearDrowseRankOneProgram",
-+      modelId,
-+    );
-+    const lock = this.loadedModelIdToLock.get(selectedModelId)!;
-+    await lock.acquire();
-+    try {
-+      selectedPipeline.clearDrowseRankOneProgram();
-+    } finally {
-+      await lock.release();
-+    }
-+  }
-+
 +  async setDrowseSaeDictionary(
 +    dictionary: DrowseSaeDictionary,
 +    modelId?: string,
@@ -3601,6 +3403,21 @@ index 1934771..a0b6b4f 100644
 +    await lock.acquire();
 +    try {
 +      await selectedPipeline.setDrowseJlensDictionary(dictionary);
++    } finally {
++      await lock.release();
++    }
++  }
++
++  /** Remove the installed hook program, leaving the model unsteered. */
++  async clearDrowseProgram(modelId?: string): Promise<void> {
++    const [selectedModelId, selectedPipeline] = this.getLLMStates(
++      "clearDrowseProgram",
++      modelId,
++    );
++    const lock = this.loadedModelIdToLock.get(selectedModelId)!;
++    await lock.acquire();
++    try {
++      selectedPipeline.clearDrowseProgram();
 +    } finally {
 +      await lock.release();
 +    }
@@ -3741,7 +3558,7 @@ index 1934771..a0b6b4f 100644
    /**
     * Get the current generated response.
     *
-@@ -1402,8 +2007,16 @@ export class MLCEngine implements MLCEngineInterface {
+@@ -1402,8 +1936,16 @@ export class MLCEngine implements MLCEngineInterface {
        ] as ChatCompletionMessageParam;
        input_str = last_msg.content as string;
        input_role_str =
@@ -3853,10 +3670,10 @@ index 0000000..52f4053
 +  return required;
 +}
 diff --git a/src/index.ts b/src/index.ts
-index d583419..ffbb0df 100644
+index d583419..7062b28 100644
 --- a/src/index.ts
 +++ b/src/index.ts
-@@ -32,6 +32,102 @@ export {
+@@ -32,6 +32,98 @@ export {
  
  export { MLCEngine, CreateMLCEngine } from "./engine";
  
@@ -3867,7 +3684,6 @@ index d583419..ffbb0df 100644
 +  DROWSE_EXACT_READOUT_MAX_SAE_FEATURES_PER_CHUNK,
 +  DROWSE_READOUT_TOP_K,
 +  DROWSE_STRUCTURED_HOOK_FORMAT,
-+  DROWSE_STRUCTURED_HOOK_FORMAT_V2,
 +  DROWSE_STRUCTURED_MAX_AFFINE_GROUPS,
 +  DROWSE_STRUCTURED_MAX_RANK,
 +  DROWSE_STRUCTURED_MAX_PROBES,
@@ -3930,15 +3746,12 @@ index d583419..ffbb0df 100644
 +  updatePackedDrowseCurveActive,
 +  validateDrowseCapturePositions,
 +  validateDrowseCaptureRows,
-+  validateDrowseRankOneProgram,
 +  normalizeDrowsePositionSelection,
 +  DrowsePositionSelection,
 +  DrowsePositionSpan,
 +  validateDrowseJlensDictionary,
 +  validateDrowseSaeDictionary,
 +  validateDrowseStructuredProgram,
-+  type DrowseRankOneProgram,
-+  type DrowseRankOneResidualCaptureV1,
 +  type DrowseStructuredProgram,
 +  type DrowseResidualCapture,
 +  type DrowseCaptureMessage,
@@ -3960,7 +3773,7 @@ index d583419..ffbb0df 100644
    hasModelInCache,
    deleteChatConfigInCache,
 diff --git a/src/llm_chat.ts b/src/llm_chat.ts
-index 616cff4..164f157 100644
+index 616cff4..ca4c9a3 100644
 --- a/src/llm_chat.ts
 +++ b/src/llm_chat.ts
 @@ -1,4 +1,6 @@
@@ -3993,12 +3806,11 @@ index 616cff4..164f157 100644
    RangeError,
    WindowSizeConfigurationError,
    WindowSizeSpecificationError,
-@@ -30,6 +35,87 @@ import {
+@@ -30,6 +35,84 @@ import {
    TextCompletionExpectsKVEmptyError,
    CannotFindImageEmbedError,
  } from "./error";
 +import {
-+  DrowseRankOneProgram,
 +  DrowsePositionSpan,
 +  normalizeDrowsePositionSelection,
 +  DrowseStructuredProgram,
@@ -4019,7 +3831,6 @@ index 616cff4..164f157 100644
 +  DROWSE_STRUCTURED_HOOK_FORMAT,
 +  DrowseCaptureRow,
 +  DrowsePreparedCaptureRow,
-+  DrowseRankOneResidualCaptureV1,
 +  DrowseResidualCapture,
 +  DrowseRuntimeCapabilities,
 +  DrowseStructuredHookProfile,
@@ -4073,7 +3884,6 @@ index 616cff4..164f157 100644
 +  validateDrowseUnitSection,
 +  validateDrowseCaptureRows,
 +  validateDrowseCapturePositions,
-+  validateDrowseRankOneProgram,
 +  validateDrowseSaeDictionary,
 +  validateDrowseJlensDictionary,
 +  validateDrowseStructuredProgram,
@@ -4081,7 +3891,7 @@ index 616cff4..164f157 100644
  
  type ImageURL = ChatCompletionContentPartImage.ImageURL;
  
-@@ -47,6 +133,425 @@ type VMFunctionAvailability = {
+@@ -47,6 +130,414 @@ type VMFunctionAvailability = {
  
  type VMFunctionRegistry = Record<string, tvmjs.PackedFunc | undefined>;
  
@@ -4223,17 +4033,6 @@ index 616cff4..164f157 100644
 +  }
 +  return chunks;
 +}
-+
-+type DrowseRankOneBuffers = {
-+  enabled: tvmjs.Tensor;
-+  basis: tvmjs.Tensor;
-+  neutral: tvmjs.Tensor;
-+  target: tvmjs.Tensor;
-+  along: tvmjs.Tensor;
-+  collapse: tvmjs.Tensor;
-+  probeBasis: tvmjs.Tensor;
-+  probeNeutral: tvmjs.Tensor;
-+};
 +
 +type DrowseStructuredBuffers = {
 +  affineActive: tvmjs.Tensor;
@@ -4507,12 +4306,10 @@ index 616cff4..164f157 100644
  type ResolvedModelABI = {
    kvStateKind: Exclude<KVStateKind, "none">;
    prefillABI: ComputeABIKind;
-@@ -67,6 +572,25 @@ export class LLMChatPipeline {
+@@ -67,6 +558,21 @@ export class LLMChatPipeline {
    private vm: tvmjs.VirtualMachine;
    private prefill: tvmjs.PackedFunc;
    private decoding: tvmjs.PackedFunc;
-+  private drowsePrefill?: tvmjs.PackedFunc;
-+  private drowseDecoding?: tvmjs.PackedFunc;
 +  private drowseStructuredPrefill?: tvmjs.PackedFunc;
 +  private drowseStructuredDecoding?: tvmjs.PackedFunc;
 +  private drowseCurvedPrefill?: tvmjs.PackedFunc;
@@ -4521,8 +4318,6 @@ index 616cff4..164f157 100644
 +  private drowseGeometryDecoding?: tvmjs.PackedFunc;
 +  private drowseCapturePrefill?: tvmjs.PackedFunc;
 +  private drowseCaptureDecoding?: tvmjs.PackedFunc;
-+  private drowseRankOneCapturePrefillV1?: tvmjs.PackedFunc;
-+  private drowseRankOneCaptureDecodingV1?: tvmjs.PackedFunc;
 +  private drowseJlensReadout?: tvmjs.PackedFunc;
 +  private drowseJlensReadoutAccumulate?: tvmjs.PackedFunc;
 +  private drowseJlensReadoutTopK?: tvmjs.PackedFunc;
@@ -4533,7 +4328,7 @@ index 616cff4..164f157 100644
    private resolvedModelABI!: ResolvedModelABI;
    private kvStateKind: KVStateKind = "kv_cache";
    private image_embed: tvmjs.PackedFunc | undefined;
-@@ -94,7 +618,81 @@ export class LLMChatPipeline {
+@@ -94,7 +600,79 @@ export class LLMChatPipeline {
    private prefillLogitPositionHost = new Int32Array(1);
    private maxHistorySize = 1;
    private logitsOnCPU?: tvmjs.Tensor = undefined;
@@ -4542,11 +4337,9 @@ index 616cff4..164f157 100644
 +  private drowseAffineActiveStaging?: Float32Array;
 +  private drowseAffineAlongStaging?: Float32Array;
 +  private drowseCurveActiveStaging?: Float32Array;
-+  private drowseProgram?: DrowseRankOneBuffers;
 +  private drowseStructuredProgram?: DrowseStructuredBuffers;
 +  private drowsePositionSpans?: DrowsePositionSpan[];
 +  private drowsePositionActive = true;
-+  private drowsePositionEnabled?: Uint32Array;
 +  private drowsePositionAffine?: Uint32Array;
 +  private drowsePositionCurve?: Uint32Array;
 +  private drowsePositionUnit?: Float32Array;
@@ -4615,7 +4408,7 @@ index 616cff4..164f157 100644
  
    // meta data
    private bosTokenId = 1;
-@@ -109,8 +707,12 @@ export class LLMChatPipeline {
+@@ -109,8 +687,12 @@ export class LLMChatPipeline {
    // states
    private outputMessage = "";
    private outputIds: Array<number> = [];
@@ -4628,7 +4421,7 @@ index 616cff4..164f157 100644
    // frequency of appeared token ids till now (refresh after PrefillStep); token_id mapped to freq
    private appearedTokensFreq = new Map<number, number>();
    private imageDataCache = new Map<string, ImageData>();
-@@ -130,6 +732,10 @@ export class LLMChatPipeline {
+@@ -130,6 +712,10 @@ export class LLMChatPipeline {
    private curRoundPrefillTotalTokens = 0;
    private curRoundDecodingTotalTime = 0;
    private curRoundPrefillTotalTime = 0;
@@ -4639,7 +4432,7 @@ index 616cff4..164f157 100644
  
    // additional stats, reset at every prefillStep()
    public curRoundLatencyBreakdown: LatencyBreakdown = {
-@@ -181,12 +787,14 @@ export class LLMChatPipeline {
+@@ -181,12 +767,14 @@ export class LLMChatPipeline {
      tokenizer: Tokenizer,
      config: ChatConfig,
      logitProcessor?: LogitProcessor,
@@ -4654,14 +4447,10 @@ index 616cff4..164f157 100644
      this.fullVocabSize = this.config.vocab_size;
      this.bitmaskSize = Math.ceil(this.fullVocabSize / 32);
  
-@@ -233,6 +841,34 @@ export class LLMChatPipeline {
+@@ -233,6 +821,26 @@ export class LLMChatPipeline {
        "batch_prefill",
        "decode",
        "batch_decode",
-+      "drowse_prefill",
-+      "drowse_batch_prefill",
-+      "drowse_decode",
-+      "drowse_batch_decode",
 +      "drowse_structured_batch_prefill",
 +      "drowse_structured_batch_decode",
 +      "drowse_curved_batch_prefill",
@@ -4682,22 +4471,10 @@ index 616cff4..164f157 100644
 +      "drowse_capture_batch_prefill",
 +      "drowse_capture_decode",
 +      "drowse_capture_batch_decode",
-+      "drowse_rank_one_capture_prefill_v1",
-+      "drowse_rank_one_capture_batch_prefill_v1",
-+      "drowse_rank_one_capture_decode_v1",
-+      "drowse_rank_one_capture_batch_decode_v1",
        "create_tir_paged_kv_cache",
        "create_rnn_state",
        "sample_with_top_p",
-@@ -244,6 +880,7 @@ export class LLMChatPipeline {
-       "apply_logit_bias_inplace",
-       "softmax_with_temperature",
-     ]);
-+    LLMChatPipeline.applyLegacyDrowseAliases(vmFunctionRegistry);
- 
-     const fgetMetadata = this.vm.getFunction("_metadata");
-     const ret_value = fgetMetadata();
-@@ -253,9 +890,15 @@ export class LLMChatPipeline {
+@@ -253,9 +861,15 @@ export class LLMChatPipeline {
  
      const vmFunctionAvailability =
        LLMChatPipeline.getVMFunctionAvailability(vmFunctionRegistry);
@@ -4713,24 +4490,10 @@ index 616cff4..164f157 100644
      );
      const stateKinds: string[] = [];
      if (this.resolvedModelABI.needsKVCache) {
-@@ -287,6 +930,167 @@ export class LLMChatPipeline {
+@@ -287,6 +901,130 @@ export class LLMChatPipeline {
          vmFunctionRegistry,
        ),
      );
-+    const drowsePrefillName =
-+      this.resolvedModelABI.prefillABI === "batch"
-+        ? "drowse_batch_prefill"
-+        : "drowse_prefill";
-+    const drowseDecodeName =
-+      this.resolvedModelABI.decodeABI === "batch"
-+        ? "drowse_batch_decode"
-+        : "drowse_decode";
-+    const drowsePrefill = vmFunctionRegistry[drowsePrefillName];
-+    const drowseDecoding = vmFunctionRegistry[drowseDecodeName];
-+    if (drowsePrefill !== undefined && drowseDecoding !== undefined) {
-+      this.drowsePrefill = this.tvm.detachFromCurrentScope(drowsePrefill);
-+      this.drowseDecoding = this.tvm.detachFromCurrentScope(drowseDecoding);
-+    }
 +    if (
 +      this.resolvedModelABI.prefillABI === "batch" &&
 +      this.resolvedModelABI.decodeABI === "batch"
@@ -4855,176 +4618,14 @@ index 616cff4..164f157 100644
 +        drowseCaptureDecoding,
 +      );
 +    }
-+    const drowseRankOneCapturePrefillName =
-+      this.resolvedModelABI.prefillABI === "batch"
-+        ? "drowse_rank_one_capture_batch_prefill_v1"
-+        : "drowse_rank_one_capture_prefill_v1";
-+    const drowseRankOneCaptureDecodeName =
-+      this.resolvedModelABI.decodeABI === "batch"
-+        ? "drowse_rank_one_capture_batch_decode_v1"
-+        : "drowse_rank_one_capture_decode_v1";
-+    const drowseRankOneCapturePrefill =
-+      vmFunctionRegistry[drowseRankOneCapturePrefillName];
-+    const drowseRankOneCaptureDecoding =
-+      vmFunctionRegistry[drowseRankOneCaptureDecodeName];
-+    if (
-+      drowseRankOneCapturePrefill !== undefined &&
-+      drowseRankOneCaptureDecoding !== undefined
-+    ) {
-+      this.drowseRankOneCapturePrefillV1 = this.tvm.detachFromCurrentScope(
-+        drowseRankOneCapturePrefill,
-+      );
-+      this.drowseRankOneCaptureDecodingV1 = this.tvm.detachFromCurrentScope(
-+        drowseRankOneCaptureDecoding,
-+      );
-+    }
      if (this.resolvedModelABI.prefillABI === "batch") {
        log.info("Using batch_prefill kernel.");
      }
-@@ -356,155 +1160,2901 @@ export class LLMChatPipeline {
-       throw new MinValueError("prefill_chunk_size", 0);
-     }
+@@ -480,31 +1218,2585 @@ export class LLMChatPipeline {
+       this.tvm.empty([numProbs], "float32", this.device),
+     );
  
--    // 5. Consolidate KVCache settings: context window, sliding window, attention sink
--    this.slidingWindowSize = config.sliding_window_size;
--    this.contextWindowSize = config.context_window_size;
--    this.attentionSinkSize = config.attention_sink_size;
--    if (this.contextWindowSize !== -1 && this.slidingWindowSize !== -1) {
--      throw new WindowSizeConfigurationError(
--        this.contextWindowSize,
--        this.slidingWindowSize,
--      );
--    } else if (this.slidingWindowSize != -1) {
--      // Use sliding window and attention sink
--      log.info("Using slidingWindowSize: ", this.slidingWindowSize);
--      if (this.attentionSinkSize >= 0) {
--        log.info("Using attentionSinkSize: ", this.attentionSinkSize);
--      } else {
--        throw new AttentionSinkSizeError();
-+    // 5. Consolidate KVCache settings: context window, sliding window, attention sink
-+    this.slidingWindowSize = config.sliding_window_size;
-+    this.contextWindowSize = config.context_window_size;
-+    this.attentionSinkSize = config.attention_sink_size;
-+    if (this.contextWindowSize !== -1 && this.slidingWindowSize !== -1) {
-+      throw new WindowSizeConfigurationError(
-+        this.contextWindowSize,
-+        this.slidingWindowSize,
-+      );
-+    } else if (this.slidingWindowSize != -1) {
-+      // Use sliding window and attention sink
-+      log.info("Using slidingWindowSize: ", this.slidingWindowSize);
-+      if (this.attentionSinkSize >= 0) {
-+        log.info("Using attentionSinkSize: ", this.attentionSinkSize);
-+      } else {
-+        throw new AttentionSinkSizeError();
-+      }
-+    } else if (this.contextWindowSize != -1) {
-+      // Use default kv cache without sliding window
-+      log.info("Using contextWindowSize: ", this.contextWindowSize);
-+    } else {
-+      throw new WindowSizeSpecificationError();
-+    }
-+    if (
-+      config.max_history_size !== undefined &&
-+      config.max_history_size !== null
-+    ) {
-+      if (config.max_history_size <= 0) {
-+        throw new MinValueError("max_history_size", 0);
-+      }
-+      this.maxHistorySize = config.max_history_size;
-+    } else if (this.resolvedModelABI.needsRNNState) {
-+      // Hybrid/recurrent models can over-allocate RNN state if we use context window directly.
-+      // Keep browser default conservative unless user explicitly overrides max_history_size.
-+      log.info("max_history_size is not set. Using browser-safe default: 1");
-+    }
-+
-+    // 5. Create cache
-+    // Load cache functions and instantiate KVCache
-+    this.fclearKVCaches = this.tvm.detachFromCurrentScope(
-+      this.tvm.getGlobalFunc("vm.builtin.kv_state_clear"),
-+    );
-+    this.fKVCacheAddSequence = this.tvm.detachFromCurrentScope(
-+      this.tvm.getGlobalFunc("vm.builtin.kv_state_add_sequence"),
-+    );
-+    this.fKVCacheRemoveSequence = this.tvm.detachFromCurrentScope(
-+      this.tvm.getGlobalFunc("vm.builtin.kv_state_remove_sequence"),
-+    );
-+    this.fKVCacheBeginForward = this.tvm.detachFromCurrentScope(
-+      this.tvm.getGlobalFunc("vm.builtin.kv_state_begin_forward"),
-+    );
-+    this.fKVCacheEndForward = this.tvm.detachFromCurrentScope(
-+      this.tvm.getGlobalFunc("vm.builtin.kv_state_end_forward"),
-+    );
-+    this.fKVCacheEnableSlidingWindowForSeq = this.tvm.detachFromCurrentScope(
-+      this.tvm.getGlobalFunc(
-+        "vm.builtin.attention_kv_cache_enable_sliding_window_for_seq",
-+      ),
-+    );
-+
-+    const defaultPageSize = 16;
-+    const defaultMaxNumSequence = 1;
-+    const maxTotalSeqLen =
-+      this.slidingWindowSize != -1
-+        ? this.slidingWindowSize
-+        : this.contextWindowSize;
-+
-+    if (this.resolvedModelABI.needsKVCache) {
-+      const createKVCache = LLMChatPipeline.getRequiredVMFunctionByName(
-+        "create_tir_paged_kv_cache",
-+        vmFunctionRegistry,
-+      );
-+      this.kvCache = this.tvm.detachFromCurrentScope(
-+        createKVCache(
-+          this.tvm.makeShapeTuple([defaultMaxNumSequence]), // max_num_sequence
-+          this.tvm.makeShapeTuple([maxTotalSeqLen]), // max_total_sequence_length
-+          this.tvm.makeShapeTuple([this.prefillChunkSize]), // prefill_chunk_size
-+          this.tvm.makeShapeTuple([defaultPageSize]), // page_size, hard coded for now
-+          this.tvm.makeShapeTuple([this.slidingWindowSize != -1 ? 1 : 0]),
-+        ),
-+      );
-+    }
-+
-+    if (this.resolvedModelABI.needsRNNState) {
-+      const createRNNState = LLMChatPipeline.getRequiredVMFunctionByName(
-+        "create_rnn_state",
-+        vmFunctionRegistry,
-+      );
-+      this.rnnState = this.tvm.detachFromCurrentScope(
-+        createRNNState(
-+          this.tvm.makeShapeTuple([defaultMaxNumSequence]),
-+          this.tvm.makeShapeTuple([this.maxHistorySize]),
-+        ),
-+      );
-+      log.info("Using maxHistorySize for RNN state: ", this.maxHistorySize);
-+    }
-+
-+    if (this.resolvedModelABI.prefillABI === "batch") {
-+      this.prefillLogitPositions = this.tvm.detachFromCurrentScope(
-+        this.tvm.empty([defaultMaxNumSequence], "int32", this.device),
-+      );
-+    }
-+
-+    this.filledKVCacheLength = 0;
-+    this.resetChat(); // especially needed for PagedKVCache as we need to call fKVCacheAddSequence
-+
-+    // Initialize WebGPU sampling related device tensors
-+    const numSamples = 1;
-+    const numProbs = 1;
-+
-+    this.sampleIndices = new Int32Array(numSamples);
-+    for (let i = 0; i < numSamples; i++) {
-+      this.sampleIndices[i] = i;
-+    }
-+    this.sampleIndicesDevice = this.tvm.detachFromCurrentScope(
-+      this.tvm
-+        .empty([numSamples], "int32", this.device)
-+        .copyFrom(this.sampleIndices),
-+    );
-+
-+    this.topPDevice = this.tvm.detachFromCurrentScope(
-+      this.tvm.empty([numProbs], "float32", this.device),
-+    );
-+
+-    tvm.endScope();
 +    tvm.endScope();
 +  }
 +
@@ -5034,8 +4635,6 @@ index 616cff4..164f157 100644
 +    this.params.dispose();
 +    this.decoding.dispose();
 +    this.prefill.dispose();
-+    this.drowseDecoding?.dispose();
-+    this.drowsePrefill?.dispose();
 +    this.drowseStructuredDecoding?.dispose();
 +    this.drowseStructuredPrefill?.dispose();
 +    this.drowseCurvedDecoding?.dispose();
@@ -5058,8 +4657,6 @@ index 616cff4..164f157 100644
 +    this.drowseGeometryPrefill?.dispose();
 +    this.drowseCaptureDecoding?.dispose();
 +    this.drowseCapturePrefill?.dispose();
-+    this.drowseRankOneCaptureDecodingV1?.dispose();
-+    this.drowseRankOneCapturePrefillV1?.dispose();
 +    this.drowseJlensReadout?.dispose();
 +    this.drowseJlensReadoutAccumulate?.dispose();
 +    this.drowseJlensReadoutTopK?.dispose();
@@ -5092,12 +4689,6 @@ index 616cff4..164f157 100644
 +    this.grammarCompiler?.dispose();
 +  }
 +
-+  supportsDrowseRankOneHooks(): boolean {
-+    return (
-+      this.drowsePrefill !== undefined && this.drowseDecoding !== undefined
-+    );
-+  }
-+
 +  supportsDrowseStructuredHooks(): boolean {
 +    return (
 +      this.drowseHookProfile !== undefined &&
@@ -5126,13 +4717,6 @@ index 616cff4..164f157 100644
 +    return (
 +      this.drowseCapturePrefill !== undefined &&
 +      this.drowseCaptureDecoding !== undefined
-+    );
-+  }
-+
-+  supportsDrowseRankOneResidualCaptureV1(): boolean {
-+    return (
-+      this.drowseRankOneCapturePrefillV1 !== undefined &&
-+      this.drowseRankOneCaptureDecodingV1 !== undefined
 +    );
 +  }
 +
@@ -6174,177 +5758,6 @@ index 616cff4..164f157 100644
 +    };
 +  }
 +
-+  async captureDrowseRankOneResidualsV1(
-+    inputIds: number[],
-+    positions: number[],
-+    program: DrowseRankOneProgram,
-+  ): Promise<DrowseRankOneResidualCaptureV1> {
-+    if (!this.supportsDrowseRankOneResidualCaptureV1()) {
-+      throw new Error(
-+        "The loaded model library does not expose the Drowse rank-one residual capture v1 ABI",
-+      );
-+    }
-+    if (
-+      this.drowseProgram !== undefined ||
-+      this.drowseStructuredProgram !== undefined
-+    ) {
-+      throw new Error(
-+        "Drowse rank-one residual capture requires an idle steering program",
-+      );
-+    }
-+    validateDrowseCapturePositions(positions, inputIds.length);
-+    if (
-+      this.slidingWindowSize === -1 &&
-+      inputIds.length > this.contextWindowSize
-+    ) {
-+      throw new ContextWindowSizeExceededError(
-+        inputIds.length,
-+        this.contextWindowSize,
-+      );
-+    }
-+
-+    const layerCount = this.requireModelDimension("num_hidden_layers");
-+    const hiddenSize = this.requireModelDimension("hidden_size");
-+    const values = new Float32Array(layerCount * positions.length * hiddenSize);
-+    this.setDrowseRankOneProgram(program);
-+    this.resetDrowseReadbackState();
-+    this.resetDrowseCaptureState();
-+    try {
-+      for (let chunkStart = 0; chunkStart < inputIds.length; ) {
-+        const span = this.drowsePositionSpans?.find(
-+          (range) => range[1] > chunkStart,
-+        );
-+        const active = span !== undefined && chunkStart >= span[0];
-+        const boundary =
-+          span === undefined ? Infinity : active ? span[1] : span[0];
-+        const chunk = inputIds.slice(
-+          chunkStart,
-+          Math.min(chunkStart + this.prefillChunkSize, boundary),
-+        );
-+        if (this.drowsePositionSpans !== undefined)
-+          await this.applyDrowsePositionControls(active);
-+        const selected: Array<{ outputIndex: number; localPosition: number }> =
-+          [];
-+        for (
-+          let outputIndex = 0;
-+          outputIndex < positions.length;
-+          outputIndex += 1
-+        ) {
-+          const position = positions[outputIndex];
-+          if (position >= chunkStart && position < chunkStart + chunk.length) {
-+            selected.push({
-+              outputIndex,
-+              localPosition: position - chunkStart,
-+            });
-+          }
-+        }
-+        chunkStart += chunk.length;
-+        if (selected.length === 0) {
-+          this.tvm.beginScope();
-+          try {
-+            await this.embedAndForward([chunk], chunk.length, true);
-+          } finally {
-+            this.tvm.endScope();
-+          }
-+          continue;
-+        }
-+        const chunkValues = await this.captureDrowseRankOneTokenChunkV1(
-+          chunk,
-+          selected.map(({ localPosition }) => localPosition),
-+        );
-+        for (let layer = 0; layer < layerCount; layer += 1) {
-+          for (
-+            let selectedIndex = 0;
-+            selectedIndex < selected.length;
-+            selectedIndex += 1
-+          ) {
-+            const source =
-+              (layer * selected.length + selectedIndex) * hiddenSize;
-+            const destination =
-+              (layer * positions.length + selected[selectedIndex].outputIndex) *
-+              hiddenSize;
-+            values.set(
-+              chunkValues.subarray(source, source + hiddenSize),
-+              destination,
-+            );
-+          }
-+        }
-+      }
-+      const measurements = await this.readDrowseMeasurements();
-+      if (measurements === undefined || measurements.length !== layerCount) {
-+        throw new Error(
-+          `Drowse rank-one capture returned ${measurements?.length ?? 0} measurements, ` +
-+            `expected ${layerCount}`,
-+        );
-+      }
-+      return {
-+        abiVersion: 1,
-+        layerCount,
-+        positionCount: positions.length,
-+        hiddenSize,
-+        positions: [...positions],
-+        values,
-+        measurements,
-+      };
-+    } finally {
-+      this.resetDrowseCaptureState();
-+      this.clearDrowseRankOneProgram();
-+    }
-+  }
-+
-+  setDrowseRankOneProgram(program: DrowseRankOneProgram): void {
-+    if (!this.supportsDrowseRankOneHooks()) {
-+      throw new Error(
-+        "The loaded model library does not expose Drowse hook functions",
-+      );
-+    }
-+    const hiddenSize = this.requireModelDimension("hidden_size");
-+    const layerCount = this.requireModelDimension("num_hidden_layers");
-+    validateDrowseRankOneProgram(program, hiddenSize, layerCount);
-+
-+    this.tvm.beginScope();
-+    let next: DrowseRankOneBuffers;
-+    try {
-+      next = {
-+        enabled: this.tvm
-+          .empty([layerCount], "uint32", this.device)
-+          .copyFrom(new Int32Array(program.enabled)),
-+        basis: this.tvm
-+          .empty([layerCount, hiddenSize], "float32", this.device)
-+          .copyFrom(program.basis),
-+        neutral: this.tvm
-+          .empty([layerCount, hiddenSize], "float32", this.device)
-+          .copyFrom(program.neutral),
-+        target: this.tvm
-+          .empty([layerCount], "float32", this.device)
-+          .copyFrom(program.target),
-+        along: this.tvm
-+          .empty([layerCount], "float32", this.device)
-+          .copyFrom(program.along),
-+        collapse: this.tvm
-+          .empty([layerCount], "float32", this.device)
-+          .copyFrom(program.collapse),
-+        probeBasis: this.tvm
-+          .empty([layerCount, hiddenSize], "float32", this.device)
-+          .copyFrom(program.probeBasis),
-+        probeNeutral: this.tvm
-+          .empty([layerCount, hiddenSize], "float32", this.device)
-+          .copyFrom(program.probeNeutral),
-+      };
-+      for (const tensor of Object.values(next)) {
-+        this.tvm.detachFromCurrentScope(tensor);
-+      }
-+    } finally {
-+      this.tvm.endScope();
-+    }
-+    this.disposeDrowseProgram();
-+    this.drowseProgram = next;
-+    this.drowsePositionSpans = normalizeDrowsePositionSelection(program);
-+    if (this.drowsePositionSpans !== undefined) {
-+      this.drowsePositionEnabled = new Uint32Array(program.enabled);
-+    }
-+  }
-+
 +  async setDrowseStructuredProgram(
 +    program: DrowseStructuredProgram,
 +  ): Promise<void> {
@@ -6850,7 +6263,8 @@ index 616cff4..164f157 100644
 +    return (await this.readDrowseMeasurementBundle()).saeTopFeatures;
 +  }
 +
-+  clearDrowseRankOneProgram(): void {
++  /** Remove the installed hook program, leaving the model unsteered. */
++  clearDrowseProgram(): void {
 +    this.disposeDrowseProgram();
 +  }
 +
@@ -7390,12 +6804,7 @@ index 616cff4..164f157 100644
 +            .copyFrom(Int32Array.of(chunk.featureOffset)),
 +        };
 +        chunks.push(resident);
-       }
--    } else if (this.contextWindowSize != -1) {
--      // Use default kv cache without sliding window
--      log.info("Using contextWindowSize: ", this.contextWindowSize);
--    } else {
--      throw new WindowSizeSpecificationError();
++      }
 +      await this.device.sync();
 +      this.tvm.detachFromCurrentScope(decoderBias);
 +      this.tvm.detachFromCurrentScope(runtimeLayerIndexDevice);
@@ -7416,7 +6825,7 @@ index 616cff4..164f157 100644
 +      };
 +    } finally {
 +      this.tvm.endScope();
-     }
++    }
 +  }
 +
 +  private async computeDrowseSaeTopFeatures(
@@ -7429,16 +6838,12 @@ index 616cff4..164f157 100644
 +      dictionary?.activation === "jump_relu"
 +        ? this.drowseSaeJumpReluReadoutAccumulate
 +        : this.drowseSaeReadoutAccumulate;
-     if (
--      config.max_history_size !== undefined &&
--      config.max_history_size !== null
++    if (
 +      !this.drowseDiscoveryRequested() ||
 +      !this.drowseSaeReadoutActive ||
 +      dictionary === undefined ||
 +      accumulate === undefined
-     ) {
--      if (config.max_history_size <= 0) {
--        throw new MinValueError("max_history_size", 0);
++    ) {
 +      return;
 +    }
 +    this.tvm.beginScope();
@@ -7487,12 +6892,7 @@ index 616cff4..164f157 100644
 +          [1, DROWSE_READOUT_TOP_K],
 +          "SAE top-feature IDs",
 +        );
-       }
--      this.maxHistorySize = config.max_history_size;
--    } else if (this.resolvedModelABI.needsRNNState) {
--      // Hybrid/recurrent models can over-allocate RNN state if we use context window directly.
--      // Keep browser default conservative unless user explicitly overrides max_history_size.
--      log.info("max_history_size is not set. Using browser-safe default: 1");
++      }
 +      const valuesHost = this.tvm.empty(
 +        values.shape,
 +        "float32",
@@ -7515,30 +6915,15 @@ index 616cff4..164f157 100644
 +      };
 +    } finally {
 +      this.tvm.endScope();
-     }
++    }
 +  }
- 
--    // 5. Create cache
--    // Load cache functions and instantiate KVCache
--    this.fclearKVCaches = this.tvm.detachFromCurrentScope(
--      this.tvm.getGlobalFunc("vm.builtin.kv_state_clear"),
--    );
--    this.fKVCacheAddSequence = this.tvm.detachFromCurrentScope(
--      this.tvm.getGlobalFunc("vm.builtin.kv_state_add_sequence"),
++
 +  private materializeDrowseJlensReadback(): void {
 +    const pending = this.drowsePendingJlensReadback;
 +    if (pending === undefined) return;
 +    const probabilities = new Float32Array(
 +      pending.layerCount * DROWSE_STRUCTURED_MAX_PROBES,
-     );
--    this.fKVCacheRemoveSequence = this.tvm.detachFromCurrentScope(
--      this.tvm.getGlobalFunc("vm.builtin.kv_state_remove_sequence"),
--    );
--    this.fKVCacheBeginForward = this.tvm.detachFromCurrentScope(
--      this.tvm.getGlobalFunc("vm.builtin.kv_state_begin_forward"),
--    );
--    this.fKVCacheEndForward = this.tvm.detachFromCurrentScope(
--      this.tvm.getGlobalFunc("vm.builtin.kv_state_end_forward"),
++    );
 +    for (const { chunk, selectedHost } of pending.chunks) {
 +      const values = new Float32Array(selectedHost.toArray());
 +      for (let row = 0; row < chunk.layerIds.length; row += 1) {
@@ -7555,14 +6940,10 @@ index 616cff4..164f157 100644
 +    const layerIndices = new Int32Array(aggregate.fittedLayerCount);
 +    const layerTokenIds = new Int32Array(
 +      aggregate.fittedLayerCount * DROWSE_READOUT_TOP_K,
-     );
--    this.fKVCacheEnableSlidingWindowForSeq = this.tvm.detachFromCurrentScope(
--      this.tvm.getGlobalFunc(
--        "vm.builtin.attention_kv_cache_enable_sliding_window_for_seq",
--      ),
++    );
 +    const layerProbabilities = new Float32Array(
 +      aggregate.fittedLayerCount * DROWSE_READOUT_TOP_K,
-     );
++    );
 +    let fittedLayerOffset = 0;
 +    for (const row of pending.chunks) {
 +      if (
@@ -7599,13 +6980,7 @@ index 616cff4..164f157 100644
 +      layerProbabilities,
 +    };
 +  }
- 
--    const defaultPageSize = 16;
--    const defaultMaxNumSequence = 1;
--    const maxTotalSeqLen =
--      this.slidingWindowSize != -1
--        ? this.slidingWindowSize
--        : this.contextWindowSize;
++
 +  private materializeDrowseSaeReadback(): void {
 +    const pending = this.drowsePendingSaeReadback;
 +    if (pending === undefined) return;
@@ -7629,11 +7004,7 @@ index 616cff4..164f157 100644
 +      featureCount: pending.featureCount,
 +    };
 +  }
- 
--    if (this.resolvedModelABI.needsKVCache) {
--      const createKVCache = LLMChatPipeline.getRequiredVMFunctionByName(
--        "create_tir_paged_kv_cache",
--        vmFunctionRegistry,
++
 +  private disposeDrowsePendingJlensReadback(): void {
 +    const pending = this.drowsePendingJlensReadback;
 +    if (pending === undefined) return;
@@ -7700,15 +7071,7 @@ index 616cff4..164f157 100644
 +    if (dictionary === undefined || dictionary.bindingId !== bindingId) {
 +      throw new Error(
 +        "The Drowse J-lens program does not match the resident dictionary",
-       );
--      this.kvCache = this.tvm.detachFromCurrentScope(
--        createKVCache(
--          this.tvm.makeShapeTuple([defaultMaxNumSequence]), // max_num_sequence
--          this.tvm.makeShapeTuple([maxTotalSeqLen]), // max_total_sequence_length
--          this.tvm.makeShapeTuple([this.prefillChunkSize]), // prefill_chunk_size
--          this.tvm.makeShapeTuple([defaultPageSize]), // page_size, hard coded for now
--          this.tvm.makeShapeTuple([this.slidingWindowSize != -1 ? 1 : 0]),
--        ),
++      );
 +    }
 +    if (
 +      layerIndices.length < 1 ||
@@ -7719,8 +7082,8 @@ index 616cff4..164f157 100644
 +    ) {
 +      throw new TypeError(
 +        "Drowse J-lens layer indices must be unique and ordered",
-       );
-     }
++      );
++    }
 +    const byLayer = new Map<number, DrowseJlensChunk>();
 +    for (const chunk of dictionary.chunks) {
 +      if (chunk.layerIds.length !== 1) {
@@ -7738,11 +7101,7 @@ index 616cff4..164f157 100644
 +      return chunk;
 +    });
 +  }
- 
--    if (this.resolvedModelABI.needsRNNState) {
--      const createRNNState = LLMChatPipeline.getRequiredVMFunctionByName(
--        "create_rnn_state",
--        vmFunctionRegistry,
++
 +  private async requireDrowseExactReadout(
 +    family: "jlens" | "sae",
 +  ): Promise<void> {
@@ -7753,23 +7112,13 @@ index 616cff4..164f157 100644
 +    ) {
 +      throw new Error(
 +        "The compiled model does not expose the exact Drowse J-lens readout functions",
-       );
--      this.rnnState = this.tvm.detachFromCurrentScope(
--        createRNNState(
--          this.tvm.makeShapeTuple([defaultMaxNumSequence]),
--          this.tvm.makeShapeTuple([this.maxHistorySize]),
--        ),
++      );
 +    }
 +    if (family === "sae" && this.drowseSaeReadoutAccumulate === undefined) {
 +      throw new Error(
 +        "The compiled model does not expose the exact Drowse SAE readout function",
-       );
--      log.info("Using maxHistorySize for RNN state: ", this.maxHistorySize);
-     }
--
--    if (this.resolvedModelABI.prefillABI === "batch") {
--      this.prefillLogitPositions = this.tvm.detachFromCurrentScope(
--        this.tvm.empty([defaultMaxNumSequence], "int32", this.device),
++      );
++    }
 +    if (this.drowseExactReadoutAttested) return;
 +    const profile = await this.getDrowseStructuredHookProfile();
 +    if (
@@ -7784,21 +7133,11 @@ index 616cff4..164f157 100644
 +    ) {
 +      throw new Error(
 +        "The compiled model does not attest the exact Drowse readout ABI",
-       );
-     }
++      );
++    }
 +    this.drowseExactReadoutAttested = true;
 +  }
- 
--    this.filledKVCacheLength = 0;
--    this.resetChat(); // especially needed for PagedKVCache as we need to call fKVCacheAddSequence
--
--    // Initialize WebGPU sampling related device tensors
--    const numSamples = 1;
--    const numProbs = 1;
--
--    this.sampleIndices = new Int32Array(numSamples);
--    for (let i = 0; i < numSamples; i++) {
--      this.sampleIndices[i] = i;
++
 +  private requireModelDimension(field: string): number {
 +    const modelConfig = this.config.model_config;
 +    const textConfig = modelConfig?.text_config as
@@ -7807,22 +7146,13 @@ index 616cff4..164f157 100644
 +    const value = modelConfig?.[field] ?? textConfig?.[field];
 +    if (!Number.isSafeInteger(value) || (value as number) <= 0) {
 +      throw new Error(`The model config does not contain a valid ${field}`);
-     }
--    this.sampleIndicesDevice = this.tvm.detachFromCurrentScope(
--      this.tvm
--        .empty([numSamples], "int32", this.device)
--        .copyFrom(this.sampleIndices),
--    );
++    }
 +    return value as number;
 +  }
- 
--    this.topPDevice = this.tvm.detachFromCurrentScope(
--      this.tvm.empty([numProbs], "float32", this.device),
--    );
++
 +  private disposeDrowseProgram(): void {
 +    this.drowsePositionSpans = undefined;
 +    this.drowsePositionActive = true;
-+    this.drowsePositionEnabled = undefined;
 +    this.drowsePositionAffine = undefined;
 +    this.drowsePositionCurve = undefined;
 +    this.resetDrowseReadbackState();
@@ -7834,33 +7164,12 @@ index 616cff4..164f157 100644
 +    this.drowseAffineAlongStaging = undefined;
 +    this.drowseCurveActiveStaging = undefined;
 +    this.drowseCurveParametersHost = undefined;
-+    if (this.drowseProgram !== undefined) {
-+      for (const tensor of Object.values(this.drowseProgram)) tensor.dispose();
-+      this.drowseProgram = undefined;
-+    }
 +    if (this.drowseStructuredProgram !== undefined) {
 +      for (const tensor of Object.values(this.drowseStructuredProgram))
 +        tensor.dispose();
 +      this.drowseStructuredProgram = undefined;
 +    }
 +    this.drowseStructuredMode = undefined;
-+  }
- 
--    tvm.endScope();
-+  private disposeDrowseJlensDictionary(): void {
-+    const dictionary = this.drowseJlensDictionary;
-+    if (dictionary !== undefined) {
-+      for (const chunk of dictionary.chunks) {
-+        chunk.jacobians.dispose();
-+        chunk.layerIdsDevice.dispose();
-+      }
-+      this.drowseJlensDictionary = undefined;
-+    }
-+    this.drowseJlensChunks = undefined;
-+    this.disposeDrowsePendingJlensReadback();
-+    this.drowseJlensProbabilitiesHost = undefined;
-+    this.drowseJlensTopTokensHost = undefined;
-+    this.drowseMeasurementBundleHost = undefined;
    }
  
 -  dispose() {
@@ -7885,6 +7194,22 @@ index 616cff4..164f157 100644
 -    this.tokenizer.dispose();
 -    this.xgTokenizerInfo?.dispose();
 -    this.grammarCompiler?.dispose();
++  private disposeDrowseJlensDictionary(): void {
++    const dictionary = this.drowseJlensDictionary;
++    if (dictionary !== undefined) {
++      for (const chunk of dictionary.chunks) {
++        chunk.jacobians.dispose();
++        chunk.layerIdsDevice.dispose();
++      }
++      this.drowseJlensDictionary = undefined;
++    }
++    this.drowseJlensChunks = undefined;
++    this.disposeDrowsePendingJlensReadback();
++    this.drowseJlensProbabilitiesHost = undefined;
++    this.drowseJlensTopTokensHost = undefined;
++    this.drowseMeasurementBundleHost = undefined;
++  }
++
 +  private disposeDrowseSaeDictionary(): void {
 +    const dictionary = this.drowseSaeDictionary;
 +    if (dictionary !== undefined) {
@@ -7905,7 +7230,7 @@ index 616cff4..164f157 100644
    }
  
    /**
-@@ -514,6 +4064,11 @@ export class LLMChatPipeline {
+@@ -514,6 +3806,11 @@ export class LLMChatPipeline {
      return this.outputMessage;
    }
  
@@ -7917,7 +7242,7 @@ index 616cff4..164f157 100644
    /**
     * Reset the runtime statistics
     */
-@@ -535,6 +4090,7 @@ export class LLMChatPipeline {
+@@ -535,6 +3832,7 @@ export class LLMChatPipeline {
      }
      this.resetKVCache();
      this.filledKVCacheLength = 0;
@@ -7925,7 +7250,7 @@ index 616cff4..164f157 100644
      this.logitProcessor?.resetState();
      this.tvm.endScope();
    }
-@@ -543,6 +4099,7 @@ export class LLMChatPipeline {
+@@ -543,6 +3841,7 @@ export class LLMChatPipeline {
     * Reset KV Cache
     */
    resetKVCache() {
@@ -7933,7 +7258,7 @@ index 616cff4..164f157 100644
      const states = this.getActiveKVStates();
      for (const state of states) {
        this.fclearKVCaches(state);
-@@ -572,6 +4129,10 @@ export class LLMChatPipeline {
+@@ -572,6 +3871,10 @@ export class LLMChatPipeline {
      return this.finishReason;
    }
  
@@ -7944,7 +7269,7 @@ index 616cff4..164f157 100644
    /**
     * @returns tokenLogprobArray for this current round of autoregressive generation.
     * Updated upon each sampled token, cleared upon each prefillStep().
-@@ -587,6 +4148,10 @@ export class LLMChatPipeline {
+@@ -587,6 +3890,10 @@ export class LLMChatPipeline {
      return this.curRoundDecodingTotalTokens;
    }
  
@@ -7955,7 +7280,7 @@ index 616cff4..164f157 100644
    /**
     * @returns the number of tokens decoded for a single request or a single choice in the request.
     */
-@@ -721,13 +4286,17 @@ export class LLMChatPipeline {
+@@ -721,13 +4028,17 @@ export class LLMChatPipeline {
     */
    async prefillStep(
      inp: string,
@@ -7976,7 +7301,7 @@ index 616cff4..164f157 100644
        );
      }
      if (this.resetStatsPerPrefill) {
-@@ -738,8 +4307,10 @@ export class LLMChatPipeline {
+@@ -738,8 +4049,10 @@ export class LLMChatPipeline {
  
      // cleanup the per convo states
      this.outputIds = [];
@@ -7987,7 +7312,7 @@ index 616cff4..164f157 100644
      this.tokenLogprobArray = [];
      this.curRoundDecodingTotalTokens = 0;
      this.curRoundPrefillTotalTokens = 0;
-@@ -747,6 +4318,10 @@ export class LLMChatPipeline {
+@@ -747,6 +4060,10 @@ export class LLMChatPipeline {
      this.curRoundDecodingTotalTime = 0;
      this.curRoundGrammarInitTotalTime = 0;
      this.curRoundGrammarPerTokenTotalTime = 0;
@@ -7998,7 +7323,7 @@ index 616cff4..164f157 100644
  
      this.curRoundLatencyBreakdown = {
        logitProcessorTime: [],
-@@ -758,6 +4333,8 @@ export class LLMChatPipeline {
+@@ -758,6 +4075,8 @@ export class LLMChatPipeline {
      };
  
      this.stopTriggered = false;
@@ -8007,7 +7332,7 @@ index 616cff4..164f157 100644
      const conversation = this.conversation;
  
      // -1. Instantiate grammar matcher according to generation config. This step is overlapped
-@@ -835,17 +4412,28 @@ export class LLMChatPipeline {
+@@ -835,17 +4154,28 @@ export class LLMChatPipeline {
        conversation.prompt = inp;
      } else {
        conversation.appendMessage(msgRole, inp, inp_role_str);
@@ -8040,7 +7365,7 @@ index 616cff4..164f157 100644
        }
      }
      const [inputData, promptLen, getEmbedSize] = await this.getInputData();
-@@ -944,8 +4532,9 @@ export class LLMChatPipeline {
+@@ -944,8 +4274,9 @@ export class LLMChatPipeline {
      }
      this.stopTriggered = true;
      this.finishReason = "abort";
@@ -8051,7 +7376,7 @@ index 616cff4..164f157 100644
      }
    }
  
-@@ -999,9 +4588,11 @@ export class LLMChatPipeline {
+@@ -999,9 +4330,11 @@ export class LLMChatPipeline {
      if (stopTokens.includes(nextToken)) {
        this.stopTriggered = true;
        this.finishReason = "stop";
@@ -8063,7 +7388,7 @@ index 616cff4..164f157 100644
        // Update token appearance frequency
        const curFreq = this.appearedTokensFreq.get(nextToken);
        if (curFreq !== undefined) {
-@@ -1013,6 +4604,7 @@ export class LLMChatPipeline {
+@@ -1013,6 +4346,7 @@ export class LLMChatPipeline {
  
      // Stop condition 2: stop string; update `this.outputMessage` subsequently
      let outputMessage = this.tokenizer.decode(new Int32Array(this.outputIds));
@@ -8071,7 +7396,7 @@ index 616cff4..164f157 100644
      let stopPos = -1;
      for (const stopStr of stopStrs) {
        // Stop at the first stopStr we find
-@@ -1021,32 +4613,36 @@ export class LLMChatPipeline {
+@@ -1021,32 +4355,36 @@ export class LLMChatPipeline {
          outputMessage = outputMessage.substring(0, stopPos);
          this.stopTriggered = true;
          this.finishReason = "stop";
@@ -8110,34 +7435,10 @@ index 616cff4..164f157 100644
        }
      }
    }
-@@ -1214,20 +4810,109 @@ export class LLMChatPipeline {
-     return embed;
-   }
- 
--  /**
--   * Embed and forward input data, that can be either array of tokens, or an image.
--   * This will increment `this.filledKVCacheLength`.
--   *
--   * @param inputData data to embed and forward
--   * @param inputDataLen length of this inputData, should smaller than prefill chunk size.
--   * @returns The logits returned by this forward as tvmjs.Tensor on GPU.
--   *
--   * @note Precondition: inputData's data length is smaller than prefill chunk size
--   */
--  private async embedAndForward(
-+  /**
-+   * Embed and forward input data, that can be either array of tokens, or an image.
-+   * This will increment `this.filledKVCacheLength`.
-+   *
-+   * @param inputData data to embed and forward
-+   * @param inputDataLen length of this inputData, should smaller than prefill chunk size.
-+   * @returns The logits returned by this forward as tvmjs.Tensor on GPU.
-+   *
-+   * @note Precondition: inputData's data length is smaller than prefill chunk size
-+   */
-+  private async embedAndForward(
-+    inputData: Array<Array<number> | ImageURL>,
-+    inputDataLen: number,
+@@ -1227,7 +4565,87 @@ export class LLMChatPipeline {
+   private async embedAndForward(
+     inputData: Array<Array<number> | ImageURL>,
+     inputDataLen: number,
 +    useDrowseProgram = true,
 +  ): Promise<tvmjs.Tensor> {
 +    if (this.drowseReplayState !== undefined) {
@@ -8194,12 +7495,7 @@ index 616cff4..164f157 100644
 +
 +  private async applyDrowsePositionControls(active: boolean): Promise<void> {
 +    if (active === this.drowsePositionActive) return;
-+    if (this.drowseProgram !== undefined) {
-+      const enabled = this.drowsePositionEnabled!;
-+      this.drowseProgram.enabled.copyFrom(
-+        active ? new Int32Array(enabled) : new Int32Array(enabled.length),
-+      );
-+    } else if (this.drowseStructuredProgram !== undefined) {
++    if (this.drowseStructuredProgram !== undefined) {
 +      const affine = this.drowsePositionAffine!;
 +      const curve = this.drowsePositionCurve!;
 +      const unit = this.drowsePositionUnit;
@@ -8217,21 +7513,17 @@ index 616cff4..164f157 100644
 +  }
 +
 +  private async embedAndForwardChunk(
-     inputData: Array<Array<number> | ImageURL>,
-     inputDataLen: number,
++    inputData: Array<Array<number> | ImageURL>,
++    inputDataLen: number,
 +    useDrowseProgram = true,
    ): Promise<tvmjs.Tensor> {
-+    if (
-+      useDrowseProgram &&
-+      (this.drowseProgram !== undefined ||
-+        this.drowseStructuredProgram !== undefined)
-+    ) {
++    if (useDrowseProgram && this.drowseStructuredProgram !== undefined) {
 +      this.resetDrowseReadbackState();
 +    }
      if (inputDataLen > this.prefillChunkSize) {
        throw new Error(
          "InternalError: expect inputDataLen <= this.prefillChunkSize.",
-@@ -1238,51 +4923,139 @@ export class LLMChatPipeline {
+@@ -1238,51 +4656,135 @@ export class LLMChatPipeline {
  
      // 1. Embed all inputData
      this.tvm.beginScope();
@@ -8317,11 +7609,7 @@ index 616cff4..164f157 100644
 +      } else {
 +        retValue = this.invokeDecode(allEmbeddings, useDrowseProgram);
 +      }
-+      if (
-+        useDrowseProgram &&
-+        (this.drowseProgram !== undefined ||
-+          this.drowseStructuredProgram !== undefined)
-+      ) {
++      if (useDrowseProgram && this.drowseStructuredProgram !== undefined) {
 +        const outputOffset = this.drowseOutputOffset();
 +        const measurements = this.tvm.detachFromCurrentScope(
 +          retValue.get(outputOffset),
@@ -8412,7 +7700,7 @@ index 616cff4..164f157 100644
      this.tvm.attachToCurrentScope(logits);
      return logits;
    }
-@@ -1292,7 +5065,14 @@ export class LLMChatPipeline {
+@@ -1292,7 +4794,14 @@ export class LLMChatPipeline {
      names: string[],
    ): VMFunctionRegistry {
      const registry: VMFunctionRegistry = {};
@@ -8428,25 +7716,7 @@ index 616cff4..164f157 100644
        try {
          const func = vm.getFunction(name) as unknown;
          if (typeof func === "function") {
-@@ -1305,6 +5085,17 @@ export class LLMChatPipeline {
-     return registry;
-   }
- 
-+  private static applyLegacyDrowseAliases(registry: VMFunctionRegistry): void {
-+    for (const [name, func] of Object.entries(registry)) {
-+      const prefix = ["polythetic_", "saklas_"].find((value) =>
-+        name.startsWith(value),
-+      );
-+      if (prefix === undefined || func === undefined) continue;
-+      const currentName = `drowse_${name.slice(prefix.length)}`;
-+      if (registry[currentName] === undefined) registry[currentName] = func;
-+    }
-+  }
-+
-   private static getRequiredVMFunctionByName(
-     name: string,
-     registry: VMFunctionRegistry,
-@@ -1365,6 +5156,7 @@ export class LLMChatPipeline {
+@@ -1365,6 +4874,7 @@ export class LLMChatPipeline {
    private static resolveModelABI(
      kvStateKind: KVStateKind,
      availability: VMFunctionAvailability,
@@ -8454,7 +7724,7 @@ index 616cff4..164f157 100644
    ): ResolvedModelABI {
      const hasSingleKernelPair = availability.prefill && availability.decode;
      const hasBatchKernelPair =
-@@ -1450,6 +5242,17 @@ export class LLMChatPipeline {
+@@ -1450,6 +4960,17 @@ export class LLMChatPipeline {
      }
  
      // kv_cache
@@ -8472,7 +7742,7 @@ index 616cff4..164f157 100644
      if (hasSingleKernelPair) {
        return {
          kvStateKind,
-@@ -1525,14 +5328,269 @@ export class LLMChatPipeline {
+@@ -1525,14 +5046,151 @@ export class LLMChatPipeline {
      return states;
    }
  
@@ -8558,71 +7828,6 @@ index 616cff4..164f157 100644
 +    }
 +  }
 +
-+  private async captureDrowseRankOneTokenChunkV1(
-+    inputIds: number[],
-+    positions: number[],
-+  ): Promise<Float32Array> {
-+    this.tvm.beginScope();
-+    const forwardStates = this.getActiveKVStates();
-+    let forwardBegun = 0;
-+    try {
-+      const embeddings = this.getTokensEmbeddings(inputIds);
-+      const allEmbeddings = embeddings.view([1].concat(embeddings.shape));
-+      const capturePositions = this.tvm
-+        .empty([positions.length], "int32", this.device)
-+        .copyFrom(new Int32Array(positions));
-+      const inputLenShape = this.tvm.makeShapeTuple([inputIds.length]);
-+      const seqIdsTuple = this.tvm.makeShapeTuple([0]);
-+      for (const state of forwardStates) {
-+        this.fKVCacheBeginForward(state, seqIdsTuple, inputLenShape);
-+        forwardBegun += 1;
-+      }
-+      const retValue = this.invokeDrowseRankOneCaptureV1(
-+        allEmbeddings,
-+        inputIds.length,
-+        capturePositions,
-+      );
-+      const measurements = this.tvm.detachFromCurrentScope(
-+        retValue.get(this.drowseOutputOffset()) as tvmjs.Tensor,
-+      );
-+      this.drowseMeasurements?.dispose();
-+      this.drowseMeasurements = measurements;
-+      this.drowseMeasurementBundleHost = undefined;
-+      const captures = retValue.get(
-+        this.drowseOutputOffset() + 1,
-+      ) as tvmjs.Tensor;
-+      const layerCount = this.requireModelDimension("num_hidden_layers");
-+      const hiddenSize = this.requireModelDimension("hidden_size");
-+      const expectedShape = [layerCount, positions.length, hiddenSize];
-+      if (
-+        captures.dtype !== "float32" ||
-+        captures.shape.length !== expectedShape.length ||
-+        captures.shape.some((value, index) => value !== expectedShape[index])
-+      ) {
-+        throw new Error(
-+          `Drowse rank-one residual capture returned ${captures.dtype}[${captures.shape.join(",")}], ` +
-+            `expected float32[${expectedShape.join(",")}]`,
-+        );
-+      }
-+      for (let index = forwardStates.length - 1; index >= 0; index -= 1) {
-+        this.fKVCacheEndForward(forwardStates[index]);
-+      }
-+      forwardBegun = 0;
-+      this.filledKVCacheLength += inputIds.length;
-+      const host = this.tvm.empty(captures.shape, "float32", this.tvm.cpu());
-+      host.copyFrom(captures);
-+      await this.device.sync();
-+      return new Float32Array(host.toArray());
-+    } finally {
-+      if (forwardBegun) {
-+        for (let index = forwardBegun - 1; index >= 0; index -= 1) {
-+          this.fKVCacheEndForward(forwardStates[index]);
-+        }
-+      }
-+      this.tvm.endScope();
-+    }
-+  }
-+
 +  private invokeDrowseCapture(
 +    allEmbeddings: tvmjs.Tensor,
 +    inputDataLen: number,
@@ -8667,66 +7872,13 @@ index 616cff4..164f157 100644
 +    );
 +  }
 +
-+  private invokeDrowseRankOneCaptureV1(
-+    allEmbeddings: tvmjs.Tensor,
-+    inputDataLen: number,
-+    capturePositions: tvmjs.Tensor,
-+  ): any {
-+    const isPrefill = inputDataLen > 1;
-+    const forward = isPrefill
-+      ? this.drowseRankOneCapturePrefillV1!
-+      : this.drowseRankOneCaptureDecodingV1!;
-+    const abi = isPrefill
-+      ? this.resolvedModelABI.prefillABI
-+      : this.resolvedModelABI.decodeABI;
-+    const drowseArgs = this.getDrowseForwardArguments();
-+    if (drowseArgs.length === 0) {
-+      throw new Error("Drowse rank-one capture requires an installed program");
-+    }
-+    if (abi === "single") {
-+      return forward(
-+        allEmbeddings,
-+        ...this.drowseStateArguments(),
-+        capturePositions,
-+        ...drowseArgs,
-+        this.params,
-+      );
-+    }
-+    if (isPrefill) {
-+      if (this.prefillLogitPositions === undefined) {
-+        throw new Error(
-+          "InternalError: batch prefill ABI requires prefillLogitPositions tensor.",
-+        );
-+      }
-+      this.prefillLogitPositionHost[0] = inputDataLen - 1;
-+      this.prefillLogitPositions.copyFrom(this.prefillLogitPositionHost);
-+      return forward(
-+        allEmbeddings,
-+        this.prefillLogitPositions,
-+        ...this.drowseStateArguments(),
-+        capturePositions,
-+        ...drowseArgs,
-+        this.params,
-+      );
-+    }
-+    return forward(
-+      allEmbeddings,
-+      ...this.drowseStateArguments(),
-+      capturePositions,
-+      ...drowseArgs,
-+      this.params,
-+    );
-+  }
-+
    private invokePrefill(
      allEmbeddings: tvmjs.Tensor,
      inputDataLen: number,
 +    useDrowseProgram = true,
    ): any {
 +    let forward = this.prefill;
-+    if (useDrowseProgram && this.drowseProgram !== undefined) {
-+      forward = this.drowsePrefill!;
-+    } else if (useDrowseProgram && this.drowseStructuredMode === "structured") {
++    if (useDrowseProgram && this.drowseStructuredMode === "structured") {
 +      forward = this.drowseStructuredPrefill!;
 +    } else if (useDrowseProgram && this.drowseStructuredMode === "curved") {
 +      forward = this.drowseCurvedPrefill!;
@@ -8743,7 +7895,7 @@ index 616cff4..164f157 100644
          this.params,
        );
      }
-@@ -1549,27 +5607,44 @@ export class LLMChatPipeline {
+@@ -1549,27 +5207,42 @@ export class LLMChatPipeline {
        this.resolvedModelABI.needsKVCache &&
        this.resolvedModelABI.needsRNNState
      ) {
@@ -8773,9 +7925,7 @@ index 616cff4..164f157 100644
 +    useDrowseProgram = true,
 +  ): any {
 +    let forward = this.decoding;
-+    if (useDrowseProgram && this.drowseProgram !== undefined) {
-+      forward = this.drowseDecoding!;
-+    } else if (useDrowseProgram && this.drowseStructuredMode === "structured") {
++    if (useDrowseProgram && this.drowseStructuredMode === "structured") {
 +      forward = this.drowseStructuredDecoding!;
 +    } else if (useDrowseProgram && this.drowseStructuredMode === "curved") {
 +      forward = this.drowseCurvedDecoding!;
@@ -8792,7 +7942,7 @@ index 616cff4..164f157 100644
          this.params,
        );
      }
-@@ -1577,20 +5652,80 @@ export class LLMChatPipeline {
+@@ -1577,20 +5250,68 @@ export class LLMChatPipeline {
        this.resolvedModelABI.needsKVCache &&
        this.resolvedModelABI.needsRNNState
      ) {
@@ -8815,18 +7965,6 @@ index 616cff4..164f157 100644
    }
  
 +  private getDrowseForwardArguments(): tvmjs.Tensor[] {
-+    if (this.drowseProgram !== undefined) {
-+      return [
-+        this.drowseProgram.enabled,
-+        this.drowseProgram.basis,
-+        this.drowseProgram.neutral,
-+        this.drowseProgram.target,
-+        this.drowseProgram.along,
-+        this.drowseProgram.collapse,
-+        this.drowseProgram.probeBasis,
-+        this.drowseProgram.probeNeutral,
-+      ];
-+    }
 +    const program = this.drowseStructuredProgram;
 +    if (program === undefined) return [];
 +    const affine = [
@@ -8875,7 +8013,7 @@ index 616cff4..164f157 100644
    // NOTE: caller must call device.sync()
    private updateLogitsOnCPU(logits: tvmjs.Tensor): tvmjs.Tensor {
      if (this.logitsOnCPU == undefined) {
-@@ -1610,7 +5745,7 @@ export class LLMChatPipeline {
+@@ -1610,7 +5331,7 @@ export class LLMChatPipeline {
      logitsOnGPU: tvmjs.Tensor,
      genConfig?: GenerationConfig,
    ) {
@@ -8884,7 +8022,7 @@ index 616cff4..164f157 100644
      // Also load other genConfig items like logit_bias. Consume all fields of `genConfig` here.
      function _hasValue(value: any): boolean {
        // if we use `if value` directly, `value` being 0 evaluates to false, violating semantics
-@@ -1618,6 +5753,7 @@ export class LLMChatPipeline {
+@@ -1618,6 +5339,7 @@ export class LLMChatPipeline {
      }
      let temperature: number = this.config.temperature;
      let top_p: number = this.config.top_p;
@@ -8892,7 +8030,7 @@ index 616cff4..164f157 100644
      let repetition_penalty: number = this.config.repetition_penalty;
      let frequency_penalty: number = this.config.frequency_penalty;
      let presence_penalty: number = this.config.presence_penalty;
-@@ -1633,6 +5769,9 @@ export class LLMChatPipeline {
+@@ -1633,6 +5355,9 @@ export class LLMChatPipeline {
        if (_hasValue(genConfig.top_p)) {
          top_p = genConfig.top_p!;
        }
@@ -8902,7 +8040,7 @@ index 616cff4..164f157 100644
        // TODO: setting top_p to 1.0 by default might run into issues since
        // top_p masking in relax uses < instead of <=
        // Set default top_p to 1.0 if not set
-@@ -1675,11 +5814,14 @@ export class LLMChatPipeline {
+@@ -1675,11 +5400,14 @@ export class LLMChatPipeline {
        }
      }
      // Check range validity
@@ -8920,7 +8058,7 @@ index 616cff4..164f157 100644
      }
      if (repetition_penalty <= 0) {
        throw new MinValueError("repetition_penalty", 0);
-@@ -1894,13 +6036,38 @@ export class LLMChatPipeline {
+@@ -1894,13 +5622,38 @@ export class LLMChatPipeline {
      // 4. Sample token from logits
      const sampleBegin = performance.now();
  
@@ -8963,7 +8101,7 @@ index 616cff4..164f157 100644
  
      this.tvm.beginScope();
      const temperaturesDevice = this.tvm
-@@ -1913,79 +6080,131 @@ export class LLMChatPipeline {
+@@ -1913,79 +5666,131 @@ export class LLMChatPipeline {
      );
      probs = probs.view([numProbs, this.fullVocabSize]);
  
@@ -9145,7 +8283,7 @@ index 616cff4..164f157 100644
    }
  
    /**
-@@ -2028,20 +6247,37 @@ export class LLMChatPipeline {
+@@ -2028,20 +5833,37 @@ export class LLMChatPipeline {
        if (this.filledKVCacheLength !== 0) {
          throw new TextCompletionExpectsKVEmptyError();
        }
@@ -9194,7 +8332,7 @@ index 616cff4..164f157 100644
      }
  
      // 1.5. Preload image dimensions to compute per-image embed sizes
-@@ -2082,7 +6318,7 @@ export class LLMChatPipeline {
+@@ -2082,7 +5904,7 @@ export class LLMChatPipeline {
  
      // 3. Encode all prompts. Iterate through each message in the prompt array, where each
      // prompt can either be a string, or an array of a mixture of string and ImageURLs.
@@ -9203,7 +8341,7 @@ index 616cff4..164f157 100644
      for (let i = 0; i < prompts.length; i++) {
        const curPrompt = prompts[i];
        if (typeof curPrompt === "string") {
-@@ -2116,6 +6352,26 @@ export class LLMChatPipeline {
+@@ -2116,6 +5938,26 @@ export class LLMChatPipeline {
          }
        }
      }
@@ -9230,7 +8368,7 @@ index 616cff4..164f157 100644
      // Deal with last curTokens
      if (curTokens.length !== 0) {
        ret.push([...curTokens]);
-@@ -2186,50 +6442,51 @@ export class LLMChatPipeline {
+@@ -2186,50 +6028,51 @@ export class LLMChatPipeline {
    }
  
    /**
@@ -9298,7 +8436,7 @@ index 616cff4..164f157 100644
      } as ChatCompletionTokenLogprob;
    }
  
-@@ -2284,3 +6541,10 @@ export class LLMChatPipeline {
+@@ -2284,3 +6127,10 @@ export class LLMChatPipeline {
      log.info(msg);
    }
  }
@@ -9310,17 +8448,16 @@ index 616cff4..164f157 100644
 +  );
 +}
 diff --git a/src/message.ts b/src/message.ts
-index 8be38bb..0a0b56c 100644
+index 8be38bb..716ff0b 100644
 --- a/src/message.ts
 +++ b/src/message.ts
-@@ -11,6 +11,22 @@ import {
+@@ -11,6 +11,21 @@ import {
    EmbeddingCreateParams,
    CreateEmbeddingResponse,
  } from "./openai_api_protocols/index";
 +import {
 +  DrowseCaptureRow,
 +  DrowsePreparedCaptureRow,
-+  DrowseRankOneProgram,
 +  DrowseStructuredProgram,
 +  DrowseResidualCapture,
 +  DrowseRuntimeCapabilities,
@@ -9336,31 +8473,27 @@ index 8be38bb..0a0b56c 100644
  
  /**
   * Message kind used by worker
-@@ -24,6 +40,34 @@ type RequestKind =
+@@ -24,6 +39,30 @@ type RequestKind =
    | "getMaxStorageBufferBindingSize"
    | "getGPUVendor"
    | "forwardTokensAndSample"
-+  | "supportsDrowseRankOneHooks"
 +  | "supportsDrowseStructuredHooks"
 +  | "supportsDrowseCurvedHooks"
 +  | "supportsDrowseUnitSites"
 +  | "supportsDrowseResidualCapture"
-+  | "supportsDrowseRankOneResidualCaptureV1"
 +  | "getDrowseRuntimeCapabilities"
 +  | "getDrowseStructuredHookProfile"
 +  | "tokenizeDrowseText"
 +  | "decodeDrowseTokens"
 +  | "prepareDrowseCaptureRows"
 +  | "captureDrowseResiduals"
-+  | "captureDrowseRankOneResidualsV1"
-+  | "setDrowseRankOneProgram"
 +  | "setDrowseStructuredProgram"
 +  | "updateDrowseStructuredControls"
 +  | "drowseBlockSites"
-+  | "clearDrowseRankOneProgram"
 +  | "setDrowseSaeDictionary"
 +  | "clearDrowseSaeDictionary"
 +  | "setDrowseJlensDictionary"
++  | "clearDrowseProgram"
 +  | "clearDrowseJlensDictionary"
 +  | "readDrowseMeasurementBundle"
 +  | "readDrowseJlensTopTokens"
@@ -9371,7 +8504,7 @@ index 8be38bb..0a0b56c 100644
    | "chatCompletionNonStreaming"
    | "completionNonStreaming"
    | "embedding"
-@@ -58,6 +102,54 @@ export interface ForwardTokensAndSampleParams {
+@@ -58,6 +97,47 @@ export interface ForwardTokensAndSampleParams {
    isPrefill: boolean;
    modelId?: string;
  }
@@ -9383,9 +8516,6 @@ index 8be38bb..0a0b56c 100644
 +}
 +export interface DecodeDrowseTokensParams extends DrowseModelParams {
 +  tokenIds: number[];
-+}
-+export interface SetDrowseRankOneProgramParams extends DrowseModelParams {
-+  program: DrowseRankOneProgram;
 +}
 +export interface SetDrowseStructuredProgramParams extends DrowseModelParams {
 +  program: DrowseStructuredProgram;
@@ -9415,10 +8545,6 @@ index 8be38bb..0a0b56c 100644
 +  inputIds: number[];
 +  positions: number[];
 +}
-+export interface CaptureDrowseRankOneResidualsV1Params
-+  extends CaptureDrowseResidualsParams {
-+  program: DrowseRankOneProgram;
-+}
 +export interface PrepareDrowseCaptureRowsParams extends DrowseModelParams {
 +  rows: DrowseCaptureRow[];
 +  specialTokenIds: number[];
@@ -9426,14 +8552,13 @@ index 8be38bb..0a0b56c 100644
  
  // Notes on the following Params with modelId and chatOpts:
  // These fields are the model and chatOpts that the frontend engine expects the backend
-@@ -111,6 +203,19 @@ export type MessageContent =
+@@ -111,6 +191,17 @@ export type MessageContent =
    | GetMessageParams
    | RuntimeStatsTextParams
    | ForwardTokensAndSampleParams
 +  | DrowseModelParams
 +  | TokenizeDrowseTextParams
 +  | DecodeDrowseTokensParams
-+  | SetDrowseRankOneProgramParams
 +  | SetDrowseStructuredProgramParams
 +  | UpdateDrowseStructuredControlsParams
 +  | DrowseBlockSitesParams
@@ -9441,12 +8566,11 @@ index 8be38bb..0a0b56c 100644
 +  | SetDrowseJlensDictionaryParams
 +  | ResolveDrowseJlensTokenDirectionsParams
 +  | CaptureDrowseResidualsParams
-+  | CaptureDrowseRankOneResidualsV1Params
 +  | PrepareDrowseCaptureRowsParams
    | ChatCompletionNonStreamingParams
    | ChatCompletionStreamInitParams
    | CompletionNonStreamingParams
-@@ -123,6 +228,17 @@ export type MessageContent =
+@@ -123,6 +214,17 @@ export type MessageContent =
    | string
    | null
    | number
@@ -9465,7 +8589,7 @@ index 8be38bb..0a0b56c 100644
    | ChatCompletionChunk
    | CreateEmbeddingResponse
 diff --git a/src/openai_api_protocols/chat_completion.ts b/src/openai_api_protocols/chat_completion.ts
-index 0ec5040..15f80c3 100644
+index 0ec5040..3dea4be 100644
 --- a/src/openai_api_protocols/chat_completion.ts
 +++ b/src/openai_api_protocols/chat_completion.ts
 @@ -162,6 +162,12 @@ export interface ChatCompletionRequestBase {
@@ -9506,8 +8630,8 @@ index 0ec5040..15f80c3 100644
 +     * every step so the normal RNG stream is preserved.
 +     */
 +    drowse_forced_prefix_token_ids?: number[] | null;
-+  drowse_readout_start_index?: number;
-+  drowse_readout_target_index?: number;
++    drowse_readout_start_index?: number;
++    drowse_readout_target_index?: number;
 +
 +    /** Token IDs whose exact sampler log probabilities are returned per step. */
 +    drowse_score_token_ids?: number[] | null;
@@ -9628,7 +8752,7 @@ index 0ec5040..15f80c3 100644
       * The index of the choice in the list of choices.
       */
 diff --git a/src/openai_api_protocols/completion.ts b/src/openai_api_protocols/completion.ts
-index 0534fe9..6391ef2 100644
+index 0534fe9..2bb4014 100644
 --- a/src/openai_api_protocols/completion.ts
 +++ b/src/openai_api_protocols/completion.ts
 @@ -27,6 +27,7 @@ import {
@@ -9671,8 +8795,8 @@ index 0534fe9..6391ef2 100644
 +     * every step so the normal RNG stream is preserved.
 +     */
 +    drowse_forced_prefix_token_ids?: number[] | null;
-+  drowse_readout_start_index?: number;
-+  drowse_readout_target_index?: number;
++    drowse_readout_start_index?: number;
++    drowse_readout_target_index?: number;
 +
 +    /** Token IDs whose exact sampler log probabilities are returned per step. */
 +    drowse_score_token_ids?: number[] | null;
@@ -9709,18 +8833,16 @@ index c91f751..d2ee04e 100644
  
  export {
 diff --git a/src/types.ts b/src/types.ts
-index ed79af5..65ec4ea 100644
+index ed79af5..0677468 100644
 --- a/src/types.ts
 +++ b/src/types.ts
-@@ -15,6 +15,23 @@ import {
+@@ -15,6 +15,21 @@ import {
    CreateEmbeddingResponse,
  } from "./openai_api_protocols/index";
  import * as API from "./openai_api_protocols/index";
 +import {
 +  DrowseCaptureRow,
 +  DrowsePreparedCaptureRow,
-+  DrowseRankOneProgram,
-+  DrowseRankOneResidualCaptureV1,
 +  DrowseStructuredProgram,
 +  DrowseResidualCapture,
 +  DrowseRuntimeCapabilities,
@@ -9736,12 +8858,10 @@ index ed79af5..65ec4ea 100644
  
  /**
   * Report during intialization.
-@@ -234,6 +251,116 @@ export interface MLCEngineInterface {
+@@ -234,6 +249,100 @@ export interface MLCEngineInterface {
      modelId?: string,
    ): Promise<number>;
  
-+  supportsDrowseRankOneHooks(modelId?: string): Promise<boolean>;
-+
 +  supportsDrowseStructuredHooks(modelId?: string): Promise<boolean>;
 +
 +  supportsDrowseCurvedHooks(modelId?: string): Promise<boolean>;
@@ -9749,8 +8869,6 @@ index ed79af5..65ec4ea 100644
 +  supportsDrowseUnitSites(modelId?: string): Promise<boolean>;
 +
 +  supportsDrowseResidualCapture(modelId?: string): Promise<boolean>;
-+
-+  supportsDrowseRankOneResidualCaptureV1(modelId?: string): Promise<boolean>;
 +
 +  getDrowseRuntimeCapabilities(
 +    modelId?: string,
@@ -9779,18 +8897,6 @@ index ed79af5..65ec4ea 100644
 +    modelId?: string,
 +  ): Promise<DrowseResidualCapture>;
 +
-+  captureDrowseRankOneResidualsV1(
-+    inputIds: number[],
-+    positions: number[],
-+    program: DrowseRankOneProgram,
-+    modelId?: string,
-+  ): Promise<DrowseRankOneResidualCaptureV1>;
-+
-+  setDrowseRankOneProgram(
-+    program: DrowseRankOneProgram,
-+    modelId?: string,
-+  ): Promise<void>;
-+
 +  setDrowseStructuredProgram(
 +    program: DrowseStructuredProgram,
 +    modelId?: string,
@@ -9809,8 +8915,6 @@ index ed79af5..65ec4ea 100644
 +    modelId?: string,
 +  ): Promise<DrowseBlockSitesResult>;
 +
-+  clearDrowseRankOneProgram(modelId?: string): Promise<void>;
-+
 +  setDrowseSaeDictionary(
 +    dictionary: DrowseSaeDictionary,
 +    modelId?: string,
@@ -9823,6 +8927,8 @@ index ed79af5..65ec4ea 100644
 +    modelId?: string,
 +  ): Promise<void>;
 +
++  /** Remove the installed hook program, leaving the model unsteered. */
++  clearDrowseProgram(modelId?: string): Promise<void>;
 +  clearDrowseJlensDictionary(modelId?: string): Promise<void>;
 +
 +  readDrowseMeasurementBundle(
@@ -9874,20 +8980,18 @@ index 84433f8..e74d73b 100644
    // Check if both configurations have the same number of model records
    if (config1.model_list.length !== config2.model_list.length) {
 diff --git a/src/web_worker.ts b/src/web_worker.ts
-index c683c00..841ac8b 100644
+index c683c00..c245986 100644
 --- a/src/web_worker.ts
 +++ b/src/web_worker.ts
-@@ -37,6 +37,19 @@ import {
+@@ -37,6 +37,17 @@ import {
    GetMessageParams,
    RuntimeStatsTextParams,
    CompletionStreamNextChunkParams,
 +  DrowseModelParams,
-+  SetDrowseRankOneProgramParams,
 +  SetDrowseStructuredProgramParams,
 +  UpdateDrowseStructuredControlsParams,
 +  DrowseBlockSitesParams,
 +  CaptureDrowseResidualsParams,
-+  CaptureDrowseRankOneResidualsV1Params,
 +  PrepareDrowseCaptureRowsParams,
 +  TokenizeDrowseTextParams,
 +  DecodeDrowseTokensParams,
@@ -9897,15 +9001,13 @@ index c683c00..841ac8b 100644
  } from "./message";
  import log from "loglevel";
  import { MLCEngine } from "./engine";
-@@ -46,6 +59,58 @@ import {
+@@ -46,6 +57,56 @@ import {
  } from "./error";
  import { areArraysEqual } from "./utils";
  import { getModelIdToUse } from "./support";
 +import {
 +  DrowseCaptureRow,
 +  DrowsePreparedCaptureRow,
-+  DrowseRankOneProgram,
-+  DrowseRankOneResidualCaptureV1,
 +  DrowseStructuredProgram,
 +  DrowseResidualCapture,
 +  DrowseRuntimeCapabilities,
@@ -9956,7 +9058,7 @@ index c683c00..841ac8b 100644
  
  /**
   * Worker handler that can be used in a WebWorker
-@@ -81,8 +146,8 @@ export class WebWorkerMLCEngineHandler {
+@@ -81,8 +142,8 @@ export class WebWorkerMLCEngineHandler {
    /**
     * @param engine A concrete implementation of MLCEngineInterface
     */
@@ -9967,7 +9069,7 @@ index c683c00..841ac8b 100644
      this.loadedModelIdToAsyncGenerator = new Map<
        string,
        AsyncGenerator<ChatCompletionChunk | Completion, void, void>
-@@ -121,11 +186,10 @@ export class WebWorkerMLCEngineHandler {
+@@ -121,11 +182,10 @@ export class WebWorkerMLCEngineHandler {
        };
        this.postMessage(msg);
      } catch (err) {
@@ -9980,21 +9082,10 @@ index c683c00..841ac8b 100644
        };
        this.postMessage(msg);
      }
-@@ -167,6 +231,324 @@ export class WebWorkerMLCEngineHandler {
+@@ -167,6 +227,276 @@ export class WebWorkerMLCEngineHandler {
          });
          return;
        }
-+      case "supportsDrowseRankOneHooks": {
-+        this.handleTask(msg.uuid, async () => {
-+          const params = msg.content as DrowseModelParams;
-+          const res = await this.engine.supportsDrowseRankOneHooks(
-+            params.modelId,
-+          );
-+          onComplete?.(res);
-+          return res;
-+        });
-+        return;
-+      }
 +      case "supportsDrowseStructuredHooks": {
 +        this.handleTask(msg.uuid, async () => {
 +          const params = msg.content as DrowseModelParams;
@@ -10030,17 +9121,6 @@ index c683c00..841ac8b 100644
 +        this.handleTask(msg.uuid, async () => {
 +          const params = msg.content as DrowseModelParams;
 +          const res = await this.engine.supportsDrowseResidualCapture(
-+            params.modelId,
-+          );
-+          onComplete?.(res);
-+          return res;
-+        });
-+        return;
-+      }
-+      case "supportsDrowseRankOneResidualCaptureV1": {
-+        this.handleTask(msg.uuid, async () => {
-+          const params = msg.content as DrowseModelParams;
-+          const res = await this.engine.supportsDrowseRankOneResidualCaptureV1(
 +            params.modelId,
 +          );
 +          onComplete?.(res);
@@ -10107,20 +9187,6 @@ index c683c00..841ac8b 100644
 +        });
 +        return;
 +      }
-+      case "captureDrowseRankOneResidualsV1": {
-+        this.handleTask(msg.uuid, async () => {
-+          const params = msg.content as CaptureDrowseRankOneResidualsV1Params;
-+          const res = await this.engine.captureDrowseRankOneResidualsV1(
-+            params.inputIds,
-+            params.positions,
-+            params.program,
-+            params.modelId,
-+          );
-+          onComplete?.(res);
-+          return res;
-+        });
-+        return;
-+      }
 +      case "prepareDrowseCaptureRows": {
 +        this.handleTask(msg.uuid, async () => {
 +          const params = msg.content as PrepareDrowseCaptureRowsParams;
@@ -10131,18 +9197,6 @@ index c683c00..841ac8b 100644
 +          );
 +          onComplete?.(res);
 +          return res;
-+        });
-+        return;
-+      }
-+      case "setDrowseRankOneProgram": {
-+        this.handleTask(msg.uuid, async () => {
-+          const params = msg.content as SetDrowseRankOneProgramParams;
-+          await this.engine.setDrowseRankOneProgram(
-+            params.program,
-+            params.modelId,
-+          );
-+          onComplete?.(null);
-+          return null;
 +        });
 +        return;
 +      }
@@ -10184,15 +9238,6 @@ index c683c00..841ac8b 100644
 +        });
 +        return;
 +      }
-+      case "clearDrowseRankOneProgram": {
-+        this.handleTask(msg.uuid, async () => {
-+          const params = msg.content as DrowseModelParams;
-+          await this.engine.clearDrowseRankOneProgram(params.modelId);
-+          onComplete?.(null);
-+          return null;
-+        });
-+        return;
-+      }
 +      case "setDrowseSaeDictionary": {
 +        this.handleTask(msg.uuid, async () => {
 +          const params = msg.content as SetDrowseSaeDictionaryParams;
@@ -10221,6 +9266,15 @@ index c683c00..841ac8b 100644
 +            params.dictionary,
 +            params.modelId,
 +          );
++          onComplete?.(null);
++          return null;
++        });
++        return;
++      }
++      case "clearDrowseProgram": {
++        this.handleTask(msg.uuid, async () => {
++          const params = msg.content as DrowseModelParams;
++          await this.engine.clearDrowseProgram(params.modelId);
 +          onComplete?.(null);
 +          return null;
 +        });
@@ -10305,19 +9359,10 @@ index c683c00..841ac8b 100644
        // For engine.chat.completions.create()
        case "chatCompletionNonStreaming": {
          // Directly return the ChatCompletion response
-@@ -633,6 +1015,320 @@ export class WebWorkerMLCEngine implements MLCEngineInterface {
+@@ -633,6 +963,274 @@ export class WebWorkerMLCEngine implements MLCEngineInterface {
      return await this.getPromise<number>(msg);
    }
  
-+  async supportsDrowseRankOneHooks(modelId?: string): Promise<boolean> {
-+    const msg: WorkerRequest = {
-+      kind: "supportsDrowseRankOneHooks",
-+      uuid: crypto.randomUUID(),
-+      content: { modelId },
-+    };
-+    return await this.getPromise<boolean>(msg);
-+  }
-+
 +  async supportsDrowseStructuredHooks(modelId?: string): Promise<boolean> {
 +    const msg: WorkerRequest = {
 +      kind: "supportsDrowseStructuredHooks",
@@ -10348,17 +9393,6 @@ index c683c00..841ac8b 100644
 +  async supportsDrowseResidualCapture(modelId?: string): Promise<boolean> {
 +    const msg: WorkerRequest = {
 +      kind: "supportsDrowseResidualCapture",
-+      uuid: crypto.randomUUID(),
-+      content: { modelId },
-+    };
-+    return await this.getPromise<boolean>(msg);
-+  }
-+
-+  async supportsDrowseRankOneResidualCaptureV1(
-+    modelId?: string,
-+  ): Promise<boolean> {
-+    const msg: WorkerRequest = {
-+      kind: "supportsDrowseRankOneResidualCaptureV1",
 +      uuid: crypto.randomUUID(),
 +      content: { modelId },
 +    };
@@ -10421,20 +9455,6 @@ index c683c00..841ac8b 100644
 +    return await this.getPromise<DrowseResidualCapture>(msg);
 +  }
 +
-+  async captureDrowseRankOneResidualsV1(
-+    inputIds: number[],
-+    positions: number[],
-+    program: DrowseRankOneProgram,
-+    modelId?: string,
-+  ): Promise<DrowseRankOneResidualCaptureV1> {
-+    const msg: WorkerRequest = {
-+      kind: "captureDrowseRankOneResidualsV1",
-+      uuid: crypto.randomUUID(),
-+      content: { inputIds, positions, program, modelId },
-+    };
-+    return await this.getPromise<DrowseRankOneResidualCaptureV1>(msg);
-+  }
-+
 +  async prepareDrowseCaptureRows(
 +    rows: DrowseCaptureRow[],
 +    specialTokenIds: number[],
@@ -10446,18 +9466,6 @@ index c683c00..841ac8b 100644
 +      content: { rows, specialTokenIds, modelId },
 +    };
 +    return await this.getPromise<DrowsePreparedCaptureRow[]>(msg);
-+  }
-+
-+  async setDrowseRankOneProgram(
-+    program: DrowseRankOneProgram,
-+    modelId?: string,
-+  ): Promise<void> {
-+    const msg: WorkerRequest = {
-+      kind: "setDrowseRankOneProgram",
-+      uuid: crypto.randomUUID(),
-+      content: { program, modelId },
-+    };
-+    await this.getPromise<null>(msg);
 +  }
 +
 +  async setDrowseStructuredProgram(
@@ -10498,15 +9506,6 @@ index c683c00..841ac8b 100644
 +    return await this.getPromise<DrowseBlockSitesResult>(msg);
 +  }
 +
-+  async clearDrowseRankOneProgram(modelId?: string): Promise<void> {
-+    const msg: WorkerRequest = {
-+      kind: "clearDrowseRankOneProgram",
-+      uuid: crypto.randomUUID(),
-+      content: { modelId },
-+    };
-+    await this.getPromise<null>(msg);
-+  }
-+
 +  async setDrowseSaeDictionary(
 +    dictionary: DrowseSaeDictionary,
 +    modelId?: string,
@@ -10536,6 +9535,15 @@ index c683c00..841ac8b 100644
 +      kind: "setDrowseJlensDictionary",
 +      uuid: crypto.randomUUID(),
 +      content: { dictionary, modelId },
++    };
++    await this.getPromise<null>(msg);
++  }
++
++  async clearDrowseProgram(modelId?: string): Promise<void> {
++    const msg: WorkerRequest = {
++      kind: "clearDrowseProgram",
++      uuid: crypto.randomUUID(),
++      content: { modelId },
 +    };
 +    await this.getPromise<null>(msg);
 +  }
@@ -10896,10 +9904,10 @@ index 8fa04b2..92ae4af 100644
    type ImageURL = ChatCompletionContentPartImage.ImageURL;
 diff --git a/tests/drowse_pipeline.test.ts b/tests/drowse_pipeline.test.ts
 new file mode 100644
-index 0000000..4b174d4
+index 0000000..96d3f42
 --- /dev/null
 +++ b/tests/drowse_pipeline.test.ts
-@@ -0,0 +1,1132 @@
+@@ -0,0 +1,1081 @@
 +import { jest, test, expect } from "@jest/globals";
 +
 +import {
@@ -10910,28 +9918,10 @@ index 0000000..4b174d4
 +  DROWSE_SAE_MAX_CHUNK_BYTES,
 +  DROWSE_SAE_MAX_FEATURES_PER_CHUNK,
 +} from "../src/llm_chat";
-+import { DROWSE_HOOK_ABI, DrowseRankOneProgram } from "../src/drowse";
++import { DROWSE_HOOK_ABI } from "../src/drowse";
 +
 +const JLENS_BINDING = "b".repeat(64);
 +const SAE_BINDING = "a".repeat(64);
-+
-+function program(): DrowseRankOneProgram {
-+  const basis = new Float32Array(8);
-+  basis[0] = 1;
-+  return {
-+    hookAbi: DROWSE_HOOK_ABI,
-+    hiddenSize: 4,
-+    layerCount: 2,
-+    enabled: Uint32Array.from([1, 0]),
-+    basis,
-+    neutral: new Float32Array(8),
-+    target: new Float32Array(2),
-+    along: new Float32Array(2),
-+    collapse: new Float32Array(2),
-+    probeBasis: new Float32Array(8),
-+    probeNeutral: new Float32Array(8),
-+  };
-+}
 +
 +function tensor() {
 +  return {
@@ -11115,39 +10105,6 @@ index 0000000..4b174d4
 +      "S:keep this position<e>" +
 +      "<|im_start|>Guide: answer<e>",
 +  );
-+});
-+
-+test("failed Drowse GPU allocation closes its TVM scope and preserves the old program", () => {
-+  const result = pipeline();
-+  const previous = { enabled: tensor() };
-+  result["drowseProgram"] = previous;
-+  result["tvm"].empty
-+    .mockImplementationOnce(() => tensor())
-+    .mockImplementationOnce(() => tensor())
-+    .mockImplementationOnce(() => {
-+      throw new Error("allocation failed");
-+    });
-+
-+  expect(() => result.setDrowseRankOneProgram(program())).toThrow(
-+    "allocation failed",
-+  );
-+  expect(result["tvm"].beginScope).toHaveBeenCalledTimes(1);
-+  expect(result["tvm"].endScope).toHaveBeenCalledTimes(1);
-+  expect(result["drowseProgram"]).toBe(previous);
-+  expect(previous.enabled.dispose).not.toHaveBeenCalled();
-+});
-+
-+test("Drowse program promotion detaches every buffer before disposing the old program", () => {
-+  const result = pipeline();
-+  const previous = { enabled: tensor() };
-+  result["drowseProgram"] = previous;
-+
-+  result.setDrowseRankOneProgram(program());
-+
-+  expect(result["tvm"].detachFromCurrentScope).toHaveBeenCalledTimes(8);
-+  expect(result["tvm"].endScope).toHaveBeenCalledTimes(1);
-+  expect(previous.enabled.dispose).toHaveBeenCalledTimes(1);
-+  expect(Object.keys(result["drowseProgram"])).toHaveLength(8);
 +});
 +
 +test("measurement read closes its TVM scope when device synchronization fails", async () => {
@@ -11558,7 +10515,7 @@ index 0000000..4b174d4
 +    expect(chunk.layerIdsDevice.copyFrom).toHaveBeenCalledTimes(1);
 +  }
 +  expect(result["device"].sync).toHaveBeenCalledTimes(1);
-+  result.clearDrowseRankOneProgram();
++  result.clearDrowseProgram();
 +  for (const chunk of chunks) {
 +    expect(chunk.jacobians.dispose).not.toHaveBeenCalled();
 +    expect(chunk.layerIdsDevice.dispose).not.toHaveBeenCalled();
@@ -12034,25 +10991,53 @@ index 0000000..4b174d4
 +});
 diff --git a/tests/drowse_positions.test.ts b/tests/drowse_positions.test.ts
 new file mode 100644
-index 0000000..f54302c
+index 0000000..2ca10a4
 --- /dev/null
 +++ b/tests/drowse_positions.test.ts
-@@ -0,0 +1,166 @@
+@@ -0,0 +1,266 @@
 +import { expect, jest, test } from "@jest/globals";
 +import { normalizeDrowsePositionSelection } from "../src/drowse";
 +import { LLMChatPipeline } from "../src/llm_chat";
 +
 +test("position selection is compact, immutable, exclusive, and half-open", () => {
-+  const spans = [[20, 1000000], [0, 2], [2, 5]] as [number, number][];
-+  expect(normalizeDrowsePositionSelection({ position_spans: spans })).toEqual([[0, 5], [20, 1000000]]);
-+  expect(spans).toEqual([[20, 1000000], [0, 2], [2, 5]]);
-+  expect(normalizeDrowsePositionSelection({ position_indices: [4, 1, 2] })).toEqual([[1, 3], [4, 5]]);
++  const spans = [
++    [20, 1000000],
++    [0, 2],
++    [2, 5],
++  ] as [number, number][];
++  expect(normalizeDrowsePositionSelection({ position_spans: spans })).toEqual([
++    [0, 5],
++    [20, 1000000],
++  ]);
++  expect(spans).toEqual([
++    [20, 1000000],
++    [0, 2],
++    [2, 5],
++  ]);
++  expect(
++    normalizeDrowsePositionSelection({ position_indices: [4, 1, 2] }),
++  ).toEqual([
++    [1, 3],
++    [4, 5],
++  ]);
 +  expect(normalizeDrowsePositionSelection({ position_spans: [] })).toEqual([]);
-+  expect(normalizeDrowsePositionSelection({ position_spans: null })).toBeUndefined();
++  expect(
++    normalizeDrowsePositionSelection({ position_spans: null }),
++  ).toBeUndefined();
 +  for (const selection of [
 +    { position_spans: [], position_indices: [] },
-+    { position_spans: [[0, 3], [2, 4]] },
-+    { position_spans: [[0, 3], [0, 3]] },
++    {
++      position_spans: [
++        [0, 3],
++        [2, 4],
++      ],
++    },
++    {
++      position_spans: [
++        [0, 3],
++        [0, 3],
++      ],
++    },
 +    { position_spans: [[2, 2]] },
 +    { position_spans: [[-1, 2]] },
 +    { position_spans: [[0.5, 2]] },
@@ -12064,7 +11049,8 @@ index 0000000..f54302c
 +    { position_indices: [true] },
 +    { position_indices: ["1"] },
 +    { position_indices: [Number.MAX_SAFE_INTEGER] },
-+  ]) expect(() => normalizeDrowsePositionSelection(selection as any)).toThrow();
++  ])
++    expect(() => normalizeDrowsePositionSelection(selection as any)).toThrow();
 +});
 +
 +function pipeline(spans?: [number, number][]): any {
@@ -12074,32 +11060,72 @@ index 0000000..f54302c
 +    prefillChunkSize: 4,
 +    drowsePositionSpans: spans,
 +    drowsePositionActive: true,
-+    drowsePositionEnabled: Uint32Array.of(1, 0),
-+    drowseProgram: { enabled: { copyFrom: jest.fn() } },
++    drowsePositionAffine: Uint32Array.of(1, 0),
++    drowsePositionCurve: Uint32Array.of(0),
++    drowseStructuredProgram: {},
 +  });
-+  const calls: { start: number; tokens: number[]; active: boolean; dispose: any }[] = [];
++  result.writeDrowseStructuredControls = jest.fn(async () => {});
++  const calls: {
++    start: number;
++    tokens: number[];
++    active: boolean;
++    dispose: any;
++  }[] = [];
 +  result.calls = calls;
-+  result.embedAndForwardChunk = jest.fn(async (parts: number[][], length: number) => {
-+    const dispose = jest.fn();
-+    calls.push({ start: result.filledKVCacheLength, tokens: parts.flat(), active: result.drowsePositionActive, dispose });
-+    result.filledKVCacheLength += length;
-+    return { dispose };
-+  });
++  result.embedAndForwardChunk = jest.fn(
++    async (parts: number[][], length: number) => {
++      const dispose = jest.fn();
++      calls.push({
++        start: result.filledKVCacheLength,
++        tokens: parts.flat(),
++        active: result.drowsePositionActive,
++        dispose,
++      });
++      result.filledKVCacheLength += length;
++      return { dispose };
++    },
++  );
 +  return result;
 +}
 +
 +test("prefill and decode use exact absolute ranges across chunk boundaries", async () => {
-+  const result = pipeline([[1, 3], [5, 7], [9, 10]]);
++  const result = pipeline([
++    [1, 3],
++    [5, 7],
++    [9, 10],
++  ]);
 +  await result.embedAndForward([[0, 1, 2, 3]], 4);
 +  await result.embedAndForward([[4, 5, 6, 7]], 4);
 +  for (const token of [8, 9, 10]) await result.embedAndForward([[token]], 1);
-+  expect(result.calls.map(({ start, tokens, active }: any) => [start, tokens, active])).toEqual([
-+    [0, [0], false], [1, [1, 2], true], [3, [3], false],
-+    [4, [4], false], [5, [5, 6], true], [7, [7], false],
-+    [8, [8], false], [9, [9], true], [10, [10], false],
++  expect(
++    result.calls.map(({ start, tokens, active }: any) => [
++      start,
++      tokens,
++      active,
++    ]),
++  ).toEqual([
++    [0, [0], false],
++    [1, [1, 2], true],
++    [3, [3], false],
++    [4, [4], false],
++    [5, [5, 6], true],
++    [7, [7], false],
++    [8, [8], false],
++    [9, [9], true],
++    [10, [10], false],
 +  ]);
-+  expect(result.drowseProgram.enabled.copyFrom.mock.calls.map(([value]: any) => [...value])).toEqual([
-+    [0, 0], [1, 0], [0, 0], [1, 0], [0, 0], [1, 0], [0, 0],
++  expect(
++    result.writeDrowseStructuredControls.mock.calls.map(([value]: any) => [
++      ...value,
++    ]),
++  ).toEqual([
++    [0, 0],
++    [1, 0],
++    [0, 0],
++    [1, 0],
++    [0, 0],
++    [1, 0],
++    [0, 0],
 +  ]);
 +  expect(result.calls[0].dispose).toHaveBeenCalledTimes(1);
 +  expect(result.calls[2].dispose).not.toHaveBeenCalled();
@@ -12107,10 +11133,13 @@ index 0000000..f54302c
 +
 +test("absent selection leaves batching unchanged; empty and future selections do not steer", async () => {
 +  const plain = pipeline();
-+  const parts = [[1, 2], [3, 4]];
++  const parts = [
++    [1, 2],
++    [3, 4],
++  ];
 +  await plain.embedAndForward(parts, 4);
 +  expect(plain.embedAndForwardChunk).toHaveBeenCalledWith(parts, 4, true);
-+  expect(plain.drowseProgram.enabled.copyFrom).not.toHaveBeenCalled();
++  expect(plain.writeDrowseStructuredControls).not.toHaveBeenCalled();
 +  for (const spans of [[], [[100, 200]]] as [number, number][][]) {
 +    const result = pipeline(spans);
 +    await result.embedAndForward([[1, 2, 3, 4]], 4);
@@ -12122,15 +11151,23 @@ index 0000000..f54302c
 +test("unsteered captures bypass selection and image inputs fail closed", async () => {
 +  const result = pipeline([[1, 2]]);
 +  await result.embedAndForward([[0, 1, 2]], 3, false);
-+  expect(result.drowseProgram.enabled.copyFrom).not.toHaveBeenCalled();
-+  expect(result.embedAndForwardChunk).toHaveBeenCalledWith([[0, 1, 2]], 3, false);
-+  await expect(result.embedAndForward([{ url: "image" }], 1)).rejects.toThrow(/text-only/);
-+  await expect(result.embedAndForward([[1]], 2)).rejects.toThrow(/token sequence/);
++  expect(result.writeDrowseStructuredControls).not.toHaveBeenCalled();
++  expect(result.embedAndForwardChunk).toHaveBeenCalledWith(
++    [[0, 1, 2]],
++    3,
++    false,
++  );
++  await expect(result.embedAndForward([{ url: "image" }], 1)).rejects.toThrow(
++    /text-only/,
++  );
++  await expect(result.embedAndForward([[1]], 2)).rejects.toThrow(
++    /token sequence/,
++  );
 +});
 +
 +test("phase and probe-gate controls are ANDed with spans, never replaced", async () => {
 +  const result = pipeline([[1, 3]]);
-+  result.drowseProgram = undefined;
++  result.drowseStructuredProgram = undefined;
 +  result.drowseStructuredProgram = {};
 +  result.drowsePositionAffine = Uint32Array.of(1, 0);
 +  result.drowsePositionCurve = Uint32Array.of(0, 1);
@@ -12142,8 +11179,24 @@ index 0000000..f54302c
 +  affine.fill(0);
 +  curve.fill(0);
 +  await result.applyDrowsePositionControls(true);
-+  expect(result.writeDrowseStructuredControls.mock.calls.map(([a, c]: any) => [[...a], [...c]])).toEqual([
-+    [[0, 0], [0, 0]], [[0, 0], [0, 0]], [[0, 1], [1, 0]],
++  expect(
++    result.writeDrowseStructuredControls.mock.calls.map(([a, c]: any) => [
++      [...a],
++      [...c],
++    ]),
++  ).toEqual([
++    [
++      [0, 0],
++      [0, 0],
++    ],
++    [
++      [0, 0],
++      [0, 0],
++    ],
++    [
++      [0, 1],
++      [1, 0],
++    ],
 +  ]);
 +  await result.updateDrowseStructuredControls(Uint32Array.of(0, 0));
 +  await result.applyDrowsePositionControls(false);
@@ -12159,7 +11212,7 @@ index 0000000..f54302c
 +  // A `!neuron/…` term with spans [[3, 5]] ablates only rows 3 and 4: outside the span the
 +  // bridge uploads unit_active zeroed, inside it the trigger state applies unchanged.
 +  const result = pipeline([[3, 5]]);
-+  result.drowseProgram = undefined;
++  result.drowseStructuredProgram = undefined;
 +  result.drowseStructuredProgram = {};
 +  result.drowsePositionAffine = Uint32Array.of(0, 0);
 +  result.drowsePositionCurve = Uint32Array.of(0, 0);
@@ -12181,9 +11234,13 @@ index 0000000..f54302c
 +    Uint32Array.of(0, 0),
 +    Float32Array.of(0, 1, 0, 0),
 +  );
-+  expect([...result.writeDrowseStructuredControls.mock.calls.at(-1)[2]]).toEqual([0, 0, 0, 0]);
++  expect([
++    ...result.writeDrowseStructuredControls.mock.calls.at(-1)[2],
++  ]).toEqual([0, 0, 0, 0]);
 +  await result.applyDrowsePositionControls(true);
-+  expect([...result.writeDrowseStructuredControls.mock.calls.at(-1)[2]]).toEqual([0, 1, 0, 0]);
++  expect([
++    ...result.writeDrowseStructuredControls.mock.calls.at(-1)[2],
++  ]).toEqual([0, 1, 0, 0]);
 +});
 +
 +test("reset and failed forwards do not reuse stale positional activation", async () => {
@@ -12195,7 +11252,7 @@ index 0000000..f54302c
 +  expect(result.calls.at(-1).active).toBe(true);
 +  result.embedAndForwardChunk.mockRejectedValueOnce(new Error("device lost"));
 +  await expect(result.embedAndForward([[1]], 1)).rejects.toThrow("device lost");
-+  result.drowseProgram = undefined;
++  result.drowseStructuredProgram = undefined;
 +  result.resetDrowseReadbackState = jest.fn();
 +  result.disposeDrowseProgram();
 +  expect(result.drowsePositionSpans).toBeUndefined();
@@ -12206,10 +11263,10 @@ index 0000000..f54302c
 +});
 diff --git a/tests/drowse.test.ts b/tests/drowse.test.ts
 new file mode 100644
-index 0000000..020b1fc
+index 0000000..2e8f6ec
 --- /dev/null
 +++ b/tests/drowse.test.ts
-@@ -0,0 +1,993 @@
+@@ -0,0 +1,931 @@
 +import { describe, expect, test } from "@jest/globals";
 +import {
 +  DROWSE_REPLAY_META,
@@ -12220,7 +11277,6 @@ index 0000000..020b1fc
 +  DROWSE_EXACT_READOUT_MAX_SAE_FEATURES_PER_CHUNK,
 +  DROWSE_READOUT_TOP_K,
 +  DROWSE_STRUCTURED_HOOK_FORMAT,
-+  DROWSE_STRUCTURED_HOOK_FORMAT_V2,
 +  DROWSE_STRUCTURED_MAX_AFFINE_GROUPS,
 +  DROWSE_STRUCTURED_MAX_CURVE_NODES,
 +  DROWSE_STRUCTURED_MAX_CURVES,
@@ -12242,7 +11298,6 @@ index 0000000..020b1fc
 +  DROWSE_STRUCTURED_GEOMETRY_HEADER_STRIDE,
 +  DROWSE_STRUCTURED_GEOMETRY_KERNEL_STORAGE_BINDINGS,
 +  DROWSE_STRUCTURED_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
-+  DrowseRankOneProgram,
 +  DrowseStructuredProgram,
 +  packDrowseCurveParameters,
 +  packDrowseGeometryHeader,
@@ -12251,7 +11306,6 @@ index 0000000..020b1fc
 +  updatePackedDrowseCurveActive,
 +  validateDrowseCapturePositions,
 +  validateDrowseCaptureRows,
-+  validateDrowseRankOneProgram,
 +  validateDrowseJlensDictionary,
 +  validateDrowseSaeDictionary,
 +  validateDrowseStructuredProgram,
@@ -12571,29 +11625,18 @@ index 0000000..020b1fc
 +  });
 +});
 +
-+function program(): DrowseRankOneProgram {
-+  return {
-+    hookAbi: DROWSE_HOOK_ABI,
-+    hiddenSize: 2,
-+    layerCount: 2,
-+    enabled: new Uint32Array([1, 0]),
-+    basis: new Float32Array([1, 0, 0, 1]),
-+    neutral: new Float32Array(4),
-+    target: new Float32Array([0.5, -0.5]),
-+    along: new Float32Array([1, 1]),
-+    collapse: new Float32Array([1, 1]),
-+    probeBasis: new Float32Array([1, 0, 0, 1]),
-+    probeNeutral: new Float32Array(4),
-+  };
++/** A drowse-structured-v4 program; every program carries the geometry buffers. */
++function structuredProgram(): DrowseStructuredProgram {
++  return structuredGeometryProgram();
 +}
 +
-+function structuredProgram(): DrowseStructuredProgram {
++function structuredBase(): DrowseStructuredProgram {
 +  const layerCount = 2;
 +  const hiddenSize = 2;
 +  const curveSlots = layerCount * DROWSE_STRUCTURED_MAX_CURVES;
 +  return {
 +    hookAbi: DROWSE_HOOK_ABI,
-+    format: DROWSE_STRUCTURED_HOOK_FORMAT_V2,
++    format: DROWSE_STRUCTURED_HOOK_FORMAT,
 +    hiddenSize,
 +    layerCount,
 +    affineActive: new Uint32Array(
@@ -12686,7 +11729,7 @@ index 0000000..020b1fc
 +}
 +
 +function structuredGeometryProgram(): DrowseStructuredProgram {
-+  const program = structuredProgram();
++  const program = structuredBase();
 +  const l = program.layerCount;
 +  const d = program.hiddenSize;
 +  const g = DROWSE_STRUCTURED_MAX_GEOMETRY_PROBES;
@@ -12729,54 +11772,6 @@ index 0000000..020b1fc
 +  program.geometryFeet = new Float32Array(slots * i);
 +  return program;
 +}
-+
-+describe("Drowse rank-one hook programs", () => {
-+  test("accepts exact finite typed buffers", () => {
-+    expect(() => validateDrowseRankOneProgram(program(), 2, 2)).not.toThrow();
-+  });
-+
-+  test("rejects model identity and buffer shape mismatches", () => {
-+    expect(() => validateDrowseRankOneProgram(program(), 3, 2)).toThrow(
-+      /model requires 2x3/,
-+    );
-+    const invalid = program();
-+    invalid.basis = new Float32Array(3);
-+    expect(() => validateDrowseRankOneProgram(invalid, 2, 2)).toThrow(
-+      /basis must contain exactly 4 values/,
-+    );
-+  });
-+
-+  test("rejects non-binary enable flags and non-finite values", () => {
-+    const invalidFlag = program();
-+    invalidFlag.enabled[0] = 2;
-+    expect(() => validateDrowseRankOneProgram(invalidFlag, 2, 2)).toThrow(
-+      /enabled values must be zero or one/,
-+    );
-+    const invalidFloat = program();
-+    invalidFloat.target[0] = Number.NaN;
-+    expect(() => validateDrowseRankOneProgram(invalidFloat, 2, 2)).toThrow(
-+      /target values must be finite/,
-+    );
-+  });
-+
-+  test("requires normalized active steering and nonzero probe bases", () => {
-+    const invalidBasis = program();
-+    invalidBasis.basis[0] = 0.5;
-+    expect(() => validateDrowseRankOneProgram(invalidBasis, 2, 2)).toThrow(
-+      /basis layer 0 must be unit length/,
-+    );
-+    const invalidProbe = program();
-+    invalidProbe.probeBasis[2] = 0.5;
-+    expect(() => validateDrowseRankOneProgram(invalidProbe, 2, 2)).toThrow(
-+      /probeBasis layer 1 must be unit length/,
-+    );
-+    const disabledProbe = program();
-+    disabledProbe.probeBasis.fill(0);
-+    expect(() =>
-+      validateDrowseRankOneProgram(disabledProbe, 2, 2),
-+    ).not.toThrow();
-+  });
-+});
 +
 +describe("Drowse structured J-lens programs", () => {
 +  test("requires exact full-vocabulary readout buffers for probability probes", () => {
@@ -13567,7 +12562,7 @@ index 43b9e95..e98dafa 100644
      const engine = createEngineWithMultiplePipelines();
      await expect(
 diff --git a/tests/generation_config.test.ts b/tests/generation_config.test.ts
-index e48b225..2242e71 100644
+index e48b225..9940976 100644
 --- a/tests/generation_config.test.ts
 +++ b/tests/generation_config.test.ts
 @@ -5,6 +5,33 @@ import {
@@ -13604,7 +12599,7 @@ index e48b225..2242e71 100644
    test("High-level unsupported fields", () => {
      expect(() => {
        const genConfig: GenerationConfig = {
-@@ -44,11 +71,17 @@ describe("Check generation config illegal values", () => {
+@@ -44,11 +71,20 @@ describe("Check generation config illegal values", () => {
      expect(() => {
        const genConfig: GenerationConfig = {
          logprobs: true,
@@ -13618,13 +12613,16 @@ index e48b225..2242e71 100644
 +  });
 +
 +  test("top_logprobs supports full-vocabulary requests", () => {
-+    const genConfig: GenerationConfig = { logprobs: true, top_logprobs: 262144 };
++    const genConfig: GenerationConfig = {
++      logprobs: true,
++      top_logprobs: 262144,
++    };
 +    postInitAndCheckGenerationConfigValues(genConfig);
 +    expect(genConfig.top_logprobs).toBe(262144);
    });
  
    test("top_logprobs set without setting logprobs", () => {
-@@ -74,6 +107,21 @@ describe("Check generation config illegal values", () => {
+@@ -74,6 +110,21 @@ describe("Check generation config illegal values", () => {
  });
  
  describe("Check generation post init", () => {
@@ -13749,101 +12747,11 @@ index 0000000..2febdb6
 +  );
 +  expect(fixture.requestDevice).not.toHaveBeenCalled();
 +});
-diff --git a/tests/llm_chat_abi.test.ts b/tests/llm_chat_abi.test.ts
-index a7cf3ed..ef9c512 100644
---- a/tests/llm_chat_abi.test.ts
-+++ b/tests/llm_chat_abi.test.ts
-@@ -28,6 +28,25 @@ function makeFakeTensor(seqLen: number) {
-   return tensor;
- }
- 
-+test("legacy compiled hook names alias to Drowse without replacing current kernels", () => {
-+  const applyAliases = (LLMChatPipeline as AnyObj).applyLegacyDrowseAliases;
-+  const legacyPrefill = jest.fn();
-+  const currentDecode = jest.fn();
-+  const legacyDecode = jest.fn();
-+  const registry: AnyObj = {
-+    saklas_structured_batch_prefill: legacyPrefill,
-+    drowse_structured_batch_decode: currentDecode,
-+    saklas_structured_batch_decode: legacyDecode,
-+    unrelated: jest.fn(),
-+  };
-+
-+  applyAliases(registry);
-+
-+  expect(registry.drowse_structured_batch_prefill).toBe(legacyPrefill);
-+  expect(registry.drowse_structured_batch_decode).toBe(currentDecode);
-+  expect(registry.drowse_unrelated).toBeUndefined();
-+});
-+
- test("parseKVStateKind defaults missing metadata to kv_cache", () => {
-   const pipeline = Object.create(LLMChatPipeline.prototype) as AnyObj;
-   expect(pipeline.parseKVStateKind(undefined)).toBe("kv_cache");
-@@ -238,3 +257,59 @@ test("embedAndForward begins and ends forward for all active states", async () =
-   expect(pipeline.fKVCacheEndForward).toHaveBeenNthCalledWith(1, rnnState);
-   expect(pipeline.fKVCacheEndForward).toHaveBeenNthCalledWith(2, kvState);
- });
-+
-+test("rank-one forward does not read the structured hidden-state tuple slot", async () => {
-+  const pipeline = Object.create(LLMChatPipeline.prototype) as AnyObj;
-+  const kvState = { id: "kv" };
-+  const logits = { value: "logits" };
-+  const measurements = { value: "measurements" };
-+  const retValue = {
-+    get: jest.fn((index: number) => {
-+      if (index === 0) return logits;
-+      if (index === 2) return measurements;
-+      throw new Error(`Index ${index} out of bounds 3`);
-+    }),
-+  };
-+
-+  pipeline.prefillChunkSize = 1024;
-+  pipeline.resolvedModelABI = {
-+    kvStateKind: "kv_cache",
-+    prefillABI: "batch",
-+    decodeABI: "batch",
-+    prefillFunctionName: "batch_prefill",
-+    decodeFunctionName: "batch_decode",
-+    needsKVCache: true,
-+    needsRNNState: false,
-+  };
-+  pipeline.kvCache = kvState;
-+  pipeline.params = { kind: "params" };
-+  pipeline.filledKVCacheLength = 0;
-+  pipeline.drowseProgram = {
-+    enabled: {},
-+    basis: {},
-+    neutral: {},
-+    target: {},
-+    along: {},
-+    collapse: {},
-+    probeBasis: {},
-+    probeNeutral: {},
-+  };
-+  pipeline.drowseDecoding = jest.fn(() => retValue);
-+  pipeline.tvm = {
-+    beginScope: jest.fn(),
-+    endScope: jest.fn(),
-+    makeShapeTuple: jest.fn((x: number[]) => x),
-+    concatEmbeddings: jest.fn(),
-+    detachFromCurrentScope: jest.fn((x: any) => x),
-+    attachToCurrentScope: jest.fn(),
-+  };
-+  pipeline.fKVCacheBeginForward = jest.fn();
-+  pipeline.fKVCacheEndForward = jest.fn();
-+  pipeline.getTokensEmbeddings = jest.fn(() => makeFakeTensor(1));
-+  pipeline.getImageEmbeddings = jest.fn();
-+
-+  await expect(pipeline.embedAndForward([[101]], 1)).resolves.toBe(logits);
-+  expect(retValue.get).toHaveBeenCalledWith(2);
-+  expect(retValue.get).toHaveBeenCalledWith(0);
-+  expect(retValue.get).not.toHaveBeenCalledWith(3);
-+});
 diff --git a/tests/llm_chat_pipeline.test.ts b/tests/llm_chat_pipeline.test.ts
-index 5138c4e..9a17c13 100644
+index 5138c4e..493c4ae 100644
 --- a/tests/llm_chat_pipeline.test.ts
 +++ b/tests/llm_chat_pipeline.test.ts
-@@ -1,4 +1,15 @@
+@@ -1,4 +1,23 @@
 -import { LLMChatPipeline } from "../src/llm_chat";
 +import { LLMChatPipeline, sampleDrowseTopKTopP } from "../src/llm_chat";
 +
@@ -13851,7 +12759,15 @@ index 5138c4e..9a17c13 100644
 +  const probabilities = new Float32Array(4096).fill(1 / 4096);
 +  const ids = Int32Array.from({ length: 4096 }, (_, i) => i);
 +  for (const count of [0, 5, 33, 257, 4096, 262144]) {
-+    const result = sampleDrowseTopKTopP(probabilities, ids, 1, 4096, 0.5, [], count);
++    const result = sampleDrowseTopKTopP(
++      probabilities,
++      ids,
++      1,
++      4096,
++      0.5,
++      [],
++      count,
++    );
 +    expect(result.topLogprobs).toHaveLength(Math.min(count, 4096));
 +    expect(result.argmax).toEqual({ token_id: 0, logprob: Math.log(1 / 4096) });
 +    expect(result.sampledTokenId).toBe(2048);
@@ -13860,7 +12776,7 @@ index 5138c4e..9a17c13 100644
  import { MinValueError } from "../src/error";
  import { Role } from "../src/config";
  import { jest, test, expect, beforeEach } from "@jest/globals";
-@@ -66,6 +77,96 @@ beforeEach(() => {
+@@ -66,6 +85,96 @@ beforeEach(() => {
    compileJSONSchemaMock.mockClear();
  });
  
@@ -13957,7 +12873,7 @@ index 5138c4e..9a17c13 100644
  type PipelineLike = LLMChatPipeline & Record<string, any>;
  
  function createPipeline(): PipelineLike {
-@@ -85,6 +186,8 @@ function createPipeline(): PipelineLike {
+@@ -85,6 +194,8 @@ function createPipeline(): PipelineLike {
    } as any;
    pipeline["config"] = {} as any;
    pipeline["outputIds"] = [];
@@ -13966,16 +12882,18 @@ index 5138c4e..9a17c13 100644
    pipeline["appearedTokensFreq"] = new Map<number, number>();
    pipeline["stopTokens"] = [];
    pipeline["stopStr"] = [];
-@@ -101,6 +204,8 @@ function createPipeline(): PipelineLike {
+@@ -101,6 +212,10 @@ function createPipeline(): PipelineLike {
    pipeline["contextWindowSize"] = 16;
    pipeline["slidingWindowSize"] = -1;
    pipeline["filledKVCacheLength"] = 0;
 +  pipeline["drowseCachedInputIds"] = [];
-+  pipeline["resetKVCache"] = jest.fn(() => { pipeline["drowseCachedInputIds"] = []; });
++  pipeline["resetKVCache"] = jest.fn(() => {
++    pipeline["drowseCachedInputIds"] = [];
++  });
    pipeline["outputMessage"] = "";
    pipeline["curRoundLatencyBreakdown"] = {
      logitProcessorTime: [],
-@@ -167,12 +272,16 @@ test("processNextToken appends tokens until stop string reached", () => {
+@@ -167,12 +282,16 @@ test("processNextToken appends tokens until stop string reached", () => {
      max_tokens: 5,
    });
    expect(pipeline["stopTriggered"]).toBe(false);
@@ -13992,7 +12910,7 @@ index 5138c4e..9a17c13 100644
  });
  
  test("processNextToken respects max_tokens and updates token frequency", () => {
-@@ -215,15 +324,45 @@ test("prefillStep adds thinking reply header when thinking disabled", async () =
+@@ -215,15 +334,45 @@ test("prefillStep adds thinking reply header when thinking disabled", async () =
    pipeline["tokenizer"].encode = jest.fn(() => Int32Array.from([9, 9]));
    await pipeline.prefillStep("hello", Role.user, undefined, {
      enable_thinking: false,
@@ -14039,7 +12957,7 @@ index 5138c4e..9a17c13 100644
  test("prefillStep appends standard reply header when thinking enabled", async () => {
    const pipeline = preparePrefillPipeline();
    pipeline["tokenizer"].encode = jest.fn(() => Int32Array.from([2]));
-@@ -236,6 +375,121 @@ test("prefillStep appends standard reply header when thinking enabled", async ()
+@@ -236,6 +385,121 @@ test("prefillStep appends standard reply header when thinking enabled", async ()
    ).not.toHaveBeenCalled();
  });
  
@@ -14161,7 +13079,7 @@ index 5138c4e..9a17c13 100644
  test("prefillStep reuses grammar matcher when schema unchanged", async () => {
    const pipeline = preparePrefillPipeline();
    const matcher = { reset: jest.fn(), dispose: jest.fn() };
-@@ -273,16 +527,68 @@ test("prefillStep compiles custom grammar when response type is grammar", async
+@@ -273,18 +537,83 @@ test("prefillStep compiles custom grammar when response type is grammar", async
    expect(compileGrammarMock).toHaveBeenCalledWith("root ::= WORD");
  });
  
@@ -14177,13 +13095,17 @@ index 5138c4e..9a17c13 100644
 -  await (pipeline as any).getInputData();
 -  expect(pipeline["conversation"].getPromptArrayLastRound).toHaveBeenCalled();
 +  pipeline["conversation"].config.system_prefix_token_ids = [2];
-+  pipeline["tokenizer"].encode = jest.fn(() => Int32Array.from([10, 20, 21, 30, 40]));
++  pipeline["tokenizer"].encode = jest.fn(() =>
++    Int32Array.from([10, 20, 21, 30, 40]),
++  );
 +  pipeline["filledKVCacheLength"] = 3;
 +  pipeline["drowseCachedInputIds"] = [2, 10, 20];
 +  const result = await (pipeline as any).getInputData();
 +  expect(result.slice(0, 2)).toEqual([[[21, 30, 40]], 3]);
 +  expect(pipeline["resetKVCache"]).not.toHaveBeenCalled();
-+  expect(pipeline["conversation"].getPromptArrayLastRound).not.toHaveBeenCalled();
++  expect(
++    pipeline["conversation"].getPromptArrayLastRound,
++  ).not.toHaveBeenCalled();
 +  pipeline["contextWindowSize"] = 5;
 +  await expect((pipeline as any).getInputData()).rejects.toThrow();
 +});
@@ -14209,7 +13131,9 @@ index 5138c4e..9a17c13 100644
 +  const pipeline = createPipeline();
 +  pipeline["conversation"].isTextCompletion = true;
 +  pipeline["conversation"].config.system_prefix_token_ids = [99];
-+  pipeline["conversation"].getPromptArrayTextCompletion = jest.fn(() => ["I love marmots because"]);
++  pipeline["conversation"].getPromptArrayTextCompletion = jest.fn(() => [
++    "I love marmots because",
++  ]);
 +  pipeline["tokenizer"].encode = jest.fn(() => Int32Array.from([4, 5, 6]));
 +  pipeline["fullVocabSize"] = 100;
 +  const plain = await (pipeline as any).getInputData();
@@ -14217,12 +13141,14 @@ index 5138c4e..9a17c13 100644
 +  pipeline["config"].drowse_completion_prefix_token_ids = [2];
 +  const prefixed = await (pipeline as any).getInputData();
 +  expect(prefixed.slice(0, 2)).toEqual([[[2, 4, 5, 6]], 4]);
-+  expect(pipeline["tokenizer"].encode).toHaveBeenCalledWith("I love marmots because");
++  expect(pipeline["tokenizer"].encode).toHaveBeenCalledWith(
++    "I love marmots because",
++  );
 +  expect(pipeline["config"].drowse_completion_prefix_token_ids).toEqual([2]);
 +  pipeline["contextWindowSize"] = 3;
 +  await expect((pipeline as any).getInputData()).rejects.toThrow();
-+});
-+
+ });
+ 
 +test("chat prefix tokens count toward the context window too", async () => {
 +  const pipeline = createPipeline();
 +  pipeline["conversation"].config.system_prefix_token_ids = [2];
@@ -14230,41 +13156,68 @@ index 5138c4e..9a17c13 100644
 +  expect(prepared.slice(0, 2)).toEqual([[[2, 1]], 2]);
 +});
 +
-+test.each([[100], [-1], [1.5], [NaN], ["2"]])("text completion rejects invalid prefix %j", async (...prefix) => {
-+  const pipeline = createPipeline();
-+  pipeline["conversation"].isTextCompletion = true;
-+  pipeline["fullVocabSize"] = 100;
-+  pipeline["config"].drowse_completion_prefix_token_ids = prefix as any;
-+  await expect((pipeline as any).getInputData()).rejects.toThrow("valid vocabulary token IDs");
- });
- 
++test.each([[100], [-1], [1.5], [NaN], ["2"]])(
++  "text completion rejects invalid prefix %j",
++  async (...prefix) => {
++    const pipeline = createPipeline();
++    pipeline["conversation"].isTextCompletion = true;
++    pipeline["fullVocabSize"] = 100;
++    pipeline["config"].drowse_completion_prefix_token_ids = prefix as any;
++    await expect((pipeline as any).getInputData()).rejects.toThrow(
++      "valid vocabulary token IDs",
++    );
++  },
++);
++
  test("processNextToken ignores eos when requested", () => {
-@@ -370,3 +676,20 @@ describe("computeImageEmbedSize", () => {
+   const pipeline = createPipeline();
+   pipeline["stopTokens"] = [1];
+@@ -370,3 +699,40 @@ describe("computeImageEmbedSize", () => {
      );
    });
  });
 +
-+
 +test("bounded sampler readback preserves distribution, forced support, and RNG mapping", () => {
-+  const probabilities = Float32Array.from({ length: 2048 }, (_, index) => (2048 - index) / 2098176);
++  const probabilities = Float32Array.from(
++    { length: 2048 },
++    (_, index) => (2048 - index) / 2098176,
++  );
 +  const ids = Int32Array.from({ length: 2048 }, (_, index) => index);
 +  for (const topK of [1, 7, 1024, 2048]) {
 +    for (const topP of [0, 0.1, 0.9, 1]) {
 +      for (const draw of [0, 0.1, 0.5, 0.999999]) {
 +        const selected = [0, 6, 1023, 2047];
-+        expect(sampleDrowseTopKTopP(probabilities.slice(0, topK), ids.slice(0, topK), topP, topK, draw, selected))
-+          .toEqual(sampleDrowseTopKTopP(probabilities, ids, topP, topK, draw, selected));
++        expect(
++          sampleDrowseTopKTopP(
++            probabilities.slice(0, topK),
++            ids.slice(0, topK),
++            topP,
++            topK,
++            draw,
++            selected,
++          ),
++        ).toEqual(
++          sampleDrowseTopKTopP(probabilities, ids, topP, topK, draw, selected),
++        );
 +      }
 +    }
 +  }
-+  expect(sampleDrowseTopKTopP(probabilities.slice(0, 1), ids.slice(0, 1), 0, 1024, 0, [0, 7]))
-+    .toEqual(sampleDrowseTopKTopP(probabilities, ids, 0, 1024, 0, [0, 7]));
++  expect(
++    sampleDrowseTopKTopP(
++      probabilities.slice(0, 1),
++      ids.slice(0, 1),
++      0,
++      1024,
++      0,
++      [0, 7],
++    ),
++  ).toEqual(sampleDrowseTopKTopP(probabilities, ids, 0, 1024, 0, [0, 7]));
 +});
 diff --git a/tests/web_worker_handler.test.ts b/tests/web_worker_handler.test.ts
-index 9b04efa..1482f3b 100644
+index 9b04efa..61e3d8b 100644
 --- a/tests/web_worker_handler.test.ts
 +++ b/tests/web_worker_handler.test.ts
-@@ -15,6 +15,25 @@ const completionMock = jest.fn<(...args: any[]) => Promise<any>>();
+@@ -15,6 +15,26 @@ const completionMock = jest.fn<(...args: any[]) => Promise<any>>();
  const embeddingMock = jest.fn<(...args: any[]) => Promise<any>>();
  const setLogitRegistryMock = jest.fn<(...args: any[]) => void>();
  const setAppConfigMock = jest.fn<(...args: any[]) => void>();
@@ -14284,20 +13237,20 @@ index 9b04efa..1482f3b 100644
 +const clearDrowseSaeMock = jest.fn<(...args: any[]) => Promise<void>>();
 +const setDrowseJlensMock = jest.fn<(...args: any[]) => Promise<void>>();
 +const clearDrowseJlensMock = jest.fn<(...args: any[]) => Promise<void>>();
-+const resolveDrowseJlensMock = jest.fn<(...args: any[]) => Promise<Float32Array>>();
++const resolveDrowseJlensMock =
++  jest.fn<(...args: any[]) => Promise<Float32Array>>();
 +const readDrowseJlensTopMock = jest.fn<(...args: any[]) => Promise<any>>();
 +const readDrowseSaeTopMock = jest.fn<(...args: any[]) => Promise<any>>();
  
  const mockEngineInstance: Record<string, any> = {
    reload: reloadMock,
-@@ -27,6 +46,25 @@ const mockEngineInstance: Record<string, any> = {
+@@ -27,6 +47,24 @@ const mockEngineInstance: Record<string, any> = {
    }),
    setLogitProcessorRegistry: setLogitRegistryMock,
    setAppConfig: setAppConfigMock,
-+  supportsDrowseRankOneHooks: supportsDrowseMock,
-+  setDrowseRankOneProgram: setDrowseMock,
++  supportsDrowseStructuredHooks: supportsDrowseMock,
 +  setDrowseStructuredProgram: setDrowseMock,
-+  clearDrowseRankOneProgram: clearDrowseMock,
++  clearDrowseProgram: clearDrowseMock,
 +  readDrowseMeasurements: readDrowseMock,
 +  supportsDrowseResidualCapture: supportsDrowseCaptureMock,
 +  captureDrowseResiduals: captureDrowseMock,
@@ -14480,7 +13433,7 @@ index 9b04efa..1482f3b 100644
  test("chatCompletionNonStreaming reloads when worker state mismatches", async () => {
    const handler = new WebWorkerMLCEngineHandler();
    chatCompletionMock.mockResolvedValueOnce({ object: "chat.completion" });
-@@ -314,3 +502,292 @@ test("WebWorkerMLCEngine info helpers resolve via worker messages", async () =>
+@@ -314,3 +502,296 @@ test("WebWorkerMLCEngine info helpers resolve via worker messages", async () =>
      true,
    );
  });
@@ -14494,17 +13447,17 @@ index 9b04efa..1482f3b 100644
 +  readDrowseMock.mockResolvedValueOnce(Float32Array.from([0.5]));
 +
 +  handler.onmessage({
-+    kind: "supportsDrowseRankOneHooks",
++    kind: "supportsDrowseStructuredHooks",
 +    uuid: "supports",
 +    content: { modelId: "demo" },
 +  } as any);
 +  handler.onmessage({
-+    kind: "setDrowseRankOneProgram",
++    kind: "setDrowseStructuredProgram",
 +    uuid: "set",
 +    content: { modelId: "demo", program: hookProgram },
 +  } as any);
 +  handler.onmessage({
-+    kind: "clearDrowseRankOneProgram",
++    kind: "clearDrowseProgram",
 +    uuid: "clear",
 +    content: { modelId: "demo" },
 +  } as any);
@@ -14630,17 +13583,19 @@ index 9b04efa..1482f3b 100644
 +test("WebWorkerMLCEngine exposes Drowse program operations", async () => {
 +  const worker = new MockWorker();
 +  const hookProgram = { enabled: Uint32Array.from([1]) } as any;
-+  worker.setResponder("supportsDrowseRankOneHooks", () => true);
-+  worker.setResponder("setDrowseRankOneProgram", () => null);
-+  worker.setResponder("clearDrowseRankOneProgram", () => null);
++  worker.setResponder("supportsDrowseStructuredHooks", () => true);
++  worker.setResponder("setDrowseStructuredProgram", () => null);
++  worker.setResponder("clearDrowseProgram", () => null);
 +  worker.setResponder("readDrowseMeasurements", () =>
 +    Float32Array.from([0.25]),
 +  );
 +  const engine = new WebWorkerMLCEngine(worker as any);
 +
-+  await expect(engine.supportsDrowseRankOneHooks("demo")).resolves.toBe(true);
-+  await engine.setDrowseRankOneProgram(hookProgram, "demo");
-+  await engine.clearDrowseRankOneProgram("demo");
++  await expect(engine.supportsDrowseStructuredHooks("demo")).resolves.toBe(
++    true,
++  );
++  await engine.setDrowseStructuredProgram(hookProgram, "demo");
++  await engine.clearDrowseProgram("demo");
 +  await expect(engine.readDrowseMeasurements("demo")).resolves.toEqual(
 +    Float32Array.from([0.25]),
 +  );
@@ -14689,7 +13644,7 @@ index 9b04efa..1482f3b 100644
 +  worker.setResponder("setDrowseJlensDictionary", () => null);
 +  worker.setResponder("clearDrowseJlensDictionary", () => null);
 +  worker.setResponder("resolveDrowseJlensTokenDirections", () =>
-+    Float32Array.from([1, 2])
++    Float32Array.from([1, 2]),
 +  );
 +  worker.setResponder("readDrowseJlensTopTokens", () => jlens);
 +  worker.setResponder("readDrowseSaeTopFeatures", () => sae);
@@ -14697,12 +13652,14 @@ index 9b04efa..1482f3b 100644
 +
 +  await engine.setDrowseSaeDictionary(dictionary, "demo");
 +  await engine.setDrowseJlensDictionary(jlensDictionary, "demo");
-+  await expect(engine.resolveDrowseJlensTokenDirections(
-+    jlensDictionary.bindingId,
-+    [1],
-+    [7],
-+    "demo",
-+  )).resolves.toEqual(Float32Array.from([1, 2]));
++  await expect(
++    engine.resolveDrowseJlensTokenDirections(
++      jlensDictionary.bindingId,
++      [1],
++      [7],
++      "demo",
++    ),
++  ).resolves.toEqual(Float32Array.from([1, 2]));
 +  await expect(engine.readDrowseJlensTopTokens("demo")).resolves.toEqual(jlens);
 +  await expect(engine.readDrowseSaeTopFeatures("demo")).resolves.toEqual(sae);
 +  await engine.clearDrowseSaeDictionary("demo");
