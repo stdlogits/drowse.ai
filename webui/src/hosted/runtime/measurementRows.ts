@@ -232,7 +232,8 @@ function summaryScalarReadings(
     if (reading.meta !== undefined && reading.meta !== null) {
       out.meta = Object.fromEntries(Object.entries(reading.meta).map(([key, value]) => [
         key,
-        typeof value === "number" && !Number.isInteger(value) ? roundReading(value) : value,
+        // drowse rounds every float meta value; its only producer (units) writes floats.
+        typeof value === "number" && Number.isFinite(value) ? roundReading(value) : value,
       ])) as ScalarReadingJSON["meta"];
     }
     return [name, out];

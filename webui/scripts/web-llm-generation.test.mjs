@@ -70,6 +70,7 @@ try {
   const {
     aggregateMeasurements,
     roundReading,
+    summaryMeasurements,
     tokenRowMeasurements,
   } = await server.ssrLoadModule("/src/hosted/runtime/measurementRows.ts");
   const { compileStructuredHookProgram } = await server.ssrLoadModule(
@@ -1535,6 +1536,32 @@ try {
     assert.equal(precise.instruments[family].readings[name].value, roundReading(expected));
     assert.equal(precise.instruments[family].readings[name].per_layer["0"], roundReading(preciseValues[index]));
   }
+  // Scalar meta: drowse rounds every float (its producers write only floats), so an
+  // integral 1234567.0 persists as 1234570.0; strings pass through.
+  const metaSummary = summaryMeasurements({
+    version: 2,
+    scope: "token",
+    provenance: precise.provenance,
+    instruments: {
+      sae: {
+        binding: precise.instruments.sae.binding,
+        readings: {
+          "sae/8": {
+            value: 0.5,
+            unit: "activation_over_max",
+            per_layer: {},
+            depth: null,
+            meta: { activation: 1234567, write_norm: 0.123456789, scale: "catalog" },
+          },
+        },
+      },
+    },
+  }, false);
+  assert.deepEqual(metaSummary.instruments.sae.readings["sae/8"].meta, {
+    activation: 1234570,
+    write_norm: 0.123457,
+    scale: "catalog",
+  });
   for (const [index, invalid] of [[0, NaN], [2, Infinity], [1, -Infinity], [0, -0.1], [2, 1.1], [3, -0.1]]) {
     const invalidValues = preciseValues.slice();
     invalidValues[index] = invalid;
