@@ -48,7 +48,9 @@ import {
 import {
   compileStructuredHookProgram,
   saeFeatureProbe,
+  structuredUnitAblationTerm,
   validateStructuredHookProgram,
+  withStructuredUnitSection,
   type StructuredAffineGroup,
   type StructuredCurve,
   type StructuredCurveAxis,
@@ -84,6 +86,13 @@ import {
   type SteeringTrigger,
 } from "./steeringExpression";
 import { instrumentAtomUnavailable } from "./hookCapabilities";
+import {
+  resolveUnitAtom,
+  unitMean,
+  unitTap,
+  type BrowserUnitProgramSource,
+} from "./units/unitProgram";
+import { unitName, type UnitRef } from "./units/unitReader";
 
 interface CoreManifold {
   key: string;
@@ -123,9 +132,11 @@ interface ResolvedManifoldAtom {
 interface ResolvedInstrumentAtom {
   kind: "instrument";
   key: string;
-  family: "sae" | "jlens";
+  family: "sae" | "jlens" | "units" | "slens";
   directions: ReadonlyMap<number, Float32Array>;
   saeFeature: BrowserSaeFeature | null;
+  /** A `neuron/…` or `head/…` atom's unit (its push direction, if any, is `directions`). */
+  unit?: UnitRef;
 }
 
 type ResolvedCoreAtom = ResolvedManifoldAtom | ResolvedInstrumentAtom;
@@ -187,6 +198,8 @@ export class BrowserFeasibilityCorePackCompiler {
   private lensLiveLayers: readonly number[] | null = null;
   private saeLive = false;
   private compiledProgram: { key: string; program: BrowserHookProgramBuffers } | null = null;
+  private unitSource: BrowserUnitProgramSource | null = null;
+  private unitSourceVersion = 0;
   private readonly attachedProbes = new Map<string, ProbeInfo>();
 
   private constructor(
@@ -493,6 +506,9 @@ export class BrowserFeasibilityCorePackCompiler {
   probeHashes(): Record<string, string> {
     const hashes: Record<string, string> = {};
     for (const [name, probe] of this.attachedProbes) {
+      // A unit probe's digest (native `units-readout-v2`: model, unit, scale source and values)
+      // is the registry's to compute once it learns unit probes (B6); until then it has none.
+      if (probe.family === "units") continue;
       hashes[name] = probe.family === "geometry"
         ? this.geometryProbeHash(probe)
         : this.instruments.probeHash(this.modelId, probe);
@@ -534,6 +550,21 @@ export class BrowserFeasibilityCorePackCompiler {
         feature_space: "readout",
         word: token.word,
         token_id: token.tokenId,
+      };
+    } else if (selector.startsWith("neuron/") || selector.startsWith("head/")) {
+      const namespace = selector.startsWith("neuron/") ? "neuron" : "head";
+      if (this.unitSource === null) throw instrumentAtomUnavailable(namespace);
+      const unit = resolveUnitAtom(this.unitSource, namespace, selector.slice(namespace.length + 1));
+      probe = {
+        family: "units",
+        name,
+        unit: unitName(unit),
+        kind: unit.kind,
+        layer: unit.layer,
+        index: unit.index,
+        layers: [unit.layer],
+        intrinsic_dim: 1,
+        feature_space: "unit-readout",
       };
     } else if (selector.startsWith("sae/")) {
       const rawFeature = selector.slice("sae/".length);
@@ -861,6 +892,16 @@ export class BrowserFeasibilityCorePackCompiler {
     };
   }
 
+  /** The loaded library's unit sites and the core pack's unit statistics (B5): `neuron/`,
+   *  `head/` and `slens/` atoms, unit probes and unit gates lower through it; without one they
+   *  are refused (`instrumentAtomUnavailable`). Directions it serves are prepared by the caller
+   *  (async, on the device) before a compile. */
+  setUnitSource(source: BrowserUnitProgramSource | null): void {
+    this.unitSource = source;
+    this.unitSourceVersion += 1;
+    this.compiledProgram = null;
+  }
+
   compile(
     expression: string,
     probeRequests?: readonly ProbeRequest[],
@@ -875,7 +916,7 @@ export class BrowserFeasibilityCorePackCompiler {
   ): BrowserHookProgramBuffers {
     const key = JSON.stringify([
       expression, probeRequests ?? this.listProbes(),
-      this.instrumentLiveState(), this.instrumentDescriptor(),
+      this.instrumentLiveState(), this.instrumentDescriptor(), this.unitSourceVersion,
     ]);
     if (this.compiledProgram?.key === key) return this.compiledProgram.program;
     const program = this.compileUncached(expression, probeRequests);
@@ -976,8 +1017,22 @@ export class BrowserFeasibilityCorePackCompiler {
   }
 
   private compileStructured(
-    terms: readonly ResolvedCoreTerm[],
+    allTerms: readonly ResolvedCoreTerm[],
   ): StructuredHookProgramBuffers {
+    // Unit ablations (`!neuron/…`, `!head/…`) act inside the block (the unit section, B1 §3.1);
+    // every other term lowers to the post-block program.
+    const unitTerms = allTerms.filter((term) =>
+      term.ablation && term.base.kind === "instrument" && term.base.family === "units"
+    );
+    const terms = allTerms.filter((term) => !unitTerms.includes(term));
+    for (const term of terms) {
+      if (term.base.kind === "instrument" && term.base.family === "units" && term.base.directions.size === 0) {
+        throw coreError(
+          "UNIT_DIRECTION_UNPREPARED",
+          `${term.base.key}'s write was not read off the model before compiling`,
+        );
+      }
+    }
     if (this.whiteners.size !== this.layerMap.length) {
       throw coreError(
         "CORE_PACK_WHITENER_UNAVAILABLE",
@@ -999,9 +1054,12 @@ export class BrowserFeasibilityCorePackCompiler {
         `The browser GPU program supports at most ${this.structuredHookProfile.maxAffineGroups} independently gated affine groups`,
       );
     }
-    const requiredGateNames = [...new Set(terms.flatMap((term) =>
+    // A gate on a unit reads the live unit tap (priorScores[unit]), not a measurement probe.
+    const allGateNames = [...new Set(allTerms.flatMap((term) =>
       term.trigger?.gate ? [term.trigger.gate.probe] : []
     ))];
+    const unitGateNames = allGateNames.filter((name) => this.isUnitGate(name));
+    const requiredGateNames = allGateNames.filter((name) => !unitGateNames.includes(name));
     if (requiredGateNames.length > this.structuredHookProfile.maxProbes) {
       throw coreError(
         "CORE_PACK_PROBE_LIMIT",
@@ -1119,7 +1177,59 @@ export class BrowserFeasibilityCorePackCompiler {
     }
     program.controls = { affine: affineControls, curve: curveControls };
     validateStructuredHookProgram(program);
-    return program;
+    return this.withUnitSection(program, unitTerms, unitGateNames, gateSlots);
+  }
+
+  private isUnitGate(name: string): boolean {
+    const attached = this.attachedProbes.get(name);
+    if (attached !== undefined) return attached.family === "units";
+    return name.startsWith("neuron/") || name.startsWith("head/");
+  }
+
+  /** The unit section (B1 §3.1, §2.2): one ablation per unit term, grouped by trigger in first
+   *  registration order (≤ `maxUnitGroups`), and a live tap for each attached unit probe and
+   *  each unit a gate reads. Capacities and duplicates refuse in the encoder's words. */
+  private withUnitSection(
+    program: StructuredHookProgramBuffers,
+    unitTerms: readonly ResolvedCoreTerm[],
+    unitGateNames: readonly string[],
+    gateSlots: ReadonlyMap<string, readonly StructuredMeasurementSlot[]>,
+  ): StructuredHookProgramBuffers {
+    const tapped: Array<{ name: string; unit: UnitRef }> = [];
+    for (const [name, probe] of this.attachedProbes) {
+      if (probe.family === "units") tapped.push({ name, unit: { kind: probe.kind, layer: probe.layer, index: probe.index } });
+    }
+    for (const name of unitGateNames) {
+      if (tapped.some((entry) => entry.name === name)) continue;
+      const namespace = name.startsWith("neuron/") ? "neuron" : "head";
+      const source = this.unitSource;
+      if (source === null) throw instrumentAtomUnavailable(namespace);
+      tapped.push({ name, unit: resolveUnitAtom(source, namespace, name.slice(namespace.length + 1)) });
+    }
+    if (unitTerms.length === 0 && tapped.length === 0) return program;
+    const source = this.unitSource;
+    if (source === null || source.spec === null) {
+      throw instrumentAtomUnavailable(unitTerms.length > 0 ? unitTerms[0].base.key.split("/")[0] : "neuron");
+    }
+    const triggers: string[] = [];
+    const controls: Array<StructuredHookControl | null> = [];
+    const ablations = unitTerms.map((term) => {
+      const unit = (term.base as ResolvedInstrumentAtom).unit!;
+      const key = JSON.stringify(term.trigger);
+      let group = triggers.indexOf(key);
+      if (group < 0) {
+        group = triggers.length;
+        triggers.push(key);
+        controls.push(term.trigger === null ? null : hookControl(term.trigger, gateSlots));
+      }
+      return structuredUnitAblationTerm(unit.kind, unit.layer, unit.index, term.coefficient, unitMean(source, unit), group);
+    });
+    const taps = tapped.map((entry, slot) => unitTap(source, entry.name, entry.unit, slot));
+    return withStructuredUnitSection(
+      program,
+      { dFF: source.spec.dFF, nHeads: source.spec.nHeads, headDim: source.spec.headDim },
+      { ablations, taps, controls },
+    );
   }
 
   private syncPinnedJlensWords(): void {
@@ -1134,6 +1244,7 @@ export class BrowserFeasibilityCorePackCompiler {
     const names = [...required];
     for (const [name, probe] of this.attachedProbes) {
       if (probe.family === "geometry" && !this.geometryLive) continue;
+      if (probe.family === "units") continue;
       if (!names.includes(name)) names.push(name);
     }
     if (names.length > this.structuredHookProfile.maxProbes) {
@@ -2466,7 +2577,7 @@ export class BrowserFeasibilityCorePackCompiler {
    *  degenerate `onto`). */
   private termFittedLayers(term: ResolvedCoreTerm): number[] {
     const atomLayers = (atom: ResolvedCoreAtom): number[] => atom.kind === "instrument"
-      ? [...atom.directions.keys()]
+      ? atom.unit !== undefined ? [atom.unit.layer] : [...atom.directions.keys()]
       : fittedLayerNumbers(atom.manifold.tensors);
     const base = atomLayers(term.base);
     if (term.projection?.operator !== "~") return [...base].sort((a, b) => a - b);
@@ -2606,6 +2717,41 @@ export class BrowserFeasibilityCorePackCompiler {
         key: token.key,
         family: "jlens",
         directions: token.directions,
+        saeFeature: null,
+      };
+    }
+    if (atom.namespace === "neuron" || atom.namespace === "head") {
+      const source = this.unitSource;
+      if (source === null) throw instrumentAtomUnavailable(atom.namespace);
+      if (atom.variant !== "raw") {
+        throw coreError("CORE_PACK_VARIANT_UNAVAILABLE", "Unit atoms do not take manifold variants");
+      }
+      const unit = resolveUnitAtom(source, atom.namespace, atom.concept);
+      const write = unit.kind === "neuron" ? source.neuronWrite(unit.layer, unit.index) : null;
+      return {
+        kind: "instrument",
+        key: unitName(unit),
+        family: "units",
+        directions: write === null ? new Map() : new Map([[unit.layer, write]]),
+        saeFeature: null,
+        unit,
+      };
+    }
+    if (atom.namespace === "slens") {
+      const source = this.unitSource;
+      if (source === null) throw instrumentAtomUnavailable(atom.namespace);
+      if (atom.variant !== "raw") {
+        throw coreError("CORE_PACK_VARIANT_UNAVAILABLE", "S-lens atoms do not take manifold variants");
+      }
+      const prepared = source.slensAtom(atom.concept);
+      if (prepared === null) {
+        throw coreError("SLENS_ATOM_UNPREPARED", `slens/${atom.concept} was not resolved before compiling`);
+      }
+      return {
+        kind: "instrument",
+        key: `slens/${atom.concept}`,
+        family: "slens",
+        directions: prepared.directions,
         saeFeature: null,
       };
     }

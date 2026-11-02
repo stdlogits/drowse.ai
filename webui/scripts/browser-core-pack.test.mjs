@@ -836,6 +836,61 @@ try {
     }
   });
 
+  test("lowers unit ablations, neuron pushes, unit probes and unit gates (drowse-structured-v4)", async () => {
+    const { decodeStructuredUnitTables } = await server.ssrLoadModule("/src/hosted/runtime/structuredHookProgram.ts");
+    const { readingScales } = await server.ssrLoadModule("/src/hosted/runtime/units/scales.ts");
+    const { request } = await fixture({ withWhitener: true, structuredHookProfile: "standard-v4" });
+    const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
+    // Without the library's unit sites the compiler refuses in its own words.
+    assert.throws(() => compiler.compile("!neuron/L1n2"), (error) => error.message === "neuron/ instrument atoms are not available in the browser runtime");
+    const spec = { dFF: 4, nHeads: 2, headDim: 1 };
+    const statistics = {
+      documents: 2,
+      neuronMean: Float32Array.from([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]),
+      neuronScale: Float32Array.from({ length: 16 }, (_, i) => 1 + i / 8),
+      headMean: Float32Array.from([0.25, -0.5, 0.75, -1]),
+      headScale: Float32Array.from([2, 3, 4, 5]),
+    };
+    const source = {
+      spec, refusal: null, layerCount: 2, statistics, scales: readingScales(statistics, spec, 2),
+      neuronWrite: (layer, index) => (layer === 1 && index === 2 ? Float32Array.from([1, 0.5]) : null),
+      slensAtom: () => null,
+    };
+    compiler.setUnitSource(source);
+    const program = compiler.compile("0.5 !neuron/L1n2 + !head/L0h1@before");
+    assert.equal(program.format, "drowse-structured-v4");
+    const tables = decodeStructuredUnitTables(program);
+    const neuron = tables.find((table) => table.site === "act");
+    const head = tables.find((table) => table.site === "z");
+    assert.deepEqual([neuron.layer, neuron.entries, neuron.keep, neuron.bias], [1, [2], [0.5], [Math.fround(0.5 * Math.fround(0.7))]]);
+    assert.deepEqual([head.layer, head.entries, head.keep, head.bias], [0, [1], [0], [-0.5]]);
+    assert.equal(program.controls.units[0], null, "an always-on group");
+    assert.equal(program.controls.units[1].phase.kind, "prompt_only");
+    // A neuron push is a one-layer instrument atom: an affine group at its layer, no unit table.
+    const push = compiler.compile("0.3 neuron/L1n2");
+    assert.equal(push.format, "drowse-structured-v4");
+    assert.equal(decodeStructuredUnitTables(push).length, 0);
+    assert.ok([...push.affineActive].some((value) => value === 1));
+    assert.throws(() => compiler.compile("0.3 neuron/L0n1"), (error) => error.code === "UNIT_DIRECTION_UNPREPARED");
+    // A unit probe and a unit gate become live taps; the gate reads priorScores[unit].
+    const probe = compiler.attachProbe({ selector: "neuron/L0n1" });
+    assert.deepEqual({ ...probe }, {
+      family: "units", name: "neuron/L0n1", unit: "neuron/L0n1", kind: "neuron", layer: 0, index: 1,
+      layers: [0], intrinsic_dim: 1, feature_space: "unit-readout",
+    });
+    const gated = compiler.compile("!neuron/L1n2@when:head/L1h0>0.5");
+    const taps = gated.measurementSchema.unitTaps.filter((tap) => tap !== null);
+    assert.deepEqual(taps.map((tap) => [tap.name, tap.unit, tap.slot]), [["neuron/L0n1", "neuron/L0n1", 0], ["head/L1h0", "head/L1h0", 1]]);
+    assert.deepEqual(taps[0].scale.top.length, 2, "a neuron's scale is a pole pair");
+    assert.equal(gated.controls.units[0].gate.scoreKey, "head/L1h0");
+    assert.equal(gated.controls.units[0].gate.threshold, 0.5);
+    compiler.detachProbe?.("neuron/L0n1");
+    // A unit outside the model is native's 400; a library without unit sites is native's 422.
+    assert.throws(() => compiler.compile("!neuron/L1n9"), (error) => error.status === 400 && /neuron 9 is outside block 1/.test(error.message));
+    compiler.setUnitSource({ ...source, spec: null, refusal: "layer 0: the attention projections are fused (qkv)" });
+    assert.throws(() => compiler.compile("!neuron/L1n2"), (error) => error.status === 422 && error.message === "layer 0: the attention projections are fused (qkv)");
+  });
+
   test("loads a verified legacy-named core archive", async () => {
     for (const extension of ["polythetic", "saklas", "saklaspack"]) {
       const { request } = await fixture({ archiveName: `demo.${extension}` });

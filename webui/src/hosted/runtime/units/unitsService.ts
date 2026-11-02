@@ -18,6 +18,9 @@ import { DEFAULT_LENS_BAND, type LensBand, type LensFamilyName, type UnitsEmbedd
 import { checkActivityOptions, unitActivity, type NodeReplayForward, type ReplayGateScores } from "./nodeReplay";
 import { noLensText } from "./referenceContext";
 import { readingScales, type UnitScales, type UnitStatistics } from "./scales";
+import { parseSteeringExpression } from "../steeringExpression";
+import { slensAtomDirections } from "./slens";
+import type { BrowserUnitProgramSource } from "./unitProgram";
 import { NO_CATALOG, parseUnit, unitCatalogStatus, UnitReader, UnitRequestError, type UnitLayerArtifacts } from "./unitReader";
 
 export const UNITS_SERVICE_METHODS = Object.freeze([
@@ -289,6 +292,61 @@ export class BrowserUnitsService {
       sources: { R: packs.lens("R")?.source ?? null, S: packs.lens("S")?.source ?? null },
     };
     return this.session;
+  }
+
+  /** The structured compiler's unit source (`BrowserFeasibilityCorePackCompiler.setUnitSource`)
+   *  over the loaded library: its block spec or refusal, the unit statistics, and the
+   *  directions `prepare(expression)` reads off the device before a compile (each neuron push's
+   *  write, each `slens/` atom's footprints over the S:out layers). */
+  async programSource(): Promise<BrowserUnitProgramSource & { prepare(expression: string): Promise<void> }> {
+    const backend = this.options.blockSites();
+    const capabilities = backend.capabilities();
+    if (capabilities === null || capabilities.blockSpec === null) {
+      return {
+        spec: null,
+        refusal: capabilities?.unitRefusal ?? "the loaded model library predates hook ABI block-sites-v5",
+        layerCount: capabilities?.layerCount ?? 0,
+        statistics: null,
+        scales: null,
+        neuronWrite: () => null,
+        slensAtom: () => null,
+        prepare: async () => undefined,
+      };
+    }
+    const session = await this.open();
+    const writes = new Map<string, Float32Array>();
+    const atoms = new Map<string, { tokenId: number; directions: ReadonlyMap<number, Float32Array> }>();
+    const { statistics } = await session.packs.statistics();
+    return {
+      spec: session.spec,
+      refusal: null,
+      layerCount: session.context.nLayers,
+      statistics,
+      scales: session.scales,
+      neuronWrite: (layer, index) => writes.get(`${layer}:${index}`) ?? null,
+      slensAtom: (word) => atoms.get(word) ?? null,
+      prepare: async (expression) => {
+        if (!expression.trim()) return;
+        const parsed = parseSteeringExpression(expression);
+        for (const term of parsed.terms) {
+          for (const atom of [term.selector.base, term.selector.onto]) {
+            if (atom === null) continue;
+            if (atom.namespace === "neuron" && !term.ablation) {
+              const ref = parseUnit(`neuron/${atom.concept}`, session.spec, session.context.nLayers);
+              const key = `${ref.layer}:${ref.index}`;
+              if (!writes.has(key)) {
+                const rows = await session.backend.unitWeightRows("neuron_write", [{ kind: "neuron", layer: ref.layer, index: ref.index }]);
+                writes.set(key, Float32Array.from(rows.data));
+              }
+            }
+            if (atom.namespace === "slens" && !atoms.has(atom.concept)) {
+              const tokenId = this.options.resolveToken(atom.concept);
+              atoms.set(atom.concept, { tokenId, directions: await slensAtomDirections(session.context, atom.concept, tokenId) });
+            }
+          }
+        }
+      },
+    };
   }
 
   private replay(): UnitsNodeReplayPort {
