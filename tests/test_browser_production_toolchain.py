@@ -151,6 +151,19 @@ def test_base_adapter_provenance_is_architecture_specific():
     assert "qwen35_adapter.py" not in TOOL.toolchain_manifest("gpt2")["modelAdapterFiles"]
 
 
+def test_fork_manifest_base_models_bind_the_checked_in_adapters():
+    """The publisher checks a base library's drowse-build.json against forks/manifest.json; the
+    builder records the adapters' real digests, so the manifest must carry the same ones (it kept
+    pre-9bae21e digests and refused every GPT-2, Pythia and Qwen3.5 library)."""
+    forks = SCRIPT.parent
+    manifest = json.loads((forks / "manifest.json").read_text())
+    for architecture, base in manifest["baseModels"].items():
+        assert base["modelAdapterFiles"] == TOOL.adapter_digests(architecture), architecture
+        assert base["modelSourceFiles"] == TOOL.BASE_MODEL_SOURCE_DIGESTS[architecture], architecture
+        for name, digest in base["modelAdapterFiles"].items():
+            assert hashlib.sha256((forks / name).read_bytes()).hexdigest() == digest, name
+
+
 def test_qwen35_base_policy_uses_the_text_backbone_not_vision_or_chat(tmp_path: Path):
     config = {"model_type": "qwen3_5", "max_position_embeddings": 4096, "eos_token_id": 99,
               "text_config": {"model_type": "qwen3_5_text", "max_position_embeddings": 2048,

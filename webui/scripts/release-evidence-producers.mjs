@@ -90,6 +90,7 @@ const q4ParityClosure = Object.freeze([
   "webui/scripts/publish-hosted-model.mjs",
   "webui/scripts/hosted-model-closure.mjs",
   "webui/scripts/capture-hosted-residuals.mjs",
+  "webui/scripts/hosted-residual-capture-units.mjs",
   "webui/scripts/hosted-residual-capture.worker.ts",
   "browser-runtime/fixtures/production-q4-parity-input-v1.json",
   "browser-runtime/mlc_q4_torch.py",

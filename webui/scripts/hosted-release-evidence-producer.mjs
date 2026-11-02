@@ -496,12 +496,16 @@ function requireReleaseEnvironment(report, evidenceType) {
     "jlensArtifactManifestSha256",
     "saeArtifactManifestSha256",
   ];
+  // The S and units packs a standard-v4 report also stages (null on a residual one); these
+  // receipts bind the eight identities above.
+  const unitKeys = ["slensArtifactManifestSha256", "unitsArtifactManifestSha256"];
   if (
     !observed ||
     typeof observed !== "object" ||
     Array.isArray(observed) ||
-    Object.keys(observed).length !== keys.length ||
+    Object.keys(observed).length !== keys.length + unitKeys.length ||
     keys.some((key) => !SHA256.test(observed[key] ?? "")) ||
+    unitKeys.some((key) => observed[key] !== null && !SHA256.test(observed[key] ?? "")) ||
     observed.runtimeIdentitySha256 !== environment.runtimeIdentitySha256
   ) {
     throw new Error(`${evidenceType} has incomplete observed artifact identities`);

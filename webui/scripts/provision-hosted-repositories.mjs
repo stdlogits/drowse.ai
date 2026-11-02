@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { catalogLocation } from "./hosted-catalog-location.mjs";
 
 const exec = promisify(execFile);
 const runtimeLockUrl = new URL("../../browser-runtime/runtime-lock.json", import.meta.url);
@@ -16,11 +17,7 @@ export function parseArguments(args) {
 }
 
 export function repositoryPlan(runtimeLock, distributionLock) {
-  const catalog = catalogRepository(distributionLock.catalogUrl, "catalogUrl");
-  const signature = catalogRepository(distributionLock.signatureUrl, "signatureUrl");
-  if (catalog !== signature) {
-    throw new Error("catalog and signature URLs must use the same Hugging Face repository");
-  }
+  const catalog = catalogLocation(distributionLock).repository;
   const models = runtimeLock.models?.map((model) => model.convertedRepository) ?? [];
   const instruments = models.map((repository) => `${repository}-instruments`);
   const repositories = [...new Set([catalog, ...models, ...instruments])];
@@ -84,21 +81,6 @@ async function modelInfo(repository, run) {
     }
     throw error;
   }
-}
-
-function catalogRepository(value, label) {
-  let url;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new Error(`${label} is not a valid URL`);
-  }
-  if (url.origin !== "https://huggingface.co" || url.username || url.password) {
-    throw new Error(`${label} must use the public Hugging Face origin`);
-  }
-  const match = /^\/([^/]+)\/([^/]+)\/resolve\/main\/catalog(?:\.sig)?\.json$/.exec(url.pathname);
-  if (!match) throw new Error(`${label} has an unsupported catalog path`);
-  return `${decodeURIComponent(match[1])}/${decodeURIComponent(match[2])}`;
 }
 
 function parseJson(value, label) {

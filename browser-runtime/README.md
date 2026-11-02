@@ -450,22 +450,37 @@ npm run test:browser-runtime:full -- \
   --model-id qwen3-1.7b \
   --model-directory MODEL_DIR --model-library MODEL.wasm --webllm WEBLLM.js \
   --core-directory CORE_DIR --jlens-directory JLENS_DIR \
-  --sae-directory SAE_DIR --context-tokens 2048 \
+  --slens-directory SLENS_DIR --units-directory UNITS_DIR \
+  [--sae-directory SAE_DIR] --context-tokens 2048 \
   --output /tmp/drowse-real-browser-e2e.json
 ```
 
+The packs follow the library's profile, as the catalog admits them: a `standard-v4` model
+runs with its R (`--jlens-directory`), S and units packs, a `standard-v4-residual` one with no
+S or units pack (an R pack is optional); SAE is optional on both. The harness stages every
+pack file and hands the runtime what the app's worker does: the install files, and each
+on-demand lens or units layer through `fetchFile` on its first read. `--runtime-lock CANDIDATE`
+runs against an engineering lock (the report is then marked `override`); `--verbose` echoes the
+page console to stderr, which an evidence observer must not write.
+
 The command rehashes every local manifest object before opening Chrome, requires
 a confirmed hardware adapter with at least 10 storage buffers per shader stage,
-then measures ordinary generation, selective
+then measures the load (the library's descriptor attested against the lock's profile and
+block spec, its block sites recorded), ordinary generation, selective
 post-block capture, exact forced-token replay and compact cross-token scoring,
-an alternate-token fork, flat steering gated independently by geometry, R-lens
-probability, and SAE activation signals, R-lens and SAE steering/readout,
+an alternate-token fork, flat steering gated independently by geometry and, with their packs,
+R-lens probability and SAE activation signals, R-lens and SAE steering/readout,
 a small spectral fit backed by the OPFS activation spool, nearest-node role
-selection and named-role generation, curved steering,
-streamed stop, unload/reload, and a final reload from reopened OPFS files while
-all HTTP(S) fetches are blocked. It fails when any phase is absent, reordered,
-unsupported, unmeasured, or emits a WebGPU/device-loss error. There is no
-`--skip-fitting` or missing-instrument mode.
+selection and named-role generation, curved steering, then on `standard-v4` the units
+check (a token-anatomy replay of the first generated token; a mean-ablation of its largest
+contributor that moves that token's logprob by at least 1e-4; a static read of a contributing
+neuron; a generation with a unit tap and an `slens/` S readout, both finite) or on
+`standard-v4-residual` the refusal check (six unit members answer 422 with the lock's
+`unitRefusal`, the unit catalog answers unbound, a unit ablation and a unit probe refuse, and
+the bridge's unit surface answers `UNIT_SITES_UNAVAILABLE`), streamed stop, unload/reload,
+and a final reload from reopened OPFS files while all HTTP(S) fetches are blocked. It fails
+when any phase is absent, reordered, unsupported, unmeasured, or emits a WebGPU/device-loss
+error. There is no `--skip-fitting` mode.
 
 Its JSON is deliberately marked `releaseEvidence: false`: one local desktop
 run is useful physical integration evidence, but it cannot claim Android,
@@ -552,9 +567,18 @@ configured BOS, EOS, and padding ID before capture can run. This prevents
 last-content pooling from silently depending on tokenizer heuristics.
 
 `distribution-lock.json` independently gates the signed catalog and download
-origins. It embeds the current and next Ed25519 public keys, the minimum catalog
-sequence, and the exact Hugging Face artifact redirect origin exercised by the
-full distribution preflight. Its verified state authorizes catalog downloads.
+origins. It embeds the catalog and signature URLs, the current and next Ed25519
+public keys, the minimum catalog sequence, and the exact Hugging Face artifact
+redirect origin exercised by the full distribution preflight. Its verified state
+authorizes catalog downloads.
+
+Each browser runtime generation reads its catalog at its own path of
+`stdlogits/drowse-web-catalog` (`webui/scripts/hosted-catalog-location.mjs`): runtime v1
+builds read the root `catalog.json` (sequences up to 10), runtime v2 builds (hook ABI v5)
+`v2/catalog.json` and `v2/catalog.sig.json` (from 11), which the lock names and
+`check-runtime-lock.mjs` requires. Publishing a catalog for the new runtime therefore never
+changes what the deployed site reads, and builds of the previous runtime keep working until
+the new one is deployed.
 
 ## Release evidence
 
@@ -619,8 +643,10 @@ profiles physically exercised for each model.
    report or capture), then the ledger. The attestation verifier refuses a ledger whose records
    name different revisions, so a record made before the adopting commit cannot be reused; any
    later commit, a submodule bump included, means recording them all again.
-5. Generate and sign the catalog (sequence 11 for this release), fill the exact Hugging Face
-   redirect origins, set `distribution-lock.json`'s minimum sequence and status to `verified`.
+5. Generate and sign the catalog (sequence 11 for this release) and publish it at the lock's
+   `v2/` path (`publish:hosted:catalog`, which first verifies the root catalog the live site
+   reads, sequence 10), fill the exact Hugging Face redirect origins, set
+   `distribution-lock.json`'s minimum sequence and status to `verified`.
 6. Run the release checker and distribution preflight:
 
    ```bash
@@ -643,8 +669,15 @@ signed identity claim that does not match those artifact digests is rejected.
 
 The catalog signing key is never stored in this repository. The signing tool
 accepts an Ed25519 PKCS#8 PEM key path and signs the exact `catalog.json` bytes.
-The publisher verifies the currently published catalog against the lock's keys
-before it advances the sequence. A rotation that cannot sign with the outgoing
+The publisher writes to the directory the lock's URLs name and verifies the catalog published
+there against the lock's keys before it advances the sequence. The first catalog at a new
+directory has nothing there to advance, so the publisher verifies the previous directory's
+catalog instead (the one deployed builds still read) and requires a greater sequence: catalog 11
+at `v2/` must verify the root's catalog 10 and exceed it. A new directory whose predecessor has
+nothing published is refused; only the root may start without one. `./deploy.sh`
+checks the signed catalog at the lock's URL before every upload (`preflight-hosted-distribution.mjs
+--catalog-only`; `--full` runs the whole preflight), so a build never ships pointing at an
+unpublished path. A rotation that cannot sign with the outgoing
 key replaces both keys in the lock and passes the lock the published catalog was
 signed under: `--previous-lock OLD_DISTRIBUTION_LOCK`. Builds with the old lock
 reject the new catalog, so deploy the new build right after publishing.

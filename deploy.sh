@@ -2,7 +2,8 @@
 # Deploy drowse.ai to Cloudflare Pages (project drowse-web): build the release from a clean, pushed
 # HEAD, upload it with Wrangler, then verify that the live site serves that revision.
 #
-#   ./deploy.sh            release build and its output checks, upload, verify
+#   ./deploy.sh            release build and its output checks (and the signed catalog at the
+#                          distribution lock's URL), upload, verify
 #   ./deploy.sh --full     also run the runtime-lock and distribution gates; needed after changes to
 #                          the browser runtime, its locks or the drowse pin. Takes about two hours:
 #                          the distribution preflight downloads and hashes every model artifact (~12 GB)
@@ -53,6 +54,12 @@ fi
 
 cd webui
 export DROWSE_PUBLIC_ORIGIN=https://drowse.ai
+# The build reads the catalog at the distribution lock's URL (a runtime generation's own path, such
+# as v2/catalog.json), so the signed catalog there must be published before the site points at it.
+# --full's distribution preflight checks it with every artifact; otherwise check the catalog alone.
+if [[ "$full" == 0 ]]; then
+  node ./scripts/preflight-hosted-distribution.mjs --catalog-only
+fi
 if [[ "$full" == 1 ]]; then
   DROWSE_RELEASE_REVISION="$rev" npm run build:hosted:release
 else

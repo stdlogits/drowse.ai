@@ -12,8 +12,8 @@ const runtimeLock = {
   ],
 };
 const distributionLock = {
-  catalogUrl: "https://huggingface.co/stdlogits/catalog/resolve/main/catalog.json",
-  signatureUrl: "https://huggingface.co/stdlogits/catalog/resolve/main/catalog.sig.json",
+  catalogUrl: "https://huggingface.co/stdlogits/catalog/resolve/main/v2/catalog.json",
+  signatureUrl: "https://huggingface.co/stdlogits/catalog/resolve/main/v2/catalog.sig.json",
 };
 
 assert.deepEqual(parseArguments([]), { create: false });
