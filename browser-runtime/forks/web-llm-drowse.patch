@@ -10225,10 +10225,13 @@ index 074f5e7..58997b9 100644
    const indexedConfig: AppConfig = {
      ...baseAppConfig,
 diff --git a/tests/conversation.test.ts b/tests/conversation.test.ts
-index 8fa04b2..3470b69 100644
+index 8fa04b2..0d5455d 100644
 --- a/tests/conversation.test.ts
 +++ b/tests/conversation.test.ts
-@@ -3,6 +3,7 @@ import {
+@@ -1,8 +1,10 @@
+ import { ChatConfig, Role } from "../src/config";
+ import {
++  appendDrowseGenerationTurn,
    compareConversationObject,
    getConversation,
    getConversationFromChatCompletionRequest,
@@ -10236,7 +10239,7 @@ index 8fa04b2..3470b69 100644
  } from "../src/conversation";
  import { describe, expect, test } from "@jest/globals";
  import {
-@@ -53,6 +54,72 @@ describe("Test basic conversation loading and getPromptArray", () => {
+@@ -53,6 +55,72 @@ describe("Test basic conversation loading and getPromptArray", () => {
  });
  
  describe("Test getConversationFromChatCompletionRequest with Qwen3", () => {
@@ -10309,7 +10312,7 @@ index 8fa04b2..3470b69 100644
    test("Test Qwen3 appendEmptyThinkingReplyHeader", () => {
      const config_json = JSON.parse(qwen3ChatConfigJSONString);
      const config = { ...config_json } as ChatConfig;
-@@ -84,6 +151,288 @@ describe("Test getConversationFromChatCompletionRequest with Qwen3", () => {
+@@ -84,6 +152,347 @@ describe("Test getConversationFromChatCompletionRequest with Qwen3", () => {
    });
  });
  
@@ -10483,6 +10486,65 @@ index 8fa04b2..3470b69 100644
 +      "<start_of_turn>user\n  Be brief.\n\nHi there<end_of_turn>\n" +
 +        "<start_of_turn>model\nHello.<end_of_turn>\n" +
 +        "<start_of_turn>user\n",
++    );
++  });
++
++  test("thinking off scaffolds the assistant seat only, as drowse's scene grammar on Qwen3", () => {
++    // qwen3-1.7b's MLC template with the production rule (system_message ""); the expected strings
++    // are drowse's render_scene on the model's own chat template (gen_extra rides the assistant
++    // seat only; tests/model/test_scene.py test_gen_extra_rides_assistant_seat_only).
++    const qwen3 = () =>
++      getConversation({
++        name: "qwen3",
++        system_template: "<|im_start|>system\n{system_message}<|im_end|>\n",
++        system_message: "",
++        roles: {
++          user: "<|im_start|>user",
++          assistant: "<|im_start|>assistant",
++        },
++        role_templates: {
++          user: "{user_message}",
++          assistant: "{assistant_message}",
++          tool: "{tool_message}",
++        },
++        seps: ["<|im_end|>\n"],
++        role_content_sep: "\n",
++        role_empty_sep: "\n",
++        stop_str: ["<|endoftext|>", "<|im_end|>"],
++        system_prefix_token_ids: undefined,
++        add_role_after_system_message: true,
++        stop_token_ids: [151643, 151645],
++        function_string: "",
++        use_function_calling: false,
++      } as unknown as ChatConfig["conv_template"]);
++    const thinkingOff = { enable_thinking: false } as const;
++    const assistant = qwen3();
++    assistant.override_system_message = "Be brief.";
++    expect(
++      appendDrowseGenerationTurn(
++        assistant,
++        "Hi there",
++        Role.user,
++        undefined,
++        thinkingOff,
++      ),
++    ).toBe("<think>\n\n</think>\n\n");
++    expect(assistant.getPromptArray().join("")).toEqual(
++      "<|im_start|>system\nBe brief.<|im_end|>\n<|im_start|>user\nHi there<|im_end|>\n" +
++        "<|im_start|>assistant\n<think>\n\n</think>\n\n",
++    );
++    const user = qwen3();
++    user.override_system_message = "Be brief.";
++    user.appendMessage(Role.user, "Hi there");
++    expect(
++      appendDrowseGenerationTurn(user, "Hello.", Role.assistant, undefined, {
++        ...thinkingOff,
++        drowse_generation_seat: "user",
++      }),
++    ).toBe("");
++    expect(user.getPromptArray().join("")).toEqual(
++      "<|im_start|>system\nBe brief.<|im_end|>\n<|im_start|>user\nHi there<|im_end|>\n" +
++        "<|im_start|>assistant\nHello.<|im_end|>\n<|im_start|>user\n",
 +    );
 +  });
 +
