@@ -25,7 +25,8 @@ set against the lock):
   four fixture models and their pattern-cap-16 libraries, `libs/SHA256SUMS`).
 - `production-library-<id>.json` (`productionLibrary`), one per lock model: the physical harness
   at the model's smallest advertised context, without SAE; a `standard-v4` model with its R, S
-  and units packs, a residual one with none.
+  and units packs, a residual one with none. They run Chrome Beta (`--browser-channel
+  chrome-beta`), the only Chrome on the M5; with stable Chrome installed, drop the flag.
 - `production-q4-parity-<id>.json` (`productionQ4Parity`), one per q4f32_1 model:
   `validate_mlc_q4_parity.py` on the CPU over a capture-schema-5 capture made beforehand with the
   repository lock (`npm run capture:hosted:residuals -- ID MODEL MODEL.wasm WEBLLM.js
@@ -44,7 +45,9 @@ The per-model configs read a fixed layout on the M5, one directory per lock mode
 ```
 
 Each entry may be a symlink to where the release pipeline built it (for example
-`~/.drowse-parity/packs/<id>/<sha16>/jlens`). Observers write nothing but their report: the
+`~/.drowse-parity/packs/<id>/<sha16>/jlens`): the harness follows it, while the pack validators
+(`validate-hosted-instrument-pack.mjs`) refuse a symlinked directory and take the real path. The
+capture for a q4 config runs on the same browser (`--browser-channel chrome-beta`). Observers write nothing but their report: the
 producer refuses any stderr output, so the harness echoes the page console only with
 `--verbose`, which no config passes.
 

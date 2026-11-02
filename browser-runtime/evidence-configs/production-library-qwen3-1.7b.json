@@ -12,6 +12,8 @@
     "/Users/a9lim/.drowse-parity/release/qwen3-1.7b/model/model.wasm",
     "--webllm",
     "node_modules/@drowse/web-llm/lib/index.js",
+    "--browser-channel",
+    "chrome-beta",
     "--core-directory",
     "/Users/a9lim/.drowse-parity/release/qwen3-1.7b/core",
     "--context-tokens",

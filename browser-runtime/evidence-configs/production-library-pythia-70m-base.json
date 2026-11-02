@@ -12,6 +12,8 @@
     "/Users/a9lim/.drowse-parity/release/pythia-70m-base/model/model.wasm",
     "--webllm",
     "node_modules/@drowse/web-llm/lib/index.js",
+    "--browser-channel",
+    "chrome-beta",
     "--core-directory",
     "/Users/a9lim/.drowse-parity/release/pythia-70m-base/core",
     "--context-tokens",
