@@ -15,7 +15,6 @@ import {
   outputTokenLimitForRuntime,
 } from "../../../../drowse/webui/src/lib/runtime/outputTokenPolicy";
 import type { GpuAdapterLike } from "./capabilities";
-import type { RankOneHookProgramBuffers } from "./rankOneHookProgram";
 import {
   assertStructuredTapGramsBound,
   STRUCTURED_HOOK_FORMAT,
@@ -724,63 +723,52 @@ export class DrowseWebLlmRuntime {
     assertHookFeaturesSupported(expression, this.hookCapabilities());
   }
 
-  async installHookProgram(
-    program: RankOneHookProgramBuffers | StructuredHookProgramBuffers,
-  ): Promise<void> {
-    if ("affineActive" in program) {
-      if (this.structuredHookProfile === null) {
-        throw runtimeError(
-          "STRUCTURED_HOOK_PROFILE_UNAVAILABLE",
-          "The loaded model library has no attested Drowse buffer profile",
-        );
-      }
-      if (program.format !== this.structuredHookProfile.format) {
-        throw runtimeError(
-          "HOOK_FORMAT_MISMATCH",
-          "The structured steering program format does not match the loaded model library",
-        );
-      }
-      if (program.hookAbi !== this.module.DROWSE_HOOK_ABI) {
-        throw runtimeError(
-          "HOOK_ABI_MISMATCH",
-          "The steering program does not match the loaded Drowse hook ABI",
-        );
-      }
-      if (program.unitMeta !== undefined && this.structuredHookProfile.unitSites !== 1) {
-        throw runtimeError(
-          "UNIT_SITES_UNAVAILABLE",
-          "The loaded model library does not compile Drowse unit sites",
-        );
-      }
-      assertStructuredTapGramsBound(program);
-      const hasCurve = program.curveRank.some((rank) => rank > 0);
-      if (hasCurve && !this.curvedHooks) {
-        throw runtimeError(
-          "CURVED_HOOKS_UNAVAILABLE",
-          "The loaded model library does not expose curved Drowse hooks",
-        );
-      }
-      if (!hasCurve && !this.structuredHooks) {
-        throw runtimeError(
-          "STRUCTURED_HOOKS_UNAVAILABLE",
-          "The loaded model library does not expose structured Drowse hooks",
-        );
-      }
-      if (program.jLensBindingId !== undefined) {
-        await this.ensureJlensDictionaryResident(program.jLensBindingId);
-      }
-      if (program.saeBindingId !== undefined) {
-        await this.ensureSaeDictionaryResident(program.saeBindingId);
-      }
-      await this.requireEngine().setDrowseStructuredProgram(program);
-      return;
+  async installHookProgram(program: StructuredHookProgramBuffers): Promise<void> {
+    if (this.structuredHookProfile === null) {
+      throw runtimeError(
+        "STRUCTURED_HOOK_PROFILE_UNAVAILABLE",
+        "The loaded model library has no attested Drowse buffer profile",
+      );
     }
-    // B5's single-term compile still returns rank-one programs; hook ABI v5 runs
-    // drowse-structured-v4 only.
-    throw runtimeError(
-      "HOOK_FORMAT_MISMATCH",
-      "Hook ABI block-sites-v5 runs drowse-structured-v4 programs only (rank-one programs are gone)",
-    );
+    if (program.format !== this.structuredHookProfile.format) {
+      throw runtimeError(
+        "HOOK_FORMAT_MISMATCH",
+        "The structured steering program format does not match the loaded model library",
+      );
+    }
+    if (program.hookAbi !== this.module.DROWSE_HOOK_ABI) {
+      throw runtimeError(
+        "HOOK_ABI_MISMATCH",
+        "The steering program does not match the loaded Drowse hook ABI",
+      );
+    }
+    if (program.unitMeta !== undefined && this.structuredHookProfile.unitSites !== 1) {
+      throw runtimeError(
+        "UNIT_SITES_UNAVAILABLE",
+        "The loaded model library does not compile Drowse unit sites",
+      );
+    }
+    assertStructuredTapGramsBound(program);
+    const hasCurve = program.curveRank.some((rank) => rank > 0);
+    if (hasCurve && !this.curvedHooks) {
+      throw runtimeError(
+        "CURVED_HOOKS_UNAVAILABLE",
+        "The loaded model library does not expose curved Drowse hooks",
+      );
+    }
+    if (!hasCurve && !this.structuredHooks) {
+      throw runtimeError(
+        "STRUCTURED_HOOKS_UNAVAILABLE",
+        "The loaded model library does not expose structured Drowse hooks",
+      );
+    }
+    if (program.jLensBindingId !== undefined) {
+      await this.ensureJlensDictionaryResident(program.jLensBindingId);
+    }
+    if (program.saeBindingId !== undefined) {
+      await this.ensureSaeDictionaryResident(program.saeBindingId);
+    }
+    await this.requireEngine().setDrowseStructuredProgram(program);
   }
 
   /** Hook ABI v5's attested surface (B1 §3.5), or null when the library predates it. */

@@ -311,7 +311,6 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
         runtimeIdentitySha256: fingerprint,
         layers: event.data.runtimeIdentity.layerMap.length,
         hiddenSize: event.data.runtimeIdentity.hiddenSize,
-        rankOne: hooks.rank_one,
         multiTerm: hooks.multi_term,
         curved: hooks.curved_manifold,
         sae: hooks.sae,

@@ -63,8 +63,8 @@ import type {
   WebLlmGeneratedToken,
   WebLlmGenerationPlan,
   WebLlmGenerationResult,
-  WebLlmHookProgram,
 } from "./webLlmGeneration";
+import type { StructuredHookProgramBuffers } from "./structuredHookProgram";
 
 const CAPTURE_VERSION = 3;
 const FIT_POLICY_VERSION = 1;
@@ -102,7 +102,7 @@ export interface BrowserManifoldFittingContext {
   runtime: BrowserAuthoringRuntimePort;
   onProgress: (event: RuntimeProgressEvent) => void;
   signal: AbortSignal;
-  compileSteering?: (expression: string) => Promise<WebLlmHookProgram>;
+  compileSteering?: (expression: string) => Promise<StructuredHookProgramBuffers>;
 }
 
 interface BrowserFittingCoordinatorPort {

@@ -26,7 +26,6 @@ import type {
   WSSubmitRequest,
   WSTreeMutatedEvent,
 } from "../../../../drowse/webui/src/lib/types";
-import type { RankOneHookProgramBuffers } from "./rankOneHookProgram";
 import type { StructuredHookProgramBuffers } from "./structuredHookProgram";
 import type {
   BrowserInstrumentRuntime,
@@ -79,13 +78,6 @@ function holdsTokens(node: LoomNodeJSON): boolean {
     node.text !== "" || (node.thinking_text ?? "") !== "";
 }
 
-type BrowserHookProgram = RankOneHookProgramBuffers | StructuredHookProgramBuffers;
-
-/** A drowse-structured-v4 program: the only kind a block-sites replay runs. */
-function isStructuredHookProgram(program: BrowserHookProgram): program is StructuredHookProgramBuffers {
-  return (program as StructuredHookProgramBuffers).format === "drowse-structured-v4";
-}
-
 interface GenerationReservation {
   anchorId: string;
   rootId: string | null;
@@ -123,7 +115,7 @@ export interface BrowserLoomOptions {
   compileSteering?: (
     expression: string,
     probeRequests?: readonly ProbeRequest[],
-  ) => Promise<BrowserHookProgram> | BrowserHookProgram;
+  ) => Promise<StructuredHookProgramBuffers> | StructuredHookProgramBuffers;
   steeringDelta?: (parent: string | null, child: string | null) => string;
   /** The installed manifolds bare atoms resolve against (the compiler's), for the `inverted`
    *  regen; without them nothing resolves, as with an empty registry. */
@@ -1564,17 +1556,9 @@ export class BrowserLoomRuntime {
         throw loomError("INVALID_NODE_OPERATION", `Raw token index ${anchor} is outside node ${node.id}`);
       }
       const settings = replaySettings(this.session, node, anchor + 1, options.steered, this.maxOutputTokens);
-      let program: StructuredHookProgramBuffers | null = null;
-      if (settings.steering) {
-        const compiled = await this.compileRequiredSteering(settings.steering);
-        if (!isStructuredHookProgram(compiled)) {
-          throw loomError(
-            "TOKEN_REPLAY_UNAVAILABLE",
-            "The node's steering did not lower to a structured hook program the replay can run",
-          );
-        }
-        program = compiled;
-      }
+      const program = settings.steering
+        ? await this.compileRequiredSteering(settings.steering)
+        : null;
       const raw_ = this.session.is_base_model || options.raw;
       const promptIds = await this.generation.renderPromptTokenIds!({
         input: generationInput({ type: "generate", input: null, raw: raw_ }, this.tree, node.parent_id!, settings.systemPrompt),
@@ -1615,7 +1599,7 @@ export class BrowserLoomRuntime {
   private compileRequiredSteering(
     expression: string,
     probeRequests?: readonly ProbeRequest[],
-  ): Promise<BrowserHookProgram> {
+  ): Promise<StructuredHookProgramBuffers> {
     if (!this.compileSteering) {
       throw loomError(
         "STEERING_COMPILER_UNAVAILABLE",
@@ -1628,7 +1612,7 @@ export class BrowserLoomRuntime {
   private async preflightGenerationSteering(
     expression: string,
     probeRequests?: readonly ProbeRequest[],
-  ): Promise<BrowserHookProgram> {
+  ): Promise<StructuredHookProgramBuffers> {
     const program = await this.compileRequiredSteering(expression, probeRequests);
     const activeRole = activeAssistantRole(program);
     if (activeRole !== null && !this.session.role_substitution_supported) {
@@ -2551,7 +2535,7 @@ function roleLabel(role: ChatRole, sampling: WSSampling | null | undefined): str
   return sampling?.assistant_role?.trim() || null;
 }
 
-function activeAssistantRole(program: BrowserHookProgram | null): string | null {
+function activeAssistantRole(program: StructuredHookProgramBuffers | null): string | null {
   const role = program?.activeRole;
   return typeof role === "string" ? role.trim() || null : null;
 }

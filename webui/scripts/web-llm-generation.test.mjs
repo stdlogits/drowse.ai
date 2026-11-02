@@ -93,19 +93,10 @@ try {
     "/src/hosted/runtime/structuredHookProfile.ts",
   );
 
-  const hookProgram = {
-    hookAbi: "post-block-residual-v4",
-    hiddenSize: 1,
-    layerCount: 1,
-    enabled: Uint32Array.of(1),
-    basis: Float32Array.of(1),
-    neutral: Float32Array.of(0),
-    target: Float32Array.of(1),
-    along: Float32Array.of(0.5),
-    collapse: Float32Array.of(1),
-    probeBasis: Float32Array.of(1),
-    probeNeutral: Float32Array.of(0),
-  };
+  // A pure push: one affine group, no probes, no controls (nothing to read per token).
+  const hookProgram = compileStructuredHookProgram(1, [{
+    affineGroups: [{ active: true, basis: [[1]], neutral: [0], target: [1], along: 0.5, kappa: [1] }],
+  }], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
   assert.equal(tokenAlternativeLimit("http"), HTTP_RETURN_TOP_K_MAX);
   assert.equal(tokenAlternativeLimit("browser"), BROWSER_RETURN_TOP_K_MAX);
   assert.equal(tokenAlternativeLimit("fake"), 0);
@@ -961,7 +952,7 @@ try {
       input: { kind: "raw", prompt: "x" }, steeringExpression: "0.5 deceptive", hookProgram, ...selection,
     }, () => {});
     assert.deepEqual(installed[0].position_spans, [[1, 3], [4, 8]]);
-    assert.equal(installed[0].basis, hookProgram.basis, "span targeting keeps the shared layer tensor");
+    assert.equal(installed[0].affineBasis, hookProgram.affineBasis, "span targeting keeps the shared layer tensor");
     assert.equal(hookProgram.position_spans, undefined, "generation must not mutate the cached compiler program");
   }
   const unsupported = { ...engine, async getDrowseRuntimeCapabilities() {

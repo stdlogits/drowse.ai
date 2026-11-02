@@ -23,7 +23,6 @@ import {
   type BrowserModelLoadResult,
 } from "./modelBackend";
 import { runtimeServiceRoute } from "./operationPolicy";
-import type { RankOneHookProgramBuffers } from "./rankOneHookProgram";
 import type { StructuredHookProgramBuffers } from "./structuredHookProgram";
 import type { SteeringManifoldEntry } from "./steeringExpression";
 import { DrowseWebLlmRuntime, type DrowseWebLlmModule } from "./webLlmEngine";
@@ -59,9 +58,7 @@ export interface BrowserAuthoringRequestContext {
   runtime: DrowseWebLlmRuntimePort;
   onProgress: (event: RuntimeProgressEvent) => void;
   signal: AbortSignal;
-  compileSteering?: (
-    expression: string,
-  ) => Promise<RankOneHookProgramBuffers | StructuredHookProgramBuffers>;
+  compileSteering?: (expression: string) => Promise<StructuredHookProgramBuffers>;
 }
 
 export interface BrowserSteeringCompileContext {
@@ -81,8 +78,7 @@ export interface DrowseWebLlmBackendOptions {
   runtime?: DrowseWebLlmRuntimePort;
   compileSteering?: (
     context: BrowserSteeringCompileContext,
-  ) => Promise<RankOneHookProgramBuffers | StructuredHookProgramBuffers> |
-    RankOneHookProgramBuffers | StructuredHookProgramBuffers;
+  ) => Promise<StructuredHookProgramBuffers> | StructuredHookProgramBuffers;
   steeringDelta?: (context: BrowserSteeringDeltaContext) => string;
   /** The installed manifolds the session's compiler resolves bare atoms against. */
   steeringManifolds?: (loadRequest: BrowserModelLoadRequest) => readonly SteeringManifoldEntry[];

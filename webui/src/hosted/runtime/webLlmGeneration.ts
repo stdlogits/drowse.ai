@@ -9,14 +9,12 @@ import type {
   TokenAltJSON,
   WSSampling,
 } from "../../../../drowse/webui/src/lib/types";
-import type { RankOneHookProgramBuffers } from "./rankOneHookProgram";
 import { aggregateEnvelope, MEASUREMENTS_VERSION, roundReading } from "./measurementRows";
 import { BROWSER_RETURN_TOP_K_MAX, BROWSER_SAMPLING_TOP_K_MAX } from "../../../../drowse/webui/src/lib/runtime/samplingCapabilities";
 import { MAX_OUTPUT_TOKEN_COUNT } from "../../../../drowse/webui/src/lib/runtime/outputTokenPolicy";
 import {
   geometryCoordinateMean,
   createStructuredHookControlEvaluator,
-  STRUCTURED_HOOK_FORMAT,
   type StructuredGeometryMeasurementProbe,
   type StructuredHookControl,
   type StructuredHookProgramBuffers,
@@ -25,8 +23,6 @@ import { isRoleSlug } from "../../../../drowse/webui/src/lib/roleSlug";
 import { normalizeSteeringPositions, type SteeringPositionSelection } from "../../../../drowse/webui/src/lib/runtime/steeringPositions";
 
 export const BROWSER_EXACT_READOUT_TOP_K_CAPACITY = 8;
-
-export type WebLlmHookProgram = RankOneHookProgramBuffers | StructuredHookProgramBuffers;
 
 export type WebLlmChatRole = "system" | "user" | "assistant";
 
@@ -51,7 +47,7 @@ export interface WebLlmGenerationPlan extends SteeringPositionSelection {
   replay?: WebLlmReplayRequest | null;
   readoutTopK?: number;
   steeringExpression?: string | null;
-  hookProgram?: WebLlmHookProgram | null;
+  hookProgram?: StructuredHookProgramBuffers | null;
   measurementSpecialTokenIds?: readonly number[];
   measurementTargetRawIndex?: number;
   measurementStartRawIndex?: number;
@@ -200,7 +196,7 @@ export interface WebLlmGenerationEngine {
 export interface WebLlmGenerationHooks {
   clear(): Promise<void>;
   interrupt(): Promise<void>;
-  install(program: WebLlmHookProgram): Promise<void>;
+  install(program: StructuredHookProgramBuffers): Promise<void>;
   updateControls?(
     affineActive: Uint32Array,
     curveActive: Uint32Array,
@@ -275,7 +271,7 @@ export async function streamWebLlmGeneration(
       ...plan.hookProgram, position_spans: spans, position_indices: undefined,
     } };
   }
-  if (plan.hookProgram && isStructuredProgram(plan.hookProgram)) {
+  if (plan.hookProgram) {
     plan = { ...plan, hookProgram: {
       ...plan.hookProgram,
       affineActive: new Uint32Array(plan.hookProgram.affineActive),
@@ -324,7 +320,7 @@ export async function streamWebLlmGeneration(
     }
   }
   throwIfAborted(plan.signal);
-  const controlEvaluator = plan.hookProgram && isStructuredProgram(plan.hookProgram)
+  const controlEvaluator = plan.hookProgram
     ? createStructuredHookControlEvaluator(plan.hookProgram)
     : null;
   const perTokenControlUpdates = requiresPerTokenControlUpdates(plan.hookProgram);
@@ -334,17 +330,15 @@ export async function streamWebLlmGeneration(
   await hooks.clear();
   try {
     if (plan.hookProgram) {
-      if (isStructuredProgram(plan.hookProgram)) {
-        const controls = controlEvaluator!({
-          prefill: true,
-          thinking: thinking.active,
-          generatedTokens: 0,
-        });
-        plan.hookProgram.affineActive.set(controls.affineActive);
-        plan.hookProgram.curveActive.set(controls.curveActive);
-        if (controls.unitActive !== undefined) {
-          plan.hookProgram.unitActive?.set(controls.unitActive);
-        }
+      const controls = controlEvaluator!({
+        prefill: true,
+        thinking: thinking.active,
+        generatedTokens: 0,
+      });
+      plan.hookProgram.affineActive.set(controls.affineActive);
+      plan.hookProgram.curveActive.set(controls.curveActive);
+      if (controls.unitActive !== undefined) {
+        plan.hookProgram.unitActive?.set(controls.unitActive);
       }
       await hooks.install(plan.hookProgram);
     }
@@ -1033,7 +1027,7 @@ function validateMeasurementPlan(
     );
   }
   const program = plan.hookProgram;
-  if (!program || !isStructuredProgram(program) || program.measurementSchema === undefined) {
+  if (!program || program.measurementSchema === undefined) {
     return;
   }
   const schema = program.measurementSchema;
@@ -1255,7 +1249,7 @@ class AggregateMeasurementSelector {
 }
 
 async function readHookMeasurements(
-  hookProgram: WebLlmHookProgram | null | undefined,
+  hookProgram: StructuredHookProgramBuffers | null | undefined,
   hooks: WebLlmGenerationHooks,
   readoutTopK: number,
   includeDiscoveryReadouts = true,
@@ -1268,9 +1262,7 @@ async function readHookMeasurements(
       saeTopFeatures: undefined,
     };
   }
-  const schema = isStructuredProgram(hookProgram)
-    ? hookProgram.measurementSchema
-    : undefined;
+  const schema = hookProgram.measurementSchema;
   const hasScalarMeasurements = schema?.probes.some((probe) => probe !== null) === true;
   const hasGeometryMeasurements = hasActiveGeometryMeasurements(hookProgram);
   const hasJlensReadout = includeDiscoveryReadouts && schema?.lensReadout === true;
@@ -1329,10 +1321,10 @@ async function readHookMeasurements(
 /** Each tapped unit's reading (`v / S`, the pole of a neuron chosen by the sign of `act`, B1
  *  §2.2), keyed by the unit's name, for unit gates on the next forward. */
 export function unitTapReadings(
-  hookProgram: WebLlmHookProgram | null | undefined,
+  hookProgram: StructuredHookProgramBuffers | null | undefined,
   taps: Float32Array | undefined,
 ): Record<string, number> | undefined {
-  if (!hookProgram || !isStructuredProgram(hookProgram) || taps === undefined) return undefined;
+  if (!hookProgram || taps === undefined) return undefined;
   const schema = hookProgram.measurementSchema?.unitTaps;
   if (schema === undefined) return undefined;
   const readings: Record<string, number> = {};
@@ -1354,7 +1346,7 @@ export function unitTapReadings(
 }
 
 export function measurementEnvelope(
-  hookProgram: WebLlmHookProgram | null | undefined,
+  hookProgram: StructuredHookProgramBuffers | null | undefined,
   values: Float32Array | undefined,
   steering: string | null,
   geometryValues?: Float32Array,
@@ -1364,8 +1356,7 @@ export function measurementEnvelope(
   persistSubspaceCoords = false,
 ): MeasurementsEnvelopeJSON | undefined {
   if (
-    !hookProgram || !isStructuredProgram(hookProgram) ||
-    hookProgram.measurementSchema === undefined ||
+    !hookProgram || hookProgram.measurementSchema === undefined ||
     values === undefined && geometryValues === undefined &&
       jlensTopTokens === undefined && saeTopFeatures === undefined
   ) {
@@ -2182,22 +2173,15 @@ function subspaceTrailError(
   );
 }
 
-function isStructuredProgram(
-  program: WebLlmHookProgram,
-): program is StructuredHookProgramBuffers {
-  return "format" in program && program.format === STRUCTURED_HOOK_FORMAT;
-}
-
 function hasActiveGeometryMeasurements(
-  program: WebLlmHookProgram,
-): program is StructuredHookProgramBuffers {
-  if (!isStructuredProgram(program)) return false;
+  program: StructuredHookProgramBuffers,
+): boolean {
   if (!program.measurementSchema?.geometryProbes?.some((probe) => probe !== null)) return false;
   return program.geometryActive?.some((active) => active === 1) ?? false;
 }
 
 function requiresPerTokenControlUpdates(
-  program: WebLlmHookProgram | null | undefined,
+  program: StructuredHookProgramBuffers | null | undefined,
 ): boolean {
   return structuredControls(program).some((control) =>
     control !== null && control.enabled &&
@@ -2205,7 +2189,7 @@ function requiresPerTokenControlUpdates(
   );
 }
 
-function hasProbeGates(program: WebLlmHookProgram | null | undefined): boolean {
+function hasProbeGates(program: StructuredHookProgramBuffers | null | undefined): boolean {
   return structuredControls(program).some((control) =>
     control !== null && control.enabled && control.gate !== null
   );
@@ -2213,9 +2197,9 @@ function hasProbeGates(program: WebLlmHookProgram | null | undefined): boolean {
 
 /** Every control of a structured program: affine, curve and unit groups alike. */
 function structuredControls(
-  program: WebLlmHookProgram | null | undefined,
+  program: StructuredHookProgramBuffers | null | undefined,
 ): readonly (StructuredHookControl | null)[] {
-  if (!program || !isStructuredProgram(program) || program.controls === undefined) return [];
+  if (!program || program.controls === undefined) return [];
   return [
     ...program.controls.affine,
     ...program.controls.curve,
@@ -2224,9 +2208,9 @@ function structuredControls(
 }
 
 function requiresPerTokenMeasurementReads(
-  program: WebLlmHookProgram | null | undefined,
+  program: StructuredHookProgramBuffers | null | undefined,
 ): boolean {
-  if (!program || !isStructuredProgram(program) || !program.measurementSchema) {
+  if (!program || !program.measurementSchema) {
     return false;
   }
   const schema = program.measurementSchema;
@@ -2237,7 +2221,7 @@ function requiresPerTokenMeasurementReads(
 }
 
 async function updateStructuredControls(
-  program: WebLlmHookProgram | null | undefined,
+  program: StructuredHookProgramBuffers | null | undefined,
   hooks: WebLlmGenerationHooks,
   evaluateControls: ReturnType<typeof createStructuredHookControlEvaluator>,
   generatedTokens: number,
@@ -2245,7 +2229,7 @@ async function updateStructuredControls(
   priorMeasurements: Float32Array | undefined,
   priorScores: Readonly<Record<string, number>> | undefined,
 ): Promise<void> {
-  if (!program || !isStructuredProgram(program) || program.controls === undefined) return;
+  if (!program || program.controls === undefined) return;
   if (!hooks.updateControls) {
     throw generationError(
       "STRUCTURED_CONTROL_UPDATE_UNAVAILABLE",

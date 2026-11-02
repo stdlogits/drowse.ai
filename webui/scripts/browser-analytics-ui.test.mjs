@@ -221,7 +221,7 @@ try {
       { name: "curved", reason: "curved manifold, not one direction" },
       { name: "fan", reason: "multidimensional subspace, not one direction" },
       { name: "feature one", reason: "SAE readout, not a residual direction" },
-      { name: "next hello", reason: "J-lens readout, not a residual direction" },
+      { name: "next hello", reason: "R-lens readout, not a residual direction" },
     ],
   );
   const collidingReadout = {
@@ -234,7 +234,7 @@ try {
       new Map([["local/demo", { info: collidingReadout }]]),
       ["local/demo"],
     ),
-    [{ name: "local/demo", reason: "J-lens readout, not a residual direction" }],
+    [{ name: "local/demo", reason: "R-lens readout, not a residual direction" }],
   );
 
   let probeRoster = [geometry("rank one")];

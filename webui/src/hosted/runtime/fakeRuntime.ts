@@ -32,7 +32,11 @@ import type {
   WSServerMessage,
   WSSubmitRequest,
 } from "../../../../drowse/webui/src/lib/types";
-import { DROWSE_HOOK_ABI, type RankOneHookProgramBuffers } from "./rankOneHookProgram";
+import { STANDARD_STRUCTURED_HOOK_PROFILE_V4 } from "./structuredHookProfile";
+import {
+  compileStructuredHookProgram,
+  type StructuredHookProgramBuffers,
+} from "./structuredHookProgram";
 import { BrowserLoomRuntime, type BrowserGenerationPort } from "./browserLoom";
 import { createFixtureUnitsService } from "./units/fixtureUnits";
 import { aggregateEnvelope, MEASUREMENTS_VERSION, roundReading } from "./measurementRows";
@@ -1302,20 +1306,9 @@ function idlePreparation(): PreparationStatusJSON {
   };
 }
 
-function fixtureHookProgram(): RankOneHookProgramBuffers {
-  return {
-    hookAbi: DROWSE_HOOK_ABI,
-    hiddenSize: 1,
-    layerCount: 1,
-    enabled: new Uint32Array([1]),
-    basis: new Float32Array([1]),
-    neutral: new Float32Array([0]),
-    target: new Float32Array([0]),
-    along: new Float32Array([0]),
-    collapse: new Float32Array([0]),
-    probeBasis: new Float32Array([1]),
-    probeNeutral: new Float32Array([0]),
-  };
+/** An empty one-layer drowse-structured-v4 program: the fake engine never runs it. */
+function fixtureHookProgram(): StructuredHookProgramBuffers {
+  return compileStructuredHookProgram(1, [{}], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
 }
 
 function generationPromptTokens(plan: WebLlmGenerationPlan): number {

@@ -313,7 +313,6 @@ try {
   assert.equal(runtime.vocabularySize(), 16);
   assert.equal(await runtime.decodeTokens([115, 117, 98]), "sub");
   assert.deepEqual(runtime.hookCapabilities(), {
-    rank_one: true,
     multi_term: true,
     projection: true,
     ablation: true,
@@ -1000,7 +999,6 @@ try {
   const instrumentEngine = instrumentRuntime.requireEngine();
 
   assert.deepEqual(instrumentRuntime.hookCapabilities(), {
-    rank_one: true,
     multi_term: true,
     projection: true,
     ablation: true,
