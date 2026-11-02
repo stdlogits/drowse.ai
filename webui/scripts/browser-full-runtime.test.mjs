@@ -88,7 +88,9 @@ test("parses the complete real-browser E2E input contract", () => {
     "--runtime-lock",
     "/tmp/candidate-runtime-lock.json",
     "--headed",
+    "--verbose",
   ]);
+  assert.equal(parsed.verbose, true);
   assert.equal(parsed.contextTokens, 4096);
   assert.equal(parsed.fitLayer, 12);
   assert.equal(parsed.maxTokens, 5);
@@ -117,6 +119,8 @@ test("requires the model and core artifacts and rejects bypass flags", () => {
   assert.equal(bare.jlensDirectory, null);
   assert.equal(bare.saeDirectory, null);
   assert.equal(bare.slensWord, "ocean");
+  // An evidence observer writes only its report: the page console stays off stderr by default.
+  assert.equal(bare.verbose, false);
   assert.throws(
     () => parseBrowserFullRuntimeArguments([...requiredArgs, "--skip-fitting"]),
     /unexpected argument --skip-fitting/,

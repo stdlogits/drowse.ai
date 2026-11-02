@@ -330,7 +330,7 @@ try {
   );
   page.on("console", (message) => {
     const value = message.text();
-    process.stderr.write(`browser ${message.type()}: ${value}\n`);
+    if (options.verbose) process.stderr.write(`browser ${message.type()}: ${value}\n`);
     if (message.type() === "error") errorConsoleMessages.push(value);
     if (isBrowserFullRuntimeWebGpuError(value)) gpuErrors.push(value);
   });

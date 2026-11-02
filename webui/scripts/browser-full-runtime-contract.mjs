@@ -73,6 +73,7 @@ export function parseBrowserFullRuntimeArguments(args) {
     stopMaxTokens: 64,
     timeoutMs: 900_000,
     unitsDirectory: null,
+    verbose: false,
     webLlm: null,
     coreDirectory: null,
     jlensDirectory: null,
@@ -111,11 +112,13 @@ export function parseBrowserFullRuntimeArguments(args) {
   const seen = new Set();
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
-    if (argument === "--headed") {
+    // `--verbose` echoes the page's console to stderr; without it the run writes only its report
+    // (stdout), as the release evidence producer requires of an observer.
+    if (argument === "--headed" || argument === "--verbose") {
       if (seen.has(argument))
         throw new Error(`${argument} may be supplied only once`);
       seen.add(argument);
-      result.headed = true;
+      result[argument.slice(2)] = true;
       continue;
     }
     const field = fields.get(argument);
