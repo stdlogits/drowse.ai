@@ -73,6 +73,8 @@ test("missing instrument actions use the guarded Models route", async ({ page })
     genStatus.active = false;
   }, `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`);
   await recovery.getByRole("button", { name: "Open Models", exact: true }).click();
+  // Models opens once the chat is saved; the shell's heading can show before the route changes.
+  await expect(page).toHaveURL(/[?&]model=qwen3-1\.7b-fixture(&|$)/);
+  await expect(page.getByRole("textbox", { name: /^Compose as / })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Models", exact: true })).toBeVisible();
-  expect(new URL(page.url()).searchParams.get("model")).toBe("qwen3-1.7b-fixture");
 });

@@ -5,7 +5,7 @@ import { extname, join } from "node:path";
 
 // The behaviour half of the old interface policy: what keeps the site's own surfaces usable with a
 // keyboard, a screen reader, zoom and an unreliable runtime. The look (borders, shadows, colour,
-// type, motion) is Ledger's and check-ledger.mjs holds it.
+// type, motion) is Ledger's (its DESIGN.md).
 const root = new URL("..", import.meta.url).pathname;
 const sourceRoots = ["src/hosted", "src/drawers", "src/lib", "hosted", "public-hosted"];
 const textExtensions = new Set([".css", ".html", ".js", ".svelte", ".ts"]);

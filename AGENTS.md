@@ -32,11 +32,11 @@ anything that crosses the runtime seam.
     browser implementations of the seams the shared app imports.
   - `vite.config.ts` — what ad-hoc Vite servers in `scripts/` load when they pass
     no config: the dashboard's own config from the submodule.
-  - `scripts/` — unit tests, release and catalog tooling, evidence recording.
+  - `scripts/` — unit tests, release and catalog tooling.
   - `e2e/` — Playwright specs against the hosted dev and preview servers.
   - `contact-worker/` — separate Cloudflare Worker with its own package.
 - `browser-runtime/` — WebLLM/MLC forks and compiler, the Rust/WASM fitting
-  kernel, runtime and distribution locks, release inputs, evidence schemas.
+  kernel, runtime and distribution locks, release inputs.
   `browser-runtime/README.md` is the reference for artifacts and release.
 - `tests/` — Python tests for the browser-runtime tools (`pytest`, with
   `pip install -e "./drowse[dev]"`).
@@ -64,22 +64,16 @@ topology tests, `verify-mlc-hook.py`). drowse's own tests pin them against the
 engine; regenerate them there, then bump the pin and update the runtime here.
 Browser-only fixtures stay in `browser-runtime/fixtures/`.
 
-## Release provenance
+## Release
 
 Release builds record this repository's exact HEAD as the source revision
 (`drowse-source-url` points at `stdlogits/drowse.ai/tree/<sha>`); the gitlink at
-that commit pins the drowse source. Evidence closures may name files inside the
-submodule (`drowse/drowse/geometry/...`); the tracked-file checks resolve those in
-the submodule's own repository. A submodule bump is a change to executable
-source, so evidence recorded against the previous pin no longer qualifies.
-`./deploy.sh` builds the release from a clean, pushed HEAD, uploads `webui/dist-hosted` to the
-`drowse-web` Pages project with Wrangler and verifies the live site. It skips the runtime-lock and
-distribution gates unless given `--full`, which changes to the runtime, its locks or the pin need
-(it always checks the signed catalog at the distribution lock's URL: runtime v2 reads
-`v2/catalog.json`, so catalog 11 must be published there before such a build ships);
-`--dry-run` stops before the upload. The Cloudflare account is not a9's: deploying needs access
-granted by its owner. The gated process behind it is in
-`browser-runtime/README.md#cloudflare-pages-deployment`.
+that commit pins the drowse source. `./deploy.sh` builds the release from a clean HEAD pushed to
+`main` (`build:hosted:release`: the lock check, the signed catalog at the distribution lock's URL,
+the build and its output checks), uploads `webui/dist-hosted` to the `drowse-web` Pages project
+with Wrangler and verifies the live site; `--dry-run` stops before the upload. The Cloudflare
+account is not a9's: deploying needs access granted by its owner. Publishing models, packs and a
+catalog is `browser-runtime/README.md#release`.
 
 ## Commands
 

@@ -238,18 +238,4 @@ expectFailure(
   /exact required Drowse icons/,
 );
 
-const packageManifest = JSON.parse(
-  await readFile(new URL("../package.json", import.meta.url), "utf8"),
-);
-assert.match(
-  packageManifest.scripts["build:hosted:release"],
-  /^node \.\/scripts\/check-runtime-lock\.mjs --release && node \.\/scripts\/preflight-hosted-distribution\.mjs/,
-  "Hosted release lock validation must run before distribution downloads",
-);
-assert.doesNotMatch(
-  packageManifest.scripts["build:hosted:release"],
-  /release-provenance/,
-  "Hosted releases must not require a Git provenance attestation",
-);
-
 console.log("Hosted release tools passed");

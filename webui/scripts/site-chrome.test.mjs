@@ -1,5 +1,5 @@
 // The hosted shell's chrome: the site header and footer, the help that replaces hover titles, and the
-// saved-chat row's order. The look is Ledger's and is held by check-ledger.mjs; this checks what the
+// saved-chat row's order. The look is Ledger's (its DESIGN.md); this checks what the
 // chrome does.
 import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";

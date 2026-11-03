@@ -2,11 +2,8 @@
 # Deploy drowse.ai to Cloudflare Pages (project drowse-web): build the release from a clean, pushed
 # HEAD, upload it with Wrangler, then verify that the live site serves that revision.
 #
-#   ./deploy.sh            release build and its output checks (and the signed catalog at the
-#                          distribution lock's URL), upload, verify
-#   ./deploy.sh --full     also run the runtime-lock and distribution gates; needed after changes to
-#                          the browser runtime, its locks or the drowse pin. Takes about two hours:
-#                          the distribution preflight downloads and hashes every model artifact (~12 GB)
+#   ./deploy.sh            the release build (the locks, the signed catalog at the distribution
+#                          lock's URL, the build and its output checks), upload, verify
 #   ./deploy.sh --dry-run  build and check only
 #
 # Wrangler is webui/contact-worker's pinned copy. It needs access to the Cloudflare account that
@@ -16,11 +13,9 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-full=0
 dry_run=0
 for arg in "$@"; do
   case "$arg" in
-    --full) full=1 ;;
     --dry-run) dry_run=1 ;;
     *) echo "deploy: unknown argument $arg" >&2; exit 2 ;;
   esac
@@ -55,21 +50,8 @@ fi
 cd webui
 export DROWSE_PUBLIC_ORIGIN=https://drowse.ai
 # The build reads the catalog at the distribution lock's URL (a runtime generation's own path, such
-# as v2/catalog.json), so the signed catalog there must be published before the site points at it.
-# --full's distribution preflight checks it with every artifact; otherwise check the catalog alone.
-if [[ "$full" == 0 ]]; then
-  node ./scripts/preflight-hosted-distribution.mjs --catalog-only
-fi
-if [[ "$full" == 1 ]]; then
-  DROWSE_RELEASE_REVISION="$rev" npm run build:hosted:release
-else
-  # build:hosted:release without its runtime-lock and distribution gates. The Vite config keys
-  # release mode off the npm script's name, and npx would overwrite it, so call Vite directly.
-  npm_lifecycle_event=build:hosted:release ../node_modules/.bin/vite build --config vite.hosted.config.ts
-  node ./scripts/prepare-hosted-release.mjs
-  node ./scripts/check-build-isolation.mjs ./dist-hosted
-  node ./scripts/check-hosted-build.mjs --release
-fi
+# as v2/catalog.json), so build:hosted:release checks the signed catalog there before building.
+npm run build:hosted:release
 
 [[ "$dry_run" == 1 ]] && exit 0
 
