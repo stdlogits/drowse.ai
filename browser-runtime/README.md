@@ -11,7 +11,7 @@ attests; `standard-v4-residual` for GPT-2, Pythia and Qwen3.5 base, with the `un
 unit calls answer), the WebLLM archive `0.2.84-drowse.49`, the fork manifest, compiler recipe
 and LLVM identities. It stays `feasibility-required` until every v5 library's converted revision,
 converted-manifest digest and library digest are filled (`prepare-hosted-candidate-lock.mjs`,
-below); `check-runtime-lock.mjs --release` lists what is still pending. Exact converted-model
+below); `check-runtime-lock.mjs` lists what is still pending. Exact converted-model
 revisions, compiled libraries, package archive, overlay closure, runtime ABI, hook ABI,
 tokenizer, and chat-template identities are bound by digest. The public signed catalog
 contains only immutable packages that match those identities.
@@ -247,8 +247,7 @@ profile, architecture, shapes, context, tokenizer or chat template differ from t
 library lacks its profile's VM functions (or, residual, exports a unit function), or whose
 `mlc-chat-config.json` would make the library attest another block spec than the lock's (the
 derivation mirrors the overlay's `_drowse_block_spec`). It refuses to overwrite an output.
-`--adopt` writes a complete candidate to `runtime-lock.json` as `verified`, with
-`runtime-lock-identity-v1.json` beside it. A candidate lock is also an engineering lock: the
+`--adopt` writes a complete candidate to `runtime-lock.json` as `verified`. A candidate lock is also an engineering lock: the
 capture, whitener and core-pack tools take it with `--runtime-lock`:
 
 ```bash
@@ -262,8 +261,7 @@ npm run validate:hosted:core-pack -- MODEL_ID CORE_DIR --runtime-lock CANDIDATE.
 ```
 
 A capture against a candidate records both the exact-byte and canonical status-free lock
-digests and marks the source as `override`; the parity validator refuses to turn an override
-capture into a release-evidence receipt.
+digests and marks the source as `override`.
 
 Instrument builders can optionally record a corpus closure produced by
 `prepare_hosted_release_corpus.py` for research bookkeeping:
@@ -488,11 +486,7 @@ and a final reload from reopened OPFS files while all HTTP(S) fetches are blocke
 when any phase is absent, reordered, unsupported, unmeasured, or emits a WebGPU/device-loss
 error. There is no `--skip-fitting` mode.
 
-Its JSON is deliberately marked `releaseEvidence: false`: one local desktop
-run is useful physical integration evidence, but it cannot claim Android,
-cross-platform, numeric-parity, or full release-matrix results. Release records
-still go through `record:hosted:evidence` and the revision-bound evidence
-schemas.
+Its JSON reports one local desktop run: a diagnosis of one library, not a release step.
 
 Build the catalog from an exact release spec only after every model and pack has
 an immutable revision. Model directories contain `hosted-artifacts.json`; each
@@ -589,85 +583,27 @@ builds read the root `catalog.json` (sequences up to 10), runtime v2 builds (hoo
 changes what the deployed site reads, and builds of the previous runtime keep working until
 the new one is deployed.
 
-## Release evidence
+## Release
 
-What a hook ABI v5 release records, per library and per pack. Records are made by
-`record-hosted-evidence.mjs` from a clean checkout at the tested revision, through the
-registered producers (`release-evidence-producers.mjs`), each record bound to its producer's
-source closure, its checked-in config (`browser-runtime/evidence-configs/`) and the runtime lock
-identity, and kept under `browser-runtime/evidence/`. A submodule bump is executable source, so
-records made against another drowse pin do not carry.
+1. Compile the libraries with the overlay (`compiler/README.md`) and assemble each
+   (`assemble:hosted:model`). When the overlay, the bridge or the drowse goldens change, run the
+   fixture goldens: `browser-runtime/record-cvm-goldens.py` on the C TVM VM and
+   `webui/scripts/browser-units-goldens.mjs --report` on WebGPU (run it with
+   `--webllm node_modules/@drowse/web-llm/lib/index.js`). They are checks, not records.
+2. Fill a candidate lock from the assembled directories (`prepare:hosted:candidate-lock`, one model
+   at a time with `--base`), rebind the packs and build each core pack against it.
+3. Publish each model's files and core pack (`publish:hosted:model`, `publish:hosted:pack ... core`),
+   then its R, S, units and SAE packs (the publisher runs the pack release policy: full-depth lenses
+   over the pinned corpus, units bound to their lenses, the corpus attribution). Fill each model's
+   `convertedRevision` with its core pack's publish revision (`--converted-revision`; the catalog
+   requires the core to share the model's revision) and adopt the candidate (`--adopt`). Commit.
+4. Build, sign and publish the catalog at the lock's path (`build:hosted:catalog`,
+   `sign-catalog.mjs`, `publish:hosted:catalog`), then set `distribution-lock.json`'s minimum
+   sequence and status. Commit, merge to `main`, run `./deploy.sh`.
 
-Runtime evidence (`runtime-evidence.json`, `runtime-evidence.schema.json` schema 4):
-
-| record | what it shows | observer | per |
-|---|---|---|---|
-| `cVmGoldens` | every units, replay and read golden (block sites, unit ablation incl. `mixed`, unit probes, attention patterns, token anatomy, unit activity, unit/lens/S reads, unit artifacts, neuron push) within its file's tolerance, plus the structured, geometry and readout goldens, on the C TVM VM | `browser-runtime/record-cvm-goldens.py` (runs `verify-mlc-hook.py` twice with the exact toolchain) | the four fixture libraries, one record |
-| `webGpuGoldens` | the same goldens through the vendored bridge on WebGPU (the record's bridge digest must be the lock archive's `package/lib/index.js`, so run it with `--webllm node_modules/@drowse/web-llm/lib/index.js`), and each library's schema-4 descriptor attested by the adapter (`attestCompiledStructuredHookProfile`, unit sites 1); each fixture library and model is recorded by digest | `webui/scripts/browser-units-goldens.mjs --report`, one argument set per library | the four fixture libraries, one record |
-| `productionLibrary` | the production library loaded by the physical harness: its descriptor attested at load against the lock's profile and block spec (a mismatch refuses the load), then every check of its profile, including `units` (an ablation that moves the next-token distribution, finite taps, one anatomy replay, one static read, the S readout) on `standard-v4` or `unit_refusal` (each unit call answers the lock's `unitRefusal`, no unit function exported) on `standard-v4-residual`, at an advertised context | `webui/scripts/browser-full-runtime.mjs` | optional, per lock model (`libraries.<id>.productionLibrary`) |
-| `productionQ4Parity` | q4 against the source weights (B1 §4.3 item 2): hook-disabled greedy parity, probe and capture error ≤ 1%, steering direction cosine ≥ 0.99; on a `standard-v4` library also `act`, `z` and `mid` ≤ 1% per layer, neuron-write static reads ≤ 1e-3 relative with top-8 overlap ≥ 7/8, and top-32 unit activity Jaccard ≥ 0.9 (null on a residual library) | `capture-hosted-residuals.mjs` (capture schema 5) then `validate_mlc_q4_parity.py` | optional, per q4f32_1 model (`libraries.<id>.productionQ4Parity`) |
-
-Offline, before any record: `assemble-hosted-model.mjs` requires each library's VM function
-surface (present and, for a residual library, absent) from the overlay's own lists, and
-`prepare-hosted-candidate-lock.mjs` checks its block spec against its converted configuration.
-
-Per pack, the release gate is the validator under the release policy, which publishing and
-catalog admission both run (`--release` for `jlens`, `slens`, `units`): native R and S lenses at
-full depth on both sites with split halves over the pinned corpus, a units pack covering every
-layer and binding its R and S lenses, S statistics and the core pack's neutral pass, and the
-corpus attribution in every one of them; the core validator requires the 17+1 core concepts and,
-on Gemma 3 and Qwen3, the neutral statistics bound to every context's whitener. The physical
-instrument record (`instrumentIntegration`, `authoring-evidence.json`) loads a model's core,
-lens and SAE packs through the browser loaders.
-
-`authoring-evidence.json` and `benchmark-evidence.json` keep their gates. None of these ledgers
-enables or blocks downloads, generation, fitting or a release build by itself; the release
-transaction below names what does.
-
-The catalog for this release lists the nine v5 libraries. A `standard-v4` model carries its R, S
-and units packs at every advertised context (the catalog builder refuses one without them), a
-residual model none; the first run selects them by default. The UI advertises only context
-profiles physically exercised for each model.
-
-## Release transaction
-
-1. Compile the nine libraries with the v5 overlay (`compiler/README.md`), assemble each
-   (`assemble:hosted:model`), and run the C VM and WebGPU goldens on the four fixture libraries
-   (`record-cvm-goldens.py`, `browser-units-goldens.mjs --report`) as checks. Nothing is recorded
-   yet: every record in the ledger carries the one revision and runtime lock identity it was made
-   at, and both change when the lock is adopted in step 3.
-2. Fill a candidate lock from the assembled directories (`prepare:hosted:candidate-lock`, one
-   model at a time with `--base`), rebind the packs to each new runtime identity
-   (`RUNTIME_LOCK=CANDIDATE.json build-hosted-packs.sh MODEL_ID`) and build each core pack
-   against the candidate. Engineering runs (captures, the physical harness) take the candidate
-   with `--runtime-lock`; their reports are marked `override` and are not release evidence.
-3. Publish each model's converted files and core pack (`publish:hosted:model`,
-   `publish:hosted:pack ... core`, each with `--runtime-lock CANDIDATE.json`), then its R, S and
-   units packs and any SAE pack (the publisher runs the release policy); fill each `convertedRevision` (`--converted-revision`;
-   a later recompile clears it) and adopt the candidate (`--adopt`), which writes
-   `runtime-lock.json` as `verified` and its identity fixture. Commit it.
-4. At that commit, record the runtime gates: `cVmGoldens` and `webGpuGoldens` (re-run through
-   their producers, against the repository lock), then the ledger. A release does not run the
-   physical harness or the q4 capture on every library: the compile's CPU verification
-   (`verify-production-library.py`) and the fixture goldens stand for the libraries, and a
-   problem found in use comes back as an issue. `productionLibrary` and `productionQ4Parity`
-   stay as optional records for diagnosing one library, made the same way when they are made.
-   The attestation verifier refuses a ledger whose records name different revisions, so a record
-   made before the adopting commit cannot be reused; any later commit, a submodule bump
-   included, means recording them again.
-5. Generate and sign the catalog (sequence 11 for this release) and publish it at the lock's
-   `v2/` path (`publish:hosted:catalog`, which first verifies the root catalog the live site
-   reads, sequence 10), fill the exact Hugging Face redirect origins, set
-   `distribution-lock.json`'s minimum sequence and status to `verified`.
-6. Run the release checker and distribution preflight:
-
-   ```bash
-   node webui/scripts/check-runtime-lock.mjs --release
-   node webui/scripts/preflight-hosted-distribution.mjs
-   ```
-
-Authoring, lifecycle and cross-platform runs remain ordinary regression tests and local
-reports; they are not part of the release transaction.
+`browser-full-runtime.mjs` (the physical harness on one real library) and
+`capture-hosted-residuals.mjs` with `validate_mlc_q4_parity.py` (q4 against the source weights) are
+diagnostic tools for one library, run when something looks wrong.
 
 `runtimeIdentitySha256` is SHA-256 over canonical, recursively key-sorted JSON
 for the runtime identity record. A context binding is the same digest over
@@ -687,9 +623,8 @@ directory has nothing there to advance, so the publisher verifies the previous d
 catalog instead (the one deployed builds still read) and requires a greater sequence: catalog 11
 at `v2/` must verify the root's catalog 10 and exceed it. A new directory whose predecessor has
 nothing published is refused; only the root may start without one. `./deploy.sh`
-checks the signed catalog at the lock's URL before every upload (`preflight-hosted-distribution.mjs
---catalog-only`; `--full` runs the whole preflight), so a build never ships pointing at an
-unpublished path. A rotation that cannot sign with the outgoing
+checks the signed catalog at the lock's URL before every upload (`preflight-hosted-distribution.mjs`),
+so a build never ships pointing at an unpublished path. A rotation that cannot sign with the outgoing
 key replaces both keys in the lock and passes the lock the published catalog was
 signed under: `--previous-lock OLD_DISTRIBUTION_LOCK`. Builds with the old lock
 reject the new catalog, so deploy the new build right after publishing.
@@ -730,38 +665,11 @@ contains no credentials.
 
 ### Public release
 
-1. Complete the runtime artifact, signed distribution, and hosted security
-   checks above. Authoring evidence, source ancestry attestations, and a complete
-   physical benchmark matrix are not required.
-2. From the repository root, run `npm ci`, then `npm run build:hosted:release` from
-   `webui`. The release
-   build fails closed unless the locks and distribution preflight pass, emits
-   public indexing policy, and records the exact 40-character source revision.
-3. Upload the resulting `webui/dist-hosted` without rebuilding it to an
-   Access-protected Pages preview. Configure a preview-host-only Cloudflare
-   Response Header Transform Rule that sets `X-Robots-Tag: noindex, nofollow`;
-   do not apply that rule to the production hostname. Provision a scoped Access
-   service token outside the repository and run the candidate check. This
-   verifies release metadata while requiring both Access protection and the
-   externally applied noindex header:
-
-   ```bash
-   npx playwright install chromium
-   export CF_ACCESS_CLIENT_ID=...
-   export CF_ACCESS_CLIENT_SECRET=...
-   npm run verify:hosted:deployment -- https://RELEASE_CANDIDATE_HOST \
-     --channel candidate
-   ```
-
-4. Publish the same byte-identical `dist-hosted` artifact to the production
-   environment and remove Access only from the intended public hostname. Unset
-   the service-token environment variables, then prove the public deployment is
-   anonymously reachable and no longer carries noindex:
-
-   ```bash
-   unset CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET
-   npm run verify:hosted:deployment -- https://RELEASE_HOST --channel release
-   ```
+`./deploy.sh` from a clean `main` that is pushed: it runs `build:hosted:release` (the lock check,
+the signed catalog at the lock's URL, the build and its output checks), uploads
+`webui/dist-hosted` to the `drowse-web` Pages project with Wrangler, and verifies the live site
+anonymously with `verify:hosted:deployment --channel release --revision HEAD`. `--dry-run` stops
+before the upload.
 
 The post-deploy verifier accepts only an HTTPS origin. Preview and candidate
 checks require Access service credentials and prove that the shell's entry

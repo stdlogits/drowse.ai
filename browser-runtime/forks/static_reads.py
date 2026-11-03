@@ -408,7 +408,7 @@ def _check_place(check, tol: dict, label: str, golden: dict, got: dict, row: int
 
 
 def verify_goldens(dev: Device, w: Weights, check, goldens: Path, arch: str, statistics) -> None:
-    block, L = w.block, w.num_layers
+    block = w.block
     d, d_ff = w.embedding.shape[1], block["d_ff"]
     lenses = fixture_lenses(d)
     reader = Reader(dev, w, lenses, statistics)

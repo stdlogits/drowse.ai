@@ -13,7 +13,7 @@ the browser.
 | --- | --- |
 | `drowse/` | Submodule pinned to [stdlogits/drowse](https://github.com/stdlogits/drowse): the shared dashboard source (`drowse/webui/src`), the Python reference implementation, and the parity goldens (`drowse/tests/fixtures/browser`) the browser runtime replays. |
 | `webui/` | The hosted shell (`hosted/`), site-only UI and runtime (`src/`), static assets (`public-hosted/`), build, release, and test scripts (`scripts/`), Playwright specs (`e2e/`), and the `/api/contact` Worker (`contact-worker/`). |
-| `browser-runtime/` | The WebGPU runtime: WebLLM/MLC forks and compiler, the Rust/WASM fitting kernel, runtime and distribution locks, release inputs, and evidence schemas. |
+| `browser-runtime/` | The WebGPU runtime: WebLLM/MLC forks and compiler, the Rust/WASM fitting kernel, runtime and distribution locks, and release inputs. |
 | `tests/` | Python tests for the browser-runtime build and validation tools. |
 
 The hosted Vite config swaps the dashboard's HTTP runtime for the browser one
@@ -56,9 +56,7 @@ git add drowse && git commit -m "bump drowse to <commit>"
 ```
 
 Dependabot proposes the bump weekly. To try an unmerged drowse branch, check it
-out inside `drowse/`; commit only pins that exist on drowse's `main`. A pin
-bump changes executable source, so release evidence recorded against the old
-pin has to be recorded again.
+out inside `drowse/`; commit only pins that exist on drowse's `main`.
 
 ## Browser edition status
 

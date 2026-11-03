@@ -17,7 +17,7 @@
 //   node prepare-hosted-candidate-lock.mjs --adopt CANDIDATE.json
 //
 // writes a complete candidate (no pending field) to browser-runtime/runtime-lock.json as
-// `verified`, with runtime-lock-identity-v1.json beside it.
+// `verified`.
 
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -45,7 +45,6 @@ import {
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const repositoryRuntimeLockPath = resolve(repositoryRoot, "browser-runtime/runtime-lock.json");
-const identityFixturePath = resolve(repositoryRoot, "browser-runtime/runtime-lock-identity-v1.json");
 const forkManifestPath = resolve(repositoryRoot, "browser-runtime/forks/manifest.json");
 const compilerRecipePath = resolve(repositoryRoot, "browser-runtime/compiler/Dockerfile");
 
@@ -197,12 +196,7 @@ async function main() {
     const { value } = await readRuntimeLock(options.adopt);
     const adopted = adoptedRuntimeLock(value);
     await replaceFile(repositoryRuntimeLockPath, `${JSON.stringify(adopted, null, 2)}\n`);
-    const identity = runtimeLockIdentitySha256(adopted);
-    await replaceFile(
-      identityFixturePath,
-      `${JSON.stringify({ schemaVersion: 1, runtimeLockIdentitySha256: identity }, null, 2)}\n`,
-    );
-    console.log(JSON.stringify({ adopted: repositoryRuntimeLockPath, runtimeLockIdentitySha256: identity }));
+    console.log(JSON.stringify({ adopted: repositoryRuntimeLockPath, runtimeLockIdentitySha256: runtimeLockIdentitySha256(adopted) }));
     return;
   }
   await requireMissing(options.outputPath);
