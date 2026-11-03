@@ -1,4 +1,5 @@
 import {
+  rejectingBlockSitesBackend,
   type BrowserModelLoadRequest,
   type BrowserModelBackend,
 } from "./modelBackend";
@@ -12,6 +13,7 @@ import { DrowseWebLlmBackend } from "./drowseWebLlmBackend";
 import { DrowseWebLlmRuntime, type DrowseWebLlmModule } from "./webLlmEngine";
 import { BrowserInstrumentRuntime } from "./browserInstrumentRuntime";
 import { browserArtifactProducer } from "./buildProvenance";
+import type { LensBand } from "./units/lensReads";
 
 export const BROWSER_MODEL_BACKEND_INTEGRATED = true;
 
@@ -84,17 +86,18 @@ export async function prepareBrowserInstrumentDictionaries(
     reportLoadProgress(
       request,
       "jlens_dictionary_uploading",
-      "Loading J-lens insights onto the GPU",
+      "Loading the R lens onto the GPU",
     );
     await runtime.warmJlensDictionary();
     request.signal.throwIfAborted();
-    reportLoadProgress(request, "jlens_dictionary_ready", "J-lens insights ready");
+    reportLoadProgress(request, "jlens_dictionary_ready", "R lens ready");
   }
 }
 
 export function createLazyBrowserModelBackend(
   loadModule: () => Promise<DrowseWebLlmModule>,
   artifacts: BrowserManifoldArtifactPort,
+  options: BrowserModelBackendOptions = {},
 ): BrowserModelBackend {
   let backend: BrowserModelBackend | null = null;
   let pending: Promise<BrowserModelBackend> | null = null;
@@ -103,7 +106,7 @@ export function createLazyBrowserModelBackend(
     if (pending !== null) return pending;
     pending = loadModule()
       .then((module) => {
-        backend = createDrowseBrowserModelBackend(module, artifacts);
+        backend = createDrowseBrowserModelBackend(module, artifacts, options);
         return backend;
       })
       .catch((error) => {
@@ -133,12 +136,30 @@ export function createLazyBrowserModelBackend(
       if (backend !== null) await backend.stop(reason);
       else if (pending !== null) await (await pending).stop(reason);
     },
+    blockSites() {
+      return backend?.blockSites() ?? notLoadedBlockSites;
+    },
   };
+}
+
+const notLoadedBlockSites = rejectingBlockSitesBackend(() =>
+  Object.assign(new Error("No browser model session is loaded"), {
+    code: "MODEL_NOT_LOADED",
+    status: 409,
+    recoverable: true,
+  }),
+);
+
+/** Backend options a harness sets; the app passes none. */
+export interface BrowserModelBackendOptions {
+  /** The S→R crossover band of the units reads (native `session.lens.band`; default 0.15–0.35). */
+  readonly lensBand?: LensBand;
 }
 
 export function createDrowseBrowserModelBackend(
   module: DrowseWebLlmModule,
   artifacts: BrowserManifoldArtifactPort,
+  options: BrowserModelBackendOptions = {},
 ): BrowserModelBackend {
   const producer = browserArtifactProducer();
   const runtime = new DrowseWebLlmRuntime(module);
@@ -180,6 +201,19 @@ export function createDrowseBrowserModelBackend(
     loadRequest: BrowserModelLoadRequest,
   ): Promise<BrowserFeasibilityCorePackCompiler> => {
     return (await compilerEntryFor(loadRequest)).compiler;
+  };
+  /** The compiler a loaded session already holds, for the loom's synchronous reads. */
+  const loadedCompiler = (
+    loadRequest: BrowserModelLoadRequest,
+  ): BrowserFeasibilityCorePackCompiler => {
+    const cached = loadRequest === activeLoadRequest ? activeCompiler : compilers.get(loadRequest);
+    if (!cached) {
+      throw backendError(
+        "STEERING_COMPILER_UNAVAILABLE",
+        "The verified core pack has not been loaded for this browser session",
+      );
+    }
+    return cached.compiler;
   };
   const refreshCompiler = async (
     loadRequest: BrowserModelLoadRequest,
@@ -226,6 +260,7 @@ export function createDrowseBrowserModelBackend(
           (profile) => profile.contextTokens === loadRequest.contextTokens,
         )?.bindingSha256 ?? null,
         false,
+        options.lensBand,
       );
       activeLoadRequest = loadRequest;
       activeCompiler = entry;
@@ -241,7 +276,10 @@ export function createDrowseBrowserModelBackend(
     },
     async compileSteering({ expression, loadRequest, probeRequests }) {
       const compiler = await compilerFor(loadRequest);
+      // What the synchronous compile reads off the device first: `jlens/` words, and through the
+      // unit source each `neuron/` push's write and each `slens/` atom (and probe) direction.
       await compiler.prepareJlensSelectors(expression, runtime);
+      await compiler.prepareUnitSelectors(expression);
       if (probeRequests !== undefined) {
         const words = probeRequests.flatMap((request) => {
           const selector = request.selector.trim();
@@ -250,18 +288,15 @@ export function createDrowseBrowserModelBackend(
             : [];
         });
         await compiler.prepareJlensWords(words, runtime);
+        for (const request of probeRequests) await compiler.prepareUnitProbe(request.selector);
       }
       return compiler.compileForGeneration(expression, probeRequests);
     },
     steeringDelta({ parent, child, loadRequest }) {
-      const cached = loadRequest === activeLoadRequest ? activeCompiler : compilers.get(loadRequest);
-      if (!cached) {
-        throw backendError(
-          "STEERING_COMPILER_UNAVAILABLE",
-          "The verified core pack has not been loaded for this browser session",
-        );
-      }
-      return cached.compiler.steeringDelta(parent, child);
+      return loadedCompiler(loadRequest).steeringDelta(parent, child);
+    },
+    steeringManifolds(loadRequest) {
+      return loadedCompiler(loadRequest).steeringManifolds();
     },
     authoringRequest(context) {
       fitting ??= new BrowserManifoldFitting(artifacts, producer, {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
-import { siteDescription, siteAccent, socialImagePath, socialImageType, socialImageAlt, publicOrigin, discoveryMetadata, pageDiscoveryMetadata, projectOwner } from "./site-metadata.mjs";
+import { siteDescription, siteAccent, themeColors, socialImagePath, socialImageType, socialImageAlt, publicOrigin, discoveryMetadata, pageDiscoveryMetadata, projectOwner } from "./site-metadata.mjs";
 
 function readJsonLd(html) {
   const scriptStart = '<script type="application/ld+json">';
@@ -46,27 +46,28 @@ test("prerendered pages get their own canonical URL and WebPage data", () => {
   assert.deepEqual(page.isPartOf, { "@id": "https://drowse.example/#website" });
 });
 
-test("SEO and social metadata use the requested description and Drowse lavender", async () => {
+test("SEO and social metadata use the requested description and Ledger's colours", async () => {
   assert.equal(siteDescription, "Open-source, fully local LLM interpretability workbench in your browser. Inspect token predictions and steer a model's internal activity.");
   assert.ok(siteDescription.length <= 160, "search snippets truncate longer descriptions");
   assert.doesNotMatch(siteDescription, /an LLMs|fully[^.]*fully/);
-  assert.equal(siteAccent, "#c5b3ff");
   assert.ok((await readFile("../drowse/webui/index.html", "utf8")).includes(`name="description" content="${siteDescription}"`), "the Python dashboard's index.html must use the shared description");
   assert.ok((await readFile("hosted/index.html", "utf8")).includes('content="__DROWSE_HOSTED_DESCRIPTION__"'));
-  assert.ok((await readFile("../drowse/webui/src/lib/style/tokens.css", "utf8")).includes(`--accent: ${siteAccent};`));
-  assert.ok(socialImagePath.startsWith("/social/drowse.jpg?v=shader-orb"));
-  assert.equal(socialImageType, "image/jpeg");
-  assert.match(socialImageAlt, /shader orb/);
-  // The SVG source of the artwork ships only with the dashboard; the hosted site publishes rasters.
-  await assert.rejects(readFile("public-hosted/social/drowse.svg"), { code: "ENOENT" });
-  for (const root of ["../drowse/webui/public"]) {
-    const artwork = await readFile(`${root}/social/drowse.svg`, "utf8");
-    assert.deepEqual([...artwork.matchAll(/<text\b[^>]*>([^<]*)<\/text>/g)].map(match => match[1]), ["Drowse", "Interpretability Workbench"]);
-    assert.match(artwork, /fill="#ffffff">Drowse<\/text>/);
-    assert.match(artwork, /font-family="DrowseText, sans-serif"[^>]*>Interpretability Workbench<\/text>/);
-    assert.ok(artwork.includes('<image href="data:image/png;base64,'));
-    assert.ok(artwork.includes("data:font/woff2;base64,"));
-  }
+  // The brand colour is the depth accent where the mark's ramp starts; the browser chrome is paper.
+  const tokens = await readFile("../node_modules/@stdlogits/ledger/src/styles/tokens.css", "utf8");
+  const light = tokens.slice(tokens.indexOf(":root {"), tokens.indexOf("}", tokens.indexOf(":root {")));
+  const dark = tokens.slice(tokens.indexOf(':root[data-theme="dark"] {'), tokens.indexOf("}", tokens.indexOf(':root[data-theme="dark"] {')));
+  const token = (body, name) => body.match(new RegExp(`${name}:\\s*(#[0-9a-f]{6});`, "i"))?.[1].toLowerCase();
+  assert.equal(siteAccent, token(light, "--deep"));
+  assert.deepEqual(themeColors, { light: token(light, "--paper"), dark: token(dark, "--paper") });
+  assert.ok((await readFile("../drowse/webui/public/favicon.svg", "utf8")).includes(`stop-color: ${siteAccent}`), "the mark's ramp starts at the brand colour");
+  // The link card is drowse's, byte for byte: drawn in Ledger by drowse's scripts/social-card.mjs, whose
+  // HTML carries the alt text. The site serves the PNG (a flat card is smaller and sharper as PNG).
+  assert.equal(socialImagePath, "/social/drowse.png?v=ledger-card");
+  assert.equal(socialImageType, "image/png");
+  const card = await readFile("../drowse/webui/scripts/social-card.html", "utf8");
+  const cardAlt = card.match(/Alt text: "([^"]+)"/)?.[1].replace(/\s+/g, " ");
+  assert.equal(socialImageAlt, cardAlt, "the alt text is the card's own");
+  await assert.rejects(readFile("public-hosted/social/drowse.jpg"), { code: "ENOENT" }, "one share image");
   assert.deepEqual(await readFile("../drowse/webui/public/social/drowse.png"), await readFile("public-hosted/social/drowse.png"));
 });
 
@@ -78,13 +79,22 @@ test("social preview and icon assets have the declared PNG dimensions", async ()
   };
   for (const root of ["../drowse/webui/public", "public-hosted"]) {
     assert.deepEqual(await dimensions(`${root}/social/drowse.png`), [1200, 630]);
-    assert.deepEqual(await dimensions(`${root}/icons/tab-home.png`), [96, 96]);
     assert.deepEqual(await dimensions(`${root}/icons/apple-touch-icon.png`), [180, 180]);
+    assert.deepEqual(await dimensions(`${root}/icons/drowse-192.png`), [192, 192]);
+    assert.deepEqual(await dimensions(`${root}/icons/drowse-512.png`), [512, 512]);
+    assert.deepEqual(await dimensions(`${root}/icons/drowse-maskable-512.png`), [512, 512]);
   }
-  const jpeg = await readFile("public-hosted/social/drowse.jpg");
-  assert.deepEqual([...jpeg.subarray(0, 3)], [0xff, 0xd8, 0xff], "share image must be a JPEG");
-  assert.ok(jpeg.byteLength < 200 * 1024, `share image is ${jpeg.byteLength} bytes`);
-  let offset = 2;
-  while (offset < jpeg.byteLength && !(jpeg[offset + 1] >= 0xc0 && jpeg[offset + 1] <= 0xc3)) offset += 2 + jpeg.readUInt16BE(offset + 2);
-  assert.deepEqual([jpeg.readUInt16BE(offset + 7), jpeg.readUInt16BE(offset + 5)], [1200, 630]);
+  // The brand set is drowse's, byte for byte: the closed eye on the depth ramp.
+  for (const file of ["favicon.svg", "favicon.ico", "icons/apple-touch-icon.png", "icons/drowse-192.png", "icons/drowse-512.png", "icons/drowse-maskable-512.png"]) {
+    assert.deepEqual(await readFile(`public-hosted/${file}`), await readFile(`../drowse/webui/public/${file}`), `${file} matches drowse`);
+  }
+  const ico = await readFile("public-hosted/favicon.ico");
+  assert.deepEqual([ico.readUInt16LE(0), ico.readUInt16LE(2)], [0, 1], "favicon.ico is an icon resource");
+  const sizes = Array.from({ length: ico.readUInt16LE(4) }, (_, i) => ico[6 + i * 16] || 256);
+  assert.ok(sizes.includes(16) && sizes.includes(32), `favicon.ico carries 16 and 32 px (has ${sizes.join(", ")})`);
+  const index = await readFile("hosted/index.html", "utf8");
+  for (const link of ['<link rel="icon" href="/favicon.ico" sizes="32x32" />', '<link rel="icon" type="image/svg+xml" href="/favicon.svg" />', '<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />']) {
+    assert.ok(index.includes(link), `hosted index links ${link}`);
+  }
+  await assert.rejects(readFile("public-hosted/icons/tab-home.png"), { code: "ENOENT" }, "tab icons are gone with tab identity");
 });

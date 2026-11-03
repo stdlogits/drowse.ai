@@ -2,9 +2,13 @@ import { readdir, readFile } from "node:fs/promises";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "src");
-// The shared dashboard source declares the theme tokens the hosted shell reads.
-const dashboardRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "drowse", "webui", "src");
+const webuiRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+// The hosted shell's own sources: src/ and the Vite root's hosted/ (main.ts, site.css).
+const sourceRoots = [resolve(webuiRoot, "src"), resolve(webuiRoot, "hosted")];
+// Ledger declares its tokens (and its pieces their own) in the package, installed at the workspace
+// root; the shared dashboard declares its own (drowse.css). Both count as declared.
+const ledgerRoot = resolve(webuiRoot, "..", "node_modules", "@stdlogits", "ledger", "src");
+const dashboardRoot = resolve(webuiRoot, "..", "drowse", "webui", "src");
 const sourceExtensions = new Set([".css", ".svelte", ".ts"]);
 
 async function sourceFiles(directory) {
@@ -24,27 +28,30 @@ async function sourceFiles(directory) {
 const declarations = new Map();
 const references = new Map();
 
-for (const path of await sourceFiles(dashboardRoot)) {
-  const source = await readFile(path, "utf8");
-  for (const match of source.matchAll(/(--[a-zA-Z0-9_-]+)\s*:/g)) {
-    declarations.set(match[1], `drowse:${path.slice(dashboardRoot.length + 1)}`);
+for (const [root, prefix] of [[ledgerRoot, "@stdlogits/ledger/"], [dashboardRoot, "drowse:"]]) {
+  for (const path of await sourceFiles(root)) {
+    for (const match of (await readFile(path, "utf8")).matchAll(/(--[a-zA-Z0-9_-]+)\s*:/g)) {
+      declarations.set(match[1], `${prefix}${path.slice(root.length + 1)}`);
+    }
   }
 }
 
-for (const path of await sourceFiles(sourceRoot)) {
-  const source = await readFile(path, "utf8");
-  const relative = path.slice(sourceRoot.length + 1);
+for (const root of sourceRoots) {
+  for (const path of await sourceFiles(root)) {
+    const source = await readFile(path, "utf8");
+    const relative = path.slice(webuiRoot.length + 1);
 
-  for (const match of source.matchAll(/(--[a-zA-Z0-9_-]+)\s*:/g)) {
-    declarations.set(match[1], relative);
-  }
-  for (const match of source.matchAll(/style:(--[a-zA-Z0-9_-]+)\s*=/g)) {
-    declarations.set(match[1], relative);
-  }
-  for (const match of source.matchAll(/var\(\s*(--[a-zA-Z0-9_-]+)/g)) {
-    const locations = references.get(match[1]) ?? new Set();
-    locations.add(relative);
-    references.set(match[1], locations);
+    for (const match of source.matchAll(/(--[a-zA-Z0-9_-]+)\s*:/g)) {
+      declarations.set(match[1], relative);
+    }
+    for (const match of source.matchAll(/style:(--[a-zA-Z0-9_-]+)\s*=/g)) {
+      declarations.set(match[1], relative);
+    }
+    for (const match of source.matchAll(/var\(\s*(--[a-zA-Z0-9_-]+)/g)) {
+      const locations = references.get(match[1]) ?? new Set();
+      locations.add(relative);
+      references.set(match[1], locations);
+    }
   }
 }
 

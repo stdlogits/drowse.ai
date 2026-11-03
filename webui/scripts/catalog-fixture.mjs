@@ -65,7 +65,7 @@ export function catalogFixture(overrides = {}) {
       variants: [{
         id: "smollm2-360m-q4f16",
         tier: "fastest",
-        structuredHookProfile: "standard-v1",
+        structuredHookProfile: "standard-v4",
         thinkingProfile: null,
         contextProfiles: [{
           contextTokens: 2048,
@@ -81,10 +81,12 @@ export function catalogFixture(overrides = {}) {
         requirements: {
           features: ["shader-f16"],
           limits: {
-            maxBufferSize: 245_760,
-            maxStorageBufferBindingSize: 245_760,
+            maxBufferSize: 737_280,
+            maxStorageBufferBindingSize: 737_280,
             maxStorageBuffersPerShaderStage: 10,
             maxComputeWorkgroupStorageSize: 32_768,
+            maxComputeWorkgroupSizeX: 256,
+            maxComputeInvocationsPerWorkgroup: 256,
           },
         },
         runtimeIdentity,
@@ -128,6 +130,25 @@ export function catalogBytes(overrides = {}) {
   return new TextEncoder().encode(JSON.stringify(catalogFixture(overrides)));
 }
 
+/** A Qwen3-shaped block spec the fixture's standard-v4 lock entries record. */
+export const FIXTURE_BLOCK_SPEC = Object.freeze({
+  dFF: 8, nHeads: 2, nKvHeads: 1, headDim: 2, sandwich: false, normOffset: 0, activation: "silu",
+  embedScale: 1, rmsEps: 1e-6, qkNorm: true, attnScaling: 0.5, attnLogitSoftcap: null,
+  finalLogitSoftcap: null, ropeTheta: 10000, ropeLocalTheta: null, ropeGlobalScale: 1,
+  ropeInGraph: true, slidingWindow: null, slidingPattern: null,
+});
+
+/** The lock entry's block sites for a fixture variant: a standard-v4 library's block spec, a
+ *  residual one's unit refusal. */
+/** What the fixture lock records about a variant's library: its block spec (standard-v4) or
+ *  unit refusal (residual), and its compiled prefill chunk (the variant's smallest context). */
+export function fixtureLibraryContract(variant) {
+  const prefillChunkSize = Math.min(...variant.contextProfiles.map((profile) => profile.contextTokens));
+  return variant.structuredHookProfile === "standard-v4"
+    ? { blockSpec: { ...FIXTURE_BLOCK_SPEC }, unitRefusal: null, prefillChunkSize }
+    : { blockSpec: null, unitRefusal: "fixture blocks are not described", prefillChunkSize };
+}
+
 export function catalogRuntimeLockModels(document = catalogFixture()) {
   return document.models.flatMap((model) => model.variants.map((variant) => ({
     runtimeIdentity: structuredClone(variant.runtimeIdentity),
@@ -136,6 +157,7 @@ export function catalogRuntimeLockModels(document = catalogFixture()) {
     convertedRepository: "a9lim/drowse-web-fixture",
     convertedRevision: FIXTURE_REVISION,
     contextProfiles: variant.contextProfiles.map((profile) => profile.contextTokens),
+    ...fixtureLibraryContract(variant),
   })));
 }
 

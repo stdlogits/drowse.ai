@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { readRuntimeLock } from "./runtime-lock-document.mjs";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createReadStream } from "node:fs";
@@ -21,17 +22,29 @@ const allowedSidecars = new Set([
   "hosted-artifacts.json",
 ]);
 
+const USAGE = "usage: node publish-hosted-model.mjs MODEL_ID DIRECTORY [--runtime-lock CANDIDATE.json] [--upload]";
+
+/** `--runtime-lock` names a candidate lock (prepare-hosted-candidate-lock.mjs): a v5 library is
+ *  published before its revision is in the repository lock. */
 export function parseArguments(args) {
-  const upload = args.includes("--upload");
-  const values = args.filter((value) => value !== "--upload");
-  if (values.length !== 2 || args.some((value) => value.startsWith("--") && value !== "--upload")) {
-    throw new Error("usage: node publish-hosted-model.mjs MODEL_ID DIRECTORY [--upload]");
+  const values = [];
+  let upload = false;
+  let runtimeLock = null;
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--upload") upload = true;
+    else if (args[index] === "--runtime-lock") {
+      const value = args[++index];
+      if (!value || value.startsWith("--") || runtimeLock !== null) throw new Error(USAGE);
+      runtimeLock = resolve(value);
+    } else if (args[index].startsWith("--")) throw new Error(USAGE);
+    else values.push(args[index]);
   }
-  return { modelId: values[0], directory: resolve(values[1]), upload };
+  if (values.length !== 2) throw new Error(USAGE);
+  return { modelId: values[0], directory: resolve(values[1]), upload, runtimeLock };
 }
 
 export async function validatePublishDirectory(directory, model, runtime, {
-  allowLegacyBranding = false, allowStaleToolchain = false,
+  allowStaleToolchain = false,
 } = {}) {
   await requireDirectory(directory);
   const manifest = JSON.parse(await readFile(resolve(directory, "hosted-artifacts.json"), "utf8"));
@@ -48,14 +61,10 @@ export async function validatePublishDirectory(directory, model, runtime, {
     ...("modelType" in manifest ? ["modelType"] : []),
   ];
   const hookProfile = structuredHookProfile(manifest.structuredHookProfile);
-  const legacyBrand = allowLegacyBranding && runtime.runtimeAbi === "drowse-web-runtime-v1"
-    ? ["saklas", "polythetic"].find((brand) => manifest.runtimeAbi === `${brand}-web-runtime-v1`)
-    : undefined;
-  const expectedRuntime = legacyBrand === undefined ? runtime : { ...runtime, runtimeAbi: manifest.runtimeAbi };
   thinkingProfile(manifest.thinkingProfile);
   if (
     Object.keys(manifest).sort().join("\0") !== manifestKeys.sort().join("\0") ||
-    manifest.runtimeAbi !== expectedRuntime.runtimeAbi || manifest.hookAbi !== runtime.hookAbi ||
+    manifest.runtimeAbi !== runtime.runtimeAbi || manifest.hookAbi !== runtime.hookAbi ||
     hookProfile !== model.structuredHookProfile ||
     (manifest.modelType ?? "chat") !== (model.modelType ?? "chat") ||
     !sameThinkingProfile(manifest.thinkingProfile, model.thinkingProfile)
@@ -67,8 +76,8 @@ export async function validatePublishDirectory(directory, model, runtime, {
     !Array.isArray(contextProfiles) || contextProfiles.length === 0 ||
     contextProfiles.some((value) => !Number.isSafeInteger(value) || value < 1) ||
     manifest.contextWindowSize !== Math.max(...contextProfiles) ||
-    !Number.isSafeInteger(manifest.prefillChunkSize) || manifest.prefillChunkSize < 1 ||
-    manifest.prefillChunkSize > manifest.contextWindowSize
+    // The library's compiled prefill chunk is the lock's (its descriptor attests it).
+    manifest.prefillChunkSize !== model.prefillChunkSize
   ) {
     throw new Error("hosted model context configuration differs from the runtime lock");
   }
@@ -100,7 +109,7 @@ export async function validatePublishDirectory(directory, model, runtime, {
   ) {
     throw new Error("hosted model metadata differs from the runtime lock");
   }
-  await validateRuntimeMetadata(directory, manifest, model, expectedRuntime, legacyBrand ?? "drowse", allowStaleToolchain);
+  await validateRuntimeMetadata(directory, manifest, model, runtime, allowStaleToolchain);
   const declared = new Set(manifest.files.map((file) => file.path));
   const entries = [];
   for await (const entry of await opendir(directory)) entries.push(entry);
@@ -128,11 +137,11 @@ export async function validatePublishDirectory(directory, model, runtime, {
   return manifest;
 }
 
-async function validateRuntimeMetadata(directory, manifest, model, runtime, brand, allowStaleToolchain) {
+async function validateRuntimeMetadata(directory, manifest, model, runtime, allowStaleToolchain) {
   const [config, tensorCache, build] = await Promise.all([
     readFile(resolve(directory, "mlc-chat-config.json"), "utf8").then(JSON.parse),
     readFile(resolve(directory, "tensor-cache.json"), "utf8").then(JSON.parse),
-    readFile(resolve(directory, `${brand}-build.json`), "utf8").then(JSON.parse),
+    readFile(resolve(directory, "drowse-build.json"), "utf8").then(JSON.parse),
   ]);
   const configModel = config.model_config;
   const configModelShape = configModel?.text_config ?? configModel;
@@ -217,7 +226,7 @@ async function validateRuntimeMetadata(directory, manifest, model, runtime, bran
 
 async function main() {
   const options = parseArguments(process.argv.slice(2));
-  const runtimeLock = JSON.parse(await readFile(runtimeLockUrl, "utf8"));
+  const { value: runtimeLock } = await readRuntimeLock(options.runtimeLock ?? fileURLToPath(runtimeLockUrl));
   const model = runtimeLock.models?.find((candidate) => candidate.id === options.modelId);
   if (!model) throw new Error(`unknown runtime model: ${options.modelId}`);
   const manifest = await validatePublishDirectory(options.directory, model, runtimeLock);

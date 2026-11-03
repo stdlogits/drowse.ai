@@ -9,8 +9,10 @@ export const EXACT_READOUT_REQUIRED_WEBGPU_LIMITS = Object.freeze({
     EXACT_READOUT_MIN_COMPUTE_INVOCATIONS_PER_WORKGROUP,
 } as const);
 
+/** A hook ABI v5 capacity profile (B1 §3.5): `standard-v4` (unit sites) or
+ *  `standard-v4-residual`, whose library attests `unitSites: 0` and every unit capacity 0. */
 export interface StructuredHookCapacityProfile {
-  readonly id: StructuredHookProfileId;
+  readonly id: BlockSitesProfileId;
   readonly maxAffineGroups: number;
   readonly maxRank: number;
   readonly maxProbes: number;
@@ -30,6 +32,18 @@ export interface StructuredHookCapacityProfile {
   readonly geometryKernelStorageBindings: number;
   readonly geometryHeaderStride: number;
   readonly maxComputeWorkgroupStorageSize: number;
+  readonly unitSites: 0 | 1;
+  readonly maxUnitGroups: number;
+  readonly maxNeuronAblations: number;
+  readonly maxHeadAblations: number;
+  readonly maxUnitTaps: number;
+  readonly maxHeadTaps: number;
+  readonly maxActivityTraces: number;
+  readonly maxActivitySpans: number;
+  readonly maxPatternLayers: number;
+  readonly maxPatternHeads: number;
+  readonly maxLensReadTopK: number;
+  readonly maxAnatomyUnits: number;
 }
 
 export interface StructuredHookMemoryRequirements {
@@ -44,59 +58,101 @@ export interface StructuredHookMemoryRequirements {
   readonly geometryPayloadBytes: number;
 }
 
-export const STANDARD_STRUCTURED_HOOK_PROFILE: StructuredHookCapacityProfile =
+// ------------------------------------------------------------ hook ABI v5 ---
+// B1-hook-abi-v5.md §3.5 and §8.1; browser-runtime/HOOK_ABI.md is the contract.
+
+/** Hook ABI of every v5 library (B1 §8.1): in-block unit sites, replay, static reads. */
+export const BLOCK_SITES_HOOK_ABI = "block-sites-v5" as const;
+/** Runtime ABI of the v5 WebLLM bridge (B1 §8.1). */
+export const BLOCK_SITES_RUNTIME_ABI = "drowse-web-runtime-v2" as const;
+/** Readout ABI of every v5 library (B1 §8.1, §4.1): lens reads at both sites, k ≤ 256. */
+export const BLOCK_SITES_EXACT_READOUT_ABI = "exact-readout-v2" as const;
+
+export type BlockSitesProfileId = Extract<
+  StructuredHookProfileId,
+  "standard-v4" | "standard-v4-residual"
+>;
+
+/** `UNIT_POSITIONS_FROM`: rows whose producing position is below it are excluded from unit
+ *  ablation and activity (the sink at 0; unproduced rows below 0). B1 §2.3, §3.1. */
+export const UNIT_POSITIONS_FROM = 1;
+/** Storage bindings every drowse kernel's emitted WGSL stays within (B1 §2.4). */
+export const DROWSE_KERNEL_STORAGE_BINDINGS = 8;
+
+/** The steering, probe and geometry capacities both v5 profiles share (unchanged since the v4
+ *  ABI's geometry profile). */
+const STRUCTURED_HOOK_CAPACITIES = Object.freeze({
+  maxAffineGroups: 4,
+  maxRank: 8,
+  maxProbes: 8,
+  maxCurves: 4,
+  maxCurveNodes: 32,
+  maxIntrinsicDim: 4,
+  maxEmbedDim: 8,
+  maxGeometryProbes: 8,
+  maxWhitenerRank: 96,
+  maxGeometryCandidates: 33,
+  geometryOutputStride: 41,
+  geometryFootRestarts: 3,
+  geometryFootIterations: 12,
+  geometryWarmRestarts: 2,
+  geometryWarmIterations: 4,
+  requiredMaxStorageBuffersPerShaderStage: 8,
+  geometryKernelStorageBindings: 8,
+  geometryHeaderStride: 7,
+  maxComputeWorkgroupStorageSize: 32 * 1024,
+});
+
+export const STANDARD_STRUCTURED_HOOK_PROFILE_V4: StructuredHookCapacityProfile = Object.freeze({
+  id: "standard-v4",
+  ...STRUCTURED_HOOK_CAPACITIES,
+  unitSites: 1,
+  maxUnitGroups: 4,
+  maxNeuronAblations: 256,
+  maxHeadAblations: 64,
+  maxUnitTaps: 64,
+  maxHeadTaps: 16,
+  maxActivityTraces: 32,
+  maxActivitySpans: 4,
+  maxPatternLayers: 16,
+  maxPatternHeads: 16,
+  maxLensReadTopK: 256,
+  maxAnatomyUnits: 64,
+});
+
+/** For `gpt2`, `gpt_neox` and `qwen3_5` (B1 §7). Lens reads stay k ≤ 256 (exact-readout-v2). */
+export const STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL: StructuredHookCapacityProfile =
   Object.freeze({
-    id: "standard-v1",
-    maxAffineGroups: 4,
-    maxRank: 8,
-    maxProbes: 8,
-    maxCurves: 4,
-    maxCurveNodes: 32,
-    maxIntrinsicDim: 4,
-    maxEmbedDim: 8,
-    maxGeometryProbes: 0,
-    maxWhitenerRank: 0,
-    maxGeometryCandidates: 0,
-    geometryOutputStride: 0,
-    geometryFootRestarts: 0,
-    geometryFootIterations: 0,
-    geometryWarmRestarts: 0,
-    geometryWarmIterations: 0,
-    requiredMaxStorageBuffersPerShaderStage: 8,
-    geometryKernelStorageBindings: 0,
-    geometryHeaderStride: 0,
-    maxComputeWorkgroupStorageSize: 32 * 1024,
+    id: "standard-v4-residual",
+    ...STRUCTURED_HOOK_CAPACITIES,
+    unitSites: 0,
+    maxUnitGroups: 0,
+    maxNeuronAblations: 0,
+    maxHeadAblations: 0,
+    maxUnitTaps: 0,
+    maxHeadTaps: 0,
+    maxActivityTraces: 0,
+    maxActivitySpans: 0,
+    maxPatternLayers: 0,
+    maxPatternHeads: 0,
+    maxLensReadTopK: 256,
+    maxAnatomyUnits: 0,
   });
 
-export const STANDARD_STRUCTURED_HOOK_PROFILE_V2: StructuredHookCapacityProfile =
-  Object.freeze({
-    id: "standard-v2",
-    maxAffineGroups: 4,
-    maxRank: 8,
-    maxProbes: 8,
-    maxCurves: 4,
-    maxCurveNodes: 32,
-    maxIntrinsicDim: 4,
-    maxEmbedDim: 8,
-    maxGeometryProbes: 8,
-    maxWhitenerRank: 96,
-    maxGeometryCandidates: 33,
-    geometryOutputStride: 41,
-    geometryFootRestarts: 3,
-    geometryFootIterations: 12,
-    geometryWarmRestarts: 2,
-    geometryWarmIterations: 4,
-    requiredMaxStorageBuffersPerShaderStage: 8,
-    geometryKernelStorageBindings: 8,
-    geometryHeaderStride: 7,
-    maxComputeWorkgroupStorageSize: 32 * 1024,
-  });
-
-export const STANDARD_STRUCTURED_HOOK_PROFILE_V3: StructuredHookCapacityProfile =
-  Object.freeze({
-    ...STANDARD_STRUCTURED_HOOK_PROFILE_V2,
-    id: "standard-v3",
-  });
+const UNIT_PROFILE_KEYS = Object.freeze([
+  "unitSites",
+  "maxUnitGroups",
+  "maxNeuronAblations",
+  "maxHeadAblations",
+  "maxUnitTaps",
+  "maxHeadTaps",
+  "maxActivityTraces",
+  "maxActivitySpans",
+  "maxPatternLayers",
+  "maxPatternHeads",
+  "maxLensReadTopK",
+  "maxAnatomyUnits",
+] as const satisfies readonly (keyof StructuredHookCapacityProfile)[]);
 
 const PROFILE_KEYS = Object.freeze([
   "id",
@@ -121,20 +177,20 @@ const PROFILE_KEYS = Object.freeze([
   "maxComputeWorkgroupStorageSize",
 ] as const);
 
-const PROFILES: ReadonlyMap<StructuredHookProfileId, StructuredHookCapacityProfile> =
-  new Map([
-    [STANDARD_STRUCTURED_HOOK_PROFILE.id, STANDARD_STRUCTURED_HOOK_PROFILE],
-    [STANDARD_STRUCTURED_HOOK_PROFILE_V2.id, STANDARD_STRUCTURED_HOOK_PROFILE_V2],
-    [STANDARD_STRUCTURED_HOOK_PROFILE_V3.id, STANDARD_STRUCTURED_HOOK_PROFILE_V3],
-  ]);
+const PROFILES: ReadonlyMap<string, StructuredHookCapacityProfile> = new Map([
+  [STANDARD_STRUCTURED_HOOK_PROFILE_V4.id, STANDARD_STRUCTURED_HOOK_PROFILE_V4],
+  [STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL.id, STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL],
+]);
 
+/** The hook ABI v5 profile named `id` (`standard-v4` or `standard-v4-residual`); any other id,
+ *  including the v1-v3 profiles of retired libraries, is a TypeError. */
 export function resolveStructuredHookProfile(
   id: unknown,
 ): StructuredHookCapacityProfile {
-  if (typeof id !== "string" || !PROFILES.has(id as StructuredHookProfileId)) {
+  if (typeof id !== "string" || !PROFILES.has(id)) {
     throw new TypeError(`Unsupported structured hook capacity profile ${String(id)}`);
   }
-  return PROFILES.get(id as StructuredHookProfileId)!;
+  return PROFILES.get(id)!;
 }
 
 export function validateStructuredHookProfile(
@@ -144,22 +200,383 @@ export function validateStructuredHookProfile(
     throw new TypeError("Structured hook capacity profile must be an object");
   }
   const candidate = value as Record<string, unknown>;
+  const profile = resolveStructuredHookProfile(candidate.id);
+  const canonical = [...PROFILE_KEYS, ...UNIT_PROFILE_KEYS];
   const keys = Object.keys(candidate).sort();
-  const expectedKeys = [...PROFILE_KEYS].sort();
+  const expectedKeys = [...canonical].sort();
   if (
     keys.length !== expectedKeys.length ||
     keys.some((key, index) => key !== expectedKeys[index])
   ) {
     throw new TypeError("Structured hook capacity profile has an unsupported shape");
   }
-  const profile = resolveStructuredHookProfile(candidate.id);
-  for (const key of PROFILE_KEYS) {
-    if (candidate[key] !== profile[key]) {
+  for (const key of canonical) {
+    if (candidate[key] !== (profile as unknown as Record<string, unknown>)[key]) {
       throw new TypeError(`Structured hook capacity profile ${profile.id} was modified`);
     }
   }
   validateProfileInvariants(profile);
   return profile;
+}
+
+// -------------------------------------------------------------- BlockSpec ---
+
+export type BlockActivation = "silu" | "gelu_tanh";
+
+/** The lock's per-model block description (B1 §8.2), recorded from native `model_spec` and the
+ *  source checkpoint's config; required with `standard-v4`, forbidden with `-residual`. Every
+ *  field is attested by the library's descriptor (schema 4). `null` means "none". */
+export interface BlockSpec {
+  readonly dFF: number;
+  readonly nHeads: number;
+  readonly nKvHeads: number;
+  readonly headDim: number;
+  /** Gemma's sandwich norms around the attention and MLP writes (`N_ao`, `N_mo`). */
+  readonly sandwich: boolean;
+  /** RMSNorm weight offset: 1 for Gemma's `1 + w`, 0 for Qwen3's `w`. */
+  readonly normOffset: 0 | 1;
+  readonly activation: BlockActivation;
+  /** Input embedding scale `s_E` (Gemma `√d`, Qwen3 1). */
+  readonly embedScale: number;
+  readonly rmsEps: number;
+  readonly qkNorm: boolean;
+  /** Attention score scale (Gemma `query_pre_attn_scalar^-0.5`, Qwen3 `head_dim^-0.5`). */
+  readonly attnScaling: number;
+  readonly attnLogitSoftcap: number | null;
+  readonly finalLogitSoftcap: number | null;
+  /** RoPE θ of the global layers. */
+  readonly ropeTheta: number;
+  /** RoPE θ of the local (sliding) layers, or null when every layer uses `ropeTheta`. */
+  readonly ropeLocalTheta: number | null;
+  /** 1 / the global layers' rope scaling factor (1 when unscaled). */
+  readonly ropeGlobalScale: number;
+  /** Gemma rotates q/k in the graph (`_gemma3_rotary`); Qwen3's paged KV cache rotates them. */
+  readonly ropeInGraph: boolean;
+  /** Local layers attend to `i − W < j ≤ i`. */
+  readonly slidingWindow: number | null;
+  /** Layer `L` is global when `(L + 1) % pattern == 0`, local otherwise. */
+  readonly slidingPattern: number | null;
+}
+
+/** B1 §8.2's field order, which is also the order the descriptor attests them in. */
+export const BLOCK_SPEC_KEYS = Object.freeze([
+  "dFF",
+  "nHeads",
+  "nKvHeads",
+  "headDim",
+  "sandwich",
+  "normOffset",
+  "activation",
+  "embedScale",
+  "rmsEps",
+  "qkNorm",
+  "attnScaling",
+  "attnLogitSoftcap",
+  "finalLogitSoftcap",
+  "ropeTheta",
+  "ropeLocalTheta",
+  "ropeGlobalScale",
+  "ropeInGraph",
+  "slidingWindow",
+  "slidingPattern",
+] as const satisfies readonly (keyof BlockSpec)[]);
+
+export function validateBlockSpec(value: unknown): BlockSpec {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("Block spec must be an object");
+  }
+  const candidate = value as Record<string, unknown>;
+  const keys = Object.keys(candidate).sort();
+  const expected = [...BLOCK_SPEC_KEYS].sort();
+  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) {
+    throw new TypeError("Block spec has an unsupported shape");
+  }
+  for (const key of ["dFF", "nHeads", "nKvHeads", "headDim"] as const) {
+    positiveInteger(candidate[key], `block spec ${key}`);
+  }
+  for (const key of ["sandwich", "qkNorm", "ropeInGraph"] as const) {
+    if (typeof candidate[key] !== "boolean") throw new TypeError(`block spec ${key} must be a boolean`);
+  }
+  if (candidate.normOffset !== 0 && candidate.normOffset !== 1) {
+    throw new TypeError("block spec normOffset must be 0 or 1");
+  }
+  if (candidate.activation !== "silu" && candidate.activation !== "gelu_tanh") {
+    throw new TypeError("block spec activation must be silu or gelu_tanh");
+  }
+  for (const key of ["embedScale", "rmsEps", "attnScaling", "ropeTheta", "ropeGlobalScale"] as const) {
+    positiveFloat32(candidate[key], `block spec ${key}`);
+  }
+  for (const key of ["attnLogitSoftcap", "finalLogitSoftcap", "ropeLocalTheta"] as const) {
+    if (candidate[key] !== null) positiveFloat32(candidate[key], `block spec ${key}`);
+  }
+  for (const key of ["slidingWindow", "slidingPattern"] as const) {
+    if (candidate[key] !== null) positiveInteger(candidate[key], `block spec ${key}`);
+  }
+  if ((candidate.slidingWindow === null) !== (candidate.slidingPattern === null)) {
+    throw new TypeError("block spec slidingWindow and slidingPattern are set together");
+  }
+  if ((candidate.nHeads as number) % (candidate.nKvHeads as number) !== 0) {
+    throw new TypeError("block spec nHeads must be a multiple of nKvHeads");
+  }
+  return Object.freeze({ ...candidate }) as unknown as BlockSpec;
+}
+
+/** Floats per layer of the replay's anatomy taps: `block_in | mid | out_pre | out | attn_o |
+ *  mlp_o | act | z` = `6·d + d_ff + H·hd` (B1 §2.3). */
+export function anatomyStride(hiddenSize: number, spec: BlockSpec): number {
+  positiveInteger(hiddenSize, "anatomy hidden size");
+  return checkedStructuredHookSum("anatomy stride", [
+    checkedStructuredHookProduct("anatomy residual fields", 6, hiddenSize),
+    spec.dFF,
+    checkedStructuredHookProduct("anatomy head site", spec.nHeads, spec.headDim),
+  ]);
+}
+
+/** Whether model layer `layer` is a local (sliding-window) layer under `spec`. */
+export function isLocalAttentionLayer(spec: BlockSpec, layer: number): boolean {
+  return spec.slidingPattern !== null && (layer + 1) % spec.slidingPattern !== 0;
+}
+
+// ------------------------------------------------------ descriptor schema 4 ---
+
+export const HOOK_PROFILE_DESCRIPTOR_MAGIC = 0x53414b4c;
+export const HOOK_PROFILE_DESCRIPTOR_SCHEMA_VERSION = 4;
+/** Descriptor field 2 for both v4 profiles; `UNIT_SITES` says which of the two. */
+export const HOOK_PROFILE_DESCRIPTOR_PROFILE_V4 = 4;
+export const BLOCK_SITES_HOOK_ABI_VERSION = 5;
+export const STRUCTURED_HOOK_FORMAT_V4_VERSION = 4;
+export const BLOCK_SITES_EXACT_READOUT_ABI_VERSION = 2;
+/** The live readout's top-k (descriptor field 29, unchanged from v3). */
+export const LIVE_READOUT_TOP_K = 8;
+export const MAX_SAE_FEATURES_PER_CHUNK = 16384;
+
+/** `drowse_hook_profile`, schema 4 (B1 §3.5): an int32 vector in this order. The first 31
+ *  fields are v3's, unchanged in meaning (hook ABI 5, format 4, exact readout 2); `*_F32_BITS`
+ *  fields hold the IEEE-754 bits of `Math.fround(value)` as a signed int32, 0 meaning none. */
+export const HOOK_PROFILE_DESCRIPTOR_V4_FIELDS = Object.freeze([
+  "MAGIC",
+  "SCHEMA_VERSION",
+  "PROFILE",
+  "HOOK_ABI_VERSION",
+  "FORMAT_VERSION",
+  "LAYER_COUNT",
+  "HIDDEN_SIZE",
+  "MAX_AFFINE_GROUPS",
+  "MAX_RANK",
+  "MAX_PROBES",
+  "MAX_CURVES",
+  "MAX_CURVE_NODES",
+  "MAX_INTRINSIC_DIM",
+  "MAX_EMBED_DIM",
+  "CURVE_PARAMETER_STRIDE",
+  "MIN_COMPUTE_WORKGROUP_STORAGE_SIZE",
+  "MAX_GEOMETRY_PROBES",
+  "MAX_WHITENER_RANK",
+  "MAX_GEOMETRY_CANDIDATES",
+  "GEOMETRY_OUTPUT_STRIDE",
+  "GEOMETRY_FOOT_RESTARTS",
+  "GEOMETRY_FOOT_ITERATIONS",
+  "GEOMETRY_WARM_RESTARTS",
+  "GEOMETRY_WARM_ITERATIONS",
+  "REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE",
+  "GEOMETRY_KERNEL_STORAGE_BINDINGS",
+  "GEOMETRY_HEADER_STRIDE",
+  "GEOMETRY_PAYLOAD_ELEMENTS",
+  "EXACT_READOUT_ABI_VERSION",
+  "READOUT_TOP_K",
+  "MAX_SAE_FEATURES_PER_CHUNK",
+  "UNIT_SITES",
+  "D_FF",
+  "N_Q_HEADS",
+  "N_KV_HEADS",
+  "HEAD_DIM",
+  "SANDWICH",
+  "NORM_OFFSET",
+  "ACTIVATION",
+  "EMBED_SCALE_F32_BITS",
+  "RMS_EPS_F32_BITS",
+  "QK_NORM",
+  "ATTN_SCALING_F32_BITS",
+  "ATTN_LOGIT_SOFTCAP_F32_BITS",
+  "FINAL_LOGIT_SOFTCAP_F32_BITS",
+  "ROPE_THETA_F32_BITS",
+  "ROPE_LOCAL_THETA_F32_BITS",
+  "ROPE_GLOBAL_SCALE_F32_BITS",
+  "ROPE_IN_GRAPH",
+  "SLIDING_WINDOW",
+  "SLIDING_PATTERN",
+  "PREFILL_CHUNK_SIZE",
+  "MAX_UNIT_GROUPS",
+  "MAX_NEURON_ABLATIONS",
+  "MAX_HEAD_ABLATIONS",
+  "MAX_UNIT_TAPS",
+  "MAX_HEAD_TAPS",
+  "MAX_ACTIVITY_TRACES",
+  "MAX_ACTIVITY_SPANS",
+  "MAX_PATTERN_LAYERS",
+  "MAX_PATTERN_HEADS",
+  "ANATOMY_STRIDE",
+  "UNIT_POSITIONS_FROM",
+  "MAX_LENS_READ_TOP_K",
+  "MAX_ANATOMY_UNITS",
+  "DROWSE_KERNEL_STORAGE_BINDINGS",
+  "CONTEXT_TOKENS",
+] as const);
+
+export type HookProfileDescriptorField = (typeof HOOK_PROFILE_DESCRIPTOR_V4_FIELDS)[number];
+export const HOOK_PROFILE_DESCRIPTOR_V4_LENGTH = HOOK_PROFILE_DESCRIPTOR_V4_FIELDS.length;
+
+/** What the descriptor is checked against besides the profile: the model's lock entry. */
+export interface HookProfileDescriptorModel {
+  readonly layerCount: number;
+  readonly hiddenSize: number;
+  /** The compiled context window: the largest of the lock's `contextProfiles`. */
+  readonly contextTokens: number;
+  /** The compiled prefill chunk: the lock's `prefillChunkSize` (at most its smallest context). */
+  readonly prefillChunkSize: number;
+  /** Required with `standard-v4`, null with `standard-v4-residual`. */
+  readonly blockSpec: BlockSpec | null;
+}
+
+/** The IEEE-754 single-precision bits of `Math.fround(value)` as a signed int32. */
+export function float32Bits(value: number): number {
+  const bits = new Int32Array(new Float32Array([value]).buffer);
+  return bits[0];
+}
+
+/** The exact descriptor a library compiled under `profile` for `model` must report; the bridge
+ *  compares element by element and fails the load with `HOOK_ABI_MISMATCH` (B1 §3.5). A residual
+ *  library reports 0 in every block field, every unit capacity, `ANATOMY_STRIDE`,
+ *  `UNIT_POSITIONS_FROM` and `MAX_ANATOMY_UNITS`. */
+export function expectedHookProfileDescriptor(
+  input: StructuredHookCapacityProfile,
+  model: HookProfileDescriptorModel,
+): Int32Array {
+  const profile = validateStructuredHookProfile(input);
+  positiveInteger(model.layerCount, "descriptor layer count");
+  positiveInteger(model.hiddenSize, "descriptor hidden size");
+  positiveInteger(model.contextTokens, "descriptor context tokens");
+  positiveInteger(model.prefillChunkSize, "descriptor prefill chunk size");
+  if (model.prefillChunkSize > model.contextTokens) {
+    throw new RangeError("descriptor prefill chunk size exceeds the context window");
+  }
+  const units = profile.unitSites === 1;
+  if (units !== (model.blockSpec !== null)) {
+    throw new TypeError(
+      units
+        ? "standard-v4 requires the model's block spec"
+        : "standard-v4-residual forbids a block spec",
+    );
+  }
+  const spec = model.blockSpec === null ? null : validateBlockSpec(model.blockSpec);
+  const bits = (value: number | null): number => (value === null ? 0 : float32Bits(value));
+  const flag = (value: boolean): number => (value ? 1 : 0);
+  const fields: Record<HookProfileDescriptorField, number> = {
+    MAGIC: HOOK_PROFILE_DESCRIPTOR_MAGIC,
+    SCHEMA_VERSION: HOOK_PROFILE_DESCRIPTOR_SCHEMA_VERSION,
+    PROFILE: HOOK_PROFILE_DESCRIPTOR_PROFILE_V4,
+    HOOK_ABI_VERSION: BLOCK_SITES_HOOK_ABI_VERSION,
+    FORMAT_VERSION: STRUCTURED_HOOK_FORMAT_V4_VERSION,
+    LAYER_COUNT: model.layerCount,
+    HIDDEN_SIZE: model.hiddenSize,
+    MAX_AFFINE_GROUPS: profile.maxAffineGroups,
+    MAX_RANK: profile.maxRank,
+    MAX_PROBES: profile.maxProbes,
+    MAX_CURVES: profile.maxCurves,
+    MAX_CURVE_NODES: profile.maxCurveNodes,
+    MAX_INTRINSIC_DIM: profile.maxIntrinsicDim,
+    MAX_EMBED_DIM: profile.maxEmbedDim,
+    CURVE_PARAMETER_STRIDE: structuredCurveParameterStride(profile),
+    MIN_COMPUTE_WORKGROUP_STORAGE_SIZE: profile.maxComputeWorkgroupStorageSize,
+    MAX_GEOMETRY_PROBES: profile.maxGeometryProbes,
+    MAX_WHITENER_RANK: profile.maxWhitenerRank,
+    MAX_GEOMETRY_CANDIDATES: profile.maxGeometryCandidates,
+    GEOMETRY_OUTPUT_STRIDE: profile.geometryOutputStride,
+    GEOMETRY_FOOT_RESTARTS: profile.geometryFootRestarts,
+    GEOMETRY_FOOT_ITERATIONS: profile.geometryFootIterations,
+    GEOMETRY_WARM_RESTARTS: profile.geometryWarmRestarts,
+    GEOMETRY_WARM_ITERATIONS: profile.geometryWarmIterations,
+    REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE: profile.requiredMaxStorageBuffersPerShaderStage,
+    GEOMETRY_KERNEL_STORAGE_BINDINGS: profile.geometryKernelStorageBindings,
+    GEOMETRY_HEADER_STRIDE: profile.geometryHeaderStride,
+    GEOMETRY_PAYLOAD_ELEMENTS: structuredGeometryPayloadLayout(
+      profile,
+      model.layerCount,
+      model.hiddenSize,
+    ).elements,
+    EXACT_READOUT_ABI_VERSION: BLOCK_SITES_EXACT_READOUT_ABI_VERSION,
+    READOUT_TOP_K: LIVE_READOUT_TOP_K,
+    MAX_SAE_FEATURES_PER_CHUNK,
+    UNIT_SITES: profile.unitSites,
+    D_FF: spec?.dFF ?? 0,
+    N_Q_HEADS: spec?.nHeads ?? 0,
+    N_KV_HEADS: spec?.nKvHeads ?? 0,
+    HEAD_DIM: spec?.headDim ?? 0,
+    SANDWICH: spec === null ? 0 : flag(spec.sandwich),
+    NORM_OFFSET: spec?.normOffset ?? 0,
+    ACTIVATION: spec === null ? 0 : spec.activation === "silu" ? 1 : 2,
+    EMBED_SCALE_F32_BITS: bits(spec?.embedScale ?? null),
+    RMS_EPS_F32_BITS: bits(spec?.rmsEps ?? null),
+    QK_NORM: spec === null ? 0 : flag(spec.qkNorm),
+    ATTN_SCALING_F32_BITS: bits(spec?.attnScaling ?? null),
+    ATTN_LOGIT_SOFTCAP_F32_BITS: bits(spec?.attnLogitSoftcap ?? null),
+    FINAL_LOGIT_SOFTCAP_F32_BITS: bits(spec?.finalLogitSoftcap ?? null),
+    ROPE_THETA_F32_BITS: bits(spec?.ropeTheta ?? null),
+    ROPE_LOCAL_THETA_F32_BITS: bits(spec?.ropeLocalTheta ?? null),
+    ROPE_GLOBAL_SCALE_F32_BITS: bits(spec?.ropeGlobalScale ?? null),
+    ROPE_IN_GRAPH: spec === null ? 0 : flag(spec.ropeInGraph),
+    SLIDING_WINDOW: spec?.slidingWindow ?? 0,
+    SLIDING_PATTERN: spec?.slidingPattern ?? 0,
+    PREFILL_CHUNK_SIZE: model.prefillChunkSize,
+    MAX_UNIT_GROUPS: profile.maxUnitGroups,
+    MAX_NEURON_ABLATIONS: profile.maxNeuronAblations,
+    MAX_HEAD_ABLATIONS: profile.maxHeadAblations,
+    MAX_UNIT_TAPS: profile.maxUnitTaps,
+    MAX_HEAD_TAPS: profile.maxHeadTaps,
+    MAX_ACTIVITY_TRACES: profile.maxActivityTraces,
+    MAX_ACTIVITY_SPANS: profile.maxActivitySpans,
+    MAX_PATTERN_LAYERS: profile.maxPatternLayers,
+    MAX_PATTERN_HEADS: profile.maxPatternHeads,
+    ANATOMY_STRIDE: spec === null ? 0 : anatomyStride(model.hiddenSize, spec),
+    UNIT_POSITIONS_FROM: units ? UNIT_POSITIONS_FROM : 0,
+    MAX_LENS_READ_TOP_K: profile.maxLensReadTopK,
+    MAX_ANATOMY_UNITS: profile.maxAnatomyUnits,
+    DROWSE_KERNEL_STORAGE_BINDINGS,
+    CONTEXT_TOKENS: model.contextTokens,
+  };
+  return Int32Array.from(HOOK_PROFILE_DESCRIPTOR_V4_FIELDS, (name) => fields[name]);
+}
+
+/** Names of the fields where a library's descriptor differs from the expected one (a length
+ *  mismatch names `LENGTH`), for the `HOOK_ABI_MISMATCH` message. Empty means attested. */
+export function hookProfileDescriptorMismatches(
+  actual: ArrayLike<number>,
+  expected: ArrayLike<number>,
+): string[] {
+  if (actual.length !== HOOK_PROFILE_DESCRIPTOR_V4_LENGTH || expected.length !== actual.length) {
+    return ["LENGTH"];
+  }
+  const mismatches: string[] = [];
+  for (let index = 0; index < actual.length; index += 1) {
+    if (actual[index] !== expected[index]) mismatches.push(HOOK_PROFILE_DESCRIPTOR_V4_FIELDS[index]);
+  }
+  return mismatches;
+}
+
+/** Which v4 profile a schema-4 descriptor claims (`UNIT_SITES` decides), before the full check. */
+export function hookProfileDescriptorProfileId(values: ArrayLike<number>): BlockSitesProfileId {
+  const at = (name: HookProfileDescriptorField): number =>
+    values[HOOK_PROFILE_DESCRIPTOR_V4_FIELDS.indexOf(name)];
+  if (
+    values.length !== HOOK_PROFILE_DESCRIPTOR_V4_LENGTH ||
+    at("MAGIC") !== HOOK_PROFILE_DESCRIPTOR_MAGIC ||
+    at("SCHEMA_VERSION") !== HOOK_PROFILE_DESCRIPTOR_SCHEMA_VERSION ||
+    at("PROFILE") !== HOOK_PROFILE_DESCRIPTOR_PROFILE_V4 ||
+    (at("UNIT_SITES") !== 0 && at("UNIT_SITES") !== 1)
+  ) {
+    throw new TypeError("The model library's hook profile descriptor is not schema 4");
+  }
+  return at("UNIT_SITES") === 1 ? "standard-v4" : "standard-v4-residual";
 }
 
 export function structuredCurveParameterStride(
@@ -376,7 +793,7 @@ export function structuredHookMemoryRequirements(
   }
   if (options.includeJlens === true) {
     hostElements.push(
-      checkedStructuredHookProduct("J-lens Jacobian elements", l, h, h),
+      checkedStructuredHookProduct("R-lens matrix elements", l, h, h),
       p,
     );
   }
@@ -411,7 +828,7 @@ export function structuredHookMemoryRequirements(
   }
   if (options.includeJlens === true) {
     gpuInputElements.push(
-      checkedStructuredHookProduct("GPU J-lens Jacobian elements", h, h),
+      checkedStructuredHookProduct("GPU R-lens matrix elements", h, h),
       p,
       1,
     );
@@ -429,9 +846,9 @@ export function structuredHookMemoryRequirements(
       : []),
     ...(options.includeJlens === true
       ? [
-          checkedStructuredHookProduct("GPU J-lens hidden elements", l, h),
+          checkedStructuredHookProduct("GPU R-lens hidden elements", l, h),
           p,
-          checkedStructuredHookProduct("GPU J-lens direction elements", p, h),
+          checkedStructuredHookProduct("GPU R-lens direction elements", p, h),
         ]
       : []),
   ];
@@ -504,25 +921,7 @@ function checkedStructuredHookSum(label: string, terms: readonly number[]): numb
 }
 
 function validateProfileInvariants(profile: StructuredHookCapacityProfile): void {
-  const geometryKeys = new Set<keyof StructuredHookCapacityProfile>([
-    "maxGeometryProbes",
-    "maxWhitenerRank",
-    "maxGeometryCandidates",
-    "geometryOutputStride",
-    "geometryFootRestarts",
-    "geometryFootIterations",
-    "geometryWarmRestarts",
-    "geometryWarmIterations",
-    "geometryKernelStorageBindings",
-    "geometryHeaderStride",
-  ]);
   for (const key of PROFILE_KEYS.slice(1)) {
-    if (geometryKeys.has(key) && profile.id === "standard-v1") {
-      if (profile[key] !== 0) {
-        throw new TypeError("Structured hook profile standard-v1 cannot declare geometry buffers");
-      }
-      continue;
-    }
     positiveInteger(profile[key], `structured hook profile ${key}`);
   }
   if (profile.maxCurveNodes < 2) {
@@ -537,28 +936,58 @@ function validateProfileInvariants(profile: StructuredHookCapacityProfile): void
   if (profile.requiredMaxStorageBuffersPerShaderStage !== 8) {
     throw new TypeError("Structured hook profiles must fit WebGPU's guaranteed storage binding limit");
   }
-  if (profile.id === "standard-v2" || profile.id === "standard-v3") {
-    if (profile.maxGeometryCandidates !== profile.maxCurveNodes + 1) {
-      throw new TypeError("Structured hook geometry requires one neutral candidate slot");
+  if (profile.maxGeometryCandidates !== profile.maxCurveNodes + 1) {
+    throw new TypeError("Structured hook geometry requires one neutral candidate slot");
+  }
+  if (
+    profile.geometryOutputStride !==
+      4 + profile.maxIntrinsicDim + profile.maxGeometryCandidates
+  ) {
+    throw new TypeError("Structured hook geometry output stride is inconsistent");
+  }
+  if (
+    profile.geometryHeaderStride !== 7 ||
+    profile.geometryKernelStorageBindings !== 8 ||
+    profile.geometryKernelStorageBindings > profile.requiredMaxStorageBuffersPerShaderStage
+  ) {
+    throw new TypeError("Structured hook geometry exceeds the WebGPU storage binding budget");
+  }
+  validateUnitInvariants(profile);
+}
+
+function validateUnitInvariants(profile: StructuredHookCapacityProfile): void {
+  positiveInteger(profile.maxLensReadTopK, "structured hook profile maxLensReadTopK");
+  const unitKeys = UNIT_PROFILE_KEYS.filter((key) => key !== "maxLensReadTopK");
+  if (profile.unitSites === 0) {
+    if (unitKeys.some((key) => profile[key] !== 0)) {
+      throw new TypeError("A residual structured hook profile cannot declare unit capacities");
     }
-    if (
-      profile.geometryOutputStride !==
-        4 + profile.maxIntrinsicDim + profile.maxGeometryCandidates
-    ) {
-      throw new TypeError("Structured hook geometry output stride is inconsistent");
-    }
-    if (
-      profile.geometryHeaderStride !== 7 ||
-      profile.geometryKernelStorageBindings !== 8 ||
-      profile.geometryKernelStorageBindings > profile.requiredMaxStorageBuffersPerShaderStage
-    ) {
-      throw new TypeError("Structured hook geometry exceeds the WebGPU storage binding budget");
-    }
+    return;
+  }
+  if (profile.unitSites !== 1) throw new TypeError("Structured hook profile unitSites must be 0 or 1");
+  for (const key of unitKeys) positiveInteger(profile[key], `structured hook profile ${key}`);
+  if (profile.maxHeadTaps > profile.maxUnitTaps) {
+    throw new TypeError("Structured hook head taps must fit within the unit tap slots");
+  }
+  if (profile.maxPatternHeads < profile.maxPatternLayers) {
+    throw new TypeError("Structured hook pattern heads must cover every pattern layer");
   }
 }
 
 function positiveInteger(value: unknown, label: string): asserts value is number {
   if (!Number.isSafeInteger(value) || (value as number) < 1) {
     throw new TypeError(`${label} must be a positive integer`);
+  }
+}
+
+function positiveFloat32(value: unknown, label: string): asserts value is number {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value <= 0 ||
+    !Number.isFinite(Math.fround(value)) ||
+    Math.fround(value) === 0
+  ) {
+    throw new TypeError(`${label} must be a positive finite float32`);
   }
 }

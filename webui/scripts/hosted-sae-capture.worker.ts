@@ -1,4 +1,5 @@
 import { runtimeIdentitySha256 } from "../src/lib/runtime/catalog";
+import type { BlockSpec } from "../src/hosted/runtime/structuredHookProfile";
 import type { ModelVariant, RuntimeIdentity } from "../../drowse/webui/src/lib/runtime/contracts";
 import {
   DrowseWebLlmRuntime,
@@ -20,6 +21,10 @@ interface CaptureRequest {
   artifacts: ArtifactEntry[];
   runtimeIdentity: RuntimeIdentity;
   structuredHookProfile: ModelVariant["structuredHookProfile"];
+  /** The runtime lock's block spec (standard-v4) and unit refusal (standard-v4-residual). */
+  blockSpec: BlockSpec | null;
+  unitRefusal: string | null;
+  prefillChunkSize: number;
   thinkingProfile: ModelVariant["thinkingProfile"];
   quantization: "q4f16_1" | "q4f32_1";
   requiredFeatures: GPUFeatureName[];
@@ -31,6 +36,8 @@ interface CaptureRequest {
 }
 
 self.onmessage = async (event: MessageEvent<CaptureRequest>) => {
+  // Only the page that started this worker posts to it.
+  if (event.origin && event.origin !== self.location.origin) return;
   if (event.data?.type !== "run") return;
   let runtime: DrowseWebLlmRuntime | null = null;
   try {
@@ -82,6 +89,9 @@ self.onmessage = async (event: MessageEvent<CaptureRequest>) => {
         },
       },
       contextTokens: event.data.contextTokens,
+      blockSpec: event.data.blockSpec,
+      unitRefusal: event.data.unitRefusal,
+      prefillChunkSize: event.data.prefillChunkSize,
       adapter,
       artifacts,
       optionalPacks: [],

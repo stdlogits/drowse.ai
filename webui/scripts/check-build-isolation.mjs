@@ -43,7 +43,7 @@ for (const header of [
 ]) {
   if (!headers.includes(header)) throw new Error(`hosted headers are missing ${header}`);
 }
-const fixtureAssets = paths.filter((path) => /fixture|\.bin$/i.test(path));
+const fixtureAssets = paths.filter((path) => /fixture/i.test(path) || /\.bin$/i.test(path));
 if (fixtureAssets.length) {
   throw new Error(`development fixture assets leaked into hosted build: ${fixtureAssets.join(", ")}`);
 }
@@ -63,13 +63,13 @@ for (const marker of [
 }
 for (const marker of [
   "SAE training tokens",
-  "J-lens corpus prompts",
   "Blocks generation; uses FineWeb-Edu",
-  "generation paused during model fitting",
   "Create on this device",
+  "Lens fit progress",
+  "Generation pauses while documents are fitted",
   "drowse lens fit",
   "train_hosted_sae.py",
-  "fit_hosted_jlens.py",
+  "build_hosted_packs.py",
 ]) {
   if (source.includes(marker)) {
     throw new Error(`Python-only instrument authoring leaked into hosted build: ${marker}`);

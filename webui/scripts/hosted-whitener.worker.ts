@@ -1,16 +1,25 @@
-import { encodeFp32Safetensors } from "../src/hosted/artifacts/safetensors";
+import {
+  decodeNeutralRows,
+  fitNeutralWhitener,
+  type FittedNeutralWhitener,
+} from "../src/hosted/fitting/neutralWhitener";
 import {
   browserFittedFlatDiscoverPack,
   type BrowserFittedFlatDiscoverPackInput,
 } from "../src/hosted/artifacts/fittedAuthoring";
 import { BrowserActivationSpool } from "../src/hosted/fitting/activationSpool";
-import { BrowserFittingCoordinator } from "../src/hosted/fitting/coordinator";
+import {
+  BrowserFittingCoordinator,
+  type BrowserFittingCoordinatorProgress,
+} from "../src/hosted/fitting/coordinator";
+import { monopolarFoundation } from "../src/hosted/fitting/monopolar";
 import { BrowserFittingWorkerClient } from "../src/hosted/fitting/fittingWorkerClient";
 import type { SerializedMahalanobisWhitener } from "../src/hosted/fitting/workerContracts";
 import {
   contextBindingSha256,
   runtimeIdentitySha256,
 } from "../src/lib/runtime/catalog";
+import type { BlockSpec } from "../src/hosted/runtime/structuredHookProfile";
 import type { ModelVariant, RuntimeIdentity } from "../../drowse/webui/src/lib/runtime/contracts";
 import {
   DrowseWebLlmRuntime,
@@ -38,17 +47,25 @@ interface BuildRequest {
   artifacts: ArtifactEntry[];
   baselinePrompts: string[];
   contexts: number[];
+  /** The neutral statements, captured when there are no native neutral rows. */
   rows: DrowseCaptureRow[];
+  /** The builder serves `build_hosted_packs.py`'s neutral rows at `/neutral-rows`. */
+  nativeNeutralRows: boolean;
   runtimeIdentity: RuntimeIdentity;
   quantization: "q4f16_1" | "q4f32_1" | "q0f32";
-  requiredFeatures: WebGPUFeatureName[];
+  requiredFeatures: GPUFeatureName[];
   structuredHookProfile: ModelVariant["structuredHookProfile"];
+  /** The runtime lock's block spec (standard-v4) and unit refusal (standard-v4-residual). */
+  blockSpec: BlockSpec | null;
+  unitRefusal: string | null;
+  prefillChunkSize: number;
   thinkingProfile: ModelVariant["thinkingProfile"];
   artifactProducer: {
     drowseVersion: string;
     producerVersion: string;
   };
-  manifold: {
+  /** The core concepts (drowse 6.0's default roster and the hosted starter), fitted in order. */
+  manifolds: Array<{
     namespace: string;
     name: string;
     description: string;
@@ -62,10 +79,12 @@ interface BuildRequest {
       kind: string | null;
       statements: string[];
     }>;
-  };
+  }>;
 }
 
 self.onmessage = async (event: MessageEvent<BuildRequest>) => {
+  // Only the page that started this worker posts to it.
+  if (event.origin && event.origin !== self.location.origin) return;
   if (event.data?.type !== "run") return;
   let runtime: DrowseWebLlmRuntime | null = null;
   try {
@@ -115,6 +134,15 @@ self.onmessage = async (event: MessageEvent<BuildRequest>) => {
       contextTokens,
       bindingSha256: contextBindingSha256(identitySha256, contextTokens),
     }));
+    const columns = event.data.runtimeIdentity.hiddenSize;
+    const layerMap = event.data.runtimeIdentity.layerMap;
+    let nativeWhitener: FittedNeutralWhitener | null = null;
+    if (event.data.nativeNeutralRows) {
+      const response = await fetch("/neutral-rows", { cache: "no-store" });
+      if (!response.ok) throw new Error("the native neutral rows could not be fetched");
+      const native = decodeNeutralRows(new Uint8Array(await response.arrayBuffer()), layerMap, columns);
+      nativeWhitener = fitNeutralWhitener(fitting, native.matrices, native.rows, columns, layerMap);
+    }
     const fittedContexts = [];
     for (const context of contexts) {
       const adapter = await navigator.gpu.requestAdapter();
@@ -138,89 +166,46 @@ self.onmessage = async (event: MessageEvent<BuildRequest>) => {
           },
         },
         contextTokens: context.contextTokens,
+        blockSpec: event.data.blockSpec,
+        unitRefusal: event.data.unitRefusal,
+        prefillChunkSize: event.data.prefillChunkSize,
         adapter,
         artifacts,
         signal: new AbortController().signal,
         onDeviceLost() {},
       } as never);
-      const prepared = await runtime.prepareCaptureRows(event.data.rows);
-      if (prepared.length !== event.data.rows.length) {
-        throw new Error("capture renderer returned the wrong neutral row count");
+      // The whitener's rows: the native neutral pass's (the units pack's write norms are measured
+      // with drowse's whitener over the same rows), or, for a model drowse has no neutral pass
+      // for, the same statements captured here.
+      let fitted = nativeWhitener;
+      if (fitted === null) {
+        const captured = await captureNeutralRows(runtime, event.data.rows, layerMap, columns);
+        fitted = fitNeutralWhitener(fitting, captured.matrices, captured.rows, columns, layerMap);
       }
-      const rows = event.data.rows.length;
-      const columns = event.data.runtimeIdentity.hiddenSize;
-      const layerMap = event.data.runtimeIdentity.layerMap;
-      const matrices = layerMap.map(() => new Float64Array(rows * columns));
-      for (let row = 0; row < prepared.length; row += 1) {
-        const capture = await runtime.capturePreparedRow(prepared[row]);
-        if (
-          capture.layerCount !== layerMap.length || capture.hiddenSize !== columns ||
-          capture.values.length !== layerMap.length * columns
-        ) throw new Error("runtime returned an incompatible neutral activation row");
-        for (let slot = 0; slot < layerMap.length; slot += 1) {
-          const start = slot * columns;
-          matrices[slot].set(capture.values.subarray(start, start + columns), row * columns);
-        }
-        self.postMessage({ type: "progress", completed: row + 1, total: rows });
-      }
-      const tensors: Record<string, { shape: number[]; data: Float32Array }> = {};
-      const ridgePerLayer: Record<string, number> = {};
-      const whiteners = new Map<number, SerializedMahalanobisWhitener>();
-      for (let slot = 0; slot < layerMap.length; slot += 1) {
-        const layer = layerMap[slot];
-        const fit = fitting.fitMahalanobisWhitener(matrices[slot], rows, columns, 1);
-        try {
-          const rank = fit.rank;
-          const mean = fit.mean();
-          const basis = fit.basis();
-          const eigenvalues = fit.eigenvalues();
-          const inverseScales = fit.inverseScales();
-          tensors[`layer_${layer}.mean`] = {
-            shape: [columns], data: Float32Array.from(mean),
-          };
-          tensors[`layer_${layer}.basis`] = {
-            shape: [rank, columns], data: Float32Array.from(basis),
-          };
-          tensors[`layer_${layer}.eigenvalues`] = {
-            shape: [rank], data: Float32Array.from(eigenvalues),
-          };
-          tensors[`layer_${layer}.inverse_scales`] = {
-            shape: [rank], data: Float32Array.from(inverseScales),
-          };
-          ridgePerLayer[String(layer)] = fit.ridge;
-          whiteners.set(layer, {
-            columns,
-            rank,
-            ridge: fit.ridge,
-            mean,
-            basis,
-            eigenvalues,
-            inverseScales,
-          });
-        } finally {
-          fit.free();
-        }
-      }
-      const tensorBytes = encodeFp32Safetensors(tensors, {
-        path: "neutral-whitener.safetensors",
-      });
+      const whiteners = fitted.whiteners;
+      const ridgePerLayer = fitted.ridgePerLayer;
+      const tensorBytes = fitted.tensorBytes;
       const tensorPayload = tensorBytes as Uint8Array<ArrayBuffer>;
       const tensorsSha256 = [...new Uint8Array(
         await crypto.subtle.digest("SHA-256", tensorPayload),
       )].map((byte) => byte.toString(16).padStart(2, "0")).join("");
       const response = await fetch(`/output?context=${context.contextTokens}`, { method: "POST", body: tensorPayload });
       if (!response.ok) throw new Error("failed to return the fitted neutral whitener");
-      const manifoldSha256 = await fitCoreManifold(
-        runtime,
-        event.data.manifold,
-        event.data.runtimeIdentity,
-        identitySha256,
-        context.bindingSha256,
-        context.contextTokens,
-        whiteners,
-        event.data.baselinePrompts,
-        event.data.artifactProducer,
-      );
+      const manifoldSha256: string[] = [];
+      for (const [index, manifold] of event.data.manifolds.entries()) {
+        manifoldSha256.push(await fitCoreManifold(
+          runtime,
+          manifold,
+          index,
+          event.data.runtimeIdentity,
+          identitySha256,
+          context.bindingSha256,
+          context.contextTokens,
+          whiteners,
+          event.data.baselinePrompts,
+          event.data.artifactProducer,
+        ));
+      }
       await runtime.unload();
       fittedContexts.push({ ...context, ridgePerLayer, tensorsSha256, manifoldSha256 });
     }
@@ -243,7 +228,8 @@ self.onmessage = async (event: MessageEvent<BuildRequest>) => {
 
 async function fitCoreManifold(
   runtime: DrowseWebLlmRuntime,
-  manifold: BuildRequest["manifold"],
+  manifold: BuildRequest["manifolds"][number],
+  manifoldIndex: number,
   runtimeIdentity: RuntimeIdentity,
   identitySha256: string,
   contextBindingSha256: string,
@@ -300,17 +286,8 @@ async function fitCoreManifold(
     new BrowserActivationSpool(),
     fittingWorker,
   );
-  const foundation = await coordinator.captureTopologyFoundation({
-    descriptor,
-    groupOffsets,
-    whiteners,
-    fitMode: "pca",
-    maxComponents: Math.min(64, runtimeIdentity.hiddenSize),
-    maxDimensions: Number(manifold.hyperparams.max_dim ?? 1),
-    varianceThreshold: Number(manifold.hyperparams.var_threshold ?? 0.7),
-    persistenceFraction: 0.5,
-  }, source, {
-    onProgress(progress) {
+  const progress = {
+    onProgress(progress: BrowserFittingCoordinatorProgress) {
       self.postMessage({
         type: "manifold-progress",
         stage: progress.stage,
@@ -319,7 +296,24 @@ async function fitCoreManifold(
         total: progress.total,
       });
     },
-  }).finally(() => fittingWorker.dispose());
+  };
+  // drowse fits a one-node concept (6.0's deceptive, refusing, manipulative) against the
+  // neutral baseline (`_fit_monopolar`), not through the affine Fisher fit, which needs two
+  // nodes; the in-app fit takes the same branch.
+  const foundation = await (manifold.nodes.length === 1
+    ? coordinator.captureNodeCentroids({ descriptor, groupOffsets }, source, progress)
+      .then((centroids) => monopolarFoundation(centroids, whiteners))
+    : coordinator.captureTopologyFoundation({
+      descriptor,
+      groupOffsets,
+      whiteners,
+      fitMode: "pca",
+      maxComponents: Math.min(64, runtimeIdentity.hiddenSize),
+      maxDimensions: Number(manifold.hyperparams.max_dim ?? 1),
+      varianceThreshold: Number(manifold.hyperparams.var_threshold ?? 0.7),
+      persistenceFraction: 0.5,
+    }, source, progress)
+  ).finally(() => fittingWorker.dispose());
   if (foundation.finalAffineLayers === null || foundation.anchoredNodeCoordinates === null) {
     throw new Error("core PCA fitting returned incomplete geometry");
   }
@@ -352,9 +346,39 @@ async function fitCoreManifold(
   const archive = await browserFittedFlatDiscoverPack(packInput);
   const bytes = new Uint8Array(await archive.arrayBuffer());
   const archiveSha256 = bytesToHex(sha256(bytes));
-  const response = await fetch(`/manifold-output?context=${contextTokens}`, { method: "POST", body: bytes });
+  const response = await fetch(
+    `/manifold-output?context=${contextTokens}&manifold=${manifoldIndex}`,
+    { method: "POST", body: bytes },
+  );
   if (!response.ok) throw new Error("failed to return the fitted core manifold");
   return archiveSha256;
+}
+
+async function captureNeutralRows(
+  runtime: DrowseWebLlmRuntime,
+  captureRows: DrowseCaptureRow[],
+  layerMap: readonly number[],
+  columns: number,
+): Promise<{ rows: number; matrices: Float64Array[] }> {
+  const prepared = await runtime.prepareCaptureRows(captureRows);
+  if (prepared.length !== captureRows.length) {
+    throw new Error("capture renderer returned the wrong neutral row count");
+  }
+  const rows = captureRows.length;
+  const matrices = layerMap.map(() => new Float64Array(rows * columns));
+  for (let row = 0; row < prepared.length; row += 1) {
+    const capture = await runtime.capturePreparedRow(prepared[row]);
+    if (
+      capture.layerCount !== layerMap.length || capture.hiddenSize !== columns ||
+      capture.values.length !== layerMap.length * columns
+    ) throw new Error("runtime returned an incompatible neutral activation row");
+    for (let slot = 0; slot < layerMap.length; slot += 1) {
+      const start = slot * columns;
+      matrices[slot].set(capture.values.subarray(start, start + columns), row * columns);
+    }
+    self.postMessage({ type: "progress", completed: row + 1, total: rows });
+  }
+  return { rows, matrices };
 }
 
 function digest(value: unknown): string {

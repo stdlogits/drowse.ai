@@ -1,10 +1,8 @@
 <script lang="ts">
-  import MorphText from "../../../drowse/webui/src/lib/ui/MorphText.svelte";
+  import { Expander, IconButton, MorphText } from "@stdlogits/ledger";
   import RollingNumber from "../../../drowse/webui/src/lib/ui/RollingNumber.svelte";
   import ResetSettings from "../../../drowse/webui/src/lib/ui/ResetSettings.svelte";
   import { onMount } from "svelte";
-  import DrawerCloseButton from "../../../drowse/webui/src/lib/ui/DrawerCloseButton.svelte";
-  import Disclosure from "../../../drowse/webui/src/lib/Disclosure.svelte";
   import {
     getHostedController,
     getRuntimeCapabilities,
@@ -159,9 +157,9 @@
         compatibleBindings.includes(binding)
       )
     );
-    // Lens packs are alternative readout sources. Keep the standard J-lens
-    // installed while downloading an R-lens so the user can switch between
-    // them without replacing either pack. SAEs remain one-per-model because
+    // Lens packs are alternative readout sources. Keep the installed lens
+    // while downloading another (a J-kind pack beside an R-kind one) so the user
+    // can switch between them without replacing either pack. SAEs remain one-per-model because
     // the runtime can hold only one active feature dictionary.
     const sameKind = pack.kind === "sae"
       ? concurrent.find((candidate) => candidate.kind === pack.kind)
@@ -374,10 +372,8 @@
 >
   {#if !embedded}
     <header class="header">
-      <div>
-        <h2 class="title">Model settings</h2>
-      </div>
-      <DrawerCloseButton onclick={closeDrawer} />
+      <h2 class="title">Model settings</h2>
+      <IconButton icon="close" label="Close" onclick={closeDrawer} />
     </header>
   {/if}
 
@@ -397,7 +393,7 @@
         <span class="status" class:ready={snapshot.lifecycle === "ready"}>{lifecycleLabel}</span>
       </div>
       <div class="actions">
-        <button class="primary" class:loading-pulse={busy === "switch"} aria-busy={busy === "switch"} type="button" disabled={busy !== null} onclick={() => void chooseModel()}>
+        <button class="primary" aria-busy={busy === "switch"} type="button" disabled={busy !== null} onclick={() => void chooseModel()}>
           <MorphText text={busy === "switch"
             ? "Closing model…"
             : snapshot.modelVariantId === null
@@ -407,7 +403,7 @@
         <button
           type="button"
           disabled={busy !== null || snapshot.modelVariantId === null}
-          class:loading-pulse={busy === "unload"}
+         
           aria-busy={busy === "unload"}
           onclick={() => void unloadModel()}
         ><MorphText text={busy === "unload" ? "Closing…" : "Close model"} /></button>
@@ -424,7 +420,7 @@
         <div>
           <h3>Included files and additions</h3>
         </div>
-        <button class="quiet" class:loading-pulse={catalogLoading} aria-busy={catalogLoading} type="button" disabled={busy !== null || catalogLoading} onclick={() => void loadCatalog()}>
+        <button class="quiet" aria-busy={catalogLoading} type="button" disabled={busy !== null || catalogLoading} onclick={() => void loadCatalog()}>
           <MorphText text={catalogLoading ? "Checking…" : "Check again"} />
         </button>
       </div>
@@ -451,13 +447,13 @@
             {@const downloading = busy === `install-pack:${pack.id}`}
             <li data-pack-id={pack.id}>
               <div class="pack-details">
-                <strong>{pack.id === requiredJlens?.id ? "Word insights · included" : pack.kind === "jlens" ? "Alternative R-lens" : "Feature explorer"}</strong>
+                <strong>{pack.id === requiredJlens?.id ? "Word insights · included" : pack.kind === "jlens" ? "Alternative R lens" : "Feature explorer"}</strong>
                 <span>{pack.displayName} · {formatBytes(pack.bytes)}</span>
               </div>
               {#if pack.id === requiredJlens?.id}
                 <span class:installed={installed}>{installed ? "Ready" : "Required file missing"}</span>
               {:else if downloading}
-                <div class="pack-download loading-placeholder" class:loading-pulse={!packProgress?.offline && !packProgress?.stalled} aria-live="polite">
+                <div class="pack-download" aria-live="polite">
                   {#if packProgress}
                     <progress
                       value={packProgress.bytesReceived}
@@ -492,7 +488,7 @@
       {/if}
     </section>
 
-    <Disclosure bind:expanded={filesOpen} summary="Storage and downloads">
+    <Expander bind:open={filesOpen} label="Storage and downloads">
       <div class="disclosure-stack">
         <section class="subsection">
           <div class="section-head">
@@ -538,14 +534,14 @@
         <section class="subsection">
           <h3>Downloaded additions</h3>
           {#if deletablePackIds.length === 0}
-            <p class="empty">No additional feature or R-lens packs are downloaded.</p>
+            <p class="empty">No additional feature or R lens packs are downloaded.</p>
           {:else}
             <ul class="models">
               {#each deletablePackIds as packId}
                 {@const catalogPack = catalogPacks.find((pack) => pack.id === packId)}
                 <li data-pack-id={packId}>
                   <span class="installed-pack-details">
-                    <strong>{catalogPack?.kind === "jlens" ? "Alternative R-lens" : catalogPack?.kind === "sae" ? "Feature explorer" : "Response controls"}</strong>
+                    <strong>{catalogPack?.kind === "jlens" ? "Alternative R lens" : catalogPack?.kind === "sae" ? "Feature explorer" : "Response controls"}</strong>
                     <code>{catalogPack?.displayName ?? packId}</code>
                   </span>
                   {#if confirmPackDelete === packId}
@@ -561,9 +557,9 @@
           {/if}
         </section>
       </div>
-    </Disclosure>
+    </Expander>
 
-    <Disclosure bind:expanded={dataOpen} summary="Reset and technical details">
+    <Expander bind:open={dataOpen} label="Reset and technical details">
       <div class="disclosure-stack">
         <section class="subsection danger-zone">
           <h3>Clear local data</h3>
@@ -578,7 +574,7 @@
           {/if}
         </section>
 
-        <Disclosure bind:expanded={diagnosticsOpen} summary="Technical details" flush>
+        <Expander bind:open={diagnosticsOpen} label="Technical details">
           <dl class="facts diagnostics">
             <div><dt>Model ID</dt><dd><code>{snapshot.modelVariantId ?? "None"}</code></dd></div>
             <div><dt>Runtime version</dt><dd>{capabilities?.runtimeVersion ?? "Unknown"}</dd></div>
@@ -593,9 +589,9 @@
               {/each}
             </div>
           {/if}
-        </Disclosure>
+        </Expander>
       </div>
-    </Disclosure>
+    </Expander>
 
     <footer class="product-footer" aria-label="About Drowse">
       <div class="product-identity"><span class="wordmark" translate="no">Drowse</span><span class="version">v 0.1</span></div>
@@ -612,73 +608,73 @@
 </section>
 
 <style>
-  .drawer-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-  .header { display: flex; justify-content: space-between; gap: var(--space-6); padding: var(--drawer-gutter-block) var(--drawer-gutter-inline); }
-  .panel p { margin: var(--space-1) 0 0; color: var(--fg-muted); line-height: 1.45; }
-  .panel > p { max-width: var(--copy-measure); text-wrap: pretty; }
-  .title { color: var(--accent); font-family: var(--font-structure); font-size: var(--text-md); font-weight: var(--weight-structure); }
-  .body { flex: 1 1 auto; display: grid; grid-auto-rows: max-content; align-content: start; gap: var(--drawer-section-gap); min-height: 0; padding: var(--drawer-gutter-block) var(--drawer-gutter-inline); overflow: auto; }
-  .panel { border-radius: var(--radius-lg); background: var(--surface-sheen), var(--glass); box-shadow: var(--shadow-well); padding: var(--panel-padding); }
-  h3 { margin: 0; color: var(--fg); font-family: var(--font-structure); font-size: var(--text-sm); font-weight: var(--weight-structure); }
-  .model-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-5); }
-  .model-copy { min-width: 0; }
-  .model-copy h3 { margin-top: var(--space-1); font-size: var(--text-lg); }
-  .status { flex: none; padding: var(--space-2) var(--space-3); border-radius: var(--radius-pill); background: var(--bg-elev); color: var(--fg-muted); font-family: var(--font-data); font-size: var(--text-2xs); letter-spacing: 0.05em; text-transform: uppercase; }
-  .status.ready { background: color-mix(in srgb, var(--accent-green) 12%, transparent); color: var(--accent-green); }
-  .section-head, .actions, .models li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
-  .actions { justify-content: flex-start; margin-top: var(--space-4); }
-  button { min-height: var(--control-target); border: 1px solid transparent; border-radius: var(--radius); background: var(--glass); color: var(--fg); padding: var(--space-3) var(--space-4); font-family: var(--font-structure); font-weight: var(--weight-structure); }
-  button:hover:not(:disabled) { background: var(--glass-strong); color: var(--accent); }
-  button.primary { background: var(--action-bg); color: var(--action-ink); }
-  button.primary:hover:not(:disabled) { background: var(--action-hover); color: var(--action-ink); }
-  button.quiet { background: transparent; color: var(--fg-muted); }
-  button.danger { color: var(--accent-red); background: var(--danger-bg); }
-  button.danger:hover:not(:disabled) { color: var(--accent-red); background: var(--danger-hover); }
-  button:disabled { opacity: var(--disabled-opacity); }
-  code { color: var(--accent-amber); font-family: var(--font-mono); overflow-wrap: anywhere; }
-  .facts { display: grid; gap: var(--space-2); margin: var(--space-5) 0 0; }
-  .facts.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .facts.compact div { display: flex; justify-content: space-between; }
-  .facts.diagnostics { margin-top: 0; }
-  .facts div { display: grid; grid-template-columns: minmax(7rem, 0.35fr) 1fr; gap: var(--space-4); }
-  dt { color: var(--fg-muted); }
-  dd { margin: 0; color: var(--fg); overflow-wrap: anywhere; }
-  .models { display: grid; gap: var(--space-3); margin: var(--space-4) 0 0; padding: 0; list-style: none; }
-  .models li { border-radius: var(--radius); background: var(--surface-sheen), var(--bg-elev); padding: var(--surface-padding); }
-  .pack-list { display: grid; gap: var(--space-3); margin: var(--space-4) 0 0; padding: 0; list-style: none; }
-  .pack-list > li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-4); border-radius: var(--radius); background: var(--surface-sheen), var(--bg-elev); padding: var(--surface-padding); }
-  .pack-details { display: grid; min-width: 0; gap: var(--space-1); color: var(--fg-muted); }
-  .pack-details strong { color: var(--fg); font-family: var(--font-structure); font-weight: var(--weight-structure); }
-  .pack-details > span { font-size: var(--text-sm); }
-  .installed { color: var(--accent-green); font-family: var(--font-data); font-size: var(--text-xs); letter-spacing: 0.06em; text-transform: uppercase; }
-  .installed-pack-details { display: grid; min-width: 0; gap: var(--space-1); }
-  .installed-pack-details strong { color: var(--fg); font-family: var(--font-structure); font-size: var(--text-sm); }
-  .pack-download { display: grid; min-width: min(16rem, 38vw); gap: var(--space-2); color: var(--fg-muted); }
-  .pack-download progress { width: 100%; accent-color: var(--accent); }
-  .warning { color: var(--accent-amber) !important; }
-  .notice { color: var(--accent-green) !important; }
-  .empty { padding: var(--surface-padding); border-radius: var(--radius); background: var(--surface-sheen), var(--bg-elev); }
-  .disclosure-stack { display: grid; gap: var(--space-6); }
-  .subsection { display: grid; gap: var(--space-3); }
-  .subsection + .subsection { padding-top: var(--space-5); box-shadow: inset 0 1px var(--glass-line); }
-  .danger-zone { padding: var(--surface-padding); border-radius: var(--radius); background: var(--surface-sheen), var(--danger-bg); }
-  .sources { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-top: var(--space-4); }
-  .sources a { color: var(--fg-dim); text-underline-offset: 3px; }
-  .error { color: var(--accent-red) !important; }
-  .product-footer { display: grid; justify-items: center; gap: var(--space-2); padding-block: var(--space-6) var(--space-3); text-align: center; color: var(--fg-muted); font-size: var(--text-xs); }
-  .product-identity { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: center; gap: var(--space-3); }
-  .wordmark { color: var(--fg); font-family: var(--font-structure); font-size: var(--text-wordmark); font-weight: var(--weight-display); letter-spacing: -0.075em; line-height: 1; }
-  .version { color: var(--fg-muted); font-variant-numeric: tabular-nums; }
-  .product-footer nav { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; column-gap: var(--space-3); }
-  .product-footer a { display: inline-flex; align-items: center; justify-content: center; min-width: 40px; min-height: 44px; color: var(--fg-muted); text-decoration: none; }
-  .product-footer a:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 4px; }
-  .product-footer a:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; border-radius: var(--radius-sm); }
-  .product-footer p { margin: 0; color: var(--fg-muted); }
+  /* The browser runtime's model settings (the Model room's Runtime section, or a dialog): the open
+     model, its tools, then storage and the reset in folds. Washes for each part, no lines. */
+  .drawer-shell { display: flex; flex-direction: column; min-height: 0; color: var(--ink2); }
+  .header { display: flex; align-items: center; justify-content: space-between; gap: var(--s4); padding: var(--s5) var(--s5) 0; }
+  .title { color: var(--ink); font: var(--type-mark); }
+  .body { display: grid; gap: var(--s4); padding: var(--s5); overflow-y: auto; }
+  .embedded .body { padding: 0; overflow: visible; }
+
+  .panel { display: grid; gap: var(--s3); padding: var(--s5); border-radius: var(--r-row); background: var(--wash); }
+  .model-heading, .section-head { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: var(--s2) var(--s4); }
+  .model-copy, .section-head > div { display: grid; gap: var(--s1); flex: 1 1 240px; min-width: 0; }
+  h3 { color: var(--ink); font: var(--type-label); overflow-wrap: anywhere; }
+  p { font: var(--type-small); overflow-wrap: anywhere; }
+  .status { padding: 2px var(--s2); border-radius: var(--r-chip); background: var(--paper); color: var(--ink3); font: var(--type-meta); }
+  .status.ready { color: var(--ink); }
+  .actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
+  .action-status, .empty { color: var(--ink3); }
+  .error, .warning { color: var(--ink); }
+  .notice { color: var(--ink2); }
+
+  /* Buttons: the one way forward filled, the rest quiet on paper, a follow-up as text. */
+  button:not(:global(.icon)) { display: inline-flex; align-items: center; justify-content: center; gap: var(--s2); height: 36px; padding: 0 var(--s4); border: 0; border-radius: var(--r-pill); background: var(--paper); color: var(--ink); font: var(--type-control); white-space: nowrap; cursor: pointer; transition: opacity var(--fast) var(--ease), background-color var(--fast) var(--ease), color var(--fast) var(--ease), scale var(--fast) var(--ease); }
+  button:not(:global(.icon)):disabled { opacity: 0.4; cursor: default; }
+  button:not(:global(.icon)):active:not(:disabled) { scale: 0.97; }
+  button.primary, button.danger { padding: 0 var(--s5); background: var(--ink); color: var(--paper); }
+  button.quiet { padding: 0 var(--s2); background: transparent; color: var(--ink3); }
+  @media (hover: hover) {
+    button:not(:global(.icon)):hover:not(:disabled) { background: var(--wash2); }
+    button.primary:hover:not(:disabled), button.danger:hover:not(:disabled) { background: var(--ink); opacity: 0.86; }
+    button.quiet:hover:not(:disabled) { background: transparent; color: var(--ink); }
+  }
+
+  .pack-list, .models { display: grid; gap: var(--s2); }
+  .pack-list li, .models li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2) var(--s4); padding: var(--s3) var(--s4); border-radius: var(--r-box); background: var(--paper); }
+  .pack-details, .installed-pack-details { display: grid; gap: 2px; flex: 1 1 200px; min-width: 0; }
+  .pack-details strong, .installed-pack-details strong { color: var(--ink); font: var(--type-control); }
+  .pack-details span, .installed-pack-details code, .models code { color: var(--ink3); font: var(--type-meta); overflow-wrap: anywhere; }
+  .pack-list li > span { color: var(--ink3); font: var(--type-meta); }
+  .pack-list li > span.installed, .installed { color: var(--ink); font: var(--type-meta); }
+  .pack-list li button, .models li button:not(.danger) { background: var(--wash); }
+  .pack-download { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); flex: 1 1 100%; color: var(--ink3); font: var(--type-meta); }
+  progress { flex: 1 1 120px; height: 4px; border: 0; border-radius: 2px; background: var(--wash); overflow: hidden; appearance: none; }
+  progress::-webkit-progress-bar { border-radius: 2px; background: var(--wash); }
+  progress::-webkit-progress-value { border-radius: 2px; background: var(--ink); transition: width var(--glide) var(--ease); }
+  progress::-moz-progress-bar { border-radius: 2px; background: var(--ink); }
+
+  .disclosure-stack { display: grid; gap: var(--s3); padding-top: var(--s3); }
+  .subsection { display: grid; gap: var(--s3); padding: var(--s4); border-radius: var(--r-row); background: var(--wash); }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: var(--s2) var(--s4); margin: 0; }
+  .facts > div { display: grid; gap: 2px; min-width: 0; }
+  dt { color: var(--ink3); font: var(--type-meta); }
+  dd { margin: 0; color: var(--ink); font: var(--type-small); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .diagnostics { padding-top: var(--s3); }
+  .sources { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4); padding-top: var(--s3); }
+  .sources a, .product-footer a { color: var(--ink2); font: var(--type-small); text-decoration: underline; text-decoration-color: var(--wash2); text-decoration-thickness: 2px; text-underline-offset: 4px; transition: color var(--fast) var(--ease); }
+  @media (hover: hover) { .sources a:hover, .product-footer a:hover { color: var(--ink); } }
+
+  .product-footer { display: grid; gap: var(--s2); padding-top: var(--s4); color: var(--ink3); font: var(--type-meta); }
+  .product-identity { display: flex; align-items: baseline; gap: var(--s2); }
+  .wordmark { color: var(--ink); font: var(--type-control); }
+  .product-footer nav { display: flex; flex-wrap: wrap; gap: var(--s2); }
+  .product-footer p { font: var(--type-meta); }
 
   @media (max-width: 720px) {
-    .model-heading, .section-head, .models li { align-items: flex-start; flex-wrap: wrap; }
-    .facts.compact { grid-template-columns: minmax(0, 1fr); }
-    .pack-list > li { grid-template-columns: minmax(0, 1fr); align-items: stretch; }
-    .pack-download { min-width: 0; }
+    .header { padding: var(--s4) var(--s4) 0; }
+    .body { padding: var(--s4); }
+    .panel { padding: var(--s4); }
+    button:not(:global(.icon)) { height: 44px; }
   }
 </style>

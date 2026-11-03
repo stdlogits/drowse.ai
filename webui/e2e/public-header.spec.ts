@@ -12,8 +12,8 @@ for (const path of ["/", "/credits", "/app?layoutFixture=setup", "compact"]) {
     if (path === "compact") await page.evaluate(async url => {
       const [{ default: Header }, { mount }] = await Promise.all([import(url), import("/e2e/svelte-runtime.ts")]);
       document.body.replaceChildren();
-      mount(Header, { target: document.body, props: { current: "chats", compact: true } });
-    }, `/@fs${resolve("../drowse/webui/src/lib/ui/PageHeader.svelte")}`);
+      mount(Header, { target: document.body, props: { current: "chats" } });
+    }, `/@fs${resolve("src/hosted/ui/SiteHeader.svelte")}`);
     await page.evaluate(() => document.fonts.ready);
     const header = page.locator(".page-header");
     const brand = header.locator(".page-brand");
@@ -24,15 +24,19 @@ for (const path of ["/", "/credits", "/app?layoutFixture=setup", "compact"]) {
       await page.setViewportSize({ width, height: 900 });
       await expect(brand).toBeVisible();
       await expect.poll(() => header.evaluate(h => {
-        const nav = h.querySelector("nav")!;
+        // The header can re-render mid-resize; a missing part is "not yet", polled again.
+        const nav = h.querySelector("nav");
+        const headerEnd = h.querySelector(".header-end");
+        if (!nav || !headerEnd) return false;
         const box = nav.getBoundingClientRect();
-        const appearance = h.querySelector(".appearance")!.getBoundingClientRect();
-        const separateRow = innerWidth <= 640;
+        const end = headerEnd.getBoundingClientRect();
+        // Public pages put their links on a row of their own on a phone; the app keeps one row.
+        const separateRow = innerWidth <= 720 && !h.classList.contains("app");
         return h.scrollWidth <= h.clientWidth + 1 && nav.scrollWidth <= nav.clientWidth + 1
           && [...nav.children].every(link => {
             const bounds = link.getBoundingClientRect();
             return bounds.left >= box.left - 1 && bounds.right <= box.right + 1
-              && (separateRow ? bounds.top >= appearance.bottom - 1 : bounds.right <= appearance.left + 1);
+              && (separateRow ? bounds.top >= end.bottom - 1 : bounds.right <= end.left + 1);
           });
       })).toBe(true);
       await expect(nav.getByRole("link")).toHaveText(destinations);
@@ -50,9 +54,9 @@ for (const path of ["/", "/credits", "/app?layoutFixture=setup", "compact"]) {
   });
 }
 
-test("public header balances its visible edges without shrinking the theme target", async ({ page }, testInfo) => {
+test("the theme button closes the header on its inline end in both directions", async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto(`${devUrl}/app?layoutFixture=setup`);
+  await page.goto(`${devUrl}/credits`);
   await page.evaluate(() => document.fonts.ready);
   const header = page.locator(".page-header");
   for (const direction of ["ltr", "rtl"]) {
@@ -61,37 +65,31 @@ test("public header balances its visible edges without shrinking the theme targe
         document.documentElement.dir = direction;
         (await import(themeUrl)).setTheme(theme);
       }, { direction, theme, themeUrl: `/@fs${resolve("../drowse/webui/src/lib/theme.ts")}` });
-      for (const width of [320, 390, 431, 480, 760, 1440]) {
+      for (const width of [320, 390, 480, 760, 1440]) {
         await page.setViewportSize({ width, height: 900 });
         await expect.poll(() => header.evaluate(element => {
           const header = element.getBoundingClientRect();
           const style = getComputedStyle(element);
-          const icon = element.querySelector(".theme-icon")!.getBoundingClientRect();
-          const button = element.querySelector(".theme-toggle button")!.getBoundingClientRect();
-          const nav = element.querySelector("nav")!;
-          const iconInset = style.direction === "rtl" ? icon.left - header.left : header.right - icon.right;
+          const button = element.querySelector(".header-end > :last-child")!.getBoundingClientRect();
+          const nav = element.querySelector("nav");
+          const inset = style.direction === "rtl" ? button.left - header.left : header.right - button.right;
           return {
-            aligned: Math.abs(iconInset - parseFloat(style.paddingInlineEnd)) <= 1,
-            target: button.width >= 44 && button.height >= 44,
+            aligned: Math.abs(inset - parseFloat(style.paddingInlineEnd)) <= 1,
             fits: button.left >= 0 && button.right <= document.documentElement.clientWidth
-              && element.scrollWidth <= element.clientWidth + 1 && nav.scrollWidth <= nav.clientWidth + 1,
+              && element.scrollWidth <= element.clientWidth + 1 && (!nav || nav.scrollWidth <= nav.clientWidth + 1),
           };
-        })).toEqual({ aligned: true, target: true, fits: true });
-        if (width === 431) {
-          await expect(header.locator(".page-brand")).toBeVisible();
-          await expect(header.locator("nav")).toHaveCSS("justify-content", "space-between");
-          await header.screenshot({ path: testInfo.outputPath(`aligned-${direction}-${theme}.png`) });
-        }
+        })).toEqual({ aligned: true, fits: true });
+        if (width === 390) await header.screenshot({ path: testInfo.outputPath(`aligned-${direction}-${theme}.png`) });
       }
     }
   }
 });
 
-test("workbench keeps its wordmark without the public navigation row", async ({ page }) => {
+test("the workbench keeps its own mark without the public navigation row", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 844 });
   await page.goto(`${devUrl}/app?layoutFixture=base`);
-  await expect(page.locator(".page-brand")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Workspace menu", exact: true })).toBeVisible();
+  await expect(page.locator(".dw-mark").first()).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Primary navigation" })).toHaveCount(0);
 });
 
 test("page navigation and footer links reflow at narrow widths and enlarged text", async ({ page }) => {

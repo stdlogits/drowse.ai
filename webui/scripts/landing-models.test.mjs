@@ -6,7 +6,7 @@ import { createServer } from "vite";
 // landing chunk does not bundle the runtime lock. This test keeps them in step with the lock.
 const lock = JSON.parse(await readFile(new URL("../../browser-runtime/runtime-lock.json", import.meta.url), "utf8"));
 const landingSource = await readFile(new URL("../src/hosted/ui/Landing.svelte", import.meta.url), "utf8");
-const heroSource = await readFile(new URL("../src/hosted/ui/HeroShader.svelte", import.meta.url), "utf8");
+const recording = JSON.parse(await readFile(new URL("../src/hosted/data/neighbor-example.json", import.meta.url), "utf8"));
 
 const server = await createServer({
   appType: "custom", logLevel: "silent",
@@ -46,28 +46,39 @@ try {
   for (const heading of ["What you need.", "Words you&#39;ll see.", "Common questions.", "Need more models?"]) {
     assert.ok(html.includes(heading) || html.includes(heading.replace("&#39;", "'")), `${heading} section is visible`);
   }
-  for (const term of ["Influence", "Strength (α)", "Word insights (J-lens)", "Feature insights (SAE)", "Loom", "Base model"]) {
+  for (const term of ["Influence", "Strength (α)", "Word insights (R lens)", "S lens", "Neurons and heads", "Feature insights (SAE)", "Loom", "Base model"]) {
     assert.ok(new RegExp(`<dt[^>]*>${RegExp.escape(term)}</dt>`).test(html), `${term} is defined`);
   }
   assert.ok((html.match(/<details[\s>]/g) ?? []).length >= 8, "questions use native details elements");
   assert.doesNotMatch(html, /application\/ld\+json|FAQPage/, "structured data is not added by the landing component");
   assert.match(html, /href="\/privacy"[^>]*>What leaves your device/);
-  assert.match(html, /href="https:\/\/github\.com\/[^"]+#installation"[^>]*>Install from source/);
+  assert.match(html, /href="https:\/\/github\.com\/[^"]+#installation"[^>]*>Install with pip/);
   assert.match(html, /<main id="main" tabindex="-1"[\s>]/);
   assert.doesNotMatch(landingSource, /scrollbar-width: none|::-webkit-scrollbar\) \{\s*display: none/);
 
-  // Hero video is versioned past the immutable cache and loads only after the page settles.
-  assert.match(heroSource, /HERO_VIDEO_VERSION = "[^"]+"/);
-  assert.match(heroSource, /\?v=\$\{HERO_VIDEO_VERSION\}/);
-  assert.match(heroSource, /requestIdleCallback/);
-  const { heroVideoAllowed, heroVideoUrl } = await server.ssrLoadModule("/src/hosted/ui/HeroShader.svelte");
-  for (const effectiveType of ["slow-2g", "2g", "3g"]) assert.equal(heroVideoAllowed({ effectiveType }, 8), false);
-  assert.equal(heroVideoAllowed({ effectiveType: "4g" }, 2), false, "low-memory devices keep the poster");
-  assert.equal(heroVideoAllowed({ effectiveType: "4g" }, 8), true);
-  assert.equal(heroVideoAllowed(undefined, undefined), true);
-  assert.match(heroVideoUrl(400), /^\/video\/ethereal-orb-720\.mp4\?v=/);
-  assert.match(heroVideoUrl(1280), /^\/video\/ethereal-orb\.mp4\?v=/);
+  // The hero is static Ledger: type and one real reading, no shader, video or loop.
+  assert.doesNotMatch(landingSource, /HeroShader|<canvas|<video|requestAnimationFrame\(\s*(?:render|loop|tick)/);
+  assert.doesNotMatch(landingSource, /animation:[^;]*infinite/, "nothing on the landing loops");
+  // Every number in the hero's reading is the recording's: the run steered toward welcoming at 0.10,
+  // token 22, its five likeliest next tokens and the one it wrote.
+  const run = recording.runs.find((candidate) => candidate.alpha === 0.1);
+  const written = run.tokens[22];
+  const context = run.tokens.slice(14, 22).map((token) => token.text).join("").replaceAll("'", "’");
+  assert.match(landingSource, new RegExp(`const heroContext = "${RegExp.escape(context)}";`));
+  assert.match(landingSource, /const heroModel = "Gemma 3 4B";/);
+  assert.equal(recording.modelId, "gemma3-4b-instruct");
+  assert.match(landingSource, /const heroSteering = "steered toward welcoming, 0\.10";/);
+  const heroNext = [...landingSource.matchAll(/\{ token: "([^"]+)", p: ([\d.]+)(, wrote: true)? \}/g)]
+    .map(([, token, p, wrote]) => ({ token, p: Number(p), wrote: Boolean(wrote) }));
+  assert.deepEqual(heroNext.map((next) => next.token), written.topAlts.map((alt) => alt.text));
+  for (const [i, next] of heroNext.entries()) {
+    assert.ok(Math.abs(next.p - Math.exp(written.topAlts[i].logprob)) < 5e-5, `${next.token} is ${Math.exp(written.topAlts[i].logprob)}`);
+    assert.equal(next.wrote, next.token === written.text, `${next.token} ${next.wrote ? "is" : "is not"} the token written`);
+  }
+  assert.match(html, /<figure class="reading[^"]*"/);
+  assert.match(html, /We’d love for you to feel <span class="slot[^"]*"[^>]*>[\s\S]*?at[\s\S]*?<\/span><\/p>/);
+  assert.equal((html.match(/<button type="button" class="row[^"]*" aria-pressed="true"/g) ?? []).length, 1, "the written token starts chosen");
 } finally {
   await server.close();
 }
-console.log("Landing: model roster matches the runtime lock, sizes and requirements agree, guide sections render, and hero video is versioned");
+console.log("Landing: model roster matches the runtime lock, sizes and requirements agree, guide sections render, and the hero reading matches its recording");

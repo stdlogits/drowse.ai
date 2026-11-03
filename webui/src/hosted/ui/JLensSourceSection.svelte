@@ -1,47 +1,17 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import {
-    instrumentFamily,
-    lensSourceState,
-    refreshLensSources,
-    sessionState,
-    useLensSource,
-  } from "../../../../drowse/webui/src/lib/stores.svelte";
-  import InstrumentSourceSection from "../../../../drowse/webui/src/panels/rack/InstrumentSourceSection.svelte";
+  // The browser runtime's lens sources, in #/artifacts/lenses under the Artifacts room's Lenses head:
+  // 6.0's four lenses (drowse's 2x2, S and R at out and mid) over the installed packs, the R pack in
+  // use chosen among those installed, and the way to a pack for a family with none loaded. The
+  // runtime offers no fit or fetch, so it renders drowse's LensQuad with the default column (no fit
+  // form) rather than the native section, and the shared columns show sources and coverage only.
+  import LensQuad from "../../../../drowse/webui/src/panels/rooms/lens/LensQuad.svelte";
+  import { lensSourceState, sessionState } from "../../../../drowse/webui/src/lib/stores.svelte";
   import InstrumentPackRecovery from "./InstrumentPackRecovery.svelte";
 
-  const fitted = $derived(sessionState.info?.jlens_fitted === true);
-  const allowSourceSwitch = $derived(
-    instrumentFamily("lens")?.capabilities.source_switch === true,
-  );
-  const visibleSources = $derived(
-    allowSourceSwitch
-      ? lensSourceState.sources
-      : lensSourceState.sources.filter((source) => source.active === true),
-  );
-  const sourceBusy = $derived(lensSourceState.loading || lensSourceState.busy);
-  let selectedSource = $state("");
-
-  onMount(() => void refreshLensSources());
+  const rLoaded = $derived(sessionState.info?.jlens_fitted === true);
+  const sLoaded = $derived(lensSourceState.sources.some((row) => row.family === "S" && row.active === true));
 </script>
 
-<InstrumentSourceSection
-  ready={fitted}
-  sources={visibleSources}
-  bind:value={selectedSource}
-  busy={sourceBusy}
-  sourceError={lensSourceState.error}
-  working={false}
-  allowLocal={false}
-  onuse={(source) => void useLensSource(source)}
-  providerOptions={[]}
-  providerPlaceholder="compatible J-lens pack"
-  onfetch={() => undefined}
-  localActionLabel=""
-  localActionDisabled
-  onlocal={() => undefined}
->
-  {#snippet messages()}
-    {#if !fitted}<InstrumentPackRecovery kind="jlens" />{/if}
-  {/snippet}
-</InstrumentSourceSection>
+<LensQuad />
+{#if !rLoaded}<InstrumentPackRecovery kind="jlens" />{/if}
+{#if !sLoaded && sessionState.info?.is_base_model !== true}<InstrumentPackRecovery kind="slens" />{/if}

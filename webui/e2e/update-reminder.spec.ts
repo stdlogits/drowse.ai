@@ -1,6 +1,5 @@
 import { expect, type Page } from "@playwright/test";
 import { createServer, request as httpRequest } from "node:http";
-import AxeBuilder from "@axe-core/playwright";
 import { test } from "./pwa-update-fixture";
 
 const key = "drowse.pwa-update-reminder.v1";
@@ -43,89 +42,7 @@ async function installUpdate(page: Page) {
   await expect(updateNotice(page)).toBeVisible();
 }
 
-test("update and reminder confirmation stay at the bottom right on phones and desktops", async ({ page }, testInfo) => {
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await installUpdate(page);
-  for (const viewport of [{ width: 320, height: 568 }, { width: 440, height: 796 }, { width: 844, height: 390 }, { width: 1440, height: 900 }]) {
-    await page.setViewportSize(viewport);
-    await expect.poll(() => updateNotice(page).evaluate(element => {
-      const box = element.getBoundingClientRect();
-      return { right: Math.round(innerWidth - box.right), bottom: Math.round(innerHeight - box.bottom) };
-    })).toEqual({ right: 16, bottom: 16 });
-    await page.screenshot({ path: testInfo.outputPath(`update-bottom-right-${viewport.width}.png`) });
-  }
-  await page.setViewportSize({ width: 440, height: 796 });
-  await updateNotice(page).getByRole("button", { name: "Update later" }).click();
-  await expect.poll(() => page.locator(".pwa-confirmation").evaluate(element => {
-    const box = element.getBoundingClientRect();
-    return { right: Math.round(innerWidth - box.right), bottom: Math.round(innerHeight - box.bottom) };
-  })).toEqual({ right: 16, bottom: 16 });
-});
-
-test("update entrance and fading glow play only once, with comfortable button spacing", async ({ context, page }, testInfo) => {
-  test.setTimeout(180_000);
-  await page.emulateMedia({ colorScheme: "dark" });
-  await page.addInitScript(() => localStorage.setItem("drowse.theme", "dark"));
-  await installUpdate(page);
-  const notice = updateNotice(page);
-  await expect(notice).toHaveClass(/first-update/);
-  await expect(notice).toHaveCSS("animation-name", /update-pop.*update-glow/);
-  const animation = await notice.evaluate(element => {
-    const card = element as HTMLElement;
-    card.style.animation = "none";
-    void card.offsetHeight;
-    card.style.removeProperty("animation");
-    const animations = element.getAnimations();
-    for (const animation of animations) {
-      animation.playbackRate = 0.1;
-      animation.pause(); animation.currentTime = 120;
-    }
-    return animations.map(animation => (animation as CSSAnimation).animationName);
-  });
-  expect(animation.some(name => name.endsWith("update-pop"))).toBe(true);
-  expect(animation.some(name => name.endsWith("update-glow"))).toBe(true);
-  await page.screenshot({ path: testInfo.outputPath("update-entrance.png") });
-  await notice.evaluate(element => {
-    for (const animation of element.getAnimations()) animation.currentTime = 1500;
-  });
-  const glow = await notice.evaluate(element => getComputedStyle(element).boxShadow);
-  await notice.evaluate(element => {
-    for (const animation of element.getAnimations()) animation.finish();
-  });
-  expect(await notice.evaluate(element => getComputedStyle(element).boxShadow)).not.toBe(glow);
-  await expect(notice.locator(".pwa-actions")).toHaveCSS("gap", "16px");
-  const gradient = await page.locator(".hero-action-row .primary-action").evaluate(element => getComputedStyle(element).backgroundImage.replace(/, none$/, ""));
-  expect(gradient).toContain("linear-gradient(");
-  for (const button of await notice.getByRole("button").all()) {
-    const expected = await button.evaluate(element => {
-      const swatch = document.createElement("div");
-      swatch.style.backgroundImage = "var(--control-sheen)";
-      element.append(swatch);
-      const value = getComputedStyle(swatch).backgroundImage;
-      swatch.remove();
-      return value;
-    });
-    expect(expected).toContain("linear-gradient(");
-    await expect(button).toHaveCSS("background-image", expected);
-    await button.hover();
-    await expect(button).toHaveCSS("background-image", expected);
-  }
-  for (const width of [1440, 320]) {
-    await page.setViewportSize({ width, height: 900 });
-    expect(await notice.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-    await notice.screenshot({ path: testInfo.outputPath(`update-rest-${width}.png`), animations: "disabled" });
-  }
-  expect((await new AxeBuilder({ page }).include(".pwa-notice").analyze()).violations).toEqual([]);
-  await page.reload();
-  await expect(notice).toBeVisible();
-  await expect(notice).not.toHaveClass(/first-update/);
-  await page.goto("/credits/");
-  await expect(notice).toBeVisible();
-  await expect(notice).not.toHaveClass(/first-update/);
-  expect(await notice.evaluate(element => element.getAnimations().length)).toBe(0);
-});
-
-test("snoozes survive navigation and reload and escalate through 1h, 6h, and daily", async ({ context, page }, testInfo) => {
+test("snoozes survive navigation and reload and escalate through 1h, 6h, and daily", async ({ page }) => {
   test.setTimeout(180_000);
   await page.clock.install();
   await installUpdate(page);
@@ -141,14 +58,6 @@ test("snoozes survive navigation and reload and escalate through 1h, 6h, and dai
     const saved = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!), key);
     expect(saved.remindAt - before).toBeGreaterThanOrEqual(hours * 3_600_000);
     expect(saved.deferrals).toBe(Math.min(index + 1, 3));
-    if (index === 0) {
-      await confirmation.locator(".countdown-remaining").evaluate(element => {
-        const animation = element.getAnimations()[0];
-        animation.pause(); animation.currentTime = 2500;
-      });
-      await expect(confirmation.locator(".countdown-remaining")).toHaveCSS("stroke-dashoffset", "0.5px");
-      await confirmation.screenshot({ path: testInfo.outputPath("reminder-confirmation.png") });
-    }
     await page.clock.fastForward(4_000);
     await expect(confirmation).toBeVisible();
     await page.clock.fastForward(1_200);
@@ -192,14 +101,13 @@ test("another tab shares the snooze and applying the update resets the next remi
   expect(await other.evaluate(key => localStorage.getItem(key), key)).toBeNull();
 });
 
-test("reduced motion removes the entrance and glow but retains the confirmation deadline", async ({ context, page }) => {
+test("under reduced motion the confirmation still clears at its deadline", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.clock.install();
   await installUpdate(page);
   const notice = updateNotice(page);
-  await expect(notice).toHaveCSS("animation-name", "none");
   await notice.getByRole("button", { name: "Update later" }).click();
-  await expect(page.locator(".countdown-remaining")).toHaveCSS("animation-timing-function", "steps(5)");
+  await expect(page.locator(".pwa-confirmation")).toBeVisible();
   await page.clock.fastForward(5_001);
   await expect(page.locator(".pwa-confirmation")).toHaveCount(0);
 });

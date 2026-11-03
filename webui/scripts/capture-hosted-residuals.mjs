@@ -27,6 +27,11 @@ import {
 } from "./release-tool-storage-quota.mjs";
 import { readRuntimeLock } from "./runtime-lock-document.mjs";
 import { validateBrowserFullRuntimeModelClosure } from "./browser-full-runtime-contract.mjs";
+import {
+  CAPTURE_SCHEMA_VERSION,
+  captureUnitsMember,
+  unitsCaptureFailures,
+} from "./hosted-residual-capture-units.mjs";
 
 const options = parseArguments(process.argv.slice(2));
 if (options.help) {
@@ -97,7 +102,7 @@ validateBrowserFullRuntimeModelClosure({
   contextTokens: Math.min(...lock.contextProfiles),
 });
 await validatePublishDirectory(modelDirectory, lock, runtimeLock, {
-  allowLegacyBranding: true, allowStaleToolchain: true,
+  allowStaleToolchain: true,
 });
 const executionProfiles = lockedModelExecutionProfiles(lock, artifactsManifest);
 if (
@@ -167,10 +172,7 @@ const server = createHttpServer(async (request, response) => {
     }
     if (request.method === "POST" && url.pathname === "/capture") {
       const kind = url.searchParams.get("kind");
-      if (
-        kind !== "unsteered" && kind !== "rank-one-control" &&
-        kind !== "steered"
-      ) {
+      if (kind !== "unsteered" && kind !== "control-probes" && kind !== "steered-probes" && kind !== "sites") {
         return send(response, "unknown capture kind", "text/plain", 400);
       }
       if (captureBodies.has(kind)) {
@@ -245,6 +247,7 @@ try {
         ? {}
         : { namedRoleCheck: { row: input.namedRoleCheck.row } }),
       contextTokens: Math.max(...lock.contextProfiles),
+      contextProfiles: [...lock.contextProfiles],
       dumpShaders: shaderDumpDirectory !== null,
     },
   });
@@ -254,17 +257,27 @@ try {
   await new Promise((resolvePromise) => server.close(resolvePromise));
 }
 const residualBytes = captureBodies.get("unsteered");
-const rankOneControlResidualBytes = captureBodies.get("rank-one-control");
-const steeredResidualBytes = captureBodies.get("steered");
-const envelopeFailures = captureEnvelopeFailures({
-  result,
-  residualBytes,
-  rankOneControlResidualBytes,
-  steeredResidualBytes,
-  lock,
-  input,
-  expectedRuntimeIdentitySha256,
-});
+const controlProbeBytes = captureBodies.get("control-probes");
+const steeredProbeBytes = captureBodies.get("steered-probes");
+const sitesBytes = captureBodies.get("sites");
+const envelopeFailures = [
+  ...captureEnvelopeFailures({
+    result,
+    residualBytes,
+    controlProbeBytes,
+    steeredProbeBytes,
+    lock,
+    input,
+    expectedRuntimeIdentitySha256,
+  }),
+  ...unitsCaptureFailures({
+    structuredHookProfile: executionProfiles.structuredHookProfile,
+    units: result.units,
+    sitesBytes,
+    lock,
+    positions: input.positions,
+  }),
+];
 if (envelopeFailures.length > 0) {
   throw new Error(
     `browser residual capture returned an incompatible envelope:\n- ${envelopeFailures.join("\n- ")}`,
@@ -281,13 +294,11 @@ const stage = await mkdtemp(join(dirname(outputDirectory), ".drowse-residual-"))
 try {
   await mkdir(stage, { recursive: true });
   await writeFile(resolve(stage, "residuals.f32"), residualBytes);
-  await writeFile(
-    resolve(stage, "rank-one-control-residuals.f32"),
-    rankOneControlResidualBytes,
-  );
-  await writeFile(resolve(stage, "steered-residuals.f32"), steeredResidualBytes);
+  await writeFile(resolve(stage, "control-probes.f32"), controlProbeBytes);
+  await writeFile(resolve(stage, "steered-probes.f32"), steeredProbeBytes);
+  if (sitesBytes !== undefined) await writeFile(resolve(stage, "sites.f32"), sitesBytes);
   await writeFile(resolve(stage, "capture.json"), `${JSON.stringify({
-    schema_version: 3,
+    schema_version: CAPTURE_SCHEMA_VERSION,
     produced_at: new Date().toISOString(),
     model_id: options.modelId,
     runtime_identity_sha256: result.runtimeIdentitySha256,
@@ -297,10 +308,9 @@ try {
     input_ids: input.inputIds,
     positions: result.positions,
     residual_sha256: result.residualSha256,
-    rank_one_control_residual_sha256: result.rankOneControlResidualSha256,
-    steered_residual_sha256: result.steeredResidualSha256,
-    rank_one_program: result.rankOneProgram,
-    probe_measurements: result.probeMeasurements,
+    control_probe_sha256: result.controlProbeSha256,
+    steered_probe_sha256: result.steeredProbeSha256,
+    steering_program: result.steeringProgram,
     greedy: {
       prompt: result.greedyPrompt,
       input_ids: result.greedyInputIds,
@@ -315,6 +325,7 @@ try {
             position: result.namedRolePrepared.position,
           },
         }),
+    ...(result.units === undefined ? {} : { units: captureUnitsMember(result.units) }),
   }, null, 2)}\n`);
   await rename(stage, outputDirectory);
 } catch (error) {
@@ -328,9 +339,11 @@ process.stdout.write(`${JSON.stringify({
   positions: result.positions,
   hiddenSize: result.hiddenSize,
   residualSha256: result.residualSha256,
-  rankOneControlResidualSha256: result.rankOneControlResidualSha256,
-  steeredResidualSha256: result.steeredResidualSha256,
+  controlProbeSha256: result.controlProbeSha256,
+  steeredProbeSha256: result.steeredProbeSha256,
   greedyTokenIds: result.greedyTokenIds,
+  sitesSha256: result.units?.sitesSha256 ?? null,
+  staticReads: result.units?.staticReads.length ?? 0,
   runtimeLock: runtimeLockProvenance,
 }, null, 2)}\n`);
 
@@ -433,22 +446,23 @@ function validNamedRoleCheck(value) {
     value.expectedPosition < value.expectedInputIds.length;
 }
 
-function validObservedRankOneResult(result, layerCount, hiddenSize) {
-  const descriptor = result.rankOneProgram;
-  return descriptor && descriptor.abiVersion === 1 &&
-    Number.isSafeInteger(descriptor.enabledLayer) && descriptor.enabledLayer >= 0 &&
-    descriptor.enabledLayer < layerCount && Array.isArray(descriptor.direction) &&
-    descriptor.direction.length === hiddenSize && descriptor.direction.every(Number.isFinite) &&
-    [descriptor.target, descriptor.along, descriptor.collapse].every(Number.isFinite) &&
-    Array.isArray(result.probeMeasurements) && result.probeMeasurements.length === layerCount &&
-    result.probeMeasurements.every(Number.isFinite);
+function validSteeringProgram(result, layerCount, hiddenSize) {
+  const program = result.steeringProgram;
+  return program && program.format === "drowse-structured-v4" &&
+    Number.isSafeInteger(program.enabledLayer) && program.enabledLayer >= 0 &&
+    program.enabledLayer < layerCount && Array.isArray(program.probeDirections) &&
+    program.probeDirections.length === result.probeCount && result.probeCount >= 1 &&
+    program.probeDirections.every((direction) =>
+      Array.isArray(direction) && direction.length === hiddenSize && direction.every(Number.isFinite)
+    ) &&
+    [program.target, program.along, program.kappa].every(Number.isFinite);
 }
 
 function captureEnvelopeFailures({
   result,
   residualBytes,
-  rankOneControlResidualBytes,
-  steeredResidualBytes,
+  controlProbeBytes,
+  steeredProbeBytes,
   lock,
   input,
   expectedRuntimeIdentitySha256,
@@ -468,34 +482,22 @@ function captureEnvelopeFailures({
       );
     }
   }
-  if (steeredResidualBytes === undefined) failures.push("steered capture body is missing");
-  else {
-    if (steeredResidualBytes.length !== result.steeredBytes) {
+  for (const [label, body, digest] of [
+    ["control probe", controlProbeBytes, result.controlProbeSha256],
+    ["steered probe", steeredProbeBytes, result.steeredProbeSha256],
+  ]) {
+    if (body === undefined) {
+      failures.push(`${label} capture body is missing`);
+      continue;
+    }
+    const expectedBytes = input.positions.length * lock.layerMap.length * result.probeCount * 4;
+    if (body.length !== result.probeBytes || body.length !== expectedBytes) {
       failures.push(
-        `steered byte count is ${steeredResidualBytes.length}, envelope declares ${String(result.steeredBytes)}`,
+        `${label} byte count is ${body.length}, envelope declares ${String(result.probeBytes)} (expected ${expectedBytes})`,
       );
     }
-    const digest = sha256(steeredResidualBytes);
-    if (digest !== result.steeredResidualSha256) {
-      failures.push(
-        `steered SHA-256 is ${digest}, envelope declares ${String(result.steeredResidualSha256)}`,
-      );
-    }
-  }
-  if (rankOneControlResidualBytes === undefined) {
-    failures.push("rank-one control capture body is missing");
-  } else {
-    if (rankOneControlResidualBytes.length !== result.rankOneControlBytes) {
-      failures.push(
-        `rank-one control byte count is ${rankOneControlResidualBytes.length}, envelope declares ${String(result.rankOneControlBytes)}`,
-      );
-    }
-    const digest = sha256(rankOneControlResidualBytes);
-    if (digest !== result.rankOneControlResidualSha256) {
-      failures.push(
-        `rank-one control SHA-256 is ${digest}, envelope declares ${String(result.rankOneControlResidualSha256)}`,
-      );
-    }
+    const actual = sha256(body);
+    if (actual !== digest) failures.push(`${label} SHA-256 is ${actual}, envelope declares ${String(digest)}`);
   }
   if (result.layerCount !== lock.layerMap.length) {
     failures.push(
@@ -510,8 +512,8 @@ function captureEnvelopeFailures({
       `position count is ${String(result.positionCount)}, expected ${input.positions.length}`,
     );
   }
-  if (!validObservedRankOneResult(result, lock.layerMap.length, lock.hiddenSize)) {
-    failures.push("rank-one program or probe measurements are invalid");
+  if (!validSteeringProgram(result, lock.layerMap.length, lock.hiddenSize)) {
+    failures.push("the steering program or its probe directions are invalid");
   }
   if (result.runtimeIdentitySha256 !== expectedRuntimeIdentitySha256) {
     failures.push(

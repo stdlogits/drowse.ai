@@ -13,7 +13,7 @@ const server = await createServer({
 });
 
 try {
-  const { BrowserLoomRuntime, deriveSeedSchedule } = await server.ssrLoadModule(
+  const { BrowserLoomRuntime, composeCall, deriveSeedSchedule, recipeModifier } = await server.ssrLoadModule(
     "/src/hosted/runtime/browserLoom.ts",
   );
   const { streamWebLlmGeneration } = await server.ssrLoadModule(
@@ -386,7 +386,19 @@ try {
     /continuation failed/,
   );
   const failedContinuationAfter = failedContinuationRuntime.snapshot();
-  assert.deepEqual(failedContinuationAfter.tree.nodes, failedContinuationBefore.tree.nodes);
+  // drowse never discards a continuation: the node stays as rebuilt, unfinalized.
+  assert.deepEqual(
+    failedContinuationAfter.tree.nodes.filter((node) => node.id !== continuedId),
+    failedContinuationBefore.tree.nodes.filter((node) => node.id !== continuedId),
+  );
+  const failedContinued = failedContinuationAfter.tree.nodes.find((node) => node.id === continuedId);
+  const continuedBefore = failedContinuationBefore.tree.nodes.find((node) => node.id === continuedId);
+  assert.equal(continuedBefore.finish_reason, "stop");
+  assert.equal(failedContinued.text, continuedBefore.text);
+  assert.equal(failedContinued.finish_reason, null);
+  assert.equal(failedContinued.raw_token_ids, null);
+  assert.equal(failedContinued.applied_steering, null);
+  assert.equal(failedContinued.aggregate_measurements, null);
   assert.equal(failedContinuationAfter.tree.active_node_id, continuedId);
   assert.equal(failedContinuationAfter.tree.rev, failedContinuationBefore.tree.rev + 2);
   assert.deepEqual(
@@ -620,7 +632,8 @@ try {
     service: "tree", method: "transcriptExport", args: [null],
   });
   assert.equal(exportedTranscript.node_id, chat.tree.active_node_id);
-  assert.match(exportedTranscript.yaml, /^drowse_transcript: 2/m);
+  assert.match(exportedTranscript.yaml, /^drowse_transcript: 3/m);
+  assert.match(exportedTranscript.yaml, /^    finish_reason: stop$/m);
   assert.match(exportedTranscript.yaml, /model_id: fixture\/drowse-tiny/);
   assert.match(exportedTranscript.yaml, /text: Question/);
   const transcriptRuntime = new BrowserLoomRuntime({
@@ -645,6 +658,20 @@ try {
       args: [exportedTranscript.yaml.replace("temperature: 0.25", "temperature: fast"), "default", false],
     }),
   );
+  assert.deepEqual(transcriptRuntime.snapshot().tree, beforeInvalidTranscript);
+  // drowse's strict reader: turns and each turn's role/text are required, and a
+  // probe is exactly {name, sha256}.
+  for (const [document, message] of [
+    ["drowse_transcript: 3\n", /transcript is missing: turns/],
+    ["drowse_transcript: 3\nturns:\n  - role: user\n", /turns\[0\] is missing: text/],
+    ["drowse_transcript: 3\nprobes:\n  - name: calm\nturns: []\n", /probes\[0\] is missing: sha256/],
+    ["drowse_transcript: 3\nprobes:\n  - name: calm\n    sha256: ab\n    layer: 3\nturns: []\n", /probes\[0\] has unknown fields: layer/],
+  ]) {
+    await assert.rejects(
+      transcriptRuntime.request({ service: "tree", method: "transcriptLoad", args: [document, "default", false] }),
+      (error) => error.code === "INVALID_TRANSCRIPT" && message.test(error.message),
+    );
+  }
   assert.deepEqual(transcriptRuntime.snapshot().tree, beforeInvalidTranscript);
   const mismatchedTranscript = exportedTranscript.yaml.replace(
     "model_id: fixture/drowse-tiny",
@@ -974,14 +1001,14 @@ try {
       };
       const readoutWidth = plan.readoutTopK ?? 2;
       const measurements = () => ({
-        version: 1,
+        version: 2,
         scope: "token",
         provenance: "captured",
         instruments: {
           ...(replayLive.geometry ? { geometry: { readings: {} } } : {}),
           ...(replayLive.lens ? {
             lens: {
-              binding: { source: "fixture-jlens", steering: plan.steeringExpression ?? null },
+              binding: { sources: { R: "fixture-jlens" }, steering: plan.steeringExpression ?? null },
               readings: {
                 "jlens/yes": {
                   value: 0.8,
@@ -999,8 +1026,8 @@ try {
                   ].slice(0, readoutWidth),
                 })),
                 aggregate: [
-                  { token: "aggregate-only", strength: 0.9, com: 0.5, spread: 0.2 },
-                  { token: "yes", strength: 0.8, com: 0.45, spread: 0.15 },
+                  { token: "aggregate-only", id: 99, strength: 0.9, com: 0.5, spread: 0.2 },
+                  { token: "yes", id: 10, strength: 0.8, com: 0.45, spread: 0.15 },
                 ].slice(0, readoutWidth),
               },
             },
@@ -1026,10 +1053,6 @@ try {
         scores: {
           ...(replayLive.lens ? { "jlens/yes": 0.8 } : {}),
           ...(replayLive.sae ? { "sae/1": 2 } : {}),
-        },
-        per_layer_scores: {
-          ...(replayLive.lens ? { "0": { "jlens/yes": 0.8 } } : {}),
-          ...(replayLive.sae ? { "1": { "sae/1": 2 } } : {}),
         },
       });
       for (const [rawIndex, tokenId] of emitted.entries()) {
@@ -1106,9 +1129,7 @@ try {
   assert.equal(lensReplay.measurements.instruments.lens.binding.steering, null);
   assert.deepEqual(Object.keys(lensReplay.measurements.instruments), ["lens"]);
   assert.deepEqual(lensReplay.measurements.scores, { "jlens/yes": 0.8 });
-  assert.deepEqual(lensReplay.measurements.per_layer_scores, {
-    "0": { "jlens/yes": 0.8 },
-  });
+  assert.equal("per_layer_scores" in lensReplay.measurements, false);
   const unsteeredReplayPlan = exactReplayEngine.plans[0];
   assert.deepEqual(unsteeredReplayPlan.input, {
     kind: "chat",
@@ -1439,17 +1460,17 @@ try {
       text: "Prompt",
       authored_role: "user",
       generated_role: "assistant",
-      steering: "0.5 honest",
+      steering: "0.5 deceptive",
       position_spans: [[5, 7], [1, 3], [3, 4]],
     },
     (event) => steeringEvents.push(event),
   );
-  assert.deepEqual(compiled, ["0.5 honest"]);
+  assert.deepEqual(compiled, ["0.5 deceptive"]);
   assert.equal(steeringEngine.plans[0].hookProgram, hookProgram);
   assert.deepEqual(steeringEngine.plans[0].position_spans, [[1, 4], [5, 7]]);
   assert.deepEqual(steeringRuntime.snapshot().tree.nodes[2].recipe.position_spans, [[1, 4], [5, 7]]);
-  assert.equal(steeringRuntime.snapshot().tree.nodes[2].applied_steering, "0.5 honest");
-  assert.equal(steeringEvents.at(-1).result.applied_steering, "0.5 honest");
+  assert.equal(steeringRuntime.snapshot().tree.nodes[2].applied_steering, "0.5 deceptive");
+  assert.equal(steeringEvents.at(-1).result.applied_steering, "0.5 deceptive");
   const comparisonEvents = [];
   await steeringRuntime.generate({
     type: "generate",
@@ -1485,7 +1506,7 @@ try {
     const planCount = steeringEngine.plans.length;
     const events = [];
     await assert.rejects(steeringRuntime.generate({ type: "submit", text: "Must not append", authored_role: "user",
-      generated_role: "assistant", steering: "0.5 honest", ...selection }, event => events.push(event)),
+      generated_role: "assistant", steering: "0.5 deceptive", ...selection }, event => events.push(event)),
     error => error.code === "INVALID_STEERING_POSITIONS");
     assert.deepEqual(steeringRuntime.snapshot().tree, before);
     assert.equal(steeringEngine.plans.length, planCount);
@@ -1512,23 +1533,33 @@ try {
     name: "mood alias",
     top_n: 4,
   }];
+  // The fake compiler returns no steering fields, so the loom folds the parse itself: `parts`
+  // come from the grammar, and `n_layers`/`terms` stay out.
+  const calmPart = (text, coeff) => ({
+    text, trigger: null, phase: "both", first_n: null, after_n: null, gate: null, op: "push",
+    target: "calm", coeff, onto: 0, position: null, layers: null, projection: null,
+  });
   assert.deepEqual(await validationRuntime.request({
     service: "sessions",
     method: "validateSteering",
     args: ["0.5 calm", undefined, { probeRequests: prospectiveProbes, tree: validationTreeBefore }],
-  }), { valid: true, expression: "0.5 calm", error: null });
-  assert.deepEqual(await validationRuntime.request({
+  }), { valid: true, expression: "0.5 calm", error: null, parts: [calmPart("0.5 calm", 0.5)] });
+  const bare = await validationRuntime.request({
     service: "sessions",
     method: "validateSteering",
     args: ["  calm  "],
-  }), { valid: true, expression: "0.5 calm", error: null });
+  });
+  assert.equal(bare.valid, true);
+  assert.equal(bare.error, null);
+  assert.equal(bare.parts.length, 1);
+  assert.equal(bare.parts[0].target, "calm");
   assert.deepEqual(validationCompiles, [
     {
       expression: "0.5 calm",
       probeRequests: prospectiveProbes,
     },
     {
-      expression: "  calm  ",
+      expression: "calm",
       probeRequests: undefined,
     },
   ]);
@@ -1554,6 +1585,33 @@ try {
   assert.equal(invalidTreeValidation.valid, false);
   assert.deepEqual(validationRuntime.snapshot().tree, validationTreeBefore);
   assert.equal(validationEngine.plans.length, 0);
+  // drowse's parse_expr folds against the installed manifolds before its lock, so conflicting
+  // triggers and an ambiguous bare label answer in-band without the compiler.
+  const foldCompiles = [];
+  const foldRuntime = new BrowserLoomRuntime({
+    session: session(),
+    generation: generation(),
+    createId: ids("fold"),
+    compileSteering(expression) {
+      foldCompiles.push(expression);
+      return hookProgram;
+    },
+    steeringManifolds: () => [
+      { namespace: "local", name: "animals", fitMode: "discover", labels: ["deer", "owl"] },
+      { namespace: "local", name: "forest", fitMode: "discover", labels: ["deer", "oak"] },
+    ],
+  });
+  for (const [expression, message] of [
+    ["0.5 x + 0.25 x@response", /^concept 'x' appears with conflicting triggers/],
+    ["0.5 deer", /^ambiguous manifold label 'deer'/],
+  ]) {
+    const result = await foldRuntime.request({
+      service: "sessions", method: "validateSteering", args: [expression],
+    });
+    assert.equal(result.valid, false, expression);
+    assert.match(result.error, message, expression);
+  }
+  assert.deepEqual(foldCompiles, []);
 
   const activeRoleEngine = generation();
   const activeRoleRuntime = new BrowserLoomRuntime({
@@ -1567,7 +1625,7 @@ try {
       };
     },
   });
-  const roleSteering = "0.5 honest.deceptive:role-pirate";
+  const roleSteering = "0.5 deceptive:role-pirate";
   await activeRoleRuntime.generate({
     type: "submit",
     text: "Tell me a story",
@@ -1683,6 +1741,50 @@ try {
     "0.6,0.3 emotions%0.2,0.8",
     "-0.6,-0.3 emotions%0.2,0.8",
   ]);
+  // The plan, its envelopes and the node's recipe carry the compiled program's canonical text, as
+  // native's recipe steering does.
+  const canonicalEngine = generation();
+  const canonicalRuntime = new BrowserLoomRuntime({
+    session: session(),
+    generation: canonicalEngine,
+    createId: ids("canonical"),
+    compileSteering: () => ({ ...hookProgram, steeringExpression: "0.5 calm@response" }),
+  });
+  await canonicalRuntime.generate({
+    type: "submit", text: "Prompt", authored_role: "user", generated_role: "assistant",
+    steering: "0.5 calm @response",
+  }, () => {});
+  assert.equal(canonicalEngine.plans.at(-1).steeringExpression, "0.5 calm@response");
+  assert.equal(canonicalRuntime.snapshot().tree.nodes.at(-1).recipe.steering, "0.5 calm@response");
+  // With the compiler's manifolds the `inverted` regen resolves and folds as drowse's
+  // Recipe.invert_steering does (steering-expression pins the Python outcomes).
+  const resolvingEngine = generation();
+  const resolvingRuntime = new BrowserLoomRuntime({
+    session: session(),
+    generation: resolvingEngine,
+    createId: ids("resolving"),
+    compileSteering: () => hookProgram,
+    steeringManifolds: () => [
+      { namespace: "default", name: "emotions", fitMode: "pca", labels: ["calm", "angry"] },
+    ],
+  });
+  await resolvingRuntime.generate({
+    type: "submit",
+    text: "Prompt",
+    authored_role: "user",
+    generated_role: "assistant",
+    steering: "0.5 calm{0}@response + 0.2 calm{0}@response",
+  }, () => {});
+  await resolvingRuntime.generate({
+    type: "generate",
+    parent_node_id: resolvingRuntime.snapshot().tree.active_node_id,
+    stateless: false,
+    recipe_override: "inverted",
+  }, () => {});
+  assert.equal(
+    resolvingEngine.plans.at(-1).steeringExpression,
+    "-0.7 default/emotions%calm{0}@response",
+  );
   const invalidRecipeEvents = [];
   await assert.rejects(
     recipeRuntime.generate({
@@ -1891,7 +1993,7 @@ try {
         text: "Prompt",
         authored_role: "user",
         generated_role: "assistant",
-        steering: "honest",
+        steering: "deceptive",
       },
       () => {},
     ),
@@ -1951,6 +2053,79 @@ try {
   const failedTree = failedRuntime.snapshot().tree;
   assert.equal(failedTree.nodes.length, 2);
   assert.equal(failedTree.active_node_id, failedTree.nodes[1].id);
+
+  {
+    // A stopped reply pools its last token's aggregate view: an SAE probe whose family's live
+    // readout is off rides no token envelope, but the cancelled aggregate still reads it.
+    const engine = cancellableGeneration("reject");
+    const stream = engine.streamGeneration.bind(engine);
+    const reading = {
+      value: 0.25, unit: "raw_activation", per_layer: { "1": 0.25 },
+      depth: { center: [1], spread: [0], basis: "single_layer" },
+    };
+    engine.streamGeneration = (plan, onToken) => stream(plan, async token => {
+      await onToken({
+        ...token,
+        aggregateMeasurements: {
+          version: 2, scope: "token", provenance: "captured",
+          instruments: { sae: { binding: { source: "fixture-sae", steering: null, layer: 1 }, readings: { "sae/3": reading } } },
+          scores: { "sae/3": 0.25 },
+        },
+      });
+    });
+    const runtime = new BrowserLoomRuntime({
+      session: session(), generation: engine, createId: ids("cancel-off-family"),
+    });
+    const events = [];
+    const pending = runtime.generate({
+      type: "submit", text: "Measure then stop", authored_role: "user", generated_role: "assistant",
+    }, event => events.push(event));
+    await engine.started;
+    await runtime.stop();
+    await pending;
+    assert.equal(events.find(event => event.type === "token").measurements, undefined);
+    const done = events.find(event => event.type === "done").result;
+    assert.equal(done.finish_reason, "cancelled");
+    assert.equal(done.measurements.scope, "aggregate");
+    assert.equal(done.measurements.instruments.sae.readings["sae/3"].value, 0.25);
+  }
+
+  {
+    // With return_probe_readings off the generation offers no aggregate, so a stopped reply has
+    // none, even though its tokens stream live readings.
+    const engine = cancellableGeneration("reject");
+    const stream = engine.streamGeneration.bind(engine);
+    engine.streamGeneration = (plan, onToken) => stream(plan, async token => {
+      await onToken({
+        ...token,
+        measurements: {
+          version: 2, scope: "token", provenance: "captured",
+          instruments: { sae: { binding: { source: "fixture-sae", steering: null, layer: 1 }, readings: {
+            "sae/3": {
+              value: 0.25, unit: "raw_activation", per_layer: { "1": 0.25 },
+              depth: { center: [1], spread: [0], basis: "single_layer" },
+            },
+          } } },
+          scores: { "sae/3": 0.25 },
+        },
+      });
+    });
+    const runtime = new BrowserLoomRuntime({
+      session: session(), generation: engine, createId: ids("cancel-unread"),
+    });
+    const events = [];
+    const pending = runtime.generate({
+      type: "submit", text: "Stream then stop", authored_role: "user", generated_role: "assistant",
+      sampling: { return_probe_readings: false },
+    }, event => events.push(event));
+    await engine.started;
+    await runtime.stop();
+    await pending;
+    assert.equal(events.find(event => event.type === "token").measurements.scores["sae/3"], 0.25);
+    const done = events.find(event => event.type === "done").result;
+    assert.equal(done.finish_reason, "cancelled");
+    assert.equal(done.measurements, undefined);
+  }
 
   {
     const engine = cancellableGeneration("reject");
@@ -2093,13 +2268,48 @@ try {
   await internalAbortEngine.started;
   await internalAbortRuntime.stop(false);
   await assert.rejects(internalAbort, (error) => error.name === "AbortError");
+  // A reply an engine error cut after a token keeps it, with no finish reason
+  // (drowse's `_discard_unanswered`).
   assert.deepEqual(
     internalAbortEvents
       .filter((event) => event.type === "tree_mutated")
       .map((event) => event.op),
+    ["add_user", "begin_assistant", "finalize_assistant"],
+  );
+  const keptReply = internalAbortRuntime.snapshot().tree.nodes.at(-1);
+  assert.equal(internalAbortRuntime.snapshot().tree.nodes.length, 3);
+  assert.equal(keptReply.text, "Partial");
+  assert.equal(keptReply.tokens.length, 1);
+  assert.equal(keptReply.finish_reason, null);
+  assert.equal(keptReply.raw_token_ids, null);
+  assert.equal(keptReply.applied_steering, null);
+
+  // An engine error before the first token leaves no empty assistant node.
+  const silentFailure = new BrowserLoomRuntime({
+    session: session(),
+    generation: {
+      async streamGeneration() {
+        throw Object.assign(new Error("device lost"), { code: "WEBGPU_DEVICE_LOST" });
+      },
+      async stop() {},
+    },
+    createId: ids("silent-failure"),
+  });
+  const silentEvents = [];
+  await assert.rejects(silentFailure.generate({
+    type: "submit",
+    text: "No reply comes",
+    authored_role: "user",
+    generated_role: "assistant",
+  }, (event) => silentEvents.push(event)), (error) => error.code === "WEBGPU_DEVICE_LOST");
+  assert.deepEqual(
+    silentEvents.filter((event) => event.type === "tree_mutated").map((event) => event.op),
     ["add_user", "begin_assistant", "delete"],
   );
-  assert.equal(internalAbortRuntime.snapshot().tree.nodes.length, 2);
+  assert.deepEqual(
+    silentFailure.snapshot().tree.nodes.map((node) => node.role),
+    ["system", "user"],
+  );
 
   const concurrencyEngine = cancellableGeneration("resolve");
   const concurrencyRuntime = new BrowserLoomRuntime({
@@ -2281,7 +2491,7 @@ try {
     service: "instruments", method: "sources", args: ["lens"],
   }), { sources: [] });
   assert.equal((await serviceRuntime.request({
-    service: "sessions", method: "validateSteering", args: ["honest +"],
+    service: "sessions", method: "validateSteering", args: ["deceptive +"],
   })).valid, false);
   const initial = await serviceRuntime.request({ service: "tree", method: "get", args: [] });
   const restored = structuredClone(chatRuntime.snapshot().tree);
@@ -2289,7 +2499,7 @@ try {
   restored.session_id = "portable-session";
   restored.nodes[2].aggregate_readings = { confidence: 0.8 };
   const scoredRow = (scores) => ({
-    version: 1, scope: "token", provenance: "captured", instruments: {}, scores,
+    version: 2, scope: "token", provenance: "captured", instruments: {}, scores,
   });
   restored.nodes[2].tokens[0].measurements = scoredRow({ confidence: 0.2 });
   restored.nodes[2].tokens[1].measurements = scoredRow({ confidence: 0.9 });
@@ -2572,6 +2782,52 @@ try {
   assert.equal(resetTree.nodes.length, 1);
   assert.notEqual(resetTree.root_id, beforeReset.root_id);
 
+  // drowse's `compose_call`, case by case: sampling ranks cast < anchor < call <
+  // modifier; steering, thinking and the system prompt cast < call < anchor <
+  // modifier; the seed modifier > call > anchor > cast; observation knobs the call's.
+  const composeFixture = JSON.parse(await readFile(
+    new URL("../../drowse/tests/fixtures/browser/recipe-compose-v1.json", import.meta.url),
+    "utf8",
+  ));
+  const samplingDefaults = {
+    presence_penalty: 0,
+    frequency_penalty: 0,
+    return_top_k: 0,
+    persist_per_layer_scores: false,
+    persist_subspace_coords: false,
+    return_probe_readings: true,
+  };
+  const setSamplingFields = (sampling) => sampling === null ? null : Object.fromEntries(
+    Object.entries(sampling).filter(([key, value]) =>
+      value !== null && value !== undefined && samplingDefaults[key] !== value),
+  );
+  const composeTier = (tier) => tier === undefined ? null : {
+    steering: tier.steering ?? null,
+    thinking: tier.thinking ?? null,
+    ...(Object.hasOwn(tier, "system_prompt") ? { system_prompt: tier.system_prompt } : {}),
+    sampling: tier.sampling ?? null,
+    seed: null,
+  };
+  assert.equal(composeFixture.schemaVersion, 1);
+  for (const fixtureCase of composeFixture.cases) {
+    const anchor = composeTier(fixtureCase.anchor);
+    const composed = composeCall({
+      steering: fixtureCase.call.steering,
+      thinking: fixtureCase.call.thinking,
+      sampling: fixtureCase.call.sampling,
+      cast: composeTier(fixtureCase.cast),
+      anchor,
+      modifier: fixtureCase.modifier === undefined
+        ? null
+        : recipeModifier(fixtureCase.modifier, anchor),
+    });
+    const expected = fixtureCase.expected;
+    assert.equal(composed.steering, expected.steering, fixtureCase.name);
+    assert.equal(composed.thinking, expected.thinking, fixtureCase.name);
+    assert.equal(composed.systemPrompt, expected.system_prompt, fixtureCase.name);
+    assert.deepEqual(setSamplingFields(composed.sampling), expected.sampling, fixtureCase.name);
+  }
+
   const sharedLoomFixture = JSON.parse(await readFile(
     new URL("../../drowse/tests/fixtures/browser/loom-operation-transcript-v1.json", import.meta.url),
     "utf8",
@@ -2682,6 +2938,68 @@ try {
   }
 
   console.log("Browser authoritative loom checks passed");
+  // The units members' node replays (`unitsNodeReplay`): a generated node replays its render
+  // plus its raw record under its recorded steering and steering positions; an authored turn is
+  // refused in drowse's words (the browser measures no prompts, so it holds no prompt capture).
+  {
+    const { compileStructuredHookProgram } = await server.ssrLoadModule("/src/hosted/runtime/structuredHookProgram.ts");
+    const { STANDARD_STRUCTURED_HOOK_PROFILE_V4 } = await server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts");
+    const rendered = [];
+    const unitsEngine = {
+      async streamGeneration(plan, onToken) {
+        for (const [rawIndex, tokenId] of [20, 21, 22].entries()) {
+          await plan.onRawToken({ text: String.fromCodePoint(tokenId), tokenId, rawIndex, logprob: -0.1, topAlts: null });
+          await onToken({ text: String.fromCodePoint(tokenId), thinking: false, tokenId, logprob: -0.1, perplexity: Math.exp(0.1), rawIndex });
+        }
+        return generated({ text: "\u0014\u0015\u0016", tokens: 3 });
+      },
+      async stop() {},
+      runtimeCapabilities() {
+        return { topK: true, positionSpans: true, forcedReplay: true, replayScoring: false, tokenizer: true, namedRoles: true, userSeatGeneration: true, sceneStitching: true };
+      },
+      async renderPromptTokenIds(plan) {
+        rendered.push(plan);
+        return [7, 8, 9];
+      },
+    };
+    const compiled = [];
+    const unitsRuntime = new BrowserLoomRuntime({
+      session: session(),
+      generation: unitsEngine,
+      createId: ids("units-replay"),
+      compileSteering: (expression) => {
+        compiled.push(expression);
+        return compileStructuredHookProgram(2, [{}, {}], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
+      },
+    });
+    await unitsRuntime.generate(
+      { type: "submit", text: "Question", authored_role: "user", generated_role: "assistant", raw: false, steering: "0.5 calm", position_spans: [[4, 6]] },
+      () => {},
+    );
+    const [, user, assistant] = unitsRuntime.snapshot().tree.nodes;
+    const port = unitsRuntime.unitsNodeReplay();
+    const options = { steered: true, raw: false, label: "session.unit_activity", produced: false };
+    const replayed = await port.nodeForward(assistant.id, null, options);
+    assert.deepEqual([...replayed.forward.ids], [7, 8, 9, 20, 21]);
+    assert.equal(replayed.forward.promptLength, 3);
+    assert.deepEqual([...replayed.forward.rawIds], [20, 21, 22]);
+    assert.deepEqual(replayed.forward.spans, [{ firstRow: 0, stopRow: 3, at: 2 }]);
+    assert.deepEqual(replayed.forward.positionSpans, [[4, 6]]);
+    assert.equal(replayed.steering, "0.5 calm");
+    assert.ok(replayed.program !== null);
+    assert.equal(compiled.at(-1), "0.5 calm");
+    assert.equal(rendered.at(-1).generationSeat, "assistant");
+    const unsteered = await port.nodeForward(assistant.id, 1, { ...options, steered: false });
+    assert.deepEqual([...unsteered.forward.ids], [7, 8, 9, 20]);
+    assert.equal(unsteered.program, null);
+    assert.equal(unsteered.forward.positionSpans, null);
+    await assert.rejects(
+      port.nodeForward(user.id, 0, options),
+      (error) => error.status === 400 && error.code === "INVALID_NODE_OPERATION" &&
+        error.message === `session.unit_activity: '${user.id}' is an authored turn no generation has measured yet, so it has no prompt tokens to replay`,
+    );
+  }
+
 } finally {
   await server.close();
 }

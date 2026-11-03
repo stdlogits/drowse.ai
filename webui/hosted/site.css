@@ -1,0 +1,85 @@
+/* drowse.ai's own globals, over Ledger (@stdlogits/ledger/ledger.css) and the dashboard's
+ * (lib/style/global.css). The site's pages are separate documents: moving between them fades the
+ * new page in over the old (Ledger's view transition), as the theme does. */
+
+@view-transition {
+  navigation: auto;
+}
+
+/* Skip link: off screen until focused. */
+.skip {
+  position: absolute;
+  left: var(--s4);
+  top: var(--s4);
+  z-index: 60;
+  padding: var(--s2) var(--s4);
+  border-radius: var(--r-pill);
+  background: var(--ink);
+  color: var(--paper);
+  font: var(--type-control);
+  translate: 0 calc(-100% - var(--s6));
+  transition: translate var(--fast) var(--ease);
+}
+
+.skip:focus-visible {
+  translate: 0 0;
+}
+
+/* The page main.ts writes when the app's own files could not load (no component to draw it). */
+.bootstrap-error {
+  display: grid;
+  justify-items: start;
+  align-content: center;
+  gap: var(--s4);
+  min-height: 100svh;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: var(--s8) var(--gutter);
+}
+
+.bootstrap-error h1 {
+  color: var(--ink);
+  font: var(--type-heading);
+  letter-spacing: -0.02em;
+}
+
+.bootstrap-error p {
+  color: var(--ink2);
+}
+
+.bootstrap-error-actions {
+  display: grid;
+  justify-items: start;
+  gap: var(--s3);
+}
+
+.bootstrap-error-actions button {
+  height: 44px;
+  padding: 0 var(--s5);
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--ink);
+  color: var(--paper);
+  font: var(--type-control);
+  cursor: pointer;
+  transition: opacity var(--fast) var(--ease), scale var(--fast) var(--ease);
+}
+
+.bootstrap-error-actions button:active:not(:disabled) {
+  scale: 0.97;
+}
+
+.bootstrap-error-actions button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.bootstrap-error .bootstrap-error-safety,
+.bootstrap-error .bootstrap-error-guidance {
+  color: var(--ink3);
+  font: var(--type-small);
+}
+
+.bootstrap-error [role="status"]:empty {
+  display: none;
+}

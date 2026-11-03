@@ -96,6 +96,13 @@ export const RUNTIME_SERVICE_ROUTES = Object.freeze({
     validateLensToken: "model",
     validateSaeFeature: "model",
     saeFeaturesMetadata: "model",
+    tokenAnatomy: "model",
+    unitActivity: "model",
+    unitRead: "model",
+    unitTop: "model",
+    unitFind: "model",
+    unitCatalog: "model",
+    unitLabels: "model",
   }),
 }) satisfies {
   [Service in RuntimeServiceName]: Readonly<

@@ -1,0 +1,28 @@
+{
+  "format_version": 10,
+  "name": "sycophantic.blunt",
+  "description": "Bipolar axis: sycophantic (+) vs blunt (-). Steer with negative alpha for the opposite pole.",
+  "fit_mode": "pca",
+  "hyperparams": {
+    "max_dim": 1,
+    "var_threshold": 0.7
+  },
+  "nodes": [
+    {
+      "label": "sycophantic",
+      "kind": "abstract",
+      "role": null
+    },
+    {
+      "label": "blunt",
+      "kind": "abstract",
+      "role": null
+    }
+  ],
+  "files": {},
+  "tags": [
+    "alignment"
+  ],
+  "source": "bundled",
+  "template_ref": null
+}

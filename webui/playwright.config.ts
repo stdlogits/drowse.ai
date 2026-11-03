@@ -7,10 +7,11 @@ const devPort = 4176;
 const previewPort = 4177;
 const browserChannel = process.env.PLAYWRIGHT_CHANNEL;
 const runCacheRoot = resolve(tmpdir(), `drowse-playwright-vite-${process.pid}`);
-const desktopFirefox = {
-  ...devices["Desktop Firefox"],
-  userAgent: undefined,
-};
+// PLAYWRIGHT_REUSE_SERVERS=1 attaches to dev and preview servers already listening on the fixed
+// ports (fast spec-by-spec runs); without it every run starts and builds its own.
+const reuseServers = process.env.PLAYWRIGHT_REUSE_SERVERS === "1";
+// Chromium runs by default; E2E_WEBKIT=1 adds the iPhone layout pass on WebKit.
+const webkit = process.env.E2E_WEBKIT === "1";
 
 export default defineConfig({
   testDir: "./e2e",
@@ -19,7 +20,7 @@ export default defineConfig({
   forbidOnly: Boolean(process.env.CI),
   timeout: 60_000,
   retries: process.env.CI ? 2 : 0,
-  workers: 1,
+  workers: process.env.E2E_WORKERS ? Number(process.env.E2E_WORKERS) : 4,
   reporter: process.env.CI ? [["github"], ["line"]] : "line",
   expect: { timeout: 10_000 },
   use: {
@@ -36,41 +37,28 @@ export default defineConfig({
         ...(browserChannel ? { channel: browserChannel } : {}),
       },
     },
-    {
+    ...(webkit ? [{
       name: "webkit-ios-layout",
-      testMatch: /(base-editor-layout|tooltip-policy|torph-motion|ios-layout|hosted-onboarding|ui-skill-pass|sae-descriptions|technical-controls|completion-selection|chat-name-stability|loom-search|workspace-consistency|interface-polish|token-sidebar|mobile-sheet|header-layout|notice-surfaces|model-downloads|message-identity|new-chat-start|storage-persistence|theme-default|public-header|saved-chat-menu|contact)\.spec\.ts/,
+      // "ios-layout" also matches every *.ios-layout.spec.ts.
+      testMatch: /(ios-layout|hosted-onboarding|site-pages|chat-library|technical-controls|completion-selection|chat-name-stability|loom-search|token-inspector|mobile-sheet|model-downloads|new-chat-start|storage-persistence|theme-default|public-header|saved-chat-menu|contact|workbench-rooms|sae-descriptions)\.spec\.ts/,
       use: {
         ...devices["iPhone 13"],
       },
-    },
-    {
-      name: "webkit-macos",
-      testMatch: /(base-editor-layout|tooltip-policy|torph-motion|desktop-browser-compat|storage-persistence|header-layout|theme-default|theme-morph\.ios-layout|contrast-audit\.ios-layout|public-header|saved-chat-menu|contact|mobile-sheet)\.spec\.ts/,
-      use: {
-        ...devices["Desktop Safari"],
-      },
-    },
-    {
-      name: "firefox-macos",
-      testMatch: /(base-editor-layout|tooltip-policy|torph-motion|desktop-browser-compat|storage-persistence|header-layout|theme-default|theme-morph\.ios-layout|contrast-audit\.ios-layout|public-header|saved-chat-menu|contact|mobile-sheet)\.spec\.ts/,
-      use: {
-        ...desktopFirefox,
-      },
-    },
+    }] : []),
   ],
   webServer: [
     {
       command: `npm run dev:hosted -- --force --host ${host} --port ${devPort} --strictPort`,
       url: `http://${host}:${devPort}`,
       env: { DROWSE_VITE_CACHE_DIR: resolve(runCacheRoot, "dev") },
-      reuseExistingServer: false,
+      reuseExistingServer: reuseServers,
       timeout: 120_000,
     },
     {
       command: `npm run build:hosted && npm run preview:hosted -- --host ${host} --port ${previewPort} --strictPort`,
       url: `http://${host}:${previewPort}`,
       env: { DROWSE_VITE_CACHE_DIR: resolve(runCacheRoot, "preview") },
-      reuseExistingServer: false,
+      reuseExistingServer: reuseServers,
       timeout: 120_000,
     },
   ],

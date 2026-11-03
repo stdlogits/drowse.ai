@@ -109,21 +109,17 @@ for (const width of [320, 1440]) {
       }
       await page.evaluate(() => scrollTo(0, 0));
       await page.screenshot({ path: testInfo.outputPath(`not-found-${width}-${theme}.png`), fullPage: true });
-      const accessibility = await new AxeBuilder({ page }).include(".page-layer").analyze();
+      const accessibility = await new AxeBuilder({ page }).include("#not-found-main").analyze();
       expect(accessibility.violations).toEqual([]);
     }
   });
 }
 
-test("the close-up shader honors reduced motion and increased contrast", async ({ page }) => {
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto(url);
-  const shader = page.locator(".hero-visual");
-  await expect(shader).toHaveAttribute("data-shader-status", "fallback");
-  await expect(shader).toHaveAttribute("data-travel", "0.380");
-  await expect(page.getByRole("button", { name: "Pause background", exact: true })).toBeHidden();
+test("the flat 404 page keeps its message under reduced motion and increased contrast", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce", contrast: "more" });
-  await expect(shader).toHaveCount(0);
+  await page.goto(url);
+  await expect(page.locator(".hero-visual, canvas")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Pause background", exact: true })).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Page not found", exact: true })).toBeVisible();
   await page.reload();
   await expect(page.locator(".recorded-tokens")).toHaveText((await current(page)).text);

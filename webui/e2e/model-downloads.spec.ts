@@ -1,4 +1,4 @@
-import { setAppearance } from "./workbench-navigation";
+import { setAppearance, settle } from "./workbench-navigation";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { resolve } from "node:path";
@@ -59,7 +59,7 @@ async function home(page: Page, installed = true) {
     const target = document.createElement("div"); document.body.append(target);
     mount(Harness, { target, props: { controller, onChooseModels: () => { routes++; } } });
   }, { moduleUrl: `/@fs/${resolve("e2e/fixtures/ModelDownloadHarness.svelte")}`, installed });
-  await page.locator(".hero-actions").getByRole("button", { name: installed ? "New chat" : "Download a model", exact: true }).click();
+  await page.getByRole("region", { name: "Your chats", exact: true }).getByRole("button", { name: installed ? "New chat" : "Download a model", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Choose a model" })).toBeVisible();
 }
 
@@ -101,7 +101,7 @@ test("pause, resume, retry, and chooser reopening retain download state", async 
   await action(page, 1).click(); await action(page, 1).click();
   await page.evaluate(() => (window as any).downloads.progress(570_000_000));
   await page.locator(".chooser-heading").getByRole("button", { name: "Cancel" }).click();
-  await page.locator(".hero-actions").getByRole("button", { name: "New chat", exact: true }).click();
+  await page.getByRole("region", { name: "Your chats", exact: true }).getByRole("button", { name: "New chat", exact: true }).click();
   await expect(card(page, 1).getByRole("progressbar")).toHaveAttribute("aria-valuenow", "25");
   await card(page, 1).getByRole("button", { name: "Pause", exact: true }).click();
   await expect(action(page, 1)).toContainText("Download paused. Select to resume");
@@ -138,30 +138,33 @@ test("keyboard confirmation, device warnings, unavailable models, and first down
   expect(await page.evaluate(() => (window as any).downloads.opens)).toEqual([]);
 });
 
-test("two padded 2x2 groups, purple installed cards, readable themes and narrow layouts", async ({ page }, testInfo) => {
+test("both model groups list every choice and fit narrow layouts in both themes", async ({ page }) => {
   await home(page);
   for (const theme of ["light", "dark"]) {
     await setAppearance(page, theme);
     for (const width of [1440, 768, 390, 320]) {
       await page.setViewportSize({ width, height: 1000 });
-      await expect(page.locator("#new-chat-title")).toHaveCSS("color", theme === "light" ? "rgb(20, 24, 34)" : "rgb(241, 243, 250)");
       await expect(page.locator(".model-choice-group")).toHaveCount(2);
       await expect(page.locator(".model-choice.installed")).toHaveCount(3);
       for (const group of await page.locator(".model-choices").all()) {
         await expect(group.locator(".model-choice")).toHaveCount(4);
-        const boxes = await group.locator(".model-choice").evaluateAll(els => els.map(el => { const rect = el.getBoundingClientRect(); return { x: rect.x, y: rect.y, height: rect.height }; }));
-        if (width >= 768) {
-          expect(boxes[0].y).toBe(boxes[1].y); expect(boxes[2].y).toBe(boxes[3].y);
-          expect(boxes[0].x).toBe(boxes[2].x); expect(boxes[1].x).toBeGreaterThan(boxes[0].x);
-        } else expect(boxes.every(box => box.x === boxes[0].x)).toBe(true);
-        expect(boxes.every(box => box.height >= 100)).toBe(true);
       }
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-      expect((await new AxeBuilder({ page }).include(".new-chat-panel").analyze()).violations).toEqual([]);
-      await page.locator(".new-chat-panel").screenshot({ path: testInfo.outputPath(`model-groups-${theme}-${width}.png`) });
     }
   }
   await action(page, 1).click();
-  expect((await new AxeBuilder({ page }).include(".new-chat-panel").analyze()).violations).toEqual([]);
   expect(await page.locator(".new-chat-panel").innerText()).not.toContain("\u2014");
+});
+
+test("model choices pass axe in both themes", async ({ page }) => {
+  await home(page);
+  for (const theme of ["light", "dark"]) {
+    await setAppearance(page, theme);
+    await settle(page);
+    expect((await new AxeBuilder({ page }).include(".new-chat-panel").analyze()).violations).toEqual([]);
+    await action(page, 1).click();
+    await settle(page);
+    expect((await new AxeBuilder({ page }).include(".new-chat-panel").analyze()).violations).toEqual([]);
+    await page.keyboard.press("Escape");
+  }
 });

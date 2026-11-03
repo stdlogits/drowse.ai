@@ -16,9 +16,7 @@
 {/if}
 
 <style>
-  .verification-badge { display: inline-flex; flex: none; width: 1em; height: 1em; vertical-align: middle; }
+  /* The account's verification mark, in ink: its kind is in the label, not a colour. */
+  .verification-badge { display: inline-flex; flex: none; width: 1em; height: 1em; color: var(--ink3); vertical-align: middle; }
   svg { display: block; width: 100%; height: 100%; }
-  [data-status="blue"] { color: var(--verification-blue); }
-  [data-status="gold"] { color: var(--verification-gold); }
-  [data-status="gray"] { color: var(--verification-gray); }
 </style>

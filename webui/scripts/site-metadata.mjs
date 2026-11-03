@@ -2,12 +2,14 @@ export const siteName = "Drowse";
 export const siteTitle = "Drowse | Local LLM interpretability and activation steering";
 export const sourceRepository = "https://github.com/stdlogits/drowse";
 export const siteDescription = "Open-source, fully local LLM interpretability workbench in your browser. Inspect token predictions and steer a model's internal activity.";
-export const siteAccent = "#c5b3ff";
-// Browser chrome follows the page surface, not the accent: these match theme-init.js and tokens.css.
-export const themeColors = { dark: "#0b0e17", light: "#f2f4f8" };
-export const socialImagePath = "/social/drowse.jpg?v=shader-orb-workbench-jpeg";
-export const socialImageType = "image/jpeg";
-export const socialImageAlt = "Drowse in white with Interpretability Workbench underneath, beside a large glowing shader orb.";
+// The brand colour is Ledger's depth accent where the mark's ramp starts (--deep, light theme).
+export const siteAccent = "#6a4fe0";
+// Browser chrome follows the page surface, not the accent: Ledger's paper in each theme, as
+// theme-init.js and @stdlogits/ledger/tokens.css write it.
+export const themeColors = { dark: "#0b0d12", light: "#ffffff" };
+export const socialImagePath = "/social/drowse.png?v=ledger-card";
+export const socialImageType = "image/png";
+export const socialImageAlt = "The drowse mark and name, the steering term 0.4 calm, a reply whose words are tinted by how calm the model reads them, and one word's calm reading across the model's layers.";
 export const projectOwner = { "@type": "Person", name: "a9lim", url: "https://github.com/a9lim" };
 
 export function publicOrigin(value = "") {
@@ -34,7 +36,7 @@ export function discoveryMetadata(origin, { version } = {}) {
         author: projectOwner, publisher: projectOwner,
         image: `${origin}${socialImagePath}`, isAccessibleForFree: true,
         license: `${origin}/LICENSE`, sameAs: [sourceRepository],
-        featureList: ["Local language model inference", "Activation steering", "Token prediction inspection", "Trait monitoring", "Branching experiments", "Compatible SAE and Jacobian lens packs"] },
+        featureList: ["Local language model inference", "Activation steering", "Token prediction inspection", "Trait monitoring", "Branching experiments", "R and S lens readouts", "Neuron and head reads and steering", "Compatible SAE packs"] },
     ],
   };
   return `<link rel="canonical" href="${origin}/" />\n<meta property="og:url" content="${origin}/" />\n${jsonLd(schema)}`;

@@ -1,12 +1,10 @@
 <script lang="ts">
-  import MorphText from "../../../../drowse/webui/src/lib/ui/MorphText.svelte";
+  import { MorphText, fadeOut, rise } from "@stdlogits/ledger";
   import { onDestroy, onMount } from "svelte";
   import { registerUpdateActions } from "../../../../drowse/webui/src/lib/webmcp/lifecycle";
-  import { fly } from "svelte/transition";
   import { registerSW } from "virtual:pwa-register";
   import { userFacingError } from "../../../../drowse/webui/src/lib/runtime/userFacingError";
   import { hostedNetworkIsOffline } from "../runtime/networkState";
-  import { contentIn, contentOut } from "../../../../drowse/webui/src/lib/motion";
   import {
     UPDATE_REMINDER_KEY, readUpdateReminder, markUpdateShown,
     deferUpdate, clearUpdateReminder,
@@ -275,8 +273,8 @@
     aria-atomic="true"
     aria-busy={applying}
     onfocusin={rememberReturnFocus}
-    in:fly={updateAvailable ? { duration: 0 } : contentIn(10)}
-    out:fly={contentOut(6)}
+    in:rise={{ duration: updateAvailable ? 0 : undefined }}
+    out:fadeOut
   >
     <div>
       {#if updateAvailable}
@@ -318,158 +316,46 @@
     role="status"
     aria-live="polite"
     aria-atomic="true"
-    style:--confirmation-duration={`${CONFIRMATION_MS}ms`}
-    in:fly={contentIn(6)}
-    out:fly={contentOut(4)}
+    in:rise
+    out:fadeOut
   >
-    <svg class="countdown" viewBox="0 0 24 24" aria-hidden="true">
-      <circle class="countdown-track" cx="12" cy="12" r="9" />
-      <circle class="countdown-remaining" cx="12" cy="12" r="9" pathLength="1" />
-    </svg>
     <span>{confirmation}</span>
   </div>
 {/if}
 
 <style>
+  /* An update or offline notice: a wash card in the corner, one sentence and its two choices. */
   .pwa-notice {
     position: fixed;
-    z-index: calc(var(--z-drawer) - 1);
-    inset-inline-end: calc(var(--space-6) + env(safe-area-inset-right, 0px));
-    bottom: calc(var(--space-6) + env(safe-area-inset-bottom, 0px));
-    display: flex;
-    flex-direction: column;
-    width: min(28rem, calc(100vw - var(--space-8) - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
-    max-height: calc(100dvh - var(--space-8) - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
-    overflow-y: auto;
-    gap: var(--space-6);
-    padding: var(--surface-padding);
-    border: 1px solid var(--popup-border);
-    border-radius: var(--popup-radius);
-    box-shadow: var(--popup-shadow);
-    color: var(--fg);
-    background: var(--surface-sheen), var(--popup-bg);
-  }
-
-  .pwa-notice div:first-child {
-    min-width: 0;
+    z-index: 45;
+    inset-inline-end: calc(var(--s5) + env(safe-area-inset-right, 0px));
+    bottom: calc(var(--s5) + env(safe-area-inset-bottom, 0px));
     display: grid;
-    gap: var(--space-1);
+    gap: var(--s3);
+    width: min(440px, calc(100vw - var(--s5) * 2 - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
+    max-height: calc(100dvh - var(--s6) - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    overflow-y: auto;
+    padding: var(--s4) var(--s5);
+    border-radius: var(--r-row);
+    background: var(--wash2);
+    color: var(--ink2);
+    font: var(--type-small);
   }
-
-  .pwa-notice span {
-    color: var(--fg-strong);
-    overflow-wrap: anywhere;
-    line-height: 1.45;
+  .pwa-notice > div:first-child { display: grid; gap: var(--s1); }
+  .pwa-notice strong { color: var(--ink); font: var(--type-label); }
+  .pwa-actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
+  .pwa-actions button { display: inline-flex; align-items: center; justify-content: center; height: 36px; padding: 0 var(--s4); border: 0; border-radius: var(--r-pill); background: var(--paper); color: var(--ink); font: var(--type-control); white-space: nowrap; cursor: pointer; transition: opacity var(--fast) var(--ease), background-color var(--fast) var(--ease), scale var(--fast) var(--ease); }
+  .pwa-actions button.primary { padding: 0 var(--s5); background: var(--ink); color: var(--paper); }
+  .pwa-actions button:active:not(:disabled) { scale: 0.97; }
+  .pwa-actions button:disabled { opacity: 0.4; cursor: default; }
+  @media (hover: hover) {
+    .pwa-actions button:hover:not(:disabled) { background: var(--wash); }
+    .pwa-actions button.primary:hover:not(:disabled) { background: var(--ink); opacity: 0.86; }
   }
-
-  .pwa-actions {
-    display: flex;
-    flex: 0 0 auto;
-    gap: var(--space-6);
-    flex-wrap: wrap;
-    justify-content: flex-end;
+  .pwa-confirmation { display: flex; align-items: center; gap: var(--s3); }
+  @media (max-width: 720px) {
+    .pwa-notice { inset-inline: var(--s4); bottom: calc(var(--s4) + env(safe-area-inset-bottom, 0px)); width: auto; padding: var(--s4); }
+    .pwa-actions button { flex: 1 1 auto; height: 44px; }
   }
-
-  button {
-    white-space: nowrap;
-    min-height: var(--control-target);
-    padding: var(--space-2) var(--space-4);
-    border: 1px solid var(--glass-line);
-    border-radius: var(--radius);
-    color: var(--fg);
-    background: var(--control-sheen), var(--glass);
-    box-shadow: var(--shadow-control);
-    font-family: var(--font-structure);
-    font-size: inherit;
-    font-weight: var(--weight-structure);
-    cursor: pointer;
-  }
-
-  button.primary {
-    color: var(--action-ink);
-    background: var(--control-sheen), var(--action-bg);
-  }
-
-  button:hover:not(:disabled) { background: var(--control-sheen), var(--glass-bright); box-shadow: var(--shadow-control-hover); }
-  button.primary:hover:not(:disabled) { background: var(--control-sheen), var(--action-hover); }
-
-  .pwa-confirmation {
-    flex-direction: row;
-    align-items: center;
-    gap: var(--space-3);
-    width: fit-content;
-    max-width: calc(100vw - var(--space-8));
-  }
-
-  .countdown {
-    flex: 0 0 auto;
-    width: 24px;
-    height: 24px;
-    transform: rotate(-90deg);
-    fill: none;
-    stroke-width: 2.5;
-  }
-
-  .countdown-track { stroke: var(--glass-line); }
-  .countdown-remaining {
-    stroke: var(--accent);
-    stroke-dasharray: 1;
-    stroke-dashoffset: 0;
-    animation: countdown var(--confirmation-duration) linear forwards;
-  }
-
-  @keyframes countdown { to { stroke-dashoffset: 1; } }
-
-  @keyframes update-pop {
-    from { opacity: 0; transform: translateY(14px) scale(0.96); }
-    to { opacity: 1; transform: none; }
-  }
-
-  @keyframes update-glow {
-    from { box-shadow: var(--popup-shadow), 0 0 44px 8px color-mix(in srgb, var(--accent) 35%, transparent); }
-    to { box-shadow: var(--popup-shadow), 0 0 44px 8px transparent; }
-  }
-
-  button:disabled {
-    cursor: wait;
-    opacity: var(--disabled-opacity);
-  }
-
-  button:focus-visible {
-    outline: 2px solid var(--focus-ring);
-    outline-offset: 2px;
-  }
-
-  @media (prefers-reduced-motion: no-preference) {
-    .first-update {
-      animation: update-pop 360ms var(--ease-out), update-glow 4s ease-out;
-    }
-    button {
-      transition: transform var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
-    }
-
-    button:active:not(:disabled) {
-      transform: scale(var(--press-scale));
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .countdown-remaining { animation-timing-function: steps(5, end); }
-  }
-
-  @media (max-width: 42rem), (max-height: 32rem) {
-    .pwa-actions button {
-      flex: 1 1 auto;
-    }
-
-  }
-
-  @media (forced-colors: active) {
-    .first-update { animation: none; }
-    .countdown-track { stroke: GrayText; }
-    .countdown-remaining { stroke: CanvasText; }
-    .pwa-notice {
-      outline: 1px solid CanvasText;
-    }
-  }
+  @media (forced-colors: active) { .pwa-notice { border: 1px solid CanvasText; } }
 </style>

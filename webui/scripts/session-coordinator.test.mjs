@@ -666,6 +666,7 @@ function node(id, parentId, role, text) {
     role_label: null,
     thinking_text: null,
     aggregate_readings: {},
+    aggregate_measurements: null,
     applied_steering: null,
     finish_reason: null,
     starred: false,
@@ -679,6 +680,7 @@ function node(id, parentId, role, text) {
     tokens: null,
     thinking_tokens: null,
     raw_token_ids: null,
+    prompt_capture: null,
   };
 }
 
@@ -719,9 +721,9 @@ function memoryStore(initial = new Map()) {
 function persistencePort(persistence) {
   return {
     claimModes: [],
-    async claim(binding, mode = "restore", compatibleRuntimeIdentitySha256s = []) {
+    async claim(binding, mode = "restore") {
       this.claimModes.push(mode);
-      return persistence.claim(binding, mode, compatibleRuntimeIdentitySha256s);
+      return persistence.claim(binding, mode);
     },
     async save(input, ownerEpoch) {
       return persistence.save(input, ownerEpoch);

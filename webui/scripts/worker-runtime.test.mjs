@@ -6,6 +6,8 @@ import {
   FIXTURE_SIGNATURE,
   catalogBytes,
   catalogFixture,
+  catalogRuntimeLockModels,
+  fixtureLibraryContract,
 } from "./catalog-fixture.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -195,6 +197,8 @@ try {
           maxStorageBufferBindingSize: 16 * 1024 * 1024,
           maxStorageBuffersPerShaderStage: 10,
           maxComputeWorkgroupStorageSize: 65_536,
+          maxComputeWorkgroupSizeX: 256,
+          maxComputeInvocationsPerWorkgroup: 256,
         },
         adapterInfo: { vendor: "fixture" },
       },
@@ -371,6 +375,7 @@ try {
         async clear() {},
       },
       modelBackend: overrides.modelBackend,
+      runtimeLockModels: overrides.runtimeLockModels ?? catalogRuntimeLockModels(),
       sessionPersistence: overrides.sessionPersistence ?? {
         async claim() { return { status: "missing" }; },
         async save(input, ownerEpoch) {
@@ -1357,6 +1362,53 @@ try {
     });
     assert.equal(typeof client.instruments.startPreparation, "function");
     assert.equal(client.instruments.startPreparaton, undefined);
+
+    // The unit and anatomy reads route to the loaded model (its load wires BrowserUnitsService),
+    // so the client the UI holds offers them and its capability checks see them.
+    const unitMembers = ["tokenAnatomy", "unitActivity", "unitRead", "unitTop", "unitFind", "unitCatalog", "unitLabels"];
+    for (const method of unitMembers) {
+      assert.equal(
+        operationPolicyModule.runtimeServiceRoute({ service: "instruments", method, args: [] }),
+        "model",
+      );
+      assert.equal(typeof client.instruments[method], "function", `the browser client offers ${method}`);
+    }
+    assert.deepEqual(contracts.replayCapabilities(client.instruments), {
+      tokenAnatomy: true,
+      unitActivity: true,
+    });
+    assert.equal(contracts.unitReadsAvailable(client), true);
+    scope.send(request("unloaded-units", "request", {
+      service: "instruments",
+      method: "unitRead",
+      args: ["neuron/L8n344"],
+    }));
+    const refused = await response(scope, "unloaded-units");
+    assert.equal(refused.ok, false);
+    assert.equal(refused.error.code, "MODEL_RUNTIME_NOT_READY", "a unit read waits for a loaded model");
+
+    // The fixture answers them through the real host ports on the tiny fixture model.
+    const fixture = new fakeRuntimeModule.DeterministicFakeRuntime();
+    for (const method of unitMembers) {
+      assert.equal(typeof fixture.instruments[method], "function", `the fixture offers ${method}`);
+    }
+    assert.equal(contracts.unitReadsAvailable(fixture), true);
+    const neuron = await fixture.instruments.unitRead("neuron/L1n5", { k: 4 });
+    assert.equal(neuron.unit, "neuron/L1n5");
+    assert.equal(neuron.poles.length, 2);
+    assert.equal(neuron.poles[0].writes.s.tokens.length, 4);
+    const head = await fixture.instruments.unitRead("head/L1h3", { k: 3 });
+    assert.equal(head.kind, "head");
+    assert.equal(head.copies.r.unit, "own_token_z");
+    const top = await fixture.instruments.unitTop("e", { by: "fires", k: 5 });
+    assert.equal(top.hits.length, 5);
+    const found = await fixture.instruments.unitFind({ vector: Array.from({ length: 64 }, (_, i) => Math.sin(i)), layer: 2, k: 3 });
+    assert.equal(found.layers["2"].neurons.length, 3);
+    assert.equal((await fixture.instruments.unitCatalog()).available, false);
+    assert.deepEqual((await fixture.instruments.unitLabels(["neuron/L1n5"])).labels, []);
+    await assert.rejects(fixture.instruments.unitRead("neuron/L9n0"), { status: 400 });
+    await assert.rejects(fixture.instruments.sources("units"), { code: "INSTRUMENT_FAMILY_UNAVAILABLE" });
+    await fixture.dispose();
     await client.dispose();
     transport.dispose();
   });
@@ -2267,6 +2319,61 @@ try {
     assert.deepEqual((await response(scope, "fixture-manifold-get-local")).result, local);
   });
 
+  test("a load carries the runtime lock's library contract for its variant", async () => {
+    const loads = [];
+    const backend = new fakeModelBackendModule.DeterministicBrowserModelBackend();
+    const load = backend.load.bind(backend);
+    backend.load = async (loadRequest) => {
+      loads.push({
+        blockSpec: loadRequest.blockSpec,
+        unitRefusal: loadRequest.unitRefusal,
+        prefillChunkSize: loadRequest.prefillChunkSize,
+      });
+      return load(loadRequest);
+    };
+    const scope = harness({
+      async download() { return result; },
+      cancel() { return false; },
+    }, { modelBackend: backend });
+    await prepareDownload(scope);
+    scope.send(request("load-lock-block-sites", "load", downloadPayload()));
+    assert.equal((await response(scope, "load-lock-block-sites")).ok, true);
+    assert.deepEqual(loads, [fixtureLibraryContract(variant)]);
+  });
+
+  test("the worker fixture serves the units members through its loaded model", async () => {
+    const scope = harness({
+      async download() { return result; },
+      cancel() { return false; },
+    }, {
+      modelBackend: new fakeModelBackendModule.DeterministicBrowserModelBackend(),
+    });
+    await prepareDownload(scope);
+    scope.send(request("load-fixture-units", "load", downloadPayload()));
+    assert.equal((await response(scope, "load-fixture-units")).ok, true);
+    // The real host ports on the tiny fixture model (units/fixtureUnits.ts), routed to the model.
+    scope.send(request("fixture-unit-read", "request", {
+      service: "instruments",
+      method: "unitRead",
+      args: ["neuron/L1n5", { k: 4 }],
+    }));
+    const read = (await response(scope, "fixture-unit-read")).result;
+    assert.equal(read.unit, "neuron/L1n5");
+    assert.equal(read.poles[0].writes.s.tokens.length, 4);
+    scope.send(request("fixture-unit-top", "request", {
+      service: "instruments",
+      method: "unitTop",
+      args: ["e", { by: "fires", k: 3 }],
+    }));
+    assert.equal((await response(scope, "fixture-unit-top")).result.hits.length, 3);
+    scope.send(request("fixture-unit-catalog", "request", {
+      service: "instruments",
+      method: "unitCatalog",
+      args: [],
+    }));
+    assert.equal((await response(scope, "fixture-unit-catalog")).result.available, false);
+  });
+
   test("clear-all waits for the artifact service clear commit", async () => {
     let clearStarted = false;
     let finishClear;
@@ -2570,6 +2677,10 @@ try {
     const done = messages.find((message) => message.type === "done");
     assert.equal(done.result.measurements.scope, "aggregate");
     assert.equal(done.result.measurements.scores["sae/7"] > 0, true);
+    // drowse's done aggregate carries readings and bindings, never readouts.
+    assert.equal(done.result.measurements.instruments.lens.readout, undefined);
+    assert.equal(done.result.measurements.instruments.sae.readout, undefined);
+    assert.ok(done.result.measurements.instruments.lens.readings["jlens/fixture"]);
 
     const generated = (await runtime.tree.get()).nodes.find(
       (node) => node.role === "assistant" && node.finish_reason !== null,
@@ -2802,12 +2913,13 @@ try {
     }, {
       modelBackend: backend,
       sessionCoordinatorFactory: () => ({
-        async restore(identity, mode, compatibleIdentities) {
+        async restore(identity, mode, ...rest) {
           calls.push(`restore:${identity.modelVariantId}:${identity.contextTokens}`);
           assert.equal(identity.runtimeIdentitySha256, variant.runtimeIdentitySha256);
           assert.equal(typeof identity.ownerEpoch, "string");
           assert.equal(mode, "replace");
-          assert.deepEqual(compatibleIdentities, []);
+          // A session restores under its own runtime identity only (no former-product aliases).
+          assert.deepEqual(rest, []);
           return { status: "not_found" };
         },
         async persist() { scope.timeline.push("session:persist"); },
@@ -4016,6 +4128,138 @@ try {
       (message) => message.kind === "event" &&
         message.payload.generation?.phase === "running",
     ), false);
+  });
+
+  test("worker answers steering validation at once while a generation or fit is admitted", async () => {
+    let releaseService;
+    let serviceStarted = false;
+    const requested = [];
+    const backend = {
+      async load() {
+        return { prefillTokensPerSecond: 30, decodeTokensPerSecond: 12 };
+      },
+      async request(request) {
+        requested.push(`${request.service}.${request.method}`);
+        if (request.service === "sessions" && request.method === "get") {
+          serviceStarted = true;
+          return new Promise((resolve) => { releaseService = resolve; });
+        }
+        if (request.method === "validateSteering") {
+          return { valid: true, expression: "0.5 calm", error: null, parts: [] };
+        }
+        return { ok: true };
+      },
+      async generate() {},
+      async fit() { return { status: "completed" }; },
+      async stop() {},
+      async unload() {},
+      // The loaded compiler's manifolds, which drowse's parse_expr resolves bare atoms against
+      // before its lock: `calm` names one manifold, `deer` two.
+      steeringManifolds() {
+        return [
+          { namespace: "default", name: "emotions", fitMode: "pca", labels: ["calm", "angry"] },
+          { namespace: "local", name: "animals", fitMode: "discover", labels: ["deer", "owl"] },
+          { namespace: "local", name: "forest", fitMode: "discover", labels: ["deer", "oak"] },
+        ];
+      },
+    };
+    const scope = harness({
+      async download() { return result; },
+      cancel() { return false; },
+    }, { modelBackend: backend });
+    await prepareDownload(scope);
+    scope.send(request("load-busy-validation", "load", downloadPayload()));
+    assert.equal((await response(scope, "load-busy-validation")).ok, true);
+    scope.messages.length = 0;
+
+    const validate = (id, expression) => scope.send(request(id, "request", {
+      service: "sessions",
+      method: "validateSteering",
+      args: [expression],
+    }));
+    scope.send(request("blocking-service", "request", {
+      service: "sessions",
+      method: "get",
+      args: [],
+    }));
+    await waitFor(() => serviceStarted);
+    // With nothing admitted, a validation queues behind the running request as before.
+    validate("queued-validation", "0.5 calm");
+    scope.send(request("admitted-generation", "generate", { type: "generate" }));
+
+    // drowse's session_lock_or_busy: past the model-free checks, 409 without waiting.
+    validate("busy-validation", "  0.5 calm  ");
+    const busy = await response(scope, "busy-validation");
+    assert.equal(busy.ok, false);
+    assert.equal(busy.error.code, "ENGINE_BUSY");
+    assert.equal(busy.error.message, "a model operation is in flight; retry shortly");
+    assert.equal(busy.error.status, 409);
+    assert.equal(busy.error.recoverable, true);
+    // The empty expression and a syntax error answer in-band before the busy check.
+    validate("busy-empty", "   ");
+    assert.deepEqual((await response(scope, "busy-empty")).result, {
+      valid: true,
+      expression: "",
+      error: null,
+    });
+    validate("busy-syntax", "0.5 calm +");
+    const syntax = (await response(scope, "busy-syntax")).result;
+    assert.equal(syntax.valid, false);
+    assert.equal(syntax.expression, "0.5 calm +");
+    assert.match(syntax.error, /col \d+/);
+    // parse_expr folds and resolves before the lock too: conflicting triggers on one concept
+    // (drowse's words, from parse_expr in the venv) and an ambiguous bare label answer in-band.
+    validate("busy-fold", "0.5 x + 0.25 x@response");
+    assert.deepEqual((await response(scope, "busy-fold")).result, {
+      valid: false,
+      expression: "0.5 x + 0.25 x@response",
+      error: "concept 'x' appears with conflicting triggers; merge triggers explicitly or split " +
+        "into separate Steering entries",
+    });
+    validate("busy-ambiguous", "0.5 deer");
+    assert.deepEqual((await response(scope, "busy-ambiguous")).result, {
+      valid: false,
+      expression: "0.5 deer",
+      error: "ambiguous manifold label 'deer': matches local/animals (label 'deer'), local/forest " +
+        "(label 'deer'). Specify the manifold explicitly as <ns>/<name>%deer. (disambiguate with " +
+        "namespace/name)",
+    });
+    assert.equal(requested.includes("sessions.validateSteering"), false);
+
+    releaseService({ id: "fixture-session" });
+    assert.equal((await response(scope, "blocking-service")).ok, true);
+    const queuedValidation = await response(scope, "queued-validation");
+    assert.equal(queuedValidation.ok, true);
+    await response(scope, "admitted-generation");
+    assert.deepEqual(requested.filter((name) => name === "sessions.validateSteering"), [
+      "sessions.validateSteering",
+    ]);
+
+    // A fit holds the model the same way.
+    serviceStarted = false;
+    scope.send(request("blocking-service-2", "request", {
+      service: "sessions",
+      method: "get",
+      args: [],
+    }));
+    await waitFor(() => serviceStarted);
+    scope.send(request("admitted-fit", "request", {
+      service: "manifolds",
+      method: "generate",
+      args: [{}],
+    }));
+    validate("busy-during-fit", "0.5 calm");
+    const fitBusy = await response(scope, "busy-during-fit");
+    assert.equal(fitBusy.ok, false);
+    assert.equal(fitBusy.error.code, "ENGINE_BUSY");
+    releaseService({ id: "fixture-session" });
+    assert.equal((await response(scope, "blocking-service-2")).ok, true);
+    await response(scope, "admitted-fit");
+
+    // Once nothing is admitted, a validation reaches the model again.
+    validate("idle-validation", "0.5 calm");
+    assert.equal((await response(scope, "idle-validation")).ok, true);
+    assert.equal(requested.filter((name) => name === "sessions.validateSteering").length, 2);
   });
 
   test("worker unload cancels an admitted generation before it reaches the backend", async () => {

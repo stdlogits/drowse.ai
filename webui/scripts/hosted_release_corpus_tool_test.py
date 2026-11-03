@@ -18,20 +18,6 @@ SPEC.loader.exec_module(corpus)
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
-class FakeTokenizer:
-    def __init__(self) -> None:
-        self.ids = {"blue": 10, "happy": 11, "world": 12}
-        self.words = {value: key for key, value in self.ids.items()}
-
-    def encode(self, value: str, *, add_special_tokens: bool) -> list[int]:
-        assert add_special_tokens is False
-        word = value.strip()
-        return [self.ids[word]] if word in self.ids else [90, 91]
-
-    def decode(self, values: list[int]) -> str:
-        return self.words.get(values[0], "piece") if len(values) == 1 else "pieces"
-
-
 class ReleaseCorpusToolTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -44,12 +30,6 @@ class ReleaseCorpusToolTest(unittest.TestCase):
         self.source.write_bytes((json.dumps(rows, separators=(",", ":")) + "\n").encode())
         self.evidence = self.root / "LICENSE.txt"
         self.evidence.write_text("Fixture corpus is released under CC0-1.0.\n")
-        self.seeds = self.root / "words.txt"
-        self.seeds.write_text("blue\nhappy\nmultitoken\nworld\n")
-        self.tokenizer = self.root / "tokenizer"
-        self.tokenizer.mkdir()
-        (self.tokenizer / "tokenizer.json").write_text('{"fixture":true}\n')
-        (self.tokenizer / "tokenizer_config.json").write_text('{"fixture":true}\n')
         self.manifest_path = self.root / "manifest.json"
         self.manifest = self.make_manifest()
         self.write_manifest()
@@ -58,11 +38,9 @@ class ReleaseCorpusToolTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def make_manifest(self) -> dict:
-        tokenizer_bytes = (self.tokenizer / "tokenizer.json").read_bytes()
-        config_bytes = (self.tokenizer / "tokenizer_config.json").read_bytes()
         return {
             "$schema": "./release-corpus-source.schema.json",
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "status": "approved",
             "blockers": [],
             "source": {
@@ -91,21 +69,6 @@ class ReleaseCorpusToolTest(unittest.TestCase):
                 "reviewedBy": "Drowse release fixture",
                 "reviewedAt": "2026-08-29T00:00:00Z",
             },
-            "wordSeeds": {
-                "path": "fixtures/words.txt",
-                "sha256": sha256(self.seeds.read_bytes()),
-                "bytes": self.seeds.stat().st_size,
-                "license": "CC0-1.0",
-            },
-            "tokenizers": [
-                {
-                    "id": "fixture-model",
-                    "sourceRepository": "fixture/model",
-                    "sourceRevision": "b" * 40,
-                    "tokenizerSha256": sha256(tokenizer_bytes),
-                    "tokenizerConfigSha256": sha256(config_bytes),
-                }
-            ],
             "selection": {
                 "algorithm": "drowse-release-corpus-v1",
                 "minimumFragmentCharacters": 10,
@@ -114,8 +77,6 @@ class ReleaseCorpusToolTest(unittest.TestCase):
                 "maximumSourceBytes": 4096,
                 "maximumSourceRows": 16,
                 "saeDocuments": 3,
-                "jlensDocuments": 2,
-                "minimumSharedWords": 3,
             },
         }
 
@@ -127,39 +88,40 @@ class ReleaseCorpusToolTest(unittest.TestCase):
             self.manifest_path,
             self.source,
             self.evidence,
-            self.seeds,
             self.root / output_name,
-            {"fixture-model": self.tokenizer},
-            tokenizer_loader=lambda _: FakeTokenizer(),
         )
 
     def test_approved_inputs_generate_deterministic_bounded_outputs(self) -> None:
         first = self.prepare("first")
         self.prepare("second")
-        for name in (
-            "sae-corpus.json",
-            "jlens-corpus.json",
-            "jlens-words.json",
-            "release-corpus.json",
-        ):
+        # Only the SAE corpus: the hosted lenses are native fits on their own pinned corpus.
+        self.assertEqual(sorted(path.name for path in (self.root / "first").iterdir()),
+                         ["release-corpus.json", "sae-corpus.json"])
+        for name in ("sae-corpus.json", "release-corpus.json"):
             self.assertEqual((self.root / "first" / name).read_bytes(), (self.root / "second" / name).read_bytes())
-        self.assertEqual(json.loads((self.root / "first" / "jlens-words.json").read_text()), [
-            "blue",
-            "happy",
-            "world",
-        ])
-        self.assertEqual(first["outputs"]["words"]["tokenIds"], {"fixture-model": [10, 11, 12]})
-        self.assertEqual(first["$schema"], "https://polythetic.ai/schemas/release-corpus-v1.json")
+        self.assertEqual(first["$schema"], "https://polythetic.ai/schemas/release-corpus-v2.json")
+        self.assertEqual(first["schemaVersion"], 2)
+        self.assertEqual(list(first["outputs"]), ["sae"])
         self.assertEqual(first["outputs"]["sae"]["documents"], 3)
-        self.assertEqual(first["outputs"]["jlens"]["documents"], 2)
-        for key in ("sae", "jlens"):
-            output = first["outputs"][key]
-            payload = (self.root / "first" / output["path"]).read_bytes()
-            self.assertEqual(output["sha256"], sha256(payload))
-            self.assertLessEqual(
-                max(map(len, json.loads(payload))),
-                self.manifest["selection"]["maximumDocumentCharacters"],
-            )
+        output = first["outputs"]["sae"]
+        payload = (self.root / "first" / output["path"]).read_bytes()
+        self.assertEqual(output["sha256"], sha256(payload))
+        self.assertLessEqual(
+            max(map(len, json.loads(payload))),
+            self.manifest["selection"]["maximumDocumentCharacters"],
+        )
+
+    def test_retired_lens_fields_are_refused(self) -> None:
+        for key, value in (("wordSeeds", {}), ("tokenizers", [])):
+            manifest = json.loads(json.dumps(self.manifest))
+            manifest[key] = value
+            self.manifest_path.write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(corpus.ReleaseCorpusError, "fields must be exactly"):
+                self.prepare()
+        self.manifest["selection"]["jlensDocuments"] = 2
+        self.write_manifest()
+        with self.assertRaisesRegex(corpus.ReleaseCorpusError, "fields must be exactly"):
+            self.prepare()
 
     def test_blocked_candidate_fails_before_reading_missing_inputs(self) -> None:
         candidates = [
@@ -176,9 +138,7 @@ class ReleaseCorpusToolTest(unittest.TestCase):
                     candidate,
                     self.root / "missing-source",
                     self.root / "missing-evidence",
-                    self.root / "missing-seeds",
                     output,
-                    {},
                 )
             self.assertFalse(output.exists())
 
@@ -194,12 +154,6 @@ class ReleaseCorpusToolTest(unittest.TestCase):
             self.prepare()
         self.assertFalse((self.root / "output").exists())
 
-    def test_tokenizer_digest_mismatch_fails_without_loading(self) -> None:
-        (self.tokenizer / "tokenizer.json").write_text("changed\n")
-        with self.assertRaisesRegex(corpus.ReleaseCorpusError, "tokenizer.json does not match"):
-            self.prepare()
-        self.assertFalse((self.root / "output").exists())
-
     def test_unknown_manifest_field_is_rejected(self) -> None:
         self.manifest["assumedLicense"] = True
         self.write_manifest()
@@ -207,7 +161,7 @@ class ReleaseCorpusToolTest(unittest.TestCase):
             self.prepare()
 
     def test_duplicate_manifest_field_is_rejected(self) -> None:
-        self.manifest_path.write_text('{"schemaVersion":1,"schemaVersion":1}\n')
+        self.manifest_path.write_text('{"schemaVersion":2,"schemaVersion":2}\n')
         with self.assertRaisesRegex(corpus.ReleaseCorpusError, "repeats the JSON field"):
             self.prepare()
 
@@ -261,14 +215,6 @@ class ReleaseCorpusToolTest(unittest.TestCase):
         )
         self.assertEqual(len(result), 1)
 
-    def test_word_seeds_must_be_unique_and_sorted(self) -> None:
-        self.seeds.write_text("world\nblue\nblue\n")
-        self.manifest["wordSeeds"]["sha256"] = sha256(self.seeds.read_bytes())
-        self.manifest["wordSeeds"]["bytes"] = self.seeds.stat().st_size
-        self.write_manifest()
-        with self.assertRaisesRegex(corpus.ReleaseCorpusError, "unique, and lexically sorted"):
-            self.prepare()
-
     def test_output_directory_is_never_overwritten(self) -> None:
         output = self.root / "output"
         output.mkdir()
@@ -285,15 +231,6 @@ class ReleaseCorpusToolTest(unittest.TestCase):
             corpus._normalize_text,
             "visible\x00hidden",
         )
-
-    def test_tokenizer_arguments_require_unique_ids(self) -> None:
-        self.assertEqual(
-            corpus._parse_tokenizers([f"fixture={self.tokenizer}"]),
-            {"fixture": self.tokenizer.resolve()},
-        )
-        with self.assertRaisesRegex(corpus.ReleaseCorpusError, "unique MODEL_ID=DIRECTORY"):
-            corpus._parse_tokenizers([f"fixture={self.tokenizer}", f"fixture={self.tokenizer}"])
-
 
 def sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()

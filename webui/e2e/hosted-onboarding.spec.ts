@@ -42,7 +42,7 @@ const models = [
   model("blocked"),
 ];
 
-test("base models stay collapsed and explain text completion before selection", async ({ page }, testInfo) => {
+test("base models stay collapsed and explain text completion before selection", async ({ page }) => {
   await mountHostedApp(page);
   await updateSnapshot(page, {
     download: { ...initialSnapshot.download, phase: "idle" },
@@ -54,17 +54,17 @@ test("base models stay collapsed and explain text completion before selection", 
       })),
     })],
   });
-  const disclosure = page.locator("details.base-models");
-  const summary = disclosure.locator("summary");
-  await expect(summary).toHaveText("Base models Text completion");
-  await expect(summary).toHaveCSS("font-size", "24px");
-  await expect(summary.locator(".base-models-note")).toHaveCSS("font-size", "16px");
+  const disclosure = page.locator(".base-models");
+  const summary = disclosure.getByRole("button", { name: "Base models · Text completion", exact: true });
   const base = disclosure.getByRole("button", { name: /Base model fixture/ });
-  await expect(disclosure).not.toHaveAttribute("open", "");
-  await expect(base).not.toBeVisible();
+  const inert = () => base.evaluate(element => element.closest("[inert]") !== null);
+  await expect(summary).toHaveAttribute("aria-expanded", "false");
+  expect(await inert()).toBe(true);
   await expect(page.getByRole("button", { name: /recommended model/ })).toHaveAttribute("aria-pressed", "true");
   await summary.focus();
   await page.keyboard.press("Enter");
+  await expect(summary).toHaveAttribute("aria-expanded", "true");
+  await expect.poll(inert).toBe(false);
   await expect(base).toBeVisible();
   await expect(disclosure).toContainText("They don't follow instructions reliably");
   await base.click();
@@ -77,11 +77,10 @@ test("base models stay collapsed and explain text completion before selection", 
     const bounds = (await disclosure.boundingBox())!;
     expect(bounds.x).toBeGreaterThanOrEqual(0);
     expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
-    await disclosure.screenshot({ path: testInfo.outputPath(`base-models-${width}.png`) });
   }
   await updateSnapshot(page, { models });
   await expect(disclosure).toContainText("No verified base-model downloads");
-  await expect(disclosure.getByRole("button")).toHaveCount(0);
+  await expect(disclosure.getByRole("button", { name: /Base model fixture/ })).toHaveCount(0);
 });
 
 test("model deletion requires confirmation and allows a new download", async ({ page }) => {
@@ -256,7 +255,7 @@ async function expectSafeActionFirst(
   await expect(actions.nth(1)).toBeFocused();
 }
 
-test("first run preselects the recommended model, explains why, and identifies the selected model", async ({ page }, testInfo) => {
+test("first run preselects the recommended model, explains why, and identifies the selected model", async ({ page }) => {
   await mountHostedApp(page, [true], {
     ...initialSnapshot,
     download: { ...initialSnapshot.download, phase: "idle", modelVariantId: undefined },
@@ -266,7 +265,7 @@ test("first run preselects the recommended model, explains why, and identifies t
   await expect(first).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator(".model-grid > button[aria-pressed=true]")).toHaveCount(1);
   await expect(page.getByRole("heading", { name: "Included with recommended model", exact: true })).toBeVisible();
-  await page.locator(".why-this summary").click();
+  await page.locator(".why-this").getByRole("button", { name: "Why this one?", exact: true }).click();
   await expect(page.locator(".why-this")).toContainText("recommended device fit");
   await expect(page.getByRole("button", { name: "Download and open", exact: true })).toBeVisible();
   await updateSnapshot(page, { headline: "Device check complete" });
@@ -277,139 +276,14 @@ test("first run preselects the recommended model, explains why, and identifies t
   await expect(page.locator(".why-this")).toHaveCount(0);
   await expect(first).toHaveAttribute("aria-pressed", "false");
   await expect(second).toHaveAttribute("aria-pressed", "true");
-  const shadows = await page.locator(".model-grid > button").evaluateAll(buttons => buttons.map(button => getComputedStyle(button).boxShadow));
-  expect(shadows[1]).not.toBe(shadows[0]);
-  await expect(second).toHaveCSS("box-shadow", /28px/);
   for (const width of [390, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     await second.scrollIntoViewIfNeeded();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    await page.screenshot({ path: testInfo.outputPath(`selected-model-${width}.png`), fullPage: true });
   }
 });
 
-test("device checks use readable status fills in both themes", async ({ page }, testInfo) => {
-  await mountHostedApp(page);
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  const panel = page.locator(".check-panel");
-  for (const theme of ["dark", "light"]) {
-    await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
-    const fills: string[] = [];
-    for (const [status, states] of [
-      ["ready", ["pass", "pass", "pass"]],
-      ["partial", ["pass", "warn", "fail"]],
-      ["unavailable", ["fail", "fail", "fail"]],
-    ] as const) {
-      await updateSnapshot(page, {
-        phase: status === "unavailable" ? "unsupported" : "supported",
-        checks: states.map((state, index) => ({ id: `check-${index}`, label: `Device requirement ${index + 1}`, detail: "Browser and graphics capability.", state })),
-      });
-      await expect(panel).toHaveAttribute("data-status", status);
-      await expect(panel).toHaveCSS("background-image", "none");
-      if (await panel.locator("details").getAttribute("open") === null) {
-        await panel.locator("summary").click();
-      }
-      await expect(panel.locator(".check-list p").first()).toBeVisible();
-      const token = status === "ready" ? "success" : status === "partial" ? "warning" : "danger";
-      const fill = await page.evaluate(token => getComputedStyle(document.documentElement).getPropertyValue(`--${token}-bg`).trim(), token);
-      const rgb = [1, 3, 5].map(index => parseInt(fill.slice(index, index + 2), 16));
-      await expect(panel).toHaveCSS("background-color", `rgb(${rgb.join(", ")})`);
-      await expect.poll(() => panel.evaluate(element => {
-        const style = getComputedStyle(element);
-        return [...element.querySelectorAll(".check-summary-copy strong, .check-summary-copy small, summary > span:last-child, .check-list h3, .check-list p, .check-label, .recovery p")]
-          .filter(child => getComputedStyle(child).color !== style.color)
-          .map(child => `${child.className}: ${getComputedStyle(child).color} != ${style.color}`);
-      })).toEqual([]);
-      fills.push(await panel.evaluate(element => getComputedStyle(element).backgroundColor));
-      for (const width of [390, 1280]) {
-        await page.setViewportSize({ width, height: 900 });
-        await panel.screenshot({ path: testInfo.outputPath(`device-${theme}-${status}-${width}.png`) });
-        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-      }
-    }
-    expect(new Set(fills).size).toBe(3);
-    await updateSnapshot(page, { phase: "checking" });
-    await expect(panel).toHaveAttribute("data-status", "checking");
-    await expect(panel).toHaveCSS("background-image", "none");
-  }
-  await page.emulateMedia({ contrast: "more" });
-  await expect(panel).toHaveCSS("outline-style", "solid");
-  await page.emulateMedia({ forcedColors: "active" });
-  await expect(panel).toHaveCSS("background-image", "none");
-});
-
-test("tab identity reflects device checks and real setup states", async ({ page }) => {
-  await mountHostedApp(page);
-  const icon = page.locator('link[rel="icon"]');
-  const states: Array<[Partial<HostedShellSnapshot>, string]> = [
-    [{ phase: "checking" }, "checking"],
-    [{ phase: "unsupported" }, "unsupported"],
-    [{ phase: "failed" }, "error"],
-    [{ phase: "supported", download: { ...initialSnapshot.download, phase: "idle" } }, "models"],
-    [{ download: { ...initialSnapshot.download, phase: "downloading" } }, "downloading"],
-    [{ download: { ...initialSnapshot.download, phase: "paused" } }, "paused"],
-    [{ download: { ...initialSnapshot.download, phase: "installed" }, runtime: { ...initialSnapshot.runtime, phase: "loading" } }, "loading"],
-    [{ runtime: { ...initialSnapshot.runtime, phase: "failed" } }, "error"],
-  ];
-  for (const [snapshot, state] of states) {
-    await updateSnapshot(page, snapshot);
-    await expect(icon).toHaveAttribute("data-state", state);
-    await expect(page).toHaveTitle(/Drowse$/);
-  }
-});
-
-test("loading pulse follows actual setup work and stops on paused or failed states", async ({ page }, testInfo) => {
-  await mountHostedApp(page);
-  await page.emulateMedia({ reducedMotion: "no-preference" });
-  const gate = page.locator(".download-gate");
-  await expect(gate).toHaveClass(/loading-pulse/);
-  await expect.poll(() => gate.evaluate(el => getComputedStyle(el, "::before").animationName)).toBe("loading-breathe");
-  for (const theme of ["Light", "Dark"]) {
-    await page.evaluate(theme => document.documentElement.dataset.theme = theme.toLowerCase(), theme);
-    for (const width of [320, 390, 1440]) {
-      await page.setViewportSize({ width, height: 900 });
-      await gate.scrollIntoViewIfNeeded();
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-      await gate.screenshot({ path: testInfo.outputPath(`loading-setup-${theme}-${width}.png`) });
-    }
-  }
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await expect.poll(() => gate.evaluate(el => getComputedStyle(el, "::before").animationName)).toBe("none");
-  for (const phase of ["paused", "failed", "idle"] as const) {
-    await updateSnapshot(page, { download: { ...initialSnapshot.download, phase } });
-    await expect(gate).not.toHaveClass(/loading-pulse/);
-  }
-  const progress = {
-    modelVariantId: "model-recommended", files: [], bytesReceived: 50, bytesTotal: 100,
-    throughputBytesPerSecond: 0, etaSeconds: null, calculatingEta: true,
-    stalled: false, offline: false, resumable: true,
-  };
-  for (const state of [{ offline: true }, { stalled: true }]) {
-    await updateSnapshot(page, { download: {
-      ...initialSnapshot.download, progress: { ...progress, ...state },
-    } });
-    await expect(gate).not.toHaveClass(/loading-pulse/);
-  }
-  await updateSnapshot(page, { download: { ...initialSnapshot.download, progress } });
-  await expect(gate).toHaveClass(/loading-pulse/);
-  await page.emulateMedia({ forcedColors: "active" });
-  await expect.poll(() => gate.evaluate(el => getComputedStyle(el, "::before").borderStyle)).toBe("dashed");
-  await page.emulateMedia({ forcedColors: "none" });
-  await updateSnapshot(page, { phase: "checking" });
-  await expect(page.locator(".check-panel")).toHaveClass(/loading-pulse/);
-  await updateSnapshot(page, {
-    phase: "supported",
-    download: { ...initialSnapshot.download, phase: "installed" },
-    models: models.map(item => ({ ...item, installed: true, setupComplete: true, remainingDownloadBytes: 0 })),
-    runtime: { ...initialSnapshot.runtime, phase: "loading" },
-  });
-  await expect(page.locator(".check-panel")).not.toHaveClass(/loading-pulse/);
-  await expect(page.locator(".runtime-gate")).toHaveClass(/loading-pulse/);
-  await updateSnapshot(page, { runtime: { ...initialSnapshot.runtime, phase: "failed" } });
-  await expect(page.locator(".runtime-gate")).not.toHaveClass(/loading-pulse/);
-});
-
-test("hosted onboarding uses truthful download actions and semantic fit colors", async ({ page }) => {
+test("hosted onboarding uses truthful download actions", async ({ page }) => {
   await mountHostedApp(page);
 
   await expect(page.getByRole("button", { name: "Pause download", exact: true })).toBeVisible();
@@ -429,126 +303,10 @@ test("hosted onboarding uses truthful download actions and semantic fit colors",
   });
   await expect(page.getByRole("button", { name: "Retry download", exact: true })).toBeVisible();
 
-  const colors = await page.evaluate(() => {
-    const resolveColor = (value: string) => {
-      const probe = document.createElement("span");
-      probe.style.color = value;
-      document.body.append(probe);
-      const color = getComputedStyle(probe).color;
-      probe.remove();
-      return color;
-    };
-    const fitColor = (fit: string) =>
-      getComputedStyle(document.querySelector<HTMLElement>(`.model-fit.${fit}`)!).color;
-    const cardStyle = (fit: string) => {
-      const label = document.querySelector<HTMLElement>(`.model-fit.${fit}`)!;
-      return getComputedStyle(label.closest("button")!);
-    };
-    return {
-      recommended: fitColor("recommended"),
-      eligible: fitColor("eligible"),
-      uncertain: fitColor("uncertain"),
-      blocked: fitColor("blocked"),
-      success: resolveColor("var(--live)"),
-      warning: resolveColor("var(--accent-yellow)"),
-      danger: resolveColor("var(--accent-red)"),
-      eligibleBackground: cardStyle("eligible").backgroundColor,
-      blockedBackground: cardStyle("blocked").backgroundColor,
-      eligibleBorder: cardStyle("eligible").borderTopWidth,
-      blockedBorder: cardStyle("blocked").borderTopWidth,
-    };
-  });
-  expect(colors.recommended).toBe(colors.success);
-  expect(colors.eligible).toBe(colors.success);
-  expect(colors.uncertain).toBe(colors.warning);
-  expect(colors.blocked).toBe(colors.danger);
-  expect(colors.blockedBackground).not.toBe(colors.eligibleBackground);
-  expect(colors.blockedBorder).toBe("0px");
-  expect(colors.eligibleBorder).toBe("0px");
   await expect(page.locator(".model-grid > button.blocked")).toBeDisabled();
 });
 
-test("hardware compatibility keeps the page canvas flat", async ({ page }) => {
-  await mountHostedApp(page);
-
-  const shell = page.locator(".app-shell");
-  await expect(shell).toHaveClass(/hardware-compatible/);
-  await expect(shell).toHaveCSS("background-image", "none");
-  expect(await shell.evaluate(element => getComputedStyle(element, "::before").content)).toBe("none");
-
-  await updateSnapshot(page, {
-    phase: "checking",
-    headline: "Checking this device",
-  });
-  await expect(shell).not.toHaveClass(/hardware-compatible/);
-  await expect(shell).toHaveCSS("background-image", "none");
-
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await updateSnapshot(page, {
-    phase: "supported",
-    headline: "This device is ready",
-  });
-  await expect(shell).toHaveClass(/hardware-compatible/);
-  await expect(shell).toHaveCSS("background-image", "none");
-  expect(await shell.evaluate((element) =>
-    Number.parseFloat(getComputedStyle(element, "::before").transitionDuration)
-  )).toBeLessThanOrEqual(0.001);
-});
-
-test("verified setup keeps page and footer backgrounds flat while scrolling", async ({ page }, testInfo) => {
-  await mountHostedApp(page);
-  const shell = page.locator(".app-shell");
-  const footer = shell.locator("footer");
-  const decoration = () => footer.evaluate(element => getComputedStyle(element, "::before").content);
-  await expect.poll(decoration).toBe("none");
-  const installed = models.map(item => ({ ...item, installed: true, setupComplete: true, remainingDownloadBytes: 0 }));
-  await updateSnapshot(page, {
-    models: installed,
-    download: { ...initialSnapshot.download, phase: "installed" },
-  });
-  await expect(shell).toHaveClass(/download-complete/);
-  await expect.poll(decoration).toBe("none");
-  await expect(page.locator(".runtime-gate")).toHaveCSS("border-top-width", "0px");
-  await expect(shell).toHaveCSS("background-image", "none");
-  await expect(footer).toHaveCSS("background-image", "none");
-  expect(await shell.evaluate(element => getComputedStyle(element, "::before").content)).toBe("none");
-  expect(await shell.evaluate(element => getComputedStyle(element, "::after").content)).toBe("none");
-  for (const theme of ["light", "dark"]) {
-    await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
-    for (const width of [390, 1440]) {
-      await page.setViewportSize({ width, height: 900 });
-      await page.evaluate(() => window.scrollTo(0, 0));
-      const card = page.locator(".model-grid > button").first();
-      await expect(card).toHaveCSS("background-image", /^linear-gradient\((?:180deg, )?rgba/);
-      await card.screenshot({ path: testInfo.outputPath(`top-lit-model-${theme}-${width}.png`) });
-      await page.evaluate(() => window.scrollTo(0, 0));
-      const initialBottom = await footer.evaluate(element => element.getBoundingClientRect().bottom);
-      await footer.scrollIntoViewIfNeeded();
-      const scrolled = await footer.evaluate(element => ({
-        bottom: element.getBoundingClientRect().bottom,
-        scroll: window.scrollY,
-      }));
-      expect(scrolled.scroll).toBeGreaterThan(0);
-      expect(Math.abs(initialBottom - scrolled.bottom - scrolled.scroll)).toBeLessThan(1);
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-      await page.screenshot({ path: testInfo.outputPath(`flat-model-page-${theme}-${width}.png`) });
-    }
-  }
-  await updateSnapshot(page, { models: installed.map(item => ({ ...item, setupComplete: false })) });
-  await expect.poll(decoration).toBe("none");
-  for (const phase of ["downloading", "paused", "failed"] as const) {
-    await updateSnapshot(page, { models: installed, download: { ...initialSnapshot.download, phase } });
-    await expect(shell).not.toHaveClass(/download-complete/);
-  }
-  await updateSnapshot(page, { phase: "checking", download: { ...initialSnapshot.download, phase: "installed" } });
-  await expect(shell).not.toHaveClass(/download-complete/);
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await updateSnapshot(page, { phase: "supported" });
-  await expect.poll(decoration).toBe("none");
-  expect(await footer.evaluate(element => parseFloat(getComputedStyle(element, "::before").transitionDuration))).toBeLessThanOrEqual(0.001);
-});
-
-test("model cards show provider logos and catalog-backed SAE availability", async ({ page }) => {
+test("model cards show catalog-backed SAE availability", async ({ page }) => {
   await mountHostedApp(page);
   const jlensPack: HostedModelOption["firstRunPacks"][number] = {
     id: "gemma-jlens",
@@ -586,8 +344,6 @@ test("model cards show provider logos and catalog-backed SAE availability", asyn
 
   const qwen = page.locator(".model-grid > button", { hasText: "Qwen3 1.7B" });
   const gemma = page.locator(".model-grid > button", { hasText: "Gemma 3 1B" });
-  await expect(qwen.locator('[data-provider="qwen"]')).toHaveAttribute("aria-hidden", "true");
-  await expect(gemma.locator('[data-provider="gemma"]')).toHaveAttribute("aria-hidden", "true");
   await expect(qwen.getByText("SAE", { exact: true })).toHaveCount(0);
   await expect(gemma.getByText("SAE", { exact: true })).toHaveAttribute(
     "aria-description",

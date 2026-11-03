@@ -56,6 +56,8 @@ export async function runServiceActionCases({ server, tools, validateInput, JobR
     drowse_preparation_status: [{ family: "lens" }, "instruments.preparationStatus", ["lens"]],
     drowse_cancel_preparation: [{ family: "lens", operation: "fit", started_at: 100 }, "instruments.cancelPreparation", ["lens"]],
     drowse_token_readout: [{ family: "lens", node_id: "a", raw_index: 0, steered: false }, "instruments.tokenReadout", ["lens", "a", 0, { steered: false }, undefined]],
+    drowse_token_anatomy: [{ node_id: "a", raw_index: 0, steered: false }, "instruments.tokenAnatomy", ["a", 0, { steered: false }]],
+    drowse_unit_activity: [{ node_id: "a", top: 8 }, "instruments.unitActivity", ["a", { top: 8 }]],
     drowse_validate_lens_token: [{ word: "sail" }, "instruments.validateLensToken", ["sail"]],
     drowse_validate_sae_feature: [{ feature_id: 3 }, "instruments.validateSaeFeature", [3]],
     drowse_sae_feature_metadata: [{ ids: [0, 3] }, "instruments.saeFeaturesMetadata", [[0, 3]]],

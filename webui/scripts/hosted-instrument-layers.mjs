@@ -16,10 +16,10 @@ export function selectHostedJlensLayers(
     !Number.isSafeInteger(hiddenSize) || hiddenSize < 1 ||
     !Number.isSafeInteger(targetBytes) || targetBytes < 1
   ) {
-    throw new Error("J-lens layer selection inputs are invalid");
+    throw new Error("lens layer selection inputs are invalid");
   }
   if (layerMap.length < 2) {
-    throw new Error("J-lens fitting requires a source layer before the final residual");
+    throw new Error("an R-lens fit requires a source layer before the final residual");
   }
   const sourceLayerMap = layerMap.slice(0, -1);
   const matrixBytes = hiddenSize * hiddenSize * FP32_BYTES;

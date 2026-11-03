@@ -84,7 +84,6 @@ export interface SessionCoordinatorPersistencePort {
   claim(
     binding: HostedSessionRuntimeIdentity,
     mode?: "restore" | "reset",
-    compatibleRuntimeIdentitySha256s?: readonly string[],
   ): Promise<HostedSessionClaimResult>;
   save(
     input: HostedSessionSave,
@@ -202,7 +201,6 @@ export class BrowserSessionCoordinator {
   async restore(
     identity: HostedSessionRuntimeIdentity,
     mode: SessionPersistenceRestoreMode = "replace",
-    compatibleRuntimeIdentitySha256s: readonly string[] = [],
   ): Promise<HostedSessionRestoreResult> {
     this.requireOpen();
     validateRuntimeIdentity(identity);
@@ -215,7 +213,6 @@ export class BrowserSessionCoordinator {
     const claim = await this.persistence.claim(
       structuredClone(identity),
       mode === "reset" ? "reset" : "restore",
-      compatibleRuntimeIdentitySha256s,
     );
     validateClaimResult(claim);
     if (claim.status === "incompatible") {

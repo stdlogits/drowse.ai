@@ -1,5 +1,5 @@
 <script lang="ts">
-  import FluentIcon from "../../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
+  import { Icon } from "@stdlogits/ledger";
   import { htmlGuidePaths, type GuidePage, type GuideLink } from "../../../../scripts/site-content.mjs";
 
   let { page }: { page: GuidePage } = $props();
@@ -28,9 +28,9 @@
           {#each section.links as link}
             <li>
               {#if isExternal(link)}
-                <a href={link.href} rel="noreferrer"><span>{link.label}</span><FluentIcon name="external" size={18} /></a>
+                <a href={link.href} rel="noreferrer"><span>{link.label}</span><Icon name="external" /></a>
               {:else}
-                <a href={internalHref(link.href)}><span>{link.label}</span><FluentIcon name="next" size={18} /></a>
+                <a href={internalHref(link.href)}><span>{link.label}</span><Icon name="right" /></a>
               {/if}
             </li>
           {/each}
@@ -41,22 +41,22 @@
 {/each}
 
 <style>
-  .guide-section { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: var(--space-6) var(--space-8); padding-block: var(--surface-padding); border-top: 1px solid var(--grid-line); }
-  h2 { margin: 0; color: var(--fg); font-family: var(--font-structure); font-weight: var(--weight-display); font-size: var(--text-model-title); line-height: 1.15; letter-spacing: -0.035em; text-wrap: balance; }
-  .section-body { display: grid; gap: var(--space-5); min-width: 0; }
-  p, li { color: var(--fg-dim); font-size: var(--text-md); line-height: 1.65; text-wrap: pretty; }
-  p { margin: 0; max-width: 68ch; }
-  .bullets { display: grid; gap: var(--space-2); margin: 0; padding-inline-start: var(--space-6); max-width: 68ch; }
-  .code { margin: 0; overflow-x: auto; padding: var(--space-4) var(--space-5); border-radius: var(--radius); background: var(--surface-card); box-shadow: var(--shadow-rack); color: var(--fg); font-family: var(--font-mono); font-size: var(--text-sm); line-height: 1.6; }
-  .links { display: flex; flex-wrap: wrap; gap: var(--space-4); margin: 0; padding: 0; list-style: none; }
-  .links li { min-width: 0; }
-  .links a { display: flex; align-items: center; gap: var(--space-4); min-height: 48px; padding: var(--space-3) var(--space-5); border-radius: var(--radius); background: var(--surface-card); box-shadow: var(--shadow-rack); color: var(--fg); font-size: var(--text-sm); text-decoration: none; overflow-wrap: anywhere; transition: background-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out); }
-  .links a:hover { background: var(--surface-card-hover); box-shadow: var(--shadow-rack-hover); }
-  .links a:active { transform: scale(var(--press-scale)); box-shadow: var(--shadow-control-pressed); }
-  .links a > :global(svg) { flex: none; color: var(--fg-muted); }
-  a:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 4px; }
-  @media (max-width: 760px) {
+  /* A guide's parts: each a caption beside what it is about; captions stay in view while their part
+     scrolls past on wide screens (neuron-lens.com's reading pages). */
+  .guide-section { display: grid; grid-template-columns: minmax(0, 300px) minmax(0, 1fr); gap: var(--s5) var(--s7); align-items: start; min-width: 0; }
+  h2 { position: sticky; top: var(--s5); color: var(--ink); font: var(--type-heading); letter-spacing: -0.02em; }
+  .section-body { display: grid; gap: var(--s5); min-width: 0; }
+  p, li { color: var(--ink2); font: var(--type-body); }
+  p { max-width: 68ch; }
+  .bullets { display: grid; gap: var(--s2); max-width: 68ch; padding-inline-start: var(--s5); list-style: disc; }
+  .code { overflow-x: auto; margin: 0; padding: var(--s4) var(--s5); border-radius: var(--r-box); background: var(--wash); color: var(--ink); font: var(--type-small); font-variant-numeric: tabular-nums; }
+  .links { display: grid; gap: var(--s2); }
+  .links a { display: flex; align-items: center; justify-content: space-between; gap: var(--s4); min-height: 48px; padding: var(--s3) var(--s4); border-radius: var(--r-box); background: var(--wash); color: var(--ink); font: var(--type-control); overflow-wrap: anywhere; transition: background-color var(--fast) var(--ease), scale var(--fast) var(--ease); }
+  .links a:active { scale: 0.99; }
+  .links a > :global(svg) { flex: none; color: var(--ink3); }
+  @media (hover: hover) { .links a:hover { background: var(--wash2); } }
+  @media (max-width: 900px) {
     .guide-section { grid-template-columns: minmax(0, 1fr); }
+    h2 { position: static; }
   }
-  @media (prefers-reduced-motion: reduce) { .links a { transition: none; } }
 </style>

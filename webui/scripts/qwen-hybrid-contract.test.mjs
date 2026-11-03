@@ -17,8 +17,7 @@ const names = [
   "requireKVCache", "requireRNNState", "getSingleStateForABI", "getActiveKVStates",
   "drowseStateArguments", "drowseOutputOffset",
   "invokePrefill", "invokeDecode", "invokeDrowseCapture",
-  "invokeDrowseRankOneCaptureV1", "captureDrowseTokenChunk",
-  "captureDrowseRankOneTokenChunkV1", "resetDrowseCaptureState",
+  "captureDrowseTokenChunk", "resetDrowseCaptureState",
   "embedAndForward", "embedAndForwardChunk", "applyDrowsePositionControls",
   "updateDrowseStructuredControls",
 ];
@@ -39,7 +38,7 @@ console.log(JSON.stringify({ sourceSha256: createHash("sha256").update(source).d
 test("all 256 position masks preserve absolute boundaries and intersect dynamic controls at every batch size", async () => {
   let cases = 0;
   for (let mask = 0; mask < 256; mask++) for (const chunkSize of [1, 2, 3, 8]) {
-    for (const structured of [false, true]) {
+    for (const structured of [true]) {
       const start = 13 + mask % 5;
       const spans = [];
       for (let position = 0; position < 8; position++) {
@@ -55,9 +54,7 @@ test("all 256 position masks preserve absolute boundaries and intersect dynamic 
       Object.assign(consumer, {
         filledKVCacheLength: start, prefillChunkSize: chunkSize,
         drowsePositionSpans: spans, drowsePositionActive: true,
-        drowsePositionEnabled: Uint32Array.of(1, 0),
         drowsePositionAffine: Uint32Array.of(1, 0), drowsePositionCurve: Uint32Array.of(0, 1),
-        drowseProgram: structured ? undefined : { enabled: { copyFrom(value) { affine = [...value]; } } },
         drowseStructuredProgram: structured ? {} : undefined,
         async writeDrowseStructuredControls(a, c) { affine = [...a]; if (c !== undefined) curve = [...c]; },
         async embedAndForwardChunk(parts, length) {
@@ -87,7 +84,7 @@ test("all 256 position masks preserve absolute boundaries and intersect dynamic 
       cases++;
     }
   }
-  assert.equal(cases, 2048);
+  assert.equal(cases, 1024);
 });
 
 function fixture(kind, abi = "batch") {
@@ -107,11 +104,10 @@ function fixture(kind, abi = "batch") {
     kvCache: kind === "rnn" ? undefined : kv,
     rnnState: kind === "kv" ? undefined : rnn,
     params, prefill: forward, decoding: forward,
-    drowsePrefill: forward, drowseDecoding: forward,
+    drowseStructuredPrefill: forward, drowseStructuredDecoding: forward,
     drowseCapturePrefill: forward, drowseCaptureDecoding: forward,
-    drowseRankOneCapturePrefillV1: forward, drowseRankOneCaptureDecodingV1: forward,
     prefillLogitPositions: positions, prefillLogitPositionHost: new Int32Array(1),
-    getDrowseForwardArguments: () => consumer.drowseProgram ? [program] : [],
+    getDrowseForwardArguments: () => consumer.drowseStructuredMode === "structured" ? [program] : [],
     filledKVCacheLength: 0,
     prefillChunkSize: 64,
     resetDrowseReadbackState: () => {},
@@ -140,7 +136,7 @@ for (const { kind, abi } of variants) {
     for (const steered of [false, true]) {
       test(`${kind}/${abi}: ${phase} forwards states in order (${steered ? "steered" : "plain"})`, () => {
         const f = fixture(kind, abi);
-        if (steered) f.consumer.drowseProgram = {};
+        if (steered) f.consumer.drowseStructuredMode = "structured";
         if (phase === "prefill") f.consumer.invokePrefill(f.embeddings, 2);
         else f.consumer.invokeDecode(f.embeddings);
         assert.deepEqual(f.calls[0], [f.embeddings,
@@ -150,36 +146,33 @@ for (const { kind, abi } of variants) {
         if (phase === "prefill" && abi === "batch") assert.equal(f.consumer.prefillLogitPositionHost[0], 1);
       });
     }
-    for (const rankOne of [false, true]) {
-      test(`${kind}/${abi}: ${phase} ${rankOne ? "rank-one " : ""}capture forwards every state`, () => {
+    {
+      test(`${kind}/${abi}: ${phase} ${""}capture forwards every state`, () => {
         const f = fixture(kind, abi);
-        if (rankOne) f.consumer.drowseProgram = {};
-        const name = rankOne ? "invokeDrowseRankOneCaptureV1" : "invokeDrowseCapture";
+        const name = "invokeDrowseCapture";
         f.consumer[name](f.embeddings, phase === "prefill" ? 2 : 1, f.positions);
         assert.deepEqual(f.calls[0], [f.embeddings,
           ...(phase === "prefill" && abi === "batch" ? [f.positions] : []),
           ...(kind !== "rnn" ? [f.kv] : []), ...(kind !== "kv" ? [f.rnn] : []),
-          f.positions, ...(rankOne ? [f.program] : []), f.params]);
+          f.positions, f.params]);
       });
     }
   }
 }
 
 for (const kind of ["kv", "hybrid"]) {
-  for (const rankOne of [false, true]) {
-    test(`${kind}: ${rankOne ? "rank-one " : ""}capture reads tensors after returned states`, async () => {
+  {
+    test(`${kind}: ${""}capture reads tensors after returned states`, async () => {
       const f = fixture(kind);
       const values = Float32Array.from({ length: 8 }, (_, i) => i / 8);
       const captures = { dtype: "float32", shape: [2, 1, 4], values };
-      const measurements = { name: "measurements", dispose() {} };
       const returned = [{ name: "logits" }, f.kv, ...(kind === "hybrid" ? [f.rnn] : []),
-        ...(rankOne ? [measurements] : []), captures];
-      const invoke = rankOne ? "invokeDrowseRankOneCaptureV1" : "invokeDrowseCapture";
+        captures];
+      const invoke = "invokeDrowseCapture";
       f.consumer[invoke] = () => ({ get: (index) => returned[index] });
-      const capture = rankOne ? "captureDrowseRankOneTokenChunkV1" : "captureDrowseTokenChunk";
+      const capture = "captureDrowseTokenChunk";
       try {
         assert.deepEqual(await f.consumer[capture]([4, 5], [1]), values);
-        if (rankOne) assert.equal(f.consumer.drowseMeasurements, measurements);
         assert.equal(f.consumer.filledKVCacheLength, 2);
       } finally {
         assert.deepEqual(f.events, ["scope+", "begin:kv",
@@ -189,42 +182,28 @@ for (const kind of ["kv", "hybrid"]) {
   }
 }
 
-for (const rankOne of [false, true]) {
-  test(`hybrid: second state begin failure closes only begun states (${rankOne ? "rank-one" : "plain"})`, async () => {
+{
+  test(`hybrid: second state begin failure closes only begun states (plain)`, async () => {
     const f = fixture("hybrid");
     f.consumer.fKVCacheBeginForward = (state) => {
       if (state === f.rnn) throw new Error("begin failed");
       f.events.push(`begin:${state.name}`);
     };
-    const capture = rankOne ? "captureDrowseRankOneTokenChunkV1" : "captureDrowseTokenChunk";
+    const capture = "captureDrowseTokenChunk";
     await assert.rejects(f.consumer[capture]([4, 5], [1]), /begin failed/);
     assert.deepEqual(f.events, ["scope+", "begin:kv", "end:kv", "scope-"]);
   });
-  test(`hybrid: failed ${rankOne ? "rank-one " : ""}capture balances scopes and both states`, async () => {
+  test(`hybrid: failed ${""}capture balances scopes and both states`, async () => {
     const f = fixture("hybrid");
-    f.consumer.drowseProgram = {};
-    const invoke = rankOne ? "invokeDrowseRankOneCaptureV1" : "invokeDrowseCapture";
+    const invoke = "invokeDrowseCapture";
     f.consumer[invoke] = () => { throw new Error("capture failed"); };
-    const capture = rankOne ? "captureDrowseRankOneTokenChunkV1" : "captureDrowseTokenChunk";
+    const capture = "captureDrowseTokenChunk";
     await assert.rejects(f.consumer[capture]([4, 5], [1]), /capture failed/);
     assert.equal(f.consumer.filledKVCacheLength, 0);
     assert.deepEqual(f.events, ["scope+", "begin:kv", "begin:rnn", "end:rnn", "end:kv", "scope-"]);
   });
 }
 
-for (const kind of ["kv", "hybrid"]) {
-  test(`${kind}: generation reads measurements after all returned states`, async () => {
-    const f = fixture(kind);
-    const logits = { name: "logits" };
-    const measurements = { name: "measurements" };
-    f.consumer.drowseProgram = {};
-    const returned = [logits, f.kv, ...(kind === "hybrid" ? [f.rnn] : []), measurements];
-    f.consumer.invokePrefill = () => ({ get: (index) => returned[index] });
-    assert.equal(await f.consumer.embedAndForward([[4, 5]], 2), logits);
-    assert.equal(f.consumer.drowseMeasurements, measurements);
-    assert.equal(f.consumer.filledKVCacheLength, 2);
-  });
-}
 
 for (const failure of ["embedding", "second state", "forward"]) {
   test(`hybrid: generation cleans up after ${failure} failure`, async () => {

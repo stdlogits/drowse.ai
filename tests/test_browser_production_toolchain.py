@@ -15,6 +15,7 @@ SPEC = importlib.util.spec_from_file_location("build_production_webgpu", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 TOOL = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(TOOL)
+import overlay_checks as CHECKS  # noqa: E402  (the production script put forks/ on sys.path)
 
 
 def test_webllm_gemma_uses_global_context_without_top_level_sliding_window():
@@ -150,6 +151,19 @@ def test_base_adapter_provenance_is_architecture_specific():
     assert "qwen35_adapter.py" not in TOOL.toolchain_manifest("gpt2")["modelAdapterFiles"]
 
 
+def test_fork_manifest_base_models_bind_the_checked_in_adapters():
+    """The publisher checks a base library's drowse-build.json against forks/manifest.json; the
+    builder records the adapters' real digests, so the manifest must carry the same ones (it kept
+    pre-9bae21e digests and refused every GPT-2, Pythia and Qwen3.5 library)."""
+    forks = SCRIPT.parent
+    manifest = json.loads((forks / "manifest.json").read_text())
+    for architecture, base in manifest["baseModels"].items():
+        assert base["modelAdapterFiles"] == TOOL.adapter_digests(architecture), architecture
+        assert base["modelSourceFiles"] == TOOL.BASE_MODEL_SOURCE_DIGESTS[architecture], architecture
+        for name, digest in base["modelAdapterFiles"].items():
+            assert hashlib.sha256((forks / name).read_bytes()).hexdigest() == digest, name
+
+
 def test_qwen35_base_policy_uses_the_text_backbone_not_vision_or_chat(tmp_path: Path):
     config = {"model_type": "qwen3_5", "max_position_embeddings": 4096, "eos_token_id": 99,
               "text_config": {"model_type": "qwen3_5_text", "max_position_embeddings": 2048,
@@ -253,6 +267,29 @@ def test_gemma_conversion_preserves_source_attention_settings(tmp_path: Path, wr
         TOOL.validate_gemma_attention_config(tmp_path, tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("source_patch", "compiled_patch", "message"),
+    [
+        ({"rope_scaling": {"rope_type": "yarn", "factor": 4.0}}, {}, "rope_scaling"),
+        ({"use_sliding_window": True, "sliding_window": 4096}, {}, "use_sliding_window"),
+        ({}, {"sliding_window_size": 4096}, "sliding_window_size"),
+    ],
+)
+def test_validate_qwen3_attention_config_refuses_scaled_or_windowed_rope(
+    tmp_path: Path, source_patch: dict, compiled_patch: dict, message: str
+):
+    source = {"rope_theta": 1000000, "rope_scaling": None, "use_sliding_window": False,
+              "sliding_window": None}
+    (tmp_path / "config.json").write_text(json.dumps(source))
+    (tmp_path / "mlc-chat-config.json").write_text(json.dumps({"sliding_window_size": -1}))
+    TOOL.validate_qwen3_attention_config(tmp_path, tmp_path)
+    (tmp_path / "config.json").write_text(json.dumps({**source, **source_patch}))
+    (tmp_path / "mlc-chat-config.json").write_text(
+        json.dumps({"sliding_window_size": -1, **compiled_patch}))
+    with pytest.raises(SystemExit, match=message):
+        TOOL.validate_qwen3_attention_config(tmp_path, tmp_path)
+
+
 def test_validate_source_closes_sharded_weights_and_optional_tokenizer_inputs(tmp_path: Path):
     revision = "c" * 40
     metadata = tmp_path / ".cache/huggingface/download"
@@ -284,7 +321,7 @@ def test_validate_source_closes_sharded_weights_and_optional_tokenizer_inputs(tm
 
 def test_verify_build_manifest_closes_and_hashes_every_artifact(tmp_path: Path):
     artifact = tmp_path / "mlc-chat-config.json"
-    artifact.write_bytes(b"config")
+    artifact.write_text(json.dumps({"conv_template": {"name": "qwen3", "system_message": ""}}))
     tokenizer = tmp_path / "tokenizer.json"
     tokenizer.write_text(json.dumps({
         "added_tokens": [
@@ -305,9 +342,9 @@ def test_verify_build_manifest_closes_and_hashes_every_artifact(tmp_path: Path):
     }
     manifest = {
         "schemaVersion": 1,
-        "runtimeAbi": "drowse-web-runtime-v1",
-        "hookAbi": "post-block-residual-v4",
-        "structuredHookProfile": TOOL.STANDARD_STRUCTURED_HOOK_PROFILE,
+        "runtimeAbi": TOOL.RUNTIME_ABI,
+        "hookAbi": TOOL.HOOK_ABI,
+        "structuredHookProfile": "standard-v4",
         "thinkingProfile": thinking_profile,
         "architecture": "qwen3",
         "quantization": "q4f16_1",
@@ -349,19 +386,29 @@ def test_verify_build_manifest_closes_and_hashes_every_artifact(tmp_path: Path):
 def test_gemma_unquantized_manifest_requires_precise_normalization_provenance(tmp_path: Path):
     tensor_cache = tmp_path / "tensor-cache.json"
     tensor_cache.write_text(json.dumps({"records": [{"records": [{"format": "raw", "dtype": "float32"}]}]}))
+    chat = tmp_path / "mlc-chat-config.json"
+    conversation = {"name": "gemma3_instruction", "system_message": ""}
+    chat.write_text(json.dumps({"conv_template": conversation}))
+    entry = lambda file: {"path": file.name, "bytes": file.stat().st_size, "sha256": TOOL.sha256(file)}  # noqa: E731
     manifest = {
-        "schemaVersion": 1, "runtimeAbi": "drowse-web-runtime-v1",
-        "hookAbi": "post-block-residual-v4", "structuredHookProfile": TOOL.STANDARD_STRUCTURED_HOOK_PROFILE,
+        "schemaVersion": 1, "runtimeAbi": TOOL.RUNTIME_ABI,
+        "hookAbi": TOOL.HOOK_ABI, "structuredHookProfile": "standard-v4",
         "thinkingProfile": None, "architecture": "gemma3_text", "quantization": "q0f32",
         "weightEncoding": "raw", "toolchain": TOOL.toolchain_manifest("gemma3_text"),
-        "files": [{"path": tensor_cache.name, "bytes": tensor_cache.stat().st_size,
-                   "sha256": TOOL.sha256(tensor_cache)}],
+        "files": [entry(tensor_cache), entry(chat)],
     }
     path = tmp_path / "drowse-build.json"
     path.write_text(json.dumps(manifest))
     with pytest.raises(SystemExit, match="source-preserving normalization"):
         TOOL.verify_build_manifest(tmp_path, "gemma3_text", "q0f32")
     manifest["conversionPolicy"] = {"rmsNormOffset": "float32-before-add-one-v1"}
+    path.write_text(json.dumps(manifest))
+    # Gemma 3's MLC template without the bridge's fold and trim renders unlike the model's template.
+    with pytest.raises(SystemExit, match="conversation rules.*drowse_content_trim.*drowse_system_fold_sep"):
+        TOOL.verify_build_manifest(tmp_path, "gemma3_text", "q0f32")
+    chat.write_text(json.dumps({"conv_template": {
+        **conversation, "drowse_system_fold_sep": "\n\n", "drowse_content_trim": True}}))
+    manifest["files"] = [entry(tensor_cache), entry(chat)]
     path.write_text(json.dumps(manifest))
     TOOL.verify_build_manifest(tmp_path, "gemma3_text", "q0f32")
 
@@ -401,7 +448,7 @@ def test_verify_compiled_library_requires_wasm_and_every_drowse_export(tmp_path:
             for binding in range(3)
         )
         + b"\n"
-        + TOOL.TOPK_WORKGROUP_LINE
+        + CHECKS.TOPK_WORKGROUP_LINE
         + b"\nfn drowse_exact_top8_tiles_kernel() {\n"
         + b"var<workgroup> best_values : array<f32, 64>;\n"
         + b"var<workgroup> best_indices : array<i32, 64>;\n"
@@ -415,7 +462,7 @@ def test_verify_compiled_library_requires_wasm_and_every_drowse_export(tmp_path:
             for binding in range(4)
         )
         + b"\n"
-        + TOOL.TOPK_WORKGROUP_LINE
+        + CHECKS.TOPK_WORKGROUP_LINE
         + b"\nfn drowse_exact_top8_merge_kernel() {\n"
         + b"var<workgroup> best_values : array<f32, 64>;\n"
         + b"var<workgroup> best_indices : array<i32, 64>;\n"
@@ -429,7 +476,7 @@ def test_verify_compiled_library_requires_wasm_and_every_drowse_export(tmp_path:
             for binding in range(3)
         )
         + b"\n"
-        + TOOL.JLENS_TRANSPORT_WORKGROUP_LINE
+        + CHECKS.JLENS_TRANSPORT_WORKGROUP_LINE
         + b"\nfn drowse_jlens_transport_kernel() {\n"
         + b"var<workgroup> partial : array<f32, 128>;\nworkgroupBarrier();\nfor (var source_coordinate : i32 = 0i; source_coordinate < 8i; source_coordinate++) {\n"
         + b"let transported = fma(1.0f, 1.0f, 0.0f);\n}\n}\n"
@@ -438,32 +485,32 @@ def test_verify_compiled_library_requires_wasm_and_every_drowse_export(tmp_path:
         b"// Function: drowse_geometry_measurements_kernel\n"
         + b"\n".join(
             f"@group(0) @binding({binding}) var<storage, read> buffer_{binding}: array<f32>;".encode()
-            for binding in range(TOOL.MAX_WEBGPU_STORAGE_BINDINGS_PER_STAGE)
+            for binding in range(CHECKS.MAX_WEBGPU_STORAGE_BINDINGS_PER_STAGE)
         )
         + b"\n@compute @workgroup_size(1) fn main() {}\n"
     )
     output.write_bytes(
         b"\x00asm" + b"".join(
             len(function.encode()).to_bytes(8, "little") + function.encode()
-            for function in sorted(TOOL.REQUIRED_FUNCTIONS)
+            for function in sorted(CHECKS.required_functions("qwen3"))
         ) + tile_shader + merge_shader + transport_shader + geometry_shader
     )
-    TOOL.verify_compiled_library(output)
+    TOOL.verify_compiled_library(output, "qwen3")
 
     output.write_bytes(output.read_bytes().replace(b"fma(", b"mul(", 1))
     with pytest.raises(SystemExit, match="bounded cooperative fp32 schedule"):
-        TOOL.verify_compiled_library(output)
+        TOOL.verify_compiled_library(output, "qwen3")
 
     output.write_bytes(b"not wasm")
     with pytest.raises(SystemExit, match="valid WebAssembly"):
-        TOOL.verify_compiled_library(output)
+        TOOL.verify_compiled_library(output, "qwen3")
 
     function = "drowse_prefill"
     output.write_bytes(
         b"\x00asm" + len(function.encode()).to_bytes(8, "little") + function.encode()
     )
     with pytest.raises(SystemExit, match="lacks Drowse VM function metadata"):
-        TOOL.verify_compiled_library(output)
+        TOOL.verify_compiled_library(output, "qwen3")
 
 
 def test_copy_notices_packages_full_declared_model_license(tmp_path: Path):
@@ -501,3 +548,123 @@ def test_copy_notices_packages_full_declared_model_license(tmp_path: Path):
     assert json.loads((output / "MODEL-LICENSE.json").read_text())["licenseId"] == (
         "LicenseRef-GPT2-Modified-MIT"
     )
+
+
+def test_rebind_carries_a_published_conversion_to_the_current_abi_byte_for_byte(tmp_path: Path):
+    source = tmp_path / "published"
+    source.mkdir()
+    files = []
+    # Published manifests are not always in path order (qwen3-1.7b's is not).
+    chat = json.dumps({"model_type": "gemma3_text", "quantization": "q4f32_1"}).encode()
+    for name, payload in (("tensor-cache.json", b"{\"records\": []}"), ("mlc-chat-config.json", chat),
+                          ("params_shard_0.bin", b"\x01\x02\x03")):
+        (source / name).write_bytes(payload)
+        files.append({"path": name, "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()})
+    (source / "unlisted.txt").write_bytes(b"not part of the conversion")
+    previous = {
+        "schemaVersion": 1, "runtimeAbi": "drowse-web-runtime-v1", "hookAbi": "post-block-residual-v4",
+        "structuredHookProfile": "standard-v3", "thinkingProfile": None, "architecture": "gemma3_text",
+        "quantization": "q4f32_1", "contextWindowSize": 4096, "prefillChunkSize": 2048,
+        "source": {"repository": "unsloth/gemma-3-1b-it", "revision": "a" * 40}, "files": files,
+    }
+    previous["toolchain"] = {"mlcLlmBaseCommit": "old"}
+    (source / "drowse-build.json").write_text(json.dumps(previous))
+    lock = tmp_path / "runtime-lock.json"
+    entry = {"id": "gemma3-1b-instruct", "architecture": "gemma3_text", "quantization": "q4f32_1",
+             "manifestSha256": hashlib.sha256(b"{\"records\": []}").hexdigest()}
+    lock.write_text(json.dumps({"models": [entry]}))
+    args = SimpleNamespace(model=source, output=tmp_path / "rebound", architecture="gemma3_text",
+                           quantization="q4f32_1", structured_hook_profile="standard-v4",
+                           model_id="gemma3-1b-instruct", runtime_lock=lock)
+
+    TOOL.rebind(args)
+    rebound = tmp_path / "rebound"
+    assert sorted(p.name for p in rebound.iterdir()) == sorted([*(f["path"] for f in files), "drowse-build.json"])
+    for file in files:
+        assert (rebound / file["path"]).read_bytes() == (source / file["path"]).read_bytes()
+    manifest = json.loads((rebound / "drowse-build.json").read_text())
+    assert manifest["files"] == files and manifest["source"] == previous["source"]
+    assert (manifest["runtimeAbi"], manifest["hookAbi"], manifest["structuredHookProfile"]) == (
+        TOOL.RUNTIME_ABI, TOOL.HOOK_ABI, "standard-v4")
+    assert manifest["toolchain"] == TOOL.toolchain_manifest("gemma3_text")
+    assert manifest["rebind"]["fromHookAbi"] == "post-block-residual-v4"
+    assert manifest["rebind"]["fromToolchain"] == {"mlcLlmBaseCommit": "old"}
+    assert manifest["rebind"]["modelId"] == "gemma3-1b-instruct"
+    assert manifest["rebind"]["fromBuildSha256"] == hashlib.sha256(
+        (source / "drowse-build.json").read_bytes()).hexdigest()
+    TOOL.verify_build_manifest(rebound, "gemma3_text", "q4f32_1")
+
+    with pytest.raises(SystemExit, match="output already exists"):
+        TOOL.rebind(args)
+    with pytest.raises(SystemExit, match="architecture and quantization"):
+        TOOL.rebind(SimpleNamespace(**{**vars(args), "output": tmp_path / "other", "quantization": "q4f16_1"}))
+    with pytest.raises(SystemExit, match="no single model"):
+        TOOL.rebind(SimpleNamespace(**{**vars(args), "output": tmp_path / "other", "model_id": "qwen3-4b"}))
+    lock.write_text(json.dumps({"models": [{**entry, "manifestSha256": "0" * 64}]}))
+    with pytest.raises(SystemExit, match="not the runtime lock's published conversion"):
+        TOOL.rebind(SimpleNamespace(**{**vars(args), "output": tmp_path / "other"}))
+    lock.write_text(json.dumps({"models": [entry]}))
+    (source / "mlc-chat-config.json").write_text(json.dumps({"model_type": "qwen3", "quantization": "q4f32_1"}))
+    with pytest.raises(SystemExit, match="mlc-chat-config.json names another"):
+        TOOL.rebind(SimpleNamespace(**{**vars(args), "output": tmp_path / "other"}))
+    (source / "mlc-chat-config.json").write_bytes(chat)
+    assert not (tmp_path / "other").exists()
+    (source / "params_shard_0.bin").write_bytes(b"\x01\x02\x04")
+    with pytest.raises(SystemExit, match="does not match its build manifest: params_shard_0.bin"):
+        TOOL.rebind(SimpleNamespace(**{**vars(args), "output": tmp_path / "tampered"}))
+    assert not (tmp_path / "tampered").exists()
+    assert not any(p.name.startswith("tampered.partial-") for p in tmp_path.iterdir())
+
+
+def test_rebind_gives_the_chat_config_the_bridges_conversation_rules(tmp_path: Path):
+    source = tmp_path / "published"
+    source.mkdir()
+    conversation = {"name": "gemma3_instruction", "system_message": "", "system_template": "{system_message}"}
+    chat = (json.dumps({"conv_template": conversation, "model_type": "gemma3_text", "quantization": "q4f32_1"},
+                       indent=2, sort_keys=True) + "\n").encode()
+    files = []
+    for name, payload in (("tensor-cache.json", b"{\"records\": []}"), ("mlc-chat-config.json", chat)):
+        (source / name).write_bytes(payload)
+        files.append({"path": name, "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()})
+    (source / "drowse-build.json").write_text(json.dumps({
+        "schemaVersion": 1, "runtimeAbi": "drowse-web-runtime-v1", "hookAbi": "post-block-residual-v4",
+        "structuredHookProfile": "standard-v3", "thinkingProfile": None, "architecture": "gemma3_text",
+        "quantization": "q4f32_1", "files": files, "toolchain": {"mlcLlmBaseCommit": "old"},
+    }))
+    lock = tmp_path / "runtime-lock.json"
+    lock.write_text(json.dumps({"models": [{
+        "id": "gemma3-1b-instruct", "architecture": "gemma3_text", "quantization": "q4f32_1",
+        "manifestSha256": hashlib.sha256(b"{\"records\": []}").hexdigest()}]}))
+    TOOL.rebind(SimpleNamespace(model=source, output=tmp_path / "rebound", architecture="gemma3_text",
+                                quantization="q4f32_1", structured_hook_profile="standard-v4",
+                                model_id="gemma3-1b-instruct", runtime_lock=lock))
+    rebound = tmp_path / "rebound"
+    rules = {"drowse_system_fold_sep": "\n\n", "drowse_content_trim": True}
+    written = json.loads((rebound / "mlc-chat-config.json").read_text())
+    assert written["conv_template"] == {**conversation, **rules}
+    assert (rebound / "tensor-cache.json").read_bytes() == (source / "tensor-cache.json").read_bytes()
+    manifest = json.loads((rebound / "drowse-build.json").read_text())
+    assert manifest["rebind"]["conversationRules"] == rules
+    assert [file["path"] for file in manifest["files"]] == ["tensor-cache.json", "mlc-chat-config.json"]
+    assert manifest["files"][1]["sha256"] == TOOL.sha256(rebound / "mlc-chat-config.json")
+    TOOL.verify_build_manifest(rebound, "gemma3_text", "q4f32_1")
+    # Rebinding a conversion that already carries them leaves its chat config byte for byte.
+    again = tmp_path / "again"
+    TOOL.rebind(SimpleNamespace(model=rebound, output=again, architecture="gemma3_text",
+                                quantization="q4f32_1", structured_hook_profile="standard-v4",
+                                model_id="gemma3-1b-instruct", runtime_lock=lock))
+    assert (again / "mlc-chat-config.json").read_bytes() == (rebound / "mlc-chat-config.json").read_bytes()
+    assert "conversationRules" not in json.loads((again / "drowse-build.json").read_text())["rebind"]
+
+
+@pytest.mark.parametrize(("name", "rules"), [
+    ("qwen3", {"system_message": ""}),
+    ("gemma3_instruction", {"drowse_system_fold_sep": "\n\n", "drowse_content_trim": True}),
+    ("chatml", {}),
+    ("drowse-base", {}),
+])
+def test_conversation_rules_by_mlc_template(name: str, rules: dict):
+    chat = {"conv_template": {"name": name, "system_message": "You are a helpful assistant."}}
+    assert TOOL.apply_conversation_rules(chat) == {key: value for key, value in rules.items()}
+    assert TOOL.apply_conversation_rules(chat) == {}
+    assert TOOL.apply_conversation_rules({}) == {}

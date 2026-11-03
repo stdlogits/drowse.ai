@@ -6,6 +6,6 @@
   const page = htmlGuides.find(guide => guide.path === "/privacy")!;
 </script>
 
-<SitePage title="Privacy · Drowse" heading={page.heading} lede={page.intro} markdown="/privacy.md">
+<SitePage current="privacy" title="Privacy · Drowse" heading={page.heading} lede={page.intro} markdown="/privacy.md">
   <GuideContent {page} />
 </SitePage>

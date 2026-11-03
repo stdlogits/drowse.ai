@@ -5,14 +5,22 @@ import { BrowserCapabilityChecker } from "../src/hosted/runtime/capabilities";
 import { BrowserFeasibilityCorePackCompiler } from "../src/hosted/runtime/browserCorePack";
 import type { BrowserModelArtifact, BrowserModelLoadRequest } from "../src/hosted/runtime/modelBackend";
 import { DrowseWebLlmRuntime, type DrowseWebLlmModule } from "../src/hosted/runtime/webLlmEngine";
+import type { BlockSpec } from "../src/hosted/runtime/structuredHookProfile";
 import type { WebLlmGeneratedToken } from "../src/hosted/runtime/webLlmGeneration";
 
-self.onmessage = async ({ data }: MessageEvent<{
+self.onmessage = async (event: MessageEvent<{
   modelId: string;
   identity: RuntimeIdentity;
+  structuredHookProfile: ModelVariant["structuredHookProfile"];
+  blockSpec: BlockSpec | null;
+  unitRefusal: string | null;
+  prefillChunkSize: number;
   modelFiles: CatalogFile[];
   coreFiles: CatalogFile[];
 }>) => {
+  // Only the page that started this worker posts to it.
+  if (event.origin && event.origin !== self.location.origin) return;
+  const { data } = event;
   let runtime: DrowseWebLlmRuntime | undefined;
   try {
     const url = "/webllm.js";
@@ -29,7 +37,7 @@ self.onmessage = async ({ data }: MessageEvent<{
     const request = {
       model: { id: data.modelId },
       variant: {
-        id: `${data.modelId}-recording`, structuredHookProfile: "standard-v3", thinkingProfile: null,
+        id: `${data.modelId}-recording`, structuredHookProfile: data.structuredHookProfile, thinkingProfile: null,
         runtimeIdentity: data.identity, runtimeIdentitySha256: fingerprint,
         contextProfiles: [2048, 4096].map(contextTokens => ({ contextTokens, bindingSha256: contextBindingSha256(fingerprint, contextTokens) })),
         requirements: { features: [], limits: {
@@ -38,7 +46,9 @@ self.onmessage = async ({ data }: MessageEvent<{
         } },
       } as ModelVariant,
       requiredCorePack: { id: `${data.modelId}-recording-core`, kind: "core", displayName: "Recorded example core", runtimeIdentitySha256: fingerprint, files: data.coreFiles },
-      contextTokens, adapter: await checker.adapterForLoad(), artifacts: [...modelArtifacts, ...coreArtifacts],
+      contextTokens, blockSpec: data.blockSpec, unitRefusal: data.unitRefusal,
+      prefillChunkSize: data.prefillChunkSize,
+      adapter: await checker.adapterForLoad(), artifacts: [...modelArtifacts, ...coreArtifacts],
       optionalPacks: [], activationSpool: new BrowserActivationSpool(), signal: new AbortController().signal,
       onDeviceLost(failure: { message: string }) { throw new Error(failure.message); },
     } as BrowserModelLoadRequest;

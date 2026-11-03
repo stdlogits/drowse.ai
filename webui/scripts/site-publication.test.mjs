@@ -7,10 +7,10 @@ import { basename, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
-import { guidePages, homeSummary, htmlGuidePaths, sitePages } from "./site-content.mjs";
+import { contributeLinks, guidePages, homeSummary, htmlGuidePaths, sitePages } from "./site-content.mjs";
 import { discoveryLinks, discoveryTags, guideMarkdown, hiddenPaths, markdownPath, publicationAssets, publicPaths, sitemapPaths, sitePublication } from "./site-publication.mjs";
 import { prefersMarkdown } from "./discovery-worker.mjs";
-import { agentCatalogPaths, contentSignals } from "./agent-discovery.mjs";
+import { agentCatalogPaths, agentResources, contentSignals } from "./agent-discovery.mjs";
 import { prerenderLanding } from "./prerender-hosted.mjs";
 
 const origin = "https://drowse.example";
@@ -352,7 +352,7 @@ test("prerender preserves the actual landing content without visible machine-res
     return `/assets/${basename(filename)}`;
   } });
   assert.match(body, /See inside/);
-  assert.match(body, /Inspect the prediction/);
+  assert.match(body, /Read every token/);
   assert.match(body, /Gemma 3 1B/);
   assert.match(body, /href="\/app"/);
   assert.doesNotMatch(body + css, /\/@fs\/|\/src\/|__DROWSE_/);
@@ -363,6 +363,38 @@ test("prerender preserves the actual landing content without visible machine-res
     assert.ok(!assets.has(path.slice(1)), `Landing must not expose machine resource ${href}`);
     if (guidePages.some(page => page.path === path)) assert.ok(publicPaths.includes(path), `Landing links to ${href}, which has no HTML page`);
   }
-  assert.ok(images.length > 0);
+  // The landing draws no images in Ledger (the mark is the name set in type); any it imports must be
+  // emitted as assets, which assetUrl above checks.
+  assert.ok(images.every(image => !image.includes("model-providers")), "provider logos left with Ledger");
   assert.match(css, /\.landing-shell\.svelte-/);
+});
+
+test("every source link in the guides names a file at the pin or in this repository, and its heading", async () => {
+  // drowse's files resolve in the pinned submodule, this site's in its own tree; a #fragment must be
+  // a Markdown heading of that file as GitHub slugs it.
+  const roots = { "https://github.com/stdlogits/drowse/blob/main/": "../drowse/", "https://github.com/stdlogits/drowse.ai/blob/main/": "../" };
+  const slug = heading => heading.trim().toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, "").replace(/\s/g, "-");
+  const links = [...homeSummary.links, ...guidePages.flatMap(page => page.sections.flatMap(section => section.links ?? []))];
+  const hrefs = [...links.map(link => link.href), ...Object.values(contributeLinks)];
+  let checked = 0;
+  for (const href of hrefs) {
+    const prefix = Object.keys(roots).find(root => href.startsWith(root));
+    if (!prefix) continue;
+    const [path, fragment] = href.slice(prefix.length).split("#");
+    const text = await readFile(new URL(roots[prefix] + path, new URL("../", import.meta.url)), "utf8").catch(() => null);
+    assert.ok(text !== null, `${href} names a file that does not exist`);
+    if (fragment) {
+      const headings = [...text.matchAll(/^#{1,6}\s+(.+)$/gmu)].map(match => slug(match[1]));
+      assert.ok(headings.includes(fragment), `${href}: no heading #${fragment}`);
+    }
+    checked += 1;
+  }
+  assert.ok(checked > 20, `checked ${checked} source links`);
+});
+
+test("the guides and the agent skill describe drowse 6.0, not 5.x", () => {
+  const text = JSON.stringify([homeSummary, guidePages, sitePages, [...agentResources("https://drowse.ai").values()]]);
+  assert.doesNotMatch(text, /J-lens|Jacobian-lens|honest\.deceptive|\bhonest\b/u, "5.x vocabulary");
+  assert.ok(guidePages.some(page => page.sections.some(section => section.code === "-0.5 deceptive + 0.3 warm")), "drowse's example expression");
+  for (const phrase of ["R lens", "S lens", "neurons and heads", "Gemma 3 and Qwen3"]) assert.ok(text.includes(phrase), `the guides mention ${phrase}`);
 });

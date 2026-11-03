@@ -1,15 +1,16 @@
 <script lang="ts">
+  // A lens or SAE source section with nothing loaded: one plain sentence and one way out (Models,
+  // where the model's packs download).
   import { onMount } from "svelte";
-  import Button from "../../../../drowse/webui/src/lib/ui/Button.svelte";
   import { sessionState } from "../../../../drowse/webui/src/lib/stores/session.svelte";
   import {
     currentCatalogInstrumentAvailability,
     type CatalogInstrumentAvailability,
   } from "../../../../drowse/webui/src/lib/runtime/instrumentAvailability";
 
-  let { kind }: { kind: "jlens" | "sae" } = $props();
+  let { kind }: { kind: "jlens" | "slens" | "units" | "sae" } = $props();
   let availability = $state<CatalogInstrumentAvailability>("unknown");
-  const name = $derived(kind === "jlens" ? "J-lens" : "SAE");
+  const name = $derived({ jlens: "R lens", slens: "S lens", units: "units", sae: "SAE" }[kind]);
   const message = $derived(
     availability === "unavailable"
       ? `No compatible ${name} pack is published for this model.`
@@ -30,12 +31,12 @@
 <div class="pack-recovery">
   <p>{message}</p>
   {#if kind === "jlens" && sessionState.info?.is_base_model}
-    <p>Word insights are optional for base models. Text completion works without a compatible J-lens pack.</p>
+    <p>Word insights are optional for base models. Text completion works without a compatible R lens pack.</p>
   {/if}
-  <Button onclick={() => window.dispatchEvent(new Event("drowse:models"))}>Open Models</Button>
+  <button type="button" class="dw-quiet" onclick={() => window.dispatchEvent(new Event("drowse:models"))}>Open Models</button>
 </div>
 
 <style>
-  .pack-recovery { display: grid; justify-items: start; gap: var(--space-3); }
-  p { margin: 0; color: var(--fg-muted); font-size: var(--text-sm); line-height: 1.5; }
+  .pack-recovery { display: grid; justify-items: start; gap: var(--s3); }
+  p { color: var(--ink2); font: var(--type-small); }
 </style>

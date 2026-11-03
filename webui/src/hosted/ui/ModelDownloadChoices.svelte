@@ -1,7 +1,6 @@
 <script lang="ts">
-  import MorphText from "../../../../drowse/webui/src/lib/ui/MorphText.svelte";
-  import InfoTip from "../../../../drowse/webui/src/lib/ui/InfoTip.svelte";
-  import ModelProviderLogo from "../../../../drowse/webui/src/lib/ui/ModelProviderLogo.svelte";
+  import { MorphText } from "@stdlogits/ledger";
+  import TipText from "./TipText.svelte";
   import { formatEtaRange } from "../../lib/runtime/eta";
   import { userFacingError } from "../../../../drowse/webui/src/lib/runtime/userFacingError";
   import { formatBytes } from "../../lib/format/bytes";
@@ -38,7 +37,9 @@
 
   function toolChips(model: HostedModelOption): string[] {
     return [
-      ...(model.firstRunPacks.some((pack) => pack.kind === "jlens") ? ["Word insights (J-lens)"] : []),
+      ...(model.firstRunPacks.some((pack) => pack.kind === "jlens") ? ["Word insights (R lens)"] : []),
+      ...(model.firstRunPacks.some((pack) => pack.kind === "slens") ? ["Early-layer reads (S lens)"] : []),
+      ...(model.firstRunPacks.some((pack) => pack.kind === "units") ? ["Neurons and heads (units)"] : []),
       ...(model.firstRunPacks.some((pack) => pack.kind === "sae") ? ["Feature insights (SAE)"] : []),
     ];
   }
@@ -109,7 +110,7 @@
       <section class="model-choice-group" aria-labelledby={`new-chat-${kind}-title`}>
         <div class="model-group-heading">
           <h3 id={`new-chat-${kind}-title`}>{kind === "base" ? "Base models" : "Chat models"}</h3>
-          {#if kind === "base"}<InfoTip label="What are base models?" text="Base models predict what comes next in a piece of text. For conversation or instructions, choose a chat model." />{/if}
+          {#if kind === "base"}<TipText label="What are base models?" text="Base models predict what comes next in a piece of text. For conversation or instructions, choose a chat model." />{/if}
         </div>
         <div class="model-choices">
           {#each models as model (model.id)}
@@ -141,7 +142,6 @@
                   `chooser-chips-${model.id}`,
                   ...(armed && (model.fit === "uncertain" || model.requiresOomRetry) ? [`model-warning-${model.id}`] : []),
                 ].join(" ")}>
-                <ModelProviderLogo modelId={model.modelId} size={28} />
                 <span class="model-choice-copy">
                   <span class="model-name" id={`chooser-name-${model.id}`}>{model.name}</span>
                   <span class="model-chips" id={`chooser-chips-${model.id}`}>
@@ -186,48 +186,48 @@
 </div>
 
 <style>
-  .model-choice-groups { --model-card-padding: var(--space-8); display: grid; gap: calc(var(--space-7) * 2); container-type: inline-size; }
-  .model-choice-group { min-width: 0; display: grid; gap: var(--space-7); }
-  .model-group-heading { display: flex; align-items: center; gap: var(--space-xs); }
-  h3 { margin: 0; font-size: var(--text-sm); color: var(--fg-muted); }
-  .model-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-7); align-items: start; }
-  .model-choice { position: relative; min-width: 0; border-radius: var(--radius); background: var(--control-sheen), var(--glass-strong); box-shadow: var(--shadow-control); }
-  .model-download-size { position: absolute; inset-block-start: var(--space-sm); inset-inline-end: var(--space-sm); z-index: 1; pointer-events: none; color: var(--fg-muted); font-size: var(--text-xs); line-height: 1.5; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .installed .model-download-size { color: var(--action-ink); }
-  .model-choice.installed { --fg: var(--action-ink); color: var(--action-ink); background: var(--action-sheen), var(--action-bg); }
-  .model-choice.armed { box-shadow: inset 0 0 0 2px var(--accent), var(--shadow-control); }
-  button { font: inherit; color: inherit; border: 0; border-radius: var(--radius); background: transparent; cursor: pointer; }
-  .model-choice-button { display: flex; align-items: center; gap: var(--space-7); width: 100%; min-height: 7.25rem; padding: var(--model-card-padding); padding-block-start: calc(var(--model-card-padding) + var(--space-xs)); text-align: start; }
-  .model-choice-button:hover:not(:disabled) { background: var(--bg-hover); }
-  .installed .model-choice-button:hover:not(:disabled) { background: var(--action-hover); }
-  .model-choice-button:disabled { cursor: default; }
-  .model-choice:not(.active) .model-choice-button:disabled { opacity: var(--disabled-opacity); }
-  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-  .model-choice-copy { min-width: 0; display: grid; gap: var(--space-2); overflow-wrap: anywhere; }
-  .model-name { font-weight: var(--weight-medium); color: var(--fg); }
-  .model-status { color: var(--fg-muted); font-size: var(--text-xs); line-height: 1.5; }
-  .model-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-  .chip { padding: var(--space-1) var(--space-3); border-radius: var(--radius-pill); background: var(--glass-strong); color: var(--fg-muted); font-size: var(--text-2xs); line-height: 1.4; }
-  .chip.recommended { background: color-mix(in srgb, var(--live) 14%, transparent); color: var(--live); }
-  .installed .chip { background: color-mix(in srgb, var(--action-ink) 12%, transparent); color: var(--action-ink); }
-  .installed .model-status { color: var(--action-ink); }
-  .model-download { display: grid; gap: var(--space-3); padding: 0 var(--model-card-padding) var(--space-7); }
-  .progress-track { height: 7px; overflow: hidden; border-radius: var(--radius-pill); background: var(--glass-strong); }
-  .progress-track > span { display: block; height: 100%; background: var(--accent); }
-  .progress-track .indeterminate { opacity: 0.6; }
-  .download-detail { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); font-size: var(--text-xs); line-height: 1.5; }
-  .download-detail > span { min-width: 0; overflow-wrap: anywhere; }
-  .pause-download { min-height: var(--control-target); padding-inline: var(--space-4); }
-  .pause-download:hover:not(:disabled) { background: var(--bg-hover); }
-  .pause-download:disabled { opacity: var(--disabled-opacity); cursor: default; }
-  .model-warning, .model-error { margin: 0; padding: 0 var(--model-card-padding) var(--model-card-padding); font-size: var(--text-xs); line-height: 1.5; overflow-wrap: anywhere; }
-  .model-error { color: var(--accent-red); }
-  .installed .model-error { color: var(--action-ink); }
-  @container (max-width: 34rem) { .model-choices { grid-template-columns: minmax(0, 1fr); } }
+  /* The model chooser inside Your chats: a row of wash per model, chips on paper, the status in
+     ink3, a thin ink bar while it downloads. */
+  .model-choice-groups { display: grid; gap: var(--s5); }
+  .model-choice-group { display: grid; gap: var(--s3); }
+  .model-group-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s2) var(--s4); }
+  h3 { color: var(--ink3); font: var(--type-head); }
+  .model-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: var(--s2); }
+  .model-choice { position: relative; display: grid; gap: var(--s2); align-content: start; padding: var(--s4); border-radius: var(--r-row); background: var(--paper); transition: background-color var(--fast) var(--ease); }
+  .model-choice.armed, .model-choice.active { background: var(--wash2); }
+  .model-download-size { position: absolute; top: var(--s4); right: var(--s4); color: var(--ink3); font: var(--type-meta); }
+  .model-choice-button { display: grid; gap: var(--s2); width: 100%; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: start; cursor: pointer; transition: scale var(--fast) var(--ease); }
+  .model-choice-button:active:not(:disabled) { scale: 0.99; }
+  .model-choice-button:disabled { opacity: 0.4; cursor: default; }
+  .model-choice-button:focus-visible { outline-offset: var(--s2); border-radius: var(--r-box); }
+  .model-choice-copy { display: grid; gap: var(--s2); min-width: 0; padding-right: var(--s8); }
+  .model-name { color: var(--ink); font: var(--type-label); overflow-wrap: anywhere; }
+  .model-chips { display: flex; flex-wrap: wrap; gap: var(--s1); }
+  .chip { padding: 2px var(--s2); border-radius: var(--r-chip); background: var(--wash); color: var(--ink2); font: var(--type-meta); }
+  .model-choice.armed .chip, .model-choice.active .chip { background: var(--paper); }
+  .chip.recommended { color: var(--ink); }
+  .model-status { color: var(--ink3); font: var(--type-small); }
+  .model-choice.armed .model-status { color: var(--ink); }
+  .model-warning, .model-error { color: var(--ink); font: var(--type-small); }
+  .model-download { display: grid; gap: var(--s2); }
+  .progress-track { position: relative; height: 4px; border-radius: 2px; background: var(--wash); overflow: hidden; }
+  .progress-track span { display: block; height: 100%; border-radius: 2px; background: var(--ink); transition: width var(--glide) var(--ease); }
+  .progress-track span.indeterminate { opacity: 0.35; }
+  .download-detail { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2); color: var(--ink3); font: var(--type-meta); }
+  .pause-download { height: 32px; padding: 0 var(--s3); border: 0; border-radius: var(--r-pill); background: var(--paper); color: var(--ink); font: var(--type-control); cursor: pointer; transition: background-color var(--fast) var(--ease), scale var(--fast) var(--ease); }
+  .pause-download:active:not(:disabled) { scale: 0.97; }
+  .pause-download:disabled { opacity: 0.4; cursor: default; }
+  @media (hover: hover) {
+    .model-choice:has(.model-choice-button:hover:not(:disabled)) { background: var(--wash2); }
+    .pause-download:hover:not(:disabled) { background: var(--wash); }
+  }
+  @media (max-width: 720px) { .pause-download { height: 44px; } }
+  /* Forced colours flatten the paper and the washes: keep each choice, the armed or installed one
+     and the download bar distinct with system colours. */
   @media (forced-colors: active) {
-    .model-choice { border: 1px solid ButtonText; }
-    .model-choice.armed, .model-choice.installed { border: 2px solid Highlight; }
+    .model-choice { border: 1px solid CanvasText; }
+    .model-choice.armed, .model-choice.active, .model-choice.installed { border: 2px solid Highlight; }
     .progress-track { border: 1px solid CanvasText; }
-    .progress-track > span { background: Highlight; forced-color-adjust: none; }
+    .progress-track span { background: Highlight; forced-color-adjust: none; }
   }
 </style>

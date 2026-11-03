@@ -10,9 +10,9 @@ import {
   prepareRequirements,
   validatePackDirectory,
   validatePackSemantics,
-  validateWeightBufferRequirements,
 } from "./build-hosted-catalog.mjs";
 import { expectedBuildToolchain } from "./hosted-model-closure.mjs";
+import { FIXTURE_BLOCK_SPEC } from "./catalog-fixture.mjs";
 
 assert.deepEqual(parseArguments(["release.json", "catalog.json"]), {
   specPath: join(process.cwd(), "release.json"),
@@ -20,25 +20,6 @@ assert.deepEqual(parseArguments(["release.json", "catalog.json"]), {
 });
 assert.throws(() => parseArguments(["release.json"]), /usage/);
 assert.throws(() => parseArguments(["release.json", "catalog.json", "--force"]), /usage/);
-const q0Cache = { records: [{ records: [{ dtype: "float32", shape: [262144, 640], format: "raw" }] }] };
-const q0Limits = { limits: { maxBufferSize: 671088640, maxStorageBufferBindingSize: 671088640 } };
-assert.equal(validateWeightBufferRequirements(q0Limits, q0Cache, "q0 fixture"), 671088640);
-for (const name of ["maxBufferSize", "maxStorageBufferBindingSize"]) {
-  assert.throws(() => validateWeightBufferRequirements(
-    { limits: { ...q0Limits.limits, [name]: 134217728 } }, q0Cache, "q0 fixture",
-  ), new RegExp(`${name} must declare at least 671088640`));
-}
-q0Cache.records[0].records[0].format = "f32-to-bf16";
-assert.equal(validateWeightBufferRequirements(q0Limits, q0Cache, "encoded f32 fixture"), 671088640);
-for (const cache of [
-  { records: [] },
-  { records: [{}] },
-  { records: [{ records: [{ dtype: "float32", shape: [-1] }] }] },
-  { records: [{ records: [{ dtype: "unknown", shape: [1] }] }] },
-  { records: [{ records: [{ dtype: "float32", shape: [Number.MAX_SAFE_INTEGER, 2] }] }] },
-]) {
-  assert.throws(() => validateWeightBufferRequirements(q0Limits, cache, "invalid fixture"), /weight tensor/);
-}
 const semanticCommands = [];
 const semanticRunner = async (...args) => semanticCommands.push(args);
 await validatePackSemantics("fixture", "core", "/tmp/core", semanticRunner);
@@ -57,11 +38,15 @@ try {
   const coreDirectory = join(root, "core");
   const instrumentDirectory = join(root, "instruments");
   const jlensDirectory = join(root, "jlens");
+  const slensDirectory = join(root, "slens");
+  const unitsDirectory = join(root, "units");
   await Promise.all([
     mkdir(modelDirectory),
     mkdir(join(coreDirectory, "packs"), { recursive: true }),
     mkdir(join(instrumentDirectory, "packs", "sae"), { recursive: true }),
     mkdir(join(jlensDirectory, "packs", "jlens"), { recursive: true }),
+    mkdir(join(slensDirectory, "packs", "slens"), { recursive: true }),
+    mkdir(join(unitsDirectory, "packs", "units"), { recursive: true }),
   ]);
   const weightContents = "data";
   const tensorCacheContents = JSON.stringify({
@@ -72,6 +57,7 @@ try {
   const configContents = JSON.stringify({
     model_type: "qwen3",
     quantization: "q4f16_1",
+    vocab_size: 259,
     context_window_size: 4096,
     prefill_chunk_size: 2048,
     model_config: {
@@ -125,9 +111,9 @@ try {
   ).map(({ path, bytes, sha256 }) => ({ path, bytes, sha256 }));
   const buildContents = JSON.stringify({
     schemaVersion: 1,
-    runtimeAbi: "drowse-web-runtime-v1",
-    hookAbi: "post-block-residual-v4",
-    structuredHookProfile: "standard-v3",
+    runtimeAbi: "drowse-web-runtime-v2",
+    hookAbi: "block-sites-v5",
+    structuredHookProfile: "standard-v4",
     thinkingProfile,
     architecture: "qwen3",
     quantization: "q4f16_1",
@@ -156,6 +142,14 @@ try {
     ["packs/sae/manifest.json", "sae manifest"],
     ["packs/sae/layer-1.safetensors", "sae tensors"],
   ]);
+  const slens = await packArtifactSet(slensDirectory, [
+    ["packs/slens/manifest.json", "slens manifest"],
+    ["packs/slens/out.layer-0.safetensors", "slens tensors"],
+  ]);
+  const units = await packArtifactSet(unitsDirectory, [
+    ["packs/units/units.json", "units record"],
+    ["packs/units/reads.layer-0.safetensors", "units tensors"],
+  ]);
   const jlens = await packArtifactSet(jlensDirectory, [
     ["packs/jlens/manifest.json", "jlens manifest"],
     ["packs/jlens/layer-1.safetensors", "jlens tensors"],
@@ -175,13 +169,15 @@ try {
     layerMap: [0, 1],
     quantization: "q4f16_1",
     contextProfiles: [2048, 4096],
-    structuredHookProfile: "standard-v3",
+    prefillChunkSize: 2048,
+    structuredHookProfile: "standard-v4",
+    blockSpec: { ...FIXTURE_BLOCK_SPEC },
     thinkingProfile,
   };
   await writeFile(join(modelDirectory, "hosted-artifacts.json"), JSON.stringify({
     schemaVersion: 1,
-    runtimeAbi: "drowse-web-runtime-v1",
-    hookAbi: "post-block-residual-v4",
+    runtimeAbi: "drowse-web-runtime-v2",
+    hookAbi: "block-sites-v5",
     structuredHookProfile: model.structuredHookProfile,
     thinkingProfile: model.thinkingProfile,
     architecture: model.architecture,
@@ -194,8 +190,8 @@ try {
     files: base,
   }));
   const runtimeLock = {
-    runtimeAbi: "drowse-web-runtime-v1",
-    hookAbi: "post-block-residual-v4",
+    runtimeAbi: "drowse-web-runtime-v2",
+    hookAbi: "block-sites-v5",
     toolchain: {
       forkManifestSha256: createHash("sha256").update(forkManifestBytes).digest("hex"),
     },
@@ -226,8 +222,6 @@ try {
       requirements: {
         features: ["shader-f16"],
         limits: {
-          maxBufferSize: 134_217_728,
-          maxStorageBufferBindingSize: 134_217_728,
           maxStorageBuffersPerShaderStage: 10,
           maxComputeWorkgroupStorageSize: 32_768,
           maxComputeWorkgroupSizeX: 256,
@@ -258,6 +252,28 @@ try {
           compatibleContextTokens: [2048, 4096],
         },
         {
+          id: `${model.id}-slens`,
+          kind: "slens",
+          displayName: "S-lens",
+          license: "Apache-2.0",
+          directory: "slens",
+          sourceRepository: `${model.convertedRepository}-instruments`,
+          sourceRevision: instrumentRevision,
+          required: false,
+          compatibleContextTokens: [2048, 4096],
+        },
+        {
+          id: `${model.id}-units`,
+          kind: "units",
+          displayName: "Units",
+          license: "Apache-2.0",
+          directory: "units",
+          sourceRepository: `${model.convertedRepository}-instruments`,
+          sourceRevision: instrumentRevision,
+          required: false,
+          compatibleContextTokens: [2048, 4096],
+        },
+        {
           id: `${model.id}-sae`,
           kind: "sae",
           displayName: "SAE",
@@ -274,12 +290,20 @@ try {
   const semanticCalls = [];
   const validateSemantics = async (...args) => semanticCalls.push(args);
   const catalog = await prepareCatalog(spec, runtimeLock, root, validateSemantics);
-  const undersizedWeightBuffer = structuredClone(spec);
-  undersizedWeightBuffer.models[0].requirements.limits.maxStorageBufferBindingSize = 2;
-  await assert.rejects(
-    () => prepareCatalog(undersizedWeightBuffer, runtimeLock, root, validateSemantics),
-    /maxStorageBufferBindingSize must declare at least 4 bytes/,
-  );
+  // The buffer limits are derived from the library, not declared: here the fixture's pattern_keys
+  // at its 4096-token context (16 slots × 1 KV head × 4096 × 2 floats = 512 KiB) outgrow the
+  // one-float weight, a 64-row vocabulary read (64 × 259 × 4) and the chunk's gate/up activation.
+  const derived = catalog.models[0].variants[0].requirements.limits;
+  assert.equal(derived.maxStorageBufferBindingSize, 16 * 4096 * 2 * 4);
+  assert.equal(derived.maxBufferSize, derived.maxStorageBufferBindingSize);
+  for (const name of ["maxBufferSize", "maxStorageBufferBindingSize"]) {
+    const declared = structuredClone(spec);
+    declared.models[0].requirements.limits[name] = 1 << 30;
+    await assert.rejects(
+      () => prepareCatalog(declared, runtimeLock, root, validateSemantics),
+      new RegExp(`${name} is derived from its library`),
+    );
+  }
   const catalogFiles = catalog.models[0].variants[0].files;
   assert.equal(catalog.models[0].variants[0].downloadBytes, sum(catalogFiles));
   assert.deepEqual(
@@ -303,10 +327,12 @@ try {
     ],
   );
   assert.equal(catalog.models[0].variants[0].requiredCorePackBytes, sum(core));
-  assert.equal(catalog.models[0].variants[0].structuredHookProfile, "standard-v3");
+  assert.equal(catalog.models[0].variants[0].structuredHookProfile, "standard-v4");
   assert.deepEqual(catalog.models[0].variants[0].thinkingProfile, model.thinkingProfile);
   assert.equal(catalog.models[0].variants[0].packs[1].bytes, sum(jlens));
-  assert.equal(catalog.models[0].variants[0].packs[2].bytes, sum(sae));
+  assert.equal(catalog.models[0].variants[0].packs[2].bytes, sum(slens));
+  assert.equal(catalog.models[0].variants[0].packs[3].bytes, sum(units));
+  assert.equal(catalog.models[0].variants[0].packs[4].bytes, sum(sae));
   assert.equal(catalog.models[0].variants[0].runtimeIdentity.modelLibrarySha256, model.librarySha256);
   assert.match(catalog.models[0].variants[0].packs[0].files[0].url, new RegExp(revision));
   assert.deepEqual(
@@ -314,6 +340,8 @@ try {
     [
       [model.id, "core", coreDirectory],
       [model.id, "jlens", jlensDirectory],
+      [model.id, "slens", slensDirectory],
+      [model.id, "units", unitsDirectory],
       [model.id, "sae", instrumentDirectory],
     ],
   );
@@ -323,7 +351,7 @@ try {
   );
   await assert.rejects(
     () => prepareCatalog(noJlensSpec, runtimeLock, root, validateSemantics),
-    /must include an existing compatible J-lens pack/u,
+    /must include an existing compatible R-lens pack/u,
   );
   const semanticCallCount = semanticCalls.length;
   const missingExactLimit = structuredClone(spec);
@@ -343,15 +371,30 @@ try {
     semanticCallCount,
     "exact-readout WebGPU requirements must fail before pack validation",
   );
-  assert.deepEqual(
-    prepareRequirements({
-      features: [],
-      limits: { maxStorageBuffersPerShaderStage: 10 },
-    }, "legacy", "standard-v2"),
-    {
-      features: [],
-      limits: { maxStorageBuffersPerShaderStage: 10 },
-    },
+  // Both v5 profiles export exact-readout-v2; no older profile is accepted.
+  assert.throws(
+    () => prepareRequirements({ features: [], limits: { maxStorageBuffersPerShaderStage: 10 } },
+      "residual", "standard-v4-residual"),
+    /maxComputeWorkgroupSizeX must explicitly declare at least 256 for standard-v4-residual/,
+  );
+  assert.throws(
+    () => prepareRequirements({ features: [], limits: {} }, "legacy", "unknown-profile"),
+    /not allow-listed/,
+  );
+  // A units library ships its R, S and units packs at every context.
+  for (const kind of ["slens", "units"]) {
+    const missing = structuredClone(spec);
+    missing.models[0].packs = missing.models[0].packs.filter((pack) => pack.kind !== kind);
+    await assert.rejects(
+      () => prepareCatalog(missing, runtimeLock, root, validateSemantics),
+      kind === "units" ? /has no units pack \(standard-v4 ships units and both lenses\)/ : /units pack without its R and S lens packs|has no S-lens pack/,
+    );
+  }
+  const narrow = structuredClone(spec);
+  narrow.models[0].packs.find((pack) => pack.kind === "units").compatibleContextTokens = [2048];
+  await assert.rejects(
+    () => prepareCatalog(narrow, runtimeLock, root, validateSemantics),
+    /context 4096 has no units pack/,
   );
 
   const server = await createServer({
@@ -399,8 +442,11 @@ try {
     const withoutSae = await prepareCatalog(baseSpec, runtimeLock, root, validateSemantics);
     assert.doesNotThrow(() => validateCatalogDocument(withoutSae));
     baseSpec.models[0].packs = baseSpec.models[0].packs.filter((pack) => pack.kind === "core");
-    const generationOnly = await prepareCatalog(baseSpec, runtimeLock, root, validateSemantics);
-    assert.doesNotThrow(() => validateCatalogDocument(generationOnly));
+    await assert.rejects(
+      () => prepareCatalog(baseSpec, runtimeLock, root, validateSemantics),
+      /has no R-lens pack/,
+      "a units base model (Gemma 3 1B PT) ships its lenses and units like a chat model",
+    );
     delete model.modelType;
     await writeFile(join(modelDirectory, "mlc-chat-config.json"), configContents);
     await writeFile(join(modelDirectory, "drowse-build.json"), buildContents);

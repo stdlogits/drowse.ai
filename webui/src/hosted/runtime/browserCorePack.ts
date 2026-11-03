@@ -5,16 +5,16 @@ import {
   type Fp32SafetensorsReader,
   type VerifiedDrowseArchive,
 } from "../artifacts";
+import { domainLabel } from "../artifacts/authoring";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import type { BrowserModelArtifact, BrowserModelLoadRequest } from "./modelBackend";
 import { LEGACY_PRODUCT_SLUGS } from "../../../../drowse/webui/src/lib/brandMigration";
 import {
-  contextBindingSha256,
-  runtimeIdentitySha256,
-} from "../../lib/runtime/catalog";
-import {
   BrowserInstrumentRegistry,
+  isNeutralStatisticsPath,
+  readNeutralStatistics,
+  type BrowserNeutralStatistics,
   type BrowserJlensGpuDictionary,
   type BrowserJlensRuntimeResolver,
   type BrowserSaeGpuDictionary,
@@ -36,17 +36,15 @@ import type {
   ProbeInfo,
   ProbeRequest,
   ProfileListResponse,
+  SteeringPartJSON,
   VectorInfo,
 } from "../../../../drowse/webui/src/lib/types";
 import {
-  compileRankOneHookProgram,
-  type RankOneHookLayer,
-  type RankOneHookProgramBuffers,
-} from "./rankOneHookProgram";
-import {
   compileStructuredHookProgram,
   saeFeatureProbe,
+  structuredUnitAblationTerm,
   validateStructuredHookProgram,
+  withStructuredUnitSection,
   type StructuredAffineGroup,
   type StructuredCurve,
   type StructuredCurveAxis,
@@ -59,19 +57,38 @@ import {
   type StructuredMeasurementProbe,
   type StructuredMeasurementSlot,
   type StructuredProbe,
+  type StructuredSlensProbe,
 } from "./structuredHookProgram";
 import {
   resolveStructuredHookProfile,
   type StructuredHookCapacityProfile,
 } from "./structuredHookProfile";
 import {
+  canonicalConceptName,
+  foldSteering,
+  formatLayerClause,
+  formatSteering,
+  normalizeTrigger,
   parseSteeringExpression,
   RESERVED_NAMESPACES,
+  selectTermLayers,
+  steeringParts,
+  type LayerScope,
   type SteeringAtom,
+  type SteeringManifoldEntry,
   type SteeringPhase,
   type SteeringExpressionTerm,
   type SteeringTrigger,
 } from "./steeringExpression";
+import { instrumentAtomUnavailable } from "./hookCapabilities";
+import {
+  resolveUnitAtom,
+  unitMean,
+  unitTap,
+  type BrowserUnitProgramSource,
+} from "./units/unitProgram";
+import { slensProbeDigest, unitProbeDigest } from "./units/probeDigest";
+import { unitName, type UnitRef } from "./units/unitReader";
 
 interface CoreManifold {
   key: string;
@@ -111,9 +128,11 @@ interface ResolvedManifoldAtom {
 interface ResolvedInstrumentAtom {
   kind: "instrument";
   key: string;
-  family: "sae" | "jlens";
+  family: "sae" | "jlens" | "units" | "slens";
   directions: ReadonlyMap<number, Float32Array>;
   saeFeature: BrowserSaeFeature | null;
+  /** A `neuron/…` or `head/…` atom's unit (its push direction, if any, is `directions`). */
+  unit?: UnitRef;
 }
 
 type ResolvedCoreAtom = ResolvedManifoldAtom | ResolvedInstrumentAtom;
@@ -130,7 +149,30 @@ interface ResolvedCoreTerm {
   ablation: boolean;
   trigger: SteeringTrigger | null;
   manifoldPosition: readonly number[] | string | null;
+  /** The `{…}` clause's scope, and the canonical IR key the clause belongs to. */
+  layers: LayerScope;
+  irKey: string;
+  /** The layers the term acts on (`select_term_layers`), `null` for every fitted one. Set once
+   *  the expression is folded. */
+  actsAt: ReadonlySet<number> | null;
 }
+
+/** Where one validated term acts, as `POST .../steering/validate` reports it. */
+export interface BrowserSteeringTermLayers {
+  key: string;
+  fitted: number[];
+  share: number[];
+  layers: number[];
+}
+
+/** A compiled program, with what steering validation answers about its expression: the
+ *  canonical text, each term's fields, where each acts and the model's depth. */
+export type BrowserCompiledSteering = StructuredHookProgramBuffers & {
+  steeringExpression?: string;
+  steeringParts?: SteeringPartJSON[];
+  steeringTerms?: readonly BrowserSteeringTermLayers[];
+  steeringDepth?: number;
+};
 
 interface InstalledProbeProgram {
   slots: readonly StructuredMeasurementSlot[];
@@ -142,16 +184,16 @@ interface StructuredAffineTermGroup {
   terms: ResolvedCoreTerm[];
 }
 
-export type BrowserHookProgramBuffers =
-  | RankOneHookProgramBuffers
-  | StructuredHookProgramBuffers;
-
 export class BrowserFeasibilityCorePackCompiler {
+  private neutralStatisticsRead: Promise<BrowserNeutralStatistics | null> | null;
+
   private geometryLive = true;
   private lensLive = false;
   private lensLiveLayers: readonly number[] | null = null;
   private saeLive = false;
-  private compiledProgram: { key: string; program: BrowserHookProgramBuffers } | null = null;
+  private compiledProgram: { key: string; program: StructuredHookProgramBuffers } | null = null;
+  private unitSource: BrowserUnitProgramSource | null = null;
+  private unitSourceVersion = 0;
   private readonly attachedProbes = new Map<string, ProbeInfo>();
 
   private constructor(
@@ -165,6 +207,7 @@ export class BrowserFeasibilityCorePackCompiler {
     private readonly loadRequest: BrowserModelLoadRequest,
     private readonly coreManifolds: readonly CoreManifold[],
   ) {
+    this.neutralStatisticsRead = null;
     const keys = new Set<string>();
     for (const manifold of manifolds) {
       if (keys.has(manifold.selectorKey)) {
@@ -204,7 +247,8 @@ export class BrowserFeasibilityCorePackCompiler {
       artifact.manifest.path.endsWith("/neutral-whitener.json")
     );
     const manifoldArtifacts = artifacts.filter((artifact) =>
-      !whitenerTensor.includes(artifact) && !whitenerSidecar.includes(artifact)
+      !whitenerTensor.includes(artifact) && !whitenerSidecar.includes(artifact) &&
+      !isNeutralStatisticsPath(artifact.manifest.path)
     );
     if (manifoldArtifacts.length === 0) {
       throw coreError("CORE_PACK_MANIFOLD_INVALID", "The required core pack has no manifold");
@@ -261,7 +305,7 @@ export class BrowserFeasibilityCorePackCompiler {
       manifolds.push(...await loadInstalledManifolds(archive, request, this.structuredHookProfile));
     }
     signal.throwIfAborted();
-    return new BrowserFeasibilityCorePackCompiler(
+    const next = new BrowserFeasibilityCorePackCompiler(
       this.modelId,
       this.hiddenSize,
       this.layerMap,
@@ -272,6 +316,10 @@ export class BrowserFeasibilityCorePackCompiler {
       this.loadRequest,
       this.coreManifolds,
     );
+    // The loaded library's unit sites outlive a manifold refresh (unit and slens/ probes
+    // re-attach to the new compiler through them).
+    next.setUnitSource(this.unitSource);
+    return next;
   }
 
   fittingWhiteners(): ReadonlyMap<number, SerializedMahalanobisWhitener> {
@@ -293,6 +341,56 @@ export class BrowserFeasibilityCorePackCompiler {
     ]));
   }
 
+  /** The core pack's neutral whitener at `layer` (eigen form), or null: the metric the units
+   *  `find` decomposes in (native `_whitener()`, the same fit). */
+  neutralWhitener(layer: number): SerializedMahalanobisWhitener | null {
+    return this.whiteners.get(layer) ?? null;
+  }
+
+  /** `find`'s selector as native resolves it (`ensure_profile_registered`): one steerable atom's
+   *  per-layer direction, an instrument atom's directions (prepared before this call: `jlens/`
+   *  words, `neuron/` writes, `slens/` atoms) or a 2-node manifold folded to its direction. */
+  selectorDirections(selector: string): ReadonlyMap<number, Float32Array> {
+    const notOne = () => coreError(
+      "PROFILE_NOT_FOUND",
+      `No profile registered for vector '${selector}' (find takes one steerable selector)`,
+    );
+    const parsed = parseSteeringExpression(selector);
+    const term = parsed.terms[0];
+    if (
+      parsed.terms.length !== 1 || term.ablation || term.trigger !== null || term.layers !== null ||
+      term.selector.onto !== null || term.selector.manifoldPosition !== null
+    ) throw notOne();
+    const atom = this.resolveAtom(term.selector.base);
+    if (atom.kind === "instrument") return atom.directions;
+    const profile = this.analyticsProfile(atom.manifold, atom.key);
+    if (profile === null) {
+      throw coreError(
+        "PROFILE_NOT_FOUND",
+        `'${selector}' is a manifold that does not fold to a single steering direction (not a 2-node affine subspace)`,
+      );
+    }
+    return profile.directions;
+  }
+
+  /** The loaded packs (lens layers, S statistics, units), read on first use (B5's members). */
+  instrumentRegistry(): BrowserInstrumentRegistry {
+    return this.instruments;
+  }
+
+  /** The core pack's neutral statistics (unit statistics, `out` and `mid` means), or null. */
+  async neutralStatistics(signal: AbortSignal): Promise<BrowserNeutralStatistics | null> {
+    this.neutralStatisticsRead ??= readNeutralStatistics(
+      this.loadRequest.artifacts.filter((artifact) => artifact.manifest.role === "core_pack"),
+      { variant: this.loadRequest.variant, signal },
+    )
+      .catch((error) => {
+        this.neutralStatisticsRead = null;
+        throw error;
+      });
+    return this.neutralStatisticsRead;
+  }
+
   instrumentDescriptor(): ReturnType<BrowserInstrumentRegistry["descriptor"]> {
     return this.instruments.descriptor();
   }
@@ -309,7 +407,8 @@ export class BrowserFeasibilityCorePackCompiler {
 
   async refreshJlensProbes(resolver: BrowserJlensRuntimeResolver): Promise<void> {
     const probes = [...this.attachedProbes.values()].filter(
-      (probe): probe is Extract<ProbeInfo, { family: "lens" }> => probe.family === "lens",
+      (probe): probe is Extract<ProbeInfo, { family: "lens" }> =>
+        probe.family === "lens" && probe.namespace === "jlens",
     );
     await this.instruments.prepareJlensWords(probes.map((probe) => probe.word), resolver);
     for (const probe of probes) {
@@ -357,12 +456,11 @@ export class BrowserFeasibilityCorePackCompiler {
     for (const term of parsed.terms) {
       addAtom(term.selector.base);
       addAtom(term.selector.onto);
+      // A gate reads the attached probe its key names (native resolve_gates), never a word.
       const gate = term.trigger?.gate?.probe;
-      if (gate?.startsWith("jlens/")) {
-        words.push(gate.slice("jlens/".length));
-      } else if (gate !== undefined) {
-        const attached = this.attachedProbes.get(gate);
-        if (attached?.family === "lens") words.push(attached.word);
+      if (gate !== undefined) {
+        const attached = this.attachedProbes.get(parseGateRef(gate).probe);
+        if (attached?.family === "lens" && attached.namespace === "jlens") words.push(attached.word);
       }
     }
     await this.instruments.prepareJlensWords(words, resolver);
@@ -389,7 +487,7 @@ export class BrowserFeasibilityCorePackCompiler {
   ): void {
     const available = this.instruments.capabilities();
     if (family === "lens" && enabled && !available.jlens) {
-      throw coreError("JLENS_PACK_UNAVAILABLE", "Install the compatible J-lens pack first");
+      throw coreError("JLENS_PACK_UNAVAILABLE", "Install the compatible R-lens pack first");
     }
     if (family === "sae" && enabled && !available.sae) {
       throw coreError("SAE_PACK_UNAVAILABLE", "Install the compatible SAE pack first");
@@ -416,7 +514,7 @@ export class BrowserFeasibilityCorePackCompiler {
     if (selected.length === 0) {
       throw coreError(
         "JLENS_PACK_LAYER_MISMATCH",
-        "J-lens live readout needs at least one fitted layer",
+        "R-lens live readout needs at least one fitted layer",
       );
     }
     const missing = selected.filter((layer) =>
@@ -425,7 +523,7 @@ export class BrowserFeasibilityCorePackCompiler {
     if (missing.length > 0) {
       throw coreError(
         "JLENS_PACK_LAYER_MISMATCH",
-        `J-lens layers ${missing.join(", ")} are not fitted in the installed pack`,
+        `R-lens layers ${missing.join(", ")} are not fitted in the installed pack`,
       );
     }
     return selected;
@@ -458,11 +556,49 @@ export class BrowserFeasibilityCorePackCompiler {
   probeHashes(): Record<string, string> {
     const hashes: Record<string, string> = {};
     for (const [name, probe] of this.attachedProbes) {
-      hashes[name] = probe.family === "geometry"
-        ? this.geometryProbeHash(probe)
-        : this.instruments.probeHash(this.modelId, probe);
+      if (probe.family === "geometry") {
+        hashes[name] = this.geometryProbeHash(probe);
+      } else if (probe.family === "units") {
+        hashes[name] = this.unitProbeHash(probe);
+      } else if (probe.family === "lens" && probe.namespace === "slens") {
+        const digest = this.slensProbeHash(probe);
+        if (digest !== null) hashes[name] = digest;
+      } else {
+        hashes[name] = this.instruments.probeHash(this.modelId, probe);
+      }
     }
     return hashes;
+  }
+
+  /** Native `UnitsInstrument.probe_hash` (`units-readout-v2`): the unit and the reading scale
+   *  its reading divides by (the scales' detail and the unit's raw values). */
+  private unitProbeHash(probe: Extract<ProbeInfo, { family: "units" }>): string {
+    const source = this.unitSource;
+    const scales = source?.scales ?? null;
+    if (source === null || scales === null || source.spec === null) return unitProbeDigest(this.modelId, probe.unit, "", []);
+    const raw = probe.kind === "neuron"
+      ? [scales.neuron[(probe.layer * 2) * source.spec.dFF + probe.index], scales.neuron[(probe.layer * 2 + 1) * source.spec.dFF + probe.index]]
+      : [scales.head[probe.layer * source.spec.nHeads + probe.index]];
+    return unitProbeDigest(this.modelId, probe.unit, scales.detail, raw);
+  }
+
+  /** Native `LensInstrument.probe_hash` for an `slens/` probe (`slens-footprint-z-v3`): null when
+   *  the unit source has not prepared the S identity (a source swapped since the attach). */
+  private slensProbeHash(probe: Extract<ProbeInfo, { family: "lens" }>): string | null {
+    if (probe.token_id === null) return null;
+    const identity = this.unitSource?.slensIdentity(probe.layers) ?? null;
+    return identity === null ? null : slensProbeDigest(this.modelId, probe.word, probe.token_id, probe.layers, identity);
+  }
+
+  /** Reads off the device what `expression`'s `neuron/` pushes and `slens/` atoms and gates
+   *  need before the synchronous compile (the unit source's `prepare`). */
+  async prepareUnitSelectors(expression: string): Promise<void> {
+    await this.unitSource?.prepare(expression);
+  }
+
+  /** The same for one probe selector (an `slens/` probe's atom and digest identity). */
+  async prepareUnitProbe(selector: string): Promise<void> {
+    await this.unitSource?.prepareProbe(selector);
   }
 
   hasAttachedProbes(): boolean {
@@ -480,24 +616,53 @@ export class BrowserFeasibilityCorePackCompiler {
     }
     const existing = this.attachedProbes.get(name);
     if (existing) return structuredClone(existing);
-    if (this.attachedProbes.size >= this.structuredHookProfile.maxProbes) {
-      throw coreError(
-        "CORE_PACK_PROBE_LIMIT",
-        `The browser GPU program supports at most ${this.structuredHookProfile.maxProbes} attached probes at once`,
-      );
-    }
 
     let probe: ProbeInfo;
     if (selector.startsWith("jlens/")) {
       const token = this.instruments.jlensToken(selector.slice("jlens/".length));
       probe = {
         family: "lens",
+        namespace: "jlens",
         name,
         layers: [...token.directions.keys()].sort((left, right) => left - right),
         intrinsic_dim: 1,
         feature_space: "readout",
         word: token.word,
         token_id: token.tokenId,
+      };
+    } else if (selector.startsWith("slens/")) {
+      // An S-lens probe reads the residuals each block wrote, post-forward on the host side of
+      // the device (B1 §2.1): no GPU measurement slot, gates read its score by name.
+      if (this.unitSource === null) throw instrumentAtomUnavailable("slens");
+      const word = selector.slice("slens/".length);
+      const prepared = this.unitSource.slensAtom(word);
+      if (prepared === null) {
+        throw coreError("SLENS_ATOM_UNPREPARED", `${selector} was not resolved before attaching`);
+      }
+      probe = {
+        family: "lens",
+        namespace: "slens",
+        name,
+        layers: [...prepared.directions.keys()].sort((left, right) => left - right),
+        intrinsic_dim: 1,
+        feature_space: "readout",
+        word,
+        token_id: prepared.tokenId,
+      };
+    } else if (selector.startsWith("neuron/") || selector.startsWith("head/")) {
+      const namespace = selector.startsWith("neuron/") ? "neuron" : "head";
+      if (this.unitSource === null) throw instrumentAtomUnavailable(namespace);
+      const unit = resolveUnitAtom(this.unitSource, namespace, selector.slice(namespace.length + 1));
+      probe = {
+        family: "units",
+        name,
+        unit: unitName(unit),
+        kind: unit.kind,
+        layer: unit.layer,
+        index: unit.index,
+        layers: [unit.layer],
+        intrinsic_dim: 1,
+        feature_space: "unit-readout",
       };
     } else if (selector.startsWith("sae/")) {
       const rawFeature = selector.slice("sae/".length);
@@ -520,9 +685,32 @@ export class BrowserFeasibilityCorePackCompiler {
       this.assertGeometryProbeLowerable(manifold);
       probe = this.geometryProbeInfo(manifold, name, request.top_n);
     }
+    this.requireProbeCapacity(probe);
     this.attachedProbes.set(name, probe);
     this.syncPinnedJlensWords();
     return structuredClone(probe);
+  }
+
+  /** Each family's own capacity: a probe slot on the device for the geometry, R-lens and SAE
+   *  probes (`maxProbes`), a unit tap for a unit probe (`maxUnitTaps`); `slens/` probes read on
+   *  the host from the forward's capture and take neither. */
+  private requireProbeCapacity(probe: ProbeInfo): void {
+    const attached = [...this.attachedProbes.values()];
+    if (probe.family === "units") {
+      const capacity = this.structuredHookProfile.maxUnitTaps;
+      if (attached.filter((entry) => entry.family === "units").length >= capacity) {
+        throw coreError("CORE_PACK_PROBE_LIMIT", `The browser GPU program supports at most ${capacity} attached unit probes at once`);
+      }
+      return;
+    }
+    if (probe.family === "lens" && probe.namespace === "slens") return;
+    const slotted = attached.filter((entry) => entry.family !== "units" && !(entry.family === "lens" && entry.namespace === "slens"));
+    if (slotted.length >= this.structuredHookProfile.maxProbes) {
+      throw coreError(
+        "CORE_PACK_PROBE_LIMIT",
+        `The browser GPU program supports at most ${this.structuredHookProfile.maxProbes} attached probes at once`,
+      );
+    }
   }
 
   detachProbe(name: string): void {
@@ -825,10 +1013,20 @@ export class BrowserFeasibilityCorePackCompiler {
     };
   }
 
+  /** The loaded library's unit sites and the core pack's unit statistics (B5): `neuron/`,
+   *  `head/` and `slens/` atoms, unit probes and unit gates lower through it; without one they
+   *  are refused (`instrumentAtomUnavailable`). Directions it serves are prepared by the caller
+   *  (async, on the device) before a compile. */
+  setUnitSource(source: BrowserUnitProgramSource | null): void {
+    this.unitSource = source;
+    this.unitSourceVersion += 1;
+    this.compiledProgram = null;
+  }
+
   compile(
     expression: string,
     probeRequests?: readonly ProbeRequest[],
-  ): BrowserHookProgramBuffers {
+  ): StructuredHookProgramBuffers {
     return structuredClone(this.compileForGeneration(expression, probeRequests));
   }
 
@@ -836,10 +1034,10 @@ export class BrowserFeasibilityCorePackCompiler {
   compileForGeneration(
     expression: string,
     probeRequests?: readonly ProbeRequest[],
-  ): BrowserHookProgramBuffers {
+  ): StructuredHookProgramBuffers {
     const key = JSON.stringify([
       expression, probeRequests ?? this.listProbes(),
-      this.instrumentLiveState(), this.instrumentDescriptor(),
+      this.instrumentLiveState(), this.instrumentDescriptor(), this.unitSourceVersion,
     ]);
     if (this.compiledProgram?.key === key) return this.compiledProgram.program;
     const program = this.compileUncached(expression, probeRequests);
@@ -850,7 +1048,7 @@ export class BrowserFeasibilityCorePackCompiler {
   private compileUncached(
     expression: string,
     probeRequests?: readonly ProbeRequest[],
-  ): BrowserHookProgramBuffers {
+  ): StructuredHookProgramBuffers {
     if (probeRequests === undefined) return this.compileCurrent(expression);
     const previous = [...this.attachedProbes.entries()];
     this.attachedProbes.clear();
@@ -864,28 +1062,24 @@ export class BrowserFeasibilityCorePackCompiler {
     }
   }
 
-  private compileCurrent(expression: string): BrowserHookProgramBuffers {
+  private compileCurrent(expression: string): BrowserCompiledSteering {
+    // The grammar's own fold first, so a malformed or ambiguous expression is refused exactly as
+    // drowse refuses it, before the compiler's narrower refusals.
     const parsed = expression.trim()
       ? parseSteeringExpression(expression)
       : { terms: [] };
+    const ir = foldSteering(parsed, { manifolds: this.steeringManifolds() });
     const resolved = this.foldResolvedTerms(
       parsed.terms.map((term) => this.resolveTerm(term)),
     );
+    const placements = this.placeTerms(resolved);
     const activeRole = this.activeRole(resolved);
-    let program: BrowserHookProgramBuffers;
-    if (this.lensLive || this.saeLive || this.attachedProbes.size > 0 || resolved.length === 0 || resolved.some((term) =>
-      term.trigger !== null || term.manifoldPosition !== null ||
-      term.base.kind === "instrument" || term.projection?.onto.kind === "instrument"
-    ) || (resolved.length > 1 && resolved.some((term) => term.ablation))) {
-      program = this.compileStructured(resolved);
-    } else if (resolved.length === 1 && resolved[0].projection === null) {
-      program = resolved[0].ablation
-        ? this.compileSingleRankOneAblation(resolved[0])
-        : this.compileSingleRankOne(resolved[0]);
-    } else {
-      program = this.compileComposedPurePush(resolved);
-    }
+    const program: BrowserCompiledSteering = this.compileStructured(resolved);
     program.activeRole = activeRole;
+    program.steeringExpression = formatSteering(ir);
+    program.steeringParts = steeringParts(ir);
+    program.steeringTerms = placements;
+    program.steeringDepth = this.layerMap.length;
     return program;
   }
 
@@ -932,8 +1126,22 @@ export class BrowserFeasibilityCorePackCompiler {
   }
 
   private compileStructured(
-    terms: readonly ResolvedCoreTerm[],
+    allTerms: readonly ResolvedCoreTerm[],
   ): StructuredHookProgramBuffers {
+    // Unit ablations (`!neuron/…`, `!head/…`) act inside the block (the unit section, B1 §3.1);
+    // every other term lowers to the post-block program.
+    const unitTerms = allTerms.filter((term) =>
+      term.ablation && term.base.kind === "instrument" && term.base.family === "units"
+    );
+    const terms = allTerms.filter((term) => !unitTerms.includes(term));
+    for (const term of terms) {
+      if (term.base.kind === "instrument" && term.base.family === "units" && term.base.directions.size === 0) {
+        throw coreError(
+          "UNIT_DIRECTION_UNPREPARED",
+          `${term.base.key}'s write was not read off the model before compiling`,
+        );
+      }
+    }
     if (this.whiteners.size !== this.layerMap.length) {
       throw coreError(
         "CORE_PACK_WHITENER_UNAVAILABLE",
@@ -955,9 +1163,18 @@ export class BrowserFeasibilityCorePackCompiler {
         `The browser GPU program supports at most ${this.structuredHookProfile.maxAffineGroups} independently gated affine groups`,
       );
     }
-    const requiredGateNames = [...new Set(terms.flatMap((term) =>
-      term.trigger?.gate ? [term.trigger.gate.probe] : []
-    ))];
+    // Native `resolve_gates`: a gate reads the attached probe its key names (any unit, attached
+    // or not, through a live tap), by its verbatim scalar key; a key naming no attached probe and
+    // no unit never fires.
+    const gates = new Map<string, GateResolution>();
+    for (const term of allTerms) {
+      const key = term.trigger?.gate?.probe;
+      if (key !== undefined && !gates.has(key)) gates.set(key, this.resolveGate(key));
+    }
+    const gatedProbes = (kind: GateResolution["kind"]) =>
+      [...new Set([...gates.values()].flatMap((gate) => gate.kind === kind && gate.kind !== "never" ? [gate.probe] : []))];
+    const unitGateNames = gatedProbes("unit");
+    const requiredGateNames = [...gatedProbes("slot"), ...gatedProbes("geometry")];
     if (requiredGateNames.length > this.structuredHookProfile.maxProbes) {
       throw coreError(
         "CORE_PACK_PROBE_LIMIT",
@@ -983,9 +1200,18 @@ export class BrowserFeasibilityCorePackCompiler {
     const geometrySchemas: Array<StructuredGeometryMeasurementProbe | null> =
       Array.from({ length: this.structuredHookProfile.maxGeometryProbes }, () => null);
     gateNames.forEach((name, probeIndex) => {
-      const installed = this.installGateProbe(name, probeIndex, layers);
+      const keys = [...gates.entries()].flatMap(([key, gate]) =>
+        gate.kind === "geometry" && gate.probe === name ? [key] : []
+      );
+      const installed = this.installGateProbe(name, probeIndex, layers, keys);
       gateSlots.set(name, installed.slots);
-      if (installed.geometry !== null) geometrySchemas[probeIndex] = installed.geometry;
+      if (installed.geometry !== null) {
+        geometrySchemas[probeIndex] = installed.geometry;
+        // A channel the readout does not produce never scores: its gate never fires (native).
+        for (const key of keys) {
+          if (!installed.geometry.scoreKeys.includes(key)) gates.set(key, { kind: "never" });
+        }
+      }
     });
     const hasActiveGeometry = geometrySchemas.some((schema) => schema !== null);
     if (hasActiveGeometry) {
@@ -996,16 +1222,21 @@ export class BrowserFeasibilityCorePackCompiler {
 
     const curveMaps = curved.map((term) => this.structuredCurves(term));
     const curvedBasisByLayer = new Map<number, ArrayLike<number>[]>();
+    // drowse's `OverlappingManifoldError` (steering/hooks.py), naming the layer's first curved
+    // manifold and the one that overlaps it.
+    const curvedOwner = new Map<number, string>();
     curveMaps.forEach((curves, curveIndex) => {
+      const name = (curved[curveIndex].base as ResolvedManifoldAtom).manifold.name;
       for (const [programIndex, curve] of curves) {
         const previous = curvedBasisByLayer.get(programIndex) ?? [];
         const overlap = maximumBasisOverlap(curve.basis, previous);
         if (overlap > 1e-3) {
-          throw coreError(
+          throw Object.assign(coreError(
             "CORE_PACK_CURVED_OVERLAP",
-            `Curved terms ${curveIndex} and an earlier term overlap at model layer ${this.layerMap[programIndex]} (max |cosine| ${overlap.toFixed(3)}); curved terms sharing a layer must be orthogonal`,
-          );
+            `manifolds '${curvedOwner.get(programIndex)}' and '${name}' both cover layer ${this.layerMap[programIndex]} with non-orthogonal subspaces (max |cosine| = ${overlap.toFixed(3)} > 0.001); curved manifolds sharing a layer must be orthogonal`,
+          ), { status: 422, recoverable: false });
         }
+        if (!curvedOwner.has(programIndex)) curvedOwner.set(programIndex, name);
         curvedBasisByLayer.set(programIndex, [...previous, ...curve.basis]);
       }
     });
@@ -1017,7 +1248,7 @@ export class BrowserFeasibilityCorePackCompiler {
         if (lowered === null) continue;
         (layers[programIndex].affineGroups as StructuredAffineGroup[])[groupIndex] = lowered;
         affineControls[programIndex * this.structuredHookProfile.maxAffineGroups + groupIndex] =
-          hookControl(termGroup.trigger, gateSlots);
+          hookControl(termGroup.trigger, gates, gateSlots);
       }
     });
 
@@ -1025,7 +1256,7 @@ export class BrowserFeasibilityCorePackCompiler {
       for (const [programIndex, curve] of curves) {
         (layers[programIndex].curves as StructuredCurve[])[curveIndex] = curve;
         curveControls[programIndex * this.structuredHookProfile.maxCurves + curveIndex] =
-          hookControl(curved[curveIndex].trigger, gateSlots);
+          hookControl(curved[curveIndex].trigger, gates, gateSlots);
       }
     });
     const program = compileStructuredHookProgram(
@@ -1075,13 +1306,118 @@ export class BrowserFeasibilityCorePackCompiler {
     }
     program.controls = { affine: affineControls, curve: curveControls };
     validateStructuredHookProgram(program);
-    return program;
+    return this.withSlensReads(this.withUnitSection(program, unitTerms, unitGateNames, gates, gateSlots));
+  }
+
+  /** The post-forward `slens/` reads (HOOK_ABI §5): every attached `slens/` probe, scored over
+   *  the bridge's `[L, d]` capture, which the program then asks for (`hiddenCapture`). */
+  private withSlensReads(program: StructuredHookProgramBuffers): StructuredHookProgramBuffers {
+    const probes: StructuredSlensProbe[] = [];
+    for (const [name, probe] of this.attachedProbes) {
+      if (probe.family !== "lens" || probe.namespace !== "slens" || probe.token_id === null) continue;
+      probes.push({ name, word: probe.word, tokenId: probe.token_id });
+    }
+    if (probes.length === 0) return program;
+    const out: StructuredHookProgramBuffers = {
+      ...program,
+      hiddenCapture: true,
+      measurementSchema: { ...program.measurementSchema!, slensProbes: probes },
+    };
+    validateStructuredHookProgram(out);
+    return out;
+  }
+
+  /** What a gate key reads (native `resolve_gates` over `parse_gate_ref`): a unit (an attached
+   *  unit probe, or any `neuron/`/`head/` unit, checked against the model) through its live tap;
+   *  an attached `slens/` probe by name; an attached R-lens or SAE probe through its device slots;
+   *  an attached geometry probe through the geometry readout, any channel it produces. The scalar
+   *  families read their one axis: another channel is native's `UnsupportedProbeChannelError`,
+   *  another axis never fires. A key naming no attached probe and no unit never fires (native's
+   *  gate stays inactive). */
+  private resolveGate(key: string): GateResolution {
+    const ref = parseGateRef(key);
+    const attached = this.attachedProbes.get(ref.probe);
+    const scalar = (family: string): boolean => {
+      if (ref.channel.kind !== "axis") {
+        throw Object.assign(new Error(
+          `probe gate '${key}' references the ${GATE_CHANNEL_WORDS[ref.channel.kind]} channel, which a ${family} probe does not produce`,
+        ), { code: "UnsupportedProbeChannelError", status: 400, recoverable: true });
+      }
+      return ref.channel.index === 0;
+    };
+    const unitNamespace = ref.probe.startsWith("neuron/") ? "neuron" : ref.probe.startsWith("head/") ? "head" : null;
+    if (attached?.family === "units" || (attached === undefined && unitNamespace !== null)) {
+      if (attached === undefined) {
+        if (this.unitSource === null) throw instrumentAtomUnavailable(unitNamespace!);
+        resolveUnitAtom(this.unitSource, unitNamespace!, ref.probe.slice(unitNamespace!.length + 1));
+      }
+      return scalar("units") ? { kind: "unit", probe: ref.probe } : { kind: "never" };
+    }
+    if (attached === undefined) return { kind: "never" };
+    switch (attached.family) {
+      case "lens":
+        if (!scalar("lens")) return { kind: "never" };
+        return { kind: attached.namespace === "slens" ? "slens" : "slot", probe: ref.probe };
+      case "sae":
+        return scalar("sae") ? { kind: "slot", probe: ref.probe } : { kind: "never" };
+      case "geometry":
+        return { kind: "geometry", probe: ref.probe };
+      default:
+        return { kind: "never" };
+    }
+  }
+
+  /** The unit section (B1 §3.1, §2.2): one ablation per unit term, grouped by trigger in first
+   *  registration order (≤ `maxUnitGroups`), and a live tap for each attached unit probe and
+   *  each unit a gate reads. Capacities and duplicates refuse in the encoder's words. */
+  private withUnitSection(
+    program: StructuredHookProgramBuffers,
+    unitTerms: readonly ResolvedCoreTerm[],
+    unitGateNames: readonly string[],
+    gates: ReadonlyMap<string, GateResolution>,
+    gateSlots: ReadonlyMap<string, readonly StructuredMeasurementSlot[]>,
+  ): StructuredHookProgramBuffers {
+    const tapped: Array<{ name: string; unit: UnitRef }> = [];
+    for (const [name, probe] of this.attachedProbes) {
+      if (probe.family === "units") tapped.push({ name, unit: { kind: probe.kind, layer: probe.layer, index: probe.index } });
+    }
+    for (const name of unitGateNames) {
+      if (tapped.some((entry) => entry.name === name)) continue;
+      const namespace = name.startsWith("neuron/") ? "neuron" : "head";
+      const source = this.unitSource;
+      if (source === null) throw instrumentAtomUnavailable(namespace);
+      tapped.push({ name, unit: resolveUnitAtom(source, namespace, name.slice(namespace.length + 1)) });
+    }
+    if (unitTerms.length === 0 && tapped.length === 0) return program;
+    const source = this.unitSource;
+    if (source === null || source.spec === null) {
+      throw instrumentAtomUnavailable(unitTerms.length > 0 ? unitTerms[0].base.key.split("/")[0] : "neuron");
+    }
+    const triggers: string[] = [];
+    const controls: Array<StructuredHookControl | null> = [];
+    const ablations = unitTerms.map((term) => {
+      const unit = (term.base as ResolvedInstrumentAtom).unit!;
+      const key = JSON.stringify(term.trigger);
+      let group = triggers.indexOf(key);
+      if (group < 0) {
+        group = triggers.length;
+        triggers.push(key);
+        controls.push(term.trigger === null ? null : hookControl(term.trigger, gates, gateSlots));
+      }
+      return structuredUnitAblationTerm(unit.kind, unit.layer, unit.index, term.coefficient, unitMean(source, unit), group);
+    });
+    const taps = tapped.map((entry, slot) => unitTap(source, entry.name, entry.unit, slot));
+    return withStructuredUnitSection(
+      program,
+      { dFF: source.spec.dFF, nHeads: source.spec.nHeads, headDim: source.spec.headDim },
+      { ablations, taps, controls },
+    );
   }
 
   private syncPinnedJlensWords(): void {
     this.instruments.setPinnedJlensWords(
       [...this.attachedProbes.values()].flatMap((probe) =>
-        probe.family === "lens" ? [probe.word] : []
+        probe.family === "lens" && probe.namespace === "jlens" ? [probe.word] : []
       ),
     );
   }
@@ -1090,6 +1426,7 @@ export class BrowserFeasibilityCorePackCompiler {
     const names = [...required];
     for (const [name, probe] of this.attachedProbes) {
       if (probe.family === "geometry" && !this.geometryLive) continue;
+      if (probe.family === "units" || (probe.family === "lens" && probe.namespace === "slens")) continue;
       if (!names.includes(name)) names.push(name);
     }
     if (names.length > this.structuredHookProfile.maxProbes) {
@@ -1145,24 +1482,14 @@ export class BrowserFeasibilityCorePackCompiler {
           `Probe ${manifold.key} layer ${layer} is outside the compiled model layer map`,
         );
       }
-      if (
-        this.structuredHookProfile.maxGeometryProbes === 0 &&
-        manifold.tensors.keys.includes(`${prefix}.node_params`)
-      ) {
-        throw coreError(
-          "CORE_PACK_CURVED_GATE_UNAVAILABLE",
-          "Curved manifold readings require the distance-readout GPU ABI",
-        );
-      }
       const shape = manifold.tensors.description.shapes.get(`${prefix}.basis`);
       if (
         !shape || shape.length !== 2 || shape[1] !== this.hiddenSize ||
-        shape[0] < 1 || shape[0] > this.structuredHookProfile.maxRank ||
-        (this.structuredHookProfile.maxGeometryProbes === 0 && shape[0] !== 1)
+        shape[0] < 1 || shape[0] > this.structuredHookProfile.maxRank
       ) {
         throw coreError(
           "CORE_PACK_GATE_PROBE_UNAVAILABLE",
-          `Probe ${manifold.key} is multidimensional and requires more than one GPU readout slot`,
+          `Probe ${manifold.key} layer ${layer} has a basis this browser model library cannot read`,
         );
       }
       if (!this.whiteners.has(layer)) {
@@ -1248,7 +1575,7 @@ export class BrowserFeasibilityCorePackCompiler {
       let ablationShare = 0;
 
       for (const term of terms) {
-        if (Math.abs(term.coefficient) < 1e-9) continue;
+        if (Math.abs(term.coefficient) < 1e-9 || !termActsAt(term, layer)) continue;
         if (term.ablation) {
           const direction = this.atomNodeDirection(term.base, layer);
           if (direction === null) continue;
@@ -1454,17 +1781,19 @@ export class BrowserFeasibilityCorePackCompiler {
       );
     }
     const domain = structuredCurveDomain(manifold.domain, this.structuredHookProfile);
-    const fitted = fittedLayerNumbers(manifold.tensors);
-    const rawShares = fitted.map((layer) => manifold.mahalanobisShares.get(layer) ?? 0);
+    // The mean-1 share normalizes over the layers the term acts at (a layer
+    // clause's selection, else every fitted layer), as _manifold_layer_shares.
+    const active = fittedLayerNumbers(manifold.tensors).filter((layer) => termActsAt(term, layer));
+    const rawShares = active.map((layer) => manifold.mahalanobisShares.get(layer) ?? 0);
     const shareMean = rawShares.reduce((sum, value) => sum + value, 0) / rawShares.length;
-    if (!(shareMean > 0)) {
+    if (!(shareMean > 0) || rawShares.some((value) => !(Number.isFinite(value) && value > 0))) {
       throw coreError("CORE_PACK_METRIC_INVALID", "Curved manifold shares are invalid");
     }
     const target = resolveCurvePosition(manifold, term.manifoldPosition, domain.axes);
     const onto = term.coefficients[1] ?? 0;
     const periodic = domain.axes.some((axis) => axis.periodic);
     const curves = new Map<number, StructuredCurve>();
-    for (const layer of fitted) {
+    for (const layer of active) {
       const programIndex = this.layerMap.indexOf(layer);
       if (programIndex < 0) {
         throw coreError(
@@ -1548,16 +1877,21 @@ export class BrowserFeasibilityCorePackCompiler {
     return curves;
   }
 
+  /** One attached probe on the device: an SAE or R-lens probe in its probe slots, a geometry
+   *  probe in the geometry readout producing its own scores and the `gateKeys` a gate reads
+   *  (a key it cannot produce is left out: that gate never fires). */
   private installGateProbe(
     name: string,
     probeIndex: number,
     layers: StructuredHookLayer[],
+    gateKeys: readonly string[],
   ): InstalledProbeProgram {
     const attached = this.attachedProbes.get(name);
-    const saeFeatureId = attached?.family === "sae"
-      ? String(attached.feature_id)
-      : name.startsWith("sae/") ? name.slice("sae/".length) : null;
-    if (saeFeatureId !== null) {
+    if (attached === undefined || attached.family === "units" || (attached.family === "lens" && attached.namespace === "slens")) {
+      throw coreError("CORE_PACK_GATE_PROBE_UNAVAILABLE", `${name} is not an attached device probe`);
+    }
+    if (attached.family === "sae") {
+      const saeFeatureId = String(attached.feature_id);
       const feature = this.instruments.saeFeature(saeFeatureId);
       const programIndex = this.layerMap.indexOf(feature.layer);
       if (programIndex < 0) {
@@ -1576,11 +1910,8 @@ export class BrowserFeasibilityCorePackCompiler {
       );
       return { slots: [{ layer: programIndex, probe: probeIndex }], geometry: null };
     }
-    const lensWord = attached?.family === "lens"
-      ? attached.word
-      : name.startsWith("jlens/") ? name.slice("jlens/".length) : null;
-    if (lensWord !== null) {
-      const token = this.instruments.jlensToken(lensWord);
+    if (attached.family === "lens") {
+      const token = this.instruments.jlensToken(attached.word);
       const slots: StructuredMeasurementSlot[] = [];
       for (const layer of token.directions.keys()) {
         const programIndex = this.layerMap.indexOf(layer);
@@ -1595,100 +1926,51 @@ export class BrowserFeasibilityCorePackCompiler {
       if (slots.length === 0) {
         throw coreError(
           "JLENS_PACK_LAYER_MISMATCH",
-          `J-lens token ${name} has no layer in the loaded runtime`,
+          `R-lens token ${name} has no layer in the loaded runtime`,
         );
       }
       return { slots, geometry: null };
     }
-    let geometryTarget: {
-      manifold: CoreManifold;
-      name: string;
-      scoreKeys: string[];
-      topN: number;
-    };
+    let manifold: CoreManifold;
     try {
-      geometryTarget = this.resolveGeometryProgramTarget(name, attached);
+      manifold = this.resolveProbeManifold(attached.manifold);
     } catch {
       throw coreError(
         "CORE_PACK_GATE_PROBE_UNAVAILABLE",
         `The installed browser packs do not provide live probe ${name}`,
       );
     }
-    const manifold = geometryTarget.manifold;
+    const geometryTarget = { name: attached.name, topN: attached.top_n };
     this.assertGeometryProbeLowerable(manifold);
-    if (this.structuredHookProfile.maxGeometryProbes > 0) {
-      const built = this.structuredGeometryProbe(manifold);
-      for (const [programIndex, probe] of built.layers) {
-        (layers[programIndex].geometryProbes as StructuredGeometryProbe[])[probeIndex] = probe;
-      }
-      return {
-        slots: [],
-        geometry: {
-          name: geometryTarget.name,
-          scoreKeys: geometryTarget.scoreKeys,
-          manifold: manifold.selectorKey,
-          labels: built.labels,
-          topN: geometryTarget.topN,
-          intrinsicDim: built.intrinsicDim,
-          rank: built.rank,
-          shareWeights: built.shareWeights,
-          assignBandwidth: built.assignBandwidth,
-          assignLogVolumeBias: built.assignLogVolumeBias,
-          labelScale: built.labelScale,
-        },
-      };
+    const built = this.structuredGeometryProbe(manifold);
+    for (const [programIndex, probe] of built.layers) {
+      (layers[programIndex].geometryProbes as StructuredGeometryProbe[])[probeIndex] = probe;
     }
-    const slots: StructuredMeasurementSlot[] = [];
-    for (const layer of fittedLayerNumbers(manifold.tensors)) {
-      const programIndex = this.layerMap.indexOf(layer);
-      if (programIndex < 0) continue;
-      const prefix = `layer_${layer}`;
-      if (manifold.tensors.keys.includes(`${prefix}.node_params`)) {
-        throw coreError(
-          "CORE_PACK_CURVED_GATE_UNAVAILABLE",
-          "Curved membership gates need the forthcoming distance-readout ABI",
-        );
-      }
-      const shape = manifold.tensors.description.shapes.get(`${prefix}.basis`);
-      if (!shape || shape[0] !== 1) {
-        throw coreError(
-          "CORE_PACK_GATE_PROBE_UNAVAILABLE",
-          `Probe ${name} is not a scalar affine coordinate`,
-        );
-      }
-      const basis = manifold.tensors.tensor(`${prefix}.basis`, [1, this.hiddenSize]).data;
-      const mean = manifold.tensors.tensor(`${prefix}.mean`, [this.hiddenSize]).data;
-      const whitener = this.whiteners.get(layer);
-      if (
-        !whitener ||
-        this.structuredHookProfile.maxGeometryProbes > 0 &&
-          whitener.rank > this.structuredHookProfile.maxWhitenerRank
-      ) {
-        throw coreError(
-          "CORE_PACK_WHITENER_UNAVAILABLE",
-          `Probe ${name} requires a neutral whitener for layer ${layer}`,
-        );
-      }
-      const inverseBasis = applySerializedInverse(whitener, basis);
-      const gram = dot(basis, inverseBasis);
-      if (!(gram > 1e-12)) {
-        throw coreError("CORE_PACK_METRIC_INVALID", `Probe ${name} has a degenerate metric at layer ${layer}`);
-      }
-      const direction = Float32Array.from(inverseBasis, (value) => value / gram);
-      (layers[programIndex].probes as StructuredProbe[])[probeIndex] = {
-        kind: "linear",
-        direction,
-        bias: -dot(mean, direction),
-      };
-      slots.push({ layer: programIndex, probe: probeIndex });
-    }
-    if (slots.length === 0) {
-      throw coreError(
-        "CORE_PACK_GATE_PROBE_UNAVAILABLE",
-        `Probe ${name} has no layer in the loaded runtime`,
-      );
-    }
-    return { slots, geometry: null };
+    // The readout's key family (native `flat_scalars`): every axis, the fraction, the membership,
+    // and a distance and an assignment per label.
+    const produced = new Set([
+      ...(built.intrinsicDim > 0 ? [name] : []),
+      ...Array.from({ length: built.intrinsicDim }, (_, axis) => `${name}[${axis}]`),
+      `${name}:fraction`,
+      `${name}:membership`,
+      ...built.labels.flatMap((label) => [`${name}@${label}`, `${name}~${label}`]),
+    ]);
+    return {
+      slots: [],
+      geometry: {
+        name: geometryTarget.name,
+        scoreKeys: [...new Set([name, ...gateKeys])].filter((key) => produced.has(key)),
+        manifold: manifold.selectorKey,
+        labels: built.labels,
+        topN: geometryTarget.topN,
+        intrinsicDim: built.intrinsicDim,
+        rank: built.rank,
+        shareWeights: built.shareWeights,
+        assignBandwidth: built.assignBandwidth,
+        assignLogVolumeBias: built.assignLogVolumeBias,
+        labelScale: built.labelScale,
+      },
+    };
   }
 
   private measurementProbe(name: string | undefined): StructuredMeasurementProbe | null {
@@ -1708,67 +1990,6 @@ export class BrowserFeasibilityCorePackCompiler {
     }
     if (attached?.family === "geometry") return { name, family: "geometry" };
     return measurementProbe(name, this.instruments);
-  }
-
-  private resolveGeometryProgramTarget(
-    name: string,
-    attached: ProbeInfo | undefined,
-  ): { manifold: CoreManifold; name: string; scoreKeys: string[]; topN: number } {
-    if (attached?.family === "geometry") {
-      return {
-        manifold: this.resolveProbeManifold(attached.manifold),
-        name: attached.name,
-        scoreKeys: [name],
-        topN: attached.top_n,
-      };
-    }
-    let selector = name;
-    let channel: "coordinate" | "fraction" | "membership" | "distance" | "assignment" =
-      "coordinate";
-    let axis = 0;
-    let label: string | null = null;
-    const scalar = /:(fraction|membership)$/u.exec(selector);
-    const indexed = /\[(0|[1-9]\d*)\]$/u.exec(selector);
-    if (scalar) {
-      channel = scalar[1] as "fraction" | "membership";
-      selector = selector.slice(0, -scalar[0].length);
-    } else if (indexed) {
-      axis = Number(indexed[1]);
-      selector = selector.slice(0, -indexed[0].length);
-    } else {
-      const distanceAt = selector.lastIndexOf("@");
-      const assignmentAt = selector.lastIndexOf("~");
-      const discriminator = Math.max(distanceAt, assignmentAt);
-      if (discriminator > 0) {
-        channel = discriminator === distanceAt ? "distance" : "assignment";
-        label = selector.slice(discriminator + 1);
-        selector = selector.slice(0, discriminator);
-      }
-    }
-    const manifold = this.resolveProbeManifold(selector);
-    const intrinsicDim = manifoldIntrinsicDimension(manifold);
-    if (channel === "coordinate" && axis >= intrinsicDim) {
-      throw coreError(
-        "CORE_PACK_GATE_PROBE_UNAVAILABLE",
-        `Probe ${selector} has no coordinate axis ${axis}`,
-      );
-    }
-    if (
-      (label !== null && label !== "neutral" && !manifold.labels.includes(label)) ||
-      (label === "neutral" && manifold.labels.includes("neutral") &&
-        manifold.labels.filter((value) => value === "neutral").length !== 1)
-    ) {
-      throw coreError(
-        "CORE_PACK_GATE_PROBE_UNAVAILABLE",
-        `Probe ${selector} has no candidate ${String(label)}`,
-      );
-    }
-    return {
-      manifold,
-      name: selector,
-      scoreKeys: [name],
-      topN: Math.min(3, manifold.labels.length + (manifold.labels.includes("neutral") ? 0 : 1)),
-    };
   }
 
   private structuredGeometryWhitener(layer: number): StructuredGeometryWhitener {
@@ -1955,234 +2176,6 @@ export class BrowserFeasibilityCorePackCompiler {
     return attached?.family === "lens" ? `jlens/${attached.word}` : name;
   }
 
-  private compileSingleRankOneAblation(
-    resolved: ResolvedCoreTerm,
-  ): RankOneHookProgramBuffers {
-    if (resolved.base.kind !== "manifold") {
-      throw coreError("CORE_PACK_EXPRESSION_UNAVAILABLE", "Instrument ablation requires the structured hook path");
-    }
-    if (this.whiteners.size !== this.layerMap.length) {
-      throw coreError(
-        "CORE_PACK_WHITENER_UNAVAILABLE",
-        "Browser ablation requires the exact neutral whitener",
-      );
-    }
-    const layers = this.layerMap.map(() => disabledLayer(this.hiddenSize));
-    if (Math.abs(resolved.coefficient) <= 1e-12) {
-      return compileRankOneHookProgram(this.hiddenSize, layers);
-    }
-    const fittedLayers = fittedLayerNumbers(resolved.base.manifold.tensors);
-    if (fittedLayers.length === 0) {
-      throw coreError("CORE_PACK_TENSOR_INVALID", "The selected core manifold has no fitted layers");
-    }
-    for (const layer of fittedLayers) {
-      const programIndex = this.layerMap.indexOf(layer);
-      if (programIndex < 0) {
-        throw coreError(
-          "CORE_PACK_LAYER_MISMATCH",
-          `Core manifold layer ${layer} is outside the compiled model layer map`,
-        );
-      }
-      const prefix = `layer_${layer}`;
-      if (resolved.base.manifold.tensors.keys.includes(`${prefix}.node_params`)) {
-        throw coreError(
-          "CORE_PACK_CURVED_UNAVAILABLE",
-          "The current browser model library cannot execute curved manifold steering",
-        );
-      }
-      const basis = resolved.base.manifold.tensors.tensor(
-        `${prefix}.basis`,
-        [1, this.hiddenSize],
-      ).data;
-      const mean = this.whiteners.get(layer)!.mean;
-      layers[programIndex] = {
-        enabled: true,
-        basis,
-        neutral: mean,
-        target: 0,
-        along: 1,
-        collapse: resolved.coefficient,
-        probeBasis: basis,
-        probeNeutral: mean,
-      };
-    }
-    return compileRankOneHookProgram(this.hiddenSize, layers);
-  }
-
-  private compileSingleRankOne(resolved: ResolvedCoreTerm): RankOneHookProgramBuffers {
-    const target = resolved.base;
-    if (target.kind !== "manifold") {
-      throw coreError("CORE_PACK_EXPRESSION_UNAVAILABLE", "Instrument steering requires the structured hook path");
-    }
-    const layers = this.layerMap.map(() => disabledLayer(this.hiddenSize));
-    const active: Array<{
-      programIndex: number;
-      basis: Float32Array;
-      mean: Float32Array;
-      target: number;
-      share: number;
-    }> = [];
-    const fittedLayers = fittedLayerNumbers(target.manifold.tensors);
-    if (fittedLayers.length === 0) {
-      throw coreError("CORE_PACK_TENSOR_INVALID", "The selected core manifold has no fitted layers");
-    }
-    for (const layer of fittedLayers) {
-      const programIndex = this.layerMap.indexOf(layer);
-      if (programIndex < 0) {
-        throw coreError(
-          "CORE_PACK_LAYER_MISMATCH",
-          `Core manifold layer ${layer} is outside the compiled model layer map`,
-        );
-      }
-      const prefix = `layer_${layer}`;
-      if (target.manifold.tensors.keys.some((key) => key === `${prefix}.node_params`)) {
-        throw coreError(
-          "CORE_PACK_CURVED_UNAVAILABLE",
-          "The current browser model library cannot execute curved manifold steering",
-        );
-      }
-      const mean = target.manifold.tensors.tensor(
-        `${prefix}.mean`,
-        [this.hiddenSize],
-      ).data;
-      const basis = target.manifold.tensors.tensor(
-        `${prefix}.basis`,
-        [1, this.hiddenSize],
-      ).data;
-      const nodeCoordinates = target.manifold.tensors.tensor(
-        `${prefix}.node_coords`,
-        [target.manifold.labels.length, 1],
-      ).data;
-      const storedShare = target.manifold.mahalanobisShares.get(layer);
-      if (storedShare === undefined) {
-        throw coreError(
-          "CORE_PACK_METRIC_MISSING",
-          `Core manifold layer ${layer} has no Mahalanobis share`,
-        );
-      }
-      const coordinateMean = nodeCoordinates.reduce((sum, value) => sum + value, 0) /
-        nodeCoordinates.length;
-      let coordinateSpreadSquared = 0;
-      for (const value of nodeCoordinates) {
-        coordinateSpreadSquared += (value - coordinateMean) ** 2;
-      }
-      const coordinateSpread = Math.sqrt(coordinateSpreadSquared);
-      if (!Number.isFinite(coordinateSpread) || coordinateSpread <= 1e-9) {
-        throw coreError(
-          "CORE_PACK_METRIC_INVALID",
-          `Core manifold layer ${layer} has degenerate fitted node coordinates`,
-        );
-      }
-      const basisMahalanobisNorm = storedShare / coordinateSpread;
-      const rawTarget = nodeCoordinates[target.labelIndex];
-      const share = Math.abs(resolved.coefficient * rawTarget) * basisMahalanobisNorm;
-      if (share <= 1e-9) continue;
-      active.push({
-        programIndex,
-        basis,
-        mean,
-        target: resolved.coefficient * rawTarget /
-          (Math.abs(rawTarget) * basisMahalanobisNorm),
-        share,
-      });
-    }
-    const totalShare = active.reduce((sum, layer) => sum + layer.share, 0);
-    for (const layer of active) {
-      layers[layer.programIndex] = {
-        enabled: true,
-        basis: layer.basis,
-        neutral: layer.mean,
-        target: layer.target,
-        along: layer.share / totalShare * active.length * 16,
-        collapse: 0,
-        probeBasis: layer.basis,
-        probeNeutral: layer.mean,
-      };
-    }
-    return compileRankOneHookProgram(this.hiddenSize, layers);
-  }
-
-  private compileComposedPurePush(
-    terms: readonly ResolvedCoreTerm[],
-  ): RankOneHookProgramBuffers {
-    if (this.whiteners.size !== this.layerMap.length) {
-      throw coreError(
-        "CORE_PACK_WHITENER_UNAVAILABLE",
-        "Composed browser steering requires the exact neutral whitener",
-      );
-    }
-    const manifolds = new Set<CoreManifold>();
-    for (const term of terms) {
-      if (term.base.kind === "manifold") manifolds.add(term.base.manifold);
-      if (term.projection?.onto.kind === "manifold") manifolds.add(term.projection.onto.manifold);
-    }
-    for (const manifold of manifolds) this.validateAffineManifoldLayers(manifold);
-
-    const layers = this.layerMap.map(() => disabledLayer(this.hiddenSize));
-    const active: Array<{
-      programIndex: number;
-      basis: Float64Array;
-      neutral: Float64Array;
-      target: number;
-      share: number;
-    }> = [];
-    this.layerMap.forEach((layer, programIndex) => {
-      const whitener = this.whiteners.get(layer)!;
-      const fragments: Array<{ coefficient: number; direction: Float64Array }> = [];
-      for (const term of terms) {
-        const direction = this.termDirection(term, layer, whitener);
-        if (direction !== null) fragments.push({ coefficient: term.coefficient, direction });
-      }
-      if (fragments.length === 0) return;
-
-      const worldTarget = new Float64Array(this.hiddenSize);
-      const rawDelta = new Float64Array(this.hiddenSize);
-      const norms: number[] = [];
-      for (const fragment of fragments) {
-        const norm = mahalanobisNorm(whitener, fragment.direction);
-        norms.push(norm);
-        for (let index = 0; index < this.hiddenSize; index += 1) {
-          rawDelta[index] += fragment.coefficient * fragment.direction[index];
-          if (norm > 1e-9) {
-            worldTarget[index] += fragment.coefficient / norm * fragment.direction[index];
-          }
-        }
-      }
-      const target = euclideanNorm(worldTarget);
-      if (target < 1e-9) return;
-      let share = mahalanobisNorm(whitener, rawDelta);
-      if (share < 1e-9) {
-        share = fragments.reduce(
-          (sum, fragment, index) => sum + Math.abs(fragment.coefficient) * norms[index],
-          0,
-        );
-      }
-      if (share < 1e-9) return;
-      active.push({
-        programIndex,
-        basis: Float64Array.from(worldTarget, (value) => value / target),
-        neutral: whitener.mean,
-        target,
-        share,
-      });
-    });
-
-    const totalShare = active.reduce((sum, layer) => sum + layer.share, 0);
-    for (const layer of active) {
-      layers[layer.programIndex] = {
-        enabled: true,
-        basis: layer.basis,
-        neutral: layer.neutral,
-        target: layer.target,
-        along: layer.share / totalShare * active.length * 16,
-        collapse: 0,
-        probeBasis: layer.basis,
-        probeNeutral: layer.neutral,
-      };
-    }
-    return compileRankOneHookProgram(this.hiddenSize, layers);
-  }
-
   private termDirection(
     term: ResolvedCoreTerm,
     layer: number,
@@ -2258,7 +2251,6 @@ export class BrowserFeasibilityCorePackCompiler {
       }
     }
     if (
-      this.structuredHookProfile.maxGeometryProbes > 0 &&
       manifold.labels.length + (manifold.labels.includes("neutral") ? 0 : 1) >
         this.structuredHookProfile.maxGeometryCandidates
     ) {
@@ -2316,27 +2308,24 @@ export class BrowserFeasibilityCorePackCompiler {
       if (atom.variant !== "raw") {
         throw coreError(
           "CORE_PACK_VARIANT_UNAVAILABLE",
-          "J-lens atoms do not take manifold variants",
+          "R-lens atoms do not take manifold variants",
         );
       }
       if (!this.instruments.capabilities().jlens) {
         throw coreError(
           "JLENS_PACK_UNAVAILABLE",
-          "Install the compatible J-lens pack to use jlens/<word>",
+          "Install the compatible R-lens pack to use jlens/<word>",
         );
       }
     }
+    const clause = formatLayerClause(term.layers === "all" ? null : term.layers);
     return onto === null
-      ? `${term.ablation ? "!" : ""}${formatAtom(base)}`
-      : `${formatAtom(base)}${term.selector.projection}${formatAtom(onto)}`;
+      ? `${term.ablation ? "!" : ""}${formatAtom(base)}${clause}`
+      : `${formatAtom(base)}${term.selector.projection}${formatAtom(onto)}${clause}`;
   }
 
   private resolveTerm(term: SteeringExpressionTerm): ResolvedCoreTerm {
-    if (
-      (term.selector.manifoldPosition === null && term.coefficients.length !== 1) ||
-      (term.selector.manifoldPosition !== null && term.coefficients.length > 2) ||
-      (term.ablation && term.selector.projection !== null)
-    ) {
+    if (term.ablation && term.selector.projection !== null) {
       throw coreError(
         "CORE_PACK_EXPRESSION_UNAVAILABLE",
         "The browser GPU compiler cannot lower this steering expression",
@@ -2351,6 +2340,16 @@ export class BrowserFeasibilityCorePackCompiler {
           operator: term.selector.projection,
           onto: this.resolveAtom(term.selector.onto!),
         };
+    // A plain term on a manifold's label or 2-node name is a `%` term, so it takes `along,onto`.
+    const position = term.selector.manifoldPosition !== null ||
+      (projection === null && !term.ablation && base.kind === "manifold");
+    if (term.coefficients.length > (position ? 2 : 1)) {
+      throw coreError(
+        "CORE_PACK_EXPRESSION_UNAVAILABLE",
+        "The browser GPU compiler cannot lower this steering expression",
+      );
+    }
+    const layers: LayerScope = term.layers === null || term.layers === "all" ? null : term.layers;
     const manifoldPosition = term.selector.manifoldPosition === null &&
         projection === null && !term.ablation && base.kind === "manifold" &&
         base.labelAlias && manifoldLabelNeedsPosition(base.manifold)
@@ -2360,66 +2359,135 @@ export class BrowserFeasibilityCorePackCompiler {
       ? base.key
       : `${base.key}%${formatManifoldPosition(term.selector.manifoldPosition)}`;
     return {
-      key: projection === null
+      key: (projection === null
         ? `${term.ablation ? "!" : ""}${baseKey}`
-        : `${formatAtom(term.selector.base)}${projection.operator}${formatAtom(term.selector.onto!)}`,
+        : `${formatAtom(term.selector.base)}${projection.operator}${formatAtom(term.selector.onto!)}`) +
+        formatLayerClause(layers),
       base,
       projection,
       coefficient: term.coefficients[0],
       coefficients: term.coefficients,
       ablation: term.ablation,
-      trigger: term.trigger,
+      trigger: normalizeTrigger(term.trigger),
       manifoldPosition,
+      layers,
+      irKey: foldSteering({ terms: [term] }, { manifolds: this.steeringManifolds() }).terms[0].key,
+      actsAt: null,
     };
   }
 
+  /** The installed manifolds as the grammar's bare-atom ladder sees them, one per folder (also
+   *  what the loom's `inverted` regen resolves against). */
+  steeringManifolds(): SteeringManifoldEntry[] {
+    const entries = new Map<string, SteeringManifoldEntry>();
+    for (const manifold of this.manifolds) {
+      const key = `${manifold.namespace}/${manifold.name}`;
+      if (!entries.has(key)) {
+        entries.set(key, {
+          namespace: manifold.namespace,
+          name: manifold.name,
+          fitMode: manifold.fitMode,
+          labels: manifold.labels,
+        });
+      }
+    }
+    return [...entries.values()];
+  }
+
+  /** The layers a resolved term can act on: its atom's fitted layers (a `~` projection's where
+   *  both operands are fitted and the projection is not zero, as `project_profile` drops a
+   *  degenerate `onto`). */
+  private termFittedLayers(term: ResolvedCoreTerm): number[] {
+    const atomLayers = (atom: ResolvedCoreAtom): number[] => atom.kind === "instrument"
+      ? atom.unit !== undefined ? [atom.unit.layer] : [...atom.directions.keys()]
+      : fittedLayerNumbers(atom.manifold.tensors);
+    const base = atomLayers(term.base);
+    if (term.projection?.operator !== "~") return [...base].sort((a, b) => a - b);
+    const ontoLayers = atomLayers(term.projection.onto);
+    const onto = new Set(ontoLayers);
+    const fitted = base.filter((layer) => {
+      if (!onto.has(layer)) return false;
+      // Without a whitener the term is refused at lowering, so the layer stays listed.
+      const whitener = this.whiteners.get(layer);
+      return whitener === undefined || this.termDirection(term, layer, whitener) !== null;
+    }).sort((a, b) => a - b);
+    if (fitted.length === 0) {
+      const list = (layers: number[]) => `[${[...layers].sort((a, b) => a - b).join(", ")}]`;
+      throw Object.assign(
+        coreError(
+          "STEERING_COMPOSITION",
+          `project_profile: no layers produced for operator '~' (base layers: ${list(base)}, ` +
+            `onto layers: ${list(ontoLayers)})`,
+        ),
+        { status: 422, recoverable: false },
+      );
+    }
+    return fitted;
+  }
+
+  /** Select each folded term's layers (`select_term_layers`: 422 on a clause naming an unfitted
+   *  layer) and report where each acts, weighed alone as composition weighs it (`term_layers`). */
+  private placeTerms(terms: ResolvedCoreTerm[]): BrowserSteeringTermLayers[] {
+    return terms.map((term, index) => {
+      const fitted = this.termFittedLayers(term);
+      let chosen: number[] | null;
+      try {
+        chosen = selectTermLayers(term.irKey, fitted, term.layers, this.layerMap.length);
+      } catch (error) {
+        throw Object.assign(
+          coreError("STEERING_COMPOSITION", error instanceof Error ? error.message : String(error)),
+          { status: 422, recoverable: false },
+        );
+      }
+      terms[index] = { ...term, actsAt: chosen === null ? null : new Set(chosen) };
+      const raw = fitted.map((layer) => this.termLayerShare(term, layer));
+      const total = raw.reduce((sum, value) => sum + value, 0);
+      const share = Number.isFinite(total) && total > 0
+        ? raw.map((value) => value / total * fitted.length)
+        : fitted.map(() => 1);
+      return { key: term.irKey, fitted, share, layers: chosen ?? fitted };
+    });
+  }
+
+  /** A term's raw weight at `layer`: an ablation's is even, a curved position's its baked
+   *  Mahalanobis share, a push's its whitened displacement. */
+  private termLayerShare(term: ResolvedCoreTerm, layer: number): number {
+    if (term.ablation) return 1;
+    if (
+      term.manifoldPosition !== null && term.base.kind === "manifold" &&
+      isCurvedManifold(term.base.manifold)
+    ) {
+      return Math.max(0, term.base.manifold.mahalanobisShares.get(layer) ?? 0);
+    }
+    const whitener = this.whiteners.get(layer);
+    if (whitener === undefined) return 0;
+    const fragment = this.structuredPushFragment(term, layer, whitener);
+    return fragment === null ? 0 : Math.max(0, mahalanobisNorm(whitener, fragment.direction));
+  }
+
+  /** Merge the terms that share an IR key, as the grammar's fold (which ran first and checked
+   *  their triggers and positions) merges them. A label term and an explicit-position term on one
+   *  node keep different keys (`local/demo%alert`, `demo%alert`), so they stay two terms. */
   private foldResolvedTerms(
     terms: readonly ResolvedCoreTerm[],
   ): ResolvedCoreTerm[] {
     const folded = new Map<string, ResolvedCoreTerm>();
     for (const term of terms) {
-      const foldKey = resolvedFoldKey(term);
-      const previous = folded.get(foldKey);
+      const previous = folded.get(term.irKey);
       if (previous === undefined) {
-        folded.set(foldKey, term);
+        folded.set(term.irKey, term);
         continue;
       }
-      const kind = resolvedTermKind(term);
-      if (resolvedTermKind(previous) !== kind) {
-        throw coreError(
-          "CORE_PACK_EXPRESSION_CONFLICT",
-          `Steering selector ${term.key} appears as incompatible term types`,
-        );
-      }
-      const previousTrigger = kind === "plain"
-        ? previous.trigger
-        : effectiveStructuredTrigger(previous.trigger);
-      const nextTrigger = kind === "plain"
-        ? term.trigger
-        : effectiveStructuredTrigger(term.trigger);
-      if (!steeringTriggersEqual(previousTrigger, nextTrigger)) {
-        throw coreError(
-          "CORE_PACK_TRIGGER_CONFLICT",
-          `Steering selector ${term.key} appears with conflicting triggers`,
-        );
-      }
       const coefficient = previous.coefficient + term.coefficient;
-      if (kind === "manifold") {
-        folded.set(foldKey, {
-          ...previous,
-          coefficient,
-          coefficients: [
-            coefficient,
-            (previous.coefficients[1] ?? 0) + (term.coefficients[1] ?? 0),
-          ],
-        });
-      } else {
-        folded.set(foldKey, {
-          ...previous,
-          coefficient,
-          coefficients: [coefficient],
-        });
-      }
+      const manifold = !term.ablation && term.projection === null &&
+        (term.manifoldPosition !== null || term.base.kind === "manifold");
+      folded.set(term.irKey, {
+        ...previous,
+        coefficient,
+        coefficients: manifold
+          ? [coefficient, (previous.coefficients[1] ?? 0) + (term.coefficients[1] ?? 0)]
+          : [coefficient],
+      });
     }
     return [...folded.values()];
   }
@@ -2463,7 +2531,7 @@ export class BrowserFeasibilityCorePackCompiler {
     }
     if (atom.namespace === "jlens") {
       if (atom.variant !== "raw") {
-        throw coreError("CORE_PACK_VARIANT_UNAVAILABLE", "J-lens atoms do not take manifold variants");
+        throw coreError("CORE_PACK_VARIANT_UNAVAILABLE", "R-lens atoms do not take manifold variants");
       }
       const token = this.instruments.jlensToken(atom.concept);
       return {
@@ -2474,11 +2542,43 @@ export class BrowserFeasibilityCorePackCompiler {
         saeFeature: null,
       };
     }
+    if (atom.namespace === "neuron" || atom.namespace === "head") {
+      const source = this.unitSource;
+      if (source === null) throw instrumentAtomUnavailable(atom.namespace);
+      if (atom.variant !== "raw") {
+        throw coreError("CORE_PACK_VARIANT_UNAVAILABLE", "Unit atoms do not take manifold variants");
+      }
+      const unit = resolveUnitAtom(source, atom.namespace, atom.concept);
+      const write = unit.kind === "neuron" ? source.neuronWrite(unit.layer, unit.index) : null;
+      return {
+        kind: "instrument",
+        key: unitName(unit),
+        family: "units",
+        directions: write === null ? new Map() : new Map([[unit.layer, write]]),
+        saeFeature: null,
+        unit,
+      };
+    }
+    if (atom.namespace === "slens") {
+      const source = this.unitSource;
+      if (source === null) throw instrumentAtomUnavailable(atom.namespace);
+      if (atom.variant !== "raw") {
+        throw coreError("CORE_PACK_VARIANT_UNAVAILABLE", "S-lens atoms do not take manifold variants");
+      }
+      const prepared = source.slensAtom(atom.concept);
+      if (prepared === null) {
+        throw coreError("SLENS_ATOM_UNPREPARED", `slens/${atom.concept} was not resolved before compiling`);
+      }
+      return {
+        kind: "instrument",
+        key: `slens/${atom.concept}`,
+        family: "slens",
+        directions: prepared.directions,
+        saeFeature: null,
+      };
+    }
     if (atom.namespace !== null && RESERVED_NAMESPACES.has(atom.namespace)) {
-      throw coreError(
-        "CORE_PACK_EXPRESSION_UNAVAILABLE",
-        `${atom.namespace}/ instrument atoms are not available in the browser runtime`,
-      );
+      throw instrumentAtomUnavailable(atom.namespace);
     }
     if (
       atom.namespace === null && atom.variant === "raw" &&
@@ -2748,7 +2848,7 @@ async function loadVerifiedManifold(
     fit_mode: fitMode,
     is_discover: fitMode === "pca" || fitMode === "spectral" || fitMode === "auto",
     domain: structuredClone(domain) as ManifoldInfo["domain"],
-    domain_label: coreDomainLabel(domain),
+    domain_label: domainLabel(domain),
     intrinsic_dim: intrinsicDimension,
     min_nodes: intrinsicDimension > 0 ? 2 * intrinsicDimension + 1 : null,
     node_count: labels.length,
@@ -2995,18 +3095,6 @@ function domainIntrinsicDimension(domain: Record<string, unknown>, key: string):
   throw coreError("CORE_PACK_MANIFOLD_INVALID", `Manifold ${key} has an invalid domain`);
 }
 
-function coreDomainLabel(domain: Record<string, unknown>): string {
-  if (domain.type === "box" && Array.isArray(domain.axes)) {
-    const names = domain.axes.map((axis, index) =>
-      isRecord(axis) && typeof axis.name === "string" ? axis.name : `axis ${index + 1}`
-    );
-    return names.join(" × ");
-  }
-  if (domain.type === "sphere") return `sphere S${String(domain.dim)}`;
-  if (domain.type === "custom") return `${String(domain.embed_dim)}D custom`;
-  return "unknown";
-}
-
 function mergedManifoldInfo(variants: readonly CoreManifold[]): ManifoldInfo {
   if (variants.length === 0) {
     throw coreError("CORE_PACK_SELECTOR_NOT_FOUND", "The browser manifold is not installed");
@@ -3032,7 +3120,7 @@ function mergedManifoldInfo(variants: readonly CoreManifold[]): ManifoldInfo {
   return info;
 }
 
-async function loadCoreWhiteners(
+export async function loadCoreWhiteners(
   tensorArtifact: BrowserModelArtifact,
   sidecarArtifact: BrowserModelArtifact,
   request: BrowserModelLoadRequest,
@@ -3055,7 +3143,7 @@ async function loadCoreWhiteners(
   const context = request.variant.contextProfiles?.find(
     (profile) => profile.contextTokens === request.contextTokens,
   );
-  const compatibleBindings = compatibleRuntimeBindings(request, request.contextTokens);
+  const compatibleBindings = runtimeBindings(request, request.contextTokens);
   if (
     keys.length !== expectedKeys.length ||
     keys.some((key, index) => key !== expectedKeys[index]) ||
@@ -3162,9 +3250,9 @@ async function selectCoreWhiteners(
     );
   }
   const allowedBindings = (request.variant.contextProfiles ?? []).flatMap((candidate) =>
-    compatibleRuntimeBindings(request, candidate.contextTokens)
+    runtimeBindings(request, candidate.contextTokens)
   );
-  const selectedBindings = compatibleRuntimeBindings(request, request.contextTokens);
+  const selectedBindings = runtimeBindings(request, request.contextTokens);
   const seenBindings = new Set<string>();
   let selected: { tensor: BrowserModelArtifact; sidecar: BrowserModelArtifact } | null = null;
   for (const [key, tensor] of tensors) {
@@ -3242,7 +3330,7 @@ function matchingFittedArtifacts(
   request: BrowserModelLoadRequest,
   requireContextBinding = false,
 ): readonly VerifiedDrowseArchive["fittedArtifacts"][number][] {
-  const compatibleBindings = compatibleRuntimeBindings(request, request.contextTokens);
+  const compatibleBindings = runtimeBindings(request, request.contextTokens);
   return verified.fittedArtifacts.filter((artifact) =>
     (artifact.variant === "raw" && artifact.variantIdentity === null ||
       artifact.variant === "sae" && artifact.variantIdentity !== null) &&
@@ -3255,7 +3343,9 @@ function matchingFittedArtifacts(
   );
 }
 
-function compatibleRuntimeBindings(
+/** The variant's runtime binding at `contextTokens` (none when the variant does not offer that
+ *  context): what a core artifact's fingerprint and context binding must equal. */
+function runtimeBindings(
   request: BrowserModelLoadRequest,
   contextTokens: number,
 ): readonly {
@@ -3266,26 +3356,10 @@ function compatibleRuntimeBindings(
     (candidate) => candidate.contextTokens === contextTokens,
   );
   if (!profile) return [];
-  const current = {
+  return [{
     runtimeIdentitySha256: request.variant.runtimeIdentitySha256,
     contextBindingSha256: profile.bindingSha256,
-  };
-  if (request.variant.runtimeIdentity.runtimeAbi !== "drowse-web-runtime-v1") {
-    return [current];
-  }
-  return [current, ...LEGACY_PRODUCT_SLUGS.map((slug) => {
-    const legacyRuntimeIdentitySha256 = runtimeIdentitySha256({
-      ...request.variant.runtimeIdentity,
-      runtimeAbi: `${slug}-web-runtime-v1`,
-    });
-    return {
-      runtimeIdentitySha256: legacyRuntimeIdentitySha256,
-      contextBindingSha256: contextBindingSha256(
-        legacyRuntimeIdentitySha256,
-        contextTokens,
-      ),
-    };
-  })];
+  }];
 }
 
 function fittedLayerNumbers(tensors: Fp32SafetensorsReader): number[] {
@@ -3341,55 +3415,8 @@ function groupAffineTermsByTrigger(
   return [...groups.values()];
 }
 
-function resolvedTermKind(
-  term: ResolvedCoreTerm,
-): "plain" | "projection" | "ablation" | "manifold" {
-  if (term.ablation) return "ablation";
-  if (term.projection !== null) return "projection";
-  if (term.manifoldPosition !== null || term.base.kind === "manifold") {
-    return "manifold";
-  }
-  return "plain";
-}
-
-function resolvedFoldKey(term: ResolvedCoreTerm): string {
-  return term.projection === null
-    ? term.key
-    : `${term.base.key}${term.projection.operator}${term.projection.onto.key}`;
-}
-
-function canonicalConceptName(value: string): string {
-  const slug = (part: string) => part.trim().toLowerCase()
-    .replace(/[^a-z0-9]+/gu, "_")
-    .replace(/^_+|_+$/gu, "");
-  const separator = value.indexOf(".");
-  return separator < 0
-    ? slug(value)
-    : `${slug(value.slice(0, separator))}.${slug(value.slice(separator + 1))}`;
-}
-
-function effectiveStructuredTrigger(
-  trigger: SteeringTrigger | null,
-): SteeringTrigger {
-  return trigger ?? { phase: { kind: "both" }, gate: null };
-}
-
-function steeringTriggersEqual(
-  left: SteeringTrigger | null,
-  right: SteeringTrigger | null,
-): boolean {
-  if (left === null || right === null) return left === right;
-  if (left.phase.kind !== right.phase.kind) return false;
-  if (
-    (left.phase.kind === "first" || left.phase.kind === "after") &&
-    (right.phase.kind !== left.phase.kind || right.phase.tokens !== left.phase.tokens)
-  ) {
-    return false;
-  }
-  if (left.gate === null || right.gate === null) return left.gate === right.gate;
-  return left.gate.probe === right.gate.probe &&
-    left.gate.operator === right.gate.operator &&
-    left.gate.threshold === right.gate.threshold;
+function termActsAt(term: ResolvedCoreTerm, layer: number): boolean {
+  return term.actsAt === null || term.actsAt.has(layer);
 }
 
 function structuredTriggerKey(trigger: SteeringTrigger | null): string {
@@ -3703,19 +3730,6 @@ function encodeVariantIdentity(value: string): string {
   return `_z${output}`;
 }
 
-function disabledLayer(hiddenSize: number): RankOneHookLayer {
-  return {
-    enabled: false,
-    basis: new Float32Array(hiddenSize),
-    neutral: new Float32Array(hiddenSize),
-    target: 0,
-    along: 0,
-    collapse: 0,
-    probeBasis: new Float32Array(hiddenSize),
-    probeNeutral: new Float32Array(hiddenSize),
-  };
-}
-
 function disabledStructuredGroup(hiddenSize: number): StructuredAffineGroup {
   const basis = new Float32Array(hiddenSize);
   basis[0] = 1;
@@ -3733,26 +3747,57 @@ function disabledStructuredProbe(hiddenSize: number): StructuredProbe {
   return { kind: "disabled", direction: new Float32Array(hiddenSize), bias: 0 };
 }
 
+/** What one gate key reads (`BrowserFeasibilityCorePackCompiler.resolveGate`). */
+type GateResolution =
+  | { readonly kind: "never" }
+  | { readonly kind: "unit" | "slens" | "slot" | "geometry"; readonly probe: string };
+
+type GateChannel =
+  | { readonly kind: "axis"; readonly index: number }
+  | { readonly kind: "fraction" | "membership" }
+  | { readonly kind: "distance" | "assignment"; readonly label: string };
+
+/** Native `_CHANNEL_WORDS`. */
+const GATE_CHANNEL_WORDS: Readonly<Record<GateChannel["kind"], string>> = {
+  axis: "coordinate axis",
+  fraction: "subspace fraction",
+  membership: "tube membership",
+  distance: "label distance",
+  assignment: "soft assignment",
+};
+
+/** Native `parse_gate_ref`: a verbatim gate scalar key into the probe it names and its channel
+ *  (`name[i]`, `name:fraction`, `name:membership`, `name@label`, `name~label`, else axis 0). */
+export function parseGateRef(key: string): { probe: string; channel: GateChannel } {
+  if (key.endsWith("]")) {
+    const open = key.lastIndexOf("[");
+    const index = key.slice(open + 1, -1);
+    if (open > 0 && /^\d+$/u.test(index)) return { probe: key.slice(0, open), channel: { kind: "axis", index: Number(index) } };
+  }
+  if (key.endsWith(":fraction")) return { probe: key.slice(0, -":fraction".length), channel: { kind: "fraction" } };
+  if (key.endsWith(":membership")) return { probe: key.slice(0, -":membership".length), channel: { kind: "membership" } };
+  for (const [separator, kind] of [["@", "distance"], ["~", "assignment"]] as const) {
+    const at = key.indexOf(separator);
+    if (at > 0 && at < key.length - 1) return { probe: key.slice(0, at), channel: { kind, label: key.slice(at + 1) } };
+  }
+  return { probe: key, channel: { kind: "axis", index: 0 } };
+}
+
 function hookControl(
   trigger: SteeringTrigger | null,
+  gates: ReadonlyMap<string, GateResolution>,
   gateSlots: ReadonlyMap<string, readonly StructuredMeasurementSlot[]>,
 ): StructuredHookControl {
   const phase: SteeringPhase = trigger?.phase ?? { kind: "both" };
   const gate = trigger?.gate ?? null;
-  return {
-    enabled: true,
-    phase,
-    gate: gate === null
-      ? null
-      : {
-          slots: gateSlots.get(gate.probe) ?? [],
-          ...((gateSlots.get(gate.probe)?.length ?? 0) === 0
-            ? { scoreKey: gate.probe }
-            : {}),
-          operator: gate.operator,
-          threshold: gate.threshold,
-        },
-  };
+  if (gate === null) return { enabled: true, phase, gate: null };
+  const resolved = gates.get(gate.probe) ?? { kind: "never" };
+  // A gate that reads nothing never fires (native: no score, inactive).
+  if (resolved.kind === "never") return { enabled: false, phase, gate: null };
+  const read = resolved.kind === "slot"
+    ? { slots: gateSlots.get(resolved.probe) ?? [] }
+    : { slots: [], scoreKey: resolved.kind === "geometry" ? gate.probe : resolved.probe };
+  return { enabled: true, phase, gate: { ...read, operator: gate.operator, threshold: gate.threshold } };
 }
 
 function structuredCurveDomain(
@@ -3799,8 +3844,7 @@ function structuredCurveDomain(
     domain.type === "sphere" && Number.isSafeInteger(domain.dim) &&
     (domain.dim as number) >= 1 &&
     (domain.dim as number) <= profile.maxIntrinsicDim &&
-    (domain.dim as number) + 1 <= profile.maxEmbedDim &&
-    profile.maxGeometryProbes > 0
+    (domain.dim as number) + 1 <= profile.maxEmbedDim
   ) {
     const dim = domain.dim as number;
     const axes = Array.from({ length: dim }, (_, axis): StructuredCurveAxis => ({

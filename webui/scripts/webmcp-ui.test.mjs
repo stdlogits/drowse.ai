@@ -81,14 +81,17 @@ try {
   const revision = (await invoke("drowse_read_workspace")).revision;
   await page.$eval('[aria-label="Template lab"] input', input => { input.value = "human renamed draft"; input.dispatchEvent(new Event("input", { bubbles: true })); });
   assert.notEqual((await invoke("drowse_read_workspace")).revision, revision, "human form typing changes revision");
-  await invoke("drowse_navigate", { drawer: null, view: "conversation" });
+  await invoke("drowse_navigate", { drawer: null, room: "workbench" });
   await invoke("drowse_set_composer", { text: "Pirate search prompt" });
   const before = (await invoke("drowse_read_workspace")).revision;
-  await page.$eval("textarea", input => { input.value += " human edit"; input.dispatchEvent(new Event("input", { bubbles: true })); });
+  await page.$eval(".dw-compose textarea", input => { input.value += " human edit"; input.dispatchEvent(new Event("input", { bubbles: true })); });
   assert.notEqual((await invoke("drowse_read_workspace")).revision, before, "human composer typing changes revision");
   await page.evaluate(async root => {
     const { applyTreeSnapshot, loomTree } = await import(`/@fs${root}/../drowse/webui/src/lib/stores.svelte.ts`);
-    const make = (id, parent_id, text, role = "assistant") => ({ id, parent_id, text, role, role_label: null, recipe: null, finish_reason: "stop", aggregate_readings: {}, thinking_tokens: [], tokens: (text.match(/\S+\s*/g) ?? []).map((text, raw_index) => ({ text, raw_index, token_id: raw_index + 1, logprob: -0.2 })) });
+    // 6.0's loom shape: a generated node carries its recipe and token rows; an authored one (null
+    // recipe) carries rows only where its prompt capture places them, so these carry none.
+    const recipe = { steering: null, sampling: null, thinking: null, seed: null, probes: [], probe_hashes: {} };
+    const make = (id, parent_id, text, role = "assistant") => ({ id, parent_id, text, role, role_label: null, recipe: role === "assistant" ? recipe : null, finish_reason: role === "assistant" ? "stop" : null, aggregate_measurements: null, prompt_capture: null, thinking_tokens: [], tokens: role === "assistant" ? (text.match(/\S+\s*/g) ?? []).map((text, raw_index) => ({ text, raw_index, token_id: raw_index + 1, logprob: -0.2 })) : [] });
     applyTreeSnapshot({ tree_format: 2, drowse_version: "test", session_id: loomTree.session_id, model_id: loomTree.modelId, root_id: "root", active_node_id: "a", rev: loomTree.rev + 100, nodes: [make("root", null, "", "system"), make("prompt", "root", "Reply", "user"), make("a", "prompt", "Ahoy pirate friend"), make("b", "prompt", "Hello friend")], children_of: { root: ["prompt"], prompt: ["a", "b"], a: [], b: [] }, cast: {} });
   }, root);
   await invoke("drowse_navigate", { drawer: null, loom_view: "map" });
@@ -101,7 +104,7 @@ try {
   await invoke("drowse_set_loom_view", { filter: { expression: "text:friend", mode: "advanced" }, collapsed_ids: ["prompt"] });
   assert.deepEqual((await invoke("drowse_read_workspace")).interfaces.loom.values.collapsed_ids, ["prompt"]);
   await invoke("drowse_set_loom_view", { filter: { expression: "", mode: "text" }, collapsed_ids: [], camera: "current" });
-  await invoke("drowse_navigate", { view: "conversation" });
+  await invoke("drowse_navigate", { room: "workbench" });
   await invoke("drowse_set_loom_view", { comparison_visible: false });
   assert.equal((await invoke("drowse_read_workspace")).interfaces.loom_filter.pin_node_id, null);
   await invoke("drowse_navigate", { drawer: "node_compare", params: { node_ids: ["a", "b"] } });
@@ -131,10 +134,11 @@ try {
   const shadow = await invoke("drowse_set_token_inspector", { branch: "shadow", cursor: { turnIdx: 1, seg: "response", tokenIdx: 0 } });
   assert.equal(shadow.values.branch, "shadow");
   await invoke("drowse_set_token_inspector", { branch: "primary" });
-  await invoke("drowse_set_token_inspector", { presentation: "dock" });
+  // 6.0 docks the token's details in the Inspector through navigation; the inspector itself only hides.
+  await assert.rejects(invoke("drowse_set_token_inspector", { presentation: "dock" }), /expected one of hide/);
+  await invoke("drowse_navigate", { token_details: "dock" });
   await mounted("token_inspector");
   assert.equal((await invoke("drowse_read_workspace")).interfaces.token_inspector.values.presentation, "dock");
-  await invoke("drowse_set_token_inspector", { presentation: "drawer" });
   await invoke("drowse_set_analysis_view", { target: "lens", fields: { sort: "depth" } });
   await invoke("drowse_set_analysis_view", { target: "sae", fields: { sort: "name" } });
   assert.equal((await invoke("drowse_read_workspace")).interfaces.lens.values.sort, "depth");
@@ -147,8 +151,10 @@ try {
   assert.equal(geometry.values.zoom, 2.1);
   assert.equal(await page.$eval("canvas[data-orbit-zoom]", node => node.dataset.orbitZoom), "2.10");
   const reset = await invoke("drowse_set_analysis_view", { target: "probe_geometry", fields: { reset: true } });
-  assert.equal(reset.values.zoom, 1.6);
-  await invoke("drowse_navigate", { drawer: "save_conversation", presentation: "sidebar", expanded: true });
+  const defaultZoom = await page.evaluate(async root => (await import(`/@fs${root}/../drowse/webui/src/lib/charts/probeGeometry.ts`)).DEFAULT_ORBIT_ZOOM, root);
+  assert.equal(reset.values.zoom, defaultZoom, "reset returns to the geometry's default zoom");
+  await assert.rejects(invoke("drowse_navigate", { drawer: "save_conversation", presentation: "sidebar" }), /unknown property/);
+  await invoke("drowse_navigate", { drawer: "save_conversation" });
   await mounted("chat_identity");
   await page.waitForFunction(async root => !(await import(`/@fs${root}/../drowse/webui/src/lib/workspaceController.ts`)).getInterfaceController("chat_identity")?.read().busy, {}, root);
   const saved = await invoke("drowse_save_chat", { name: "Saved fixture" });
@@ -164,7 +170,6 @@ try {
   await invoke("drowse_cancel_pending_action", { id: "human-pending" });
   assert.equal(await page.evaluate(() => window.cancelObserved), true);
   await assert.rejects(invoke("drowse_cancel_pending_action", { id: "human-pending" }), /already ran/);
-  assert.equal((await invoke("drowse_read_workspace")).presentation.expanded, true);
   await page.goto(`${origin}/app?layoutFixture=base`);
   await page.waitForSelector('[aria-label="Editable completion buffer"]');
   await invoke("drowse_set_raw_buffer", { action: "edit", text: "A pirate story", selection: { start: 0, end: 1 } });

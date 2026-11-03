@@ -18,7 +18,7 @@ export interface BrowserArtifactProducer {
 const COMMIT = /^[0-9a-f]{40}$/;
 const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:[a-zA-Z0-9.+-]*)?$/;
 const RUNTIME_ABI = /^drowse-web-runtime-v[0-9]+$/;
-const HOOK_ABI = /^post-block-residual-v[0-9]+$/;
+const HOOK_ABI = /^block-sites-v[0-9]+$/;
 
 export function browserBuildProvenance(): Readonly<BrowserBuildProvenance> {
   return validateBrowserBuildProvenance({

@@ -7,11 +7,15 @@ import { resolve } from "node:path";
 import { createServer } from "vite";
 import { readRuntimeLock } from "./runtime-lock-document.mjs";
 import { collectPackArtifacts } from "./assemble-hosted-pack.mjs";
+import { readCoreManifoldSource } from "./hosted-core-manifold-source.mjs";
+import { nativeFitModel } from "./hosted-native-models.mjs";
+import { fitNativeNeutralWhitener } from "./neutral-whitener-node.mjs";
 
 const options = parseArguments(process.argv.slice(2));
 if (!options) {
   throw new Error(
-    "usage: validate-hosted-core-pack.mjs MODEL_ID PACK_DIR [--runtime-lock PATH]",
+    "usage: validate-hosted-core-pack.mjs MODEL_ID PACK_DIR [--runtime-lock PATH] [--neutral-rows FILE]\n" +
+    "  --neutral-rows  build_hosted_packs.py's core/neutral-rows.safetensors: refit the whitener from it",
   );
 }
 const { modelId, input } = options;
@@ -65,6 +69,9 @@ try {
   ]);
   const identitySha256 = runtimeIdentitySha256(runtimeIdentity);
   const tensorSha256ByContext = {};
+  const sidecarSha256ByContext = {};
+  const ridgeByContext = {};
+  const whitenerMeansByContext = {};
   const coreArtifacts = [];
   for (const contextTokens of lock.contextProfiles) {
     const contextDirectory = resolve(directory, String(contextTokens));
@@ -74,7 +81,9 @@ try {
     ]);
     const currentTensorSha256 = sha256(tensorBytes);
     tensorSha256ByContext[contextTokens] = currentTensorSha256;
+    sidecarSha256ByContext[contextTokens] = sha256(sidecarBytes);
     const sidecar = JSON.parse(sidecarBytes);
+    ridgeByContext[contextTokens] = sidecar.ridge_per_layer;
     assert.deepEqual(Object.keys(sidecar).sort(), [
       "context_binding_sha256",
       "format_version",
@@ -112,7 +121,7 @@ try {
         `${prefix}.inverse_scales`,
         `${prefix}.mean`,
       );
-      tensors.tensor(`${prefix}.mean`, [lock.hiddenSize]);
+      (whitenerMeansByContext[contextTokens] ??= []).push(tensors.tensor(`${prefix}.mean`, [lock.hiddenSize]).data);
       const eigenvalues = tensors.tensor(`${prefix}.eigenvalues`, [rank]).data;
       const inverseScales = tensors.tensor(`${prefix}.inverse_scales`, [rank]).data;
       assert.ok(eigenvalues.every((value) => value > 0));
@@ -129,7 +138,7 @@ try {
     .filter((name) => name.endsWith(".drowse"));
   assert.ok(archives.length > 0, "core pack must contain a Drowse manifold archive");
   const manifoldSha256ByPath = {};
-  const manifoldIdentities = new Set();
+  const identitiesByContext = new Map();
   for (const path of archives) {
     const archiveBytes = await readFile(resolve(manifoldDirectory, path));
     const verified = await validateDrowseArchive(new Blob([archiveBytes]));
@@ -137,11 +146,76 @@ try {
     assert.equal(verified.fittedArtifacts[0].modelId, lock.sourceRepository);
     assert.equal(verified.fittedArtifacts[0].modelFingerprint, identitySha256);
     assert.equal(verified.fittedArtifacts[0].variant, "raw");
-    manifoldIdentities.add(verified.primaryIdentity.join("/"));
+    const context = path.split("/")[0];
+    const identity = verified.primaryIdentity.join("/");
+    const identities = identitiesByContext.get(context) ?? new Set();
+    assert.ok(!identities.has(identity), `context ${context} repeats ${identity}`);
+    identities.add(identity);
+    identitiesByContext.set(context, identities);
     manifoldSha256ByPath[path] = sha256(archiveBytes);
     coreArtifacts.push(artifact(`manifolds/${path}`, archiveBytes));
   }
-  assert.equal(manifoldIdentities.size, 1, "core pack must contain exactly one manifold identity");
+  // Every context carries exactly the core roster: drowse 6.0's default concepts and the hosted
+  // starter, the sources in browser-runtime/release-inputs/core-manifolds.
+  const rosterDirectory = resolve(repositoryRoot, "browser-runtime/release-inputs/core-manifolds");
+  const roster = [];
+  for (const name of (await readdir(rosterDirectory)).sort()) {
+    const source = await readCoreManifoldSource(resolve(rosterDirectory, name), repositoryRoot);
+    roster.push(`${source.namespace}/${source.name}`);
+  }
+  const manifoldIdentities = new Set(roster);
+  assert.deepEqual([...identitiesByContext.keys()].sort(), lock.contextProfiles.map(String).sort());
+  for (const [context, identities] of identitiesByContext) {
+    assert.deepEqual([...identities].sort(), [...roster].sort(), `context ${context} does not carry the core roster`);
+  }
+  // The neutral statistics (`build_hosted_packs.py` core/): unit statistics and the out and mid
+  // means of the neutral pass. A model drowse fits natively must carry them (units read them),
+  // with its whitener fitted from the same pass's rows in every context; a refused model has none.
+  let neutralStatistics = null;
+  let recordBytes = null;
+  try {
+    recordBytes = await readFile(resolve(directory, "neutral-statistics.json"));
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  assert.equal(recordBytes !== null, nativeFitModel(lock),
+    nativeFitModel(lock)
+      ? `${modelId} is fitted natively: its core pack must carry neutral-statistics.json`
+      : `${modelId} has no native neutral pass: its core pack carries no neutral statistics`);
+  if (recordBytes !== null) {
+    const record = JSON.parse(recordBytes.toString("utf8"));
+    coreArtifacts.push(
+      artifact("neutral-statistics.json", recordBytes),
+      artifact(record.tensor_file, await readFile(resolve(directory, record.tensor_file))),
+    );
+    assert.match(record.neutral?.rows_sha256 ?? "", /^[0-9a-f]{64}$/u, "the neutral pass names its rows");
+    assert.equal(record.whitener?.rows_sha256, record.neutral.rows_sha256, "the whitener is fitted from the pass's rows");
+    assert.deepEqual(record.whitener?.tensors_sha256, Object.fromEntries(
+      lock.contextProfiles.map((contextTokens) => [String(contextTokens), tensorSha256ByContext[contextTokens]]),
+    ), "the neutral statistics name each context's whitener");
+    assert.deepEqual(record.whitener?.sidecars_sha256, Object.fromEntries(
+      lock.contextProfiles.map((contextTokens) => [String(contextTokens), sidecarSha256ByContext[contextTokens]]),
+    ), "the neutral statistics name each context's whitener sidecar (its ridge)");
+    if (options.neutralRows !== null) {
+      const rowsBytes = await readFile(resolve(options.neutralRows));
+      assert.equal(sha256(rowsBytes), record.neutral.rows_sha256, "--neutral-rows are not this pass's rows");
+      const refit = await fitNativeNeutralWhitener(vite, rowsBytes, lock);
+      for (const contextTokens of lock.contextProfiles) {
+        assert.equal(tensorSha256ByContext[contextTokens], sha256(refit.tensorBytes),
+          `context ${contextTokens}'s whitener is not the one the neutral rows give`);
+        assert.deepEqual(ridgeByContext[contextTokens], refit.ridgePerLayer,
+          `context ${contextTokens}'s whitener ridge is not the one the neutral rows give`);
+      }
+    }
+    neutralStatistics = {
+      tensorSha256: record.tensor_sha256,
+      nDocuments: record.n_documents,
+      rowsSha256: record.neutral.rows_sha256,
+      whitenerRefit: options.neutralRows !== null,
+    };
+  } else if (options.neutralRows !== null) {
+    throw new Error("--neutral-rows given for a core pack without neutral statistics");
+  }
   const actualArtifacts = await collectPackArtifacts(directory);
   assert.deepEqual(actualArtifacts.files.map((file) => file.path).sort(),
     coreArtifacts.map((entry) => entry.manifest.path).sort(),
@@ -171,6 +245,23 @@ try {
       signal: new AbortController().signal,
     });
     assert.equal(compiler.fittingWhiteners().size, lock.layerMap.length);
+    const statistics = await compiler.neutralStatistics(new AbortController().signal);
+    assert.equal(statistics === null, neutralStatistics === null);
+    if (statistics !== null) {
+      for (const [name, tensor] of statistics.tensors) {
+        assert.equal(tensor.shape[0], lock.layerMap.length, `${name} covers every layer`);
+      }
+      // Without the rows (a catalog or publish check), the whitener's centring mean must still be
+      // the neutral pass's `out` mean: a whitener fitted from other rows is refused.
+      const outMean = statistics.tensors.get("out_mean").data;
+      for (const [slot, mean] of whitenerMeansByContext[contextTokens].entries()) {
+        const expected = outMean.subarray(slot * lock.hiddenSize, (slot + 1) * lock.hiddenSize);
+        const scale = expected.reduce((largest, value) => Math.max(largest, Math.abs(value)), 0);
+        const worst = mean.reduce((largest, value, index) => Math.max(largest, Math.abs(value - expected[index])), 0);
+        assert.ok(worst <= 2e-6 * scale + 1e-7,
+          `context ${contextTokens} layer ${lock.layerMap[slot]}: the whitener mean is not the neutral pass's (${worst})`);
+      }
+    }
   }
   process.stdout.write(`${JSON.stringify({
     modelId,
@@ -178,7 +269,8 @@ try {
     identitySha256,
     tensorSha256ByContext,
     manifoldSha256ByPath,
-    manifold: [...manifoldIdentities][0],
+    manifolds: [...manifoldIdentities].sort(),
+    neutralStatistics,
     contexts: lock.contextProfiles,
     layers: lock.layerMap.length,
   }, null, 2)}\n`);
@@ -188,20 +280,25 @@ try {
 
 function parseArguments(args) {
   const positional = [];
-  let runtimeLock = null;
+  const flags = { "--runtime-lock": null, "--neutral-rows": null };
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
-    if (argument !== "--runtime-lock") {
+    if (!(argument in flags)) {
       positional.push(argument);
       continue;
     }
     const value = args[index + 1];
     if (!value || value.startsWith("--")) return null;
-    runtimeLock = value;
+    flags[argument] = value;
     index += 1;
   }
   if (positional.length !== 2) return null;
-  return { modelId: positional[0], input: positional[1], runtimeLock };
+  return {
+    modelId: positional[0],
+    input: positional[1],
+    runtimeLock: flags["--runtime-lock"],
+    neutralRows: flags["--neutral-rows"],
+  };
 }
 
 function sha256(bytes) {

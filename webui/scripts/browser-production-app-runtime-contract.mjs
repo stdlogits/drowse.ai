@@ -344,12 +344,9 @@ export function createProductionAppCatalog({
             maxStorageBufferBindingSize: weightBufferBytes,
             maxStorageBuffersPerShaderStage: 10,
             maxComputeWorkgroupStorageSize: 32_768,
-            ...(lock.structuredHookProfile === "standard-v3"
-              ? {
-                  maxComputeWorkgroupSizeX: 256,
-                  maxComputeInvocationsPerWorkgroup: 256,
-                }
-              : {}),
+            // Both hook ABI v5 profiles export exact-readout-v2's top-k kernels.
+            maxComputeWorkgroupSizeX: 256,
+            maxComputeInvocationsPerWorkgroup: 256,
           },
         },
         runtimeIdentity,

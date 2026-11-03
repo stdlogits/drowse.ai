@@ -308,6 +308,59 @@ try {
   await context.close();
 
   console.log("content-store restart, orphan, reservation, and cleanup regressions passed");
+
+  // An on-demand pack layer joins its install in the commit's transaction: two layers fetched
+  // from the same starting record both stay referenced, and a removed install is not revived.
+  const mergeContext = await browser.newContext();
+  const mergePage = await mergeContext.newPage();
+  await mergePage.goto(origin, { waitUntil: "domcontentloaded" });
+  const merged = await mergePage.evaluate(async () => {
+    const { BrowserContentStore } = await import("/src/hosted/runtime/contentStore.ts");
+    const store = new BrowserContentStore();
+    await store.initialize();
+    const hex = (value) => [...new Uint8Array(value)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const put = async (bytes) => {
+      const sha256 = hex(await crypto.subtle.digest("SHA-256", bytes));
+      await store.beginPartial({
+        sha256, expectedBytes: bytes.byteLength, url: `https://example.invalid/${sha256}`,
+        revision: "a".repeat(40), etag: null,
+        partialOwners: [{ id: "fixture-pack", kind: "pack", catalogSequence: 1 }],
+      });
+      const writer = await store.openWrite(sha256, 0);
+      await writer.write(bytes);
+      await writer.checkpoint();
+      await store.commitVerified(sha256, sha256, bytes.byteLength);
+      return sha256;
+    };
+    const [base, layerA, layerB] = [
+      await put(Uint8Array.of(21, 22)), await put(Uint8Array.of(23, 24)), await put(Uint8Array.of(25, 26)),
+    ];
+    await store.registerInstall({ id: "fixture-pack", kind: "pack", objectHashes: [base], installedAt: 1 });
+    await Promise.all([layerA, layerB].map((hash) => store.registerInstall(
+      { id: "fixture-pack", kind: "pack", objectHashes: [hash], installedAt: 2 },
+      { mergeObjectHashes: true },
+    )));
+    const install = (await store.listInstalls()).find((candidate) => candidate.id === "fixture-pack");
+    await store.collectGarbage({ validPartialOwners: [] });
+    const kept = await Promise.all([base, layerA, layerB].map(async (hash) => (await store.verifiedFile(hash)) !== null));
+    await store.removeInstall("fixture-pack", "pack");
+    let revived = null;
+    try {
+      await store.registerInstall(
+        { id: "fixture-pack", kind: "pack", objectHashes: [base], installedAt: 3 },
+        { mergeObjectHashes: true },
+      );
+      revived = true;
+    } catch {
+      revived = false;
+    }
+    return { hashes: [...install.objectHashes].sort(), expected: [base, layerA, layerB].sort(), kept, revived };
+  });
+  assert.deepEqual(merged.hashes, merged.expected);
+  assert.deepEqual(merged.kept, [true, true, true]);
+  assert.equal(merged.revived, false);
+  await mergeContext.close();
+  console.log("content-store install merges keep concurrently fetched pack layers");
 } finally {
   await browser?.close();
   await server.close();

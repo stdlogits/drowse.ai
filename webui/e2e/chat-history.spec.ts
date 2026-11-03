@@ -1,7 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { resolve } from "node:path";
-
-const storesUrl = `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
+import { storesUrl } from "./workbench-navigation";
 
 test("historical chat text remains selectable and its tokens keyboard accessible", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -9,14 +7,15 @@ test("historical chat text remains selectable and its tokens keyboard accessible
   await expect(page.locator(".shell")).toBeVisible();
   await page.evaluate(async url => {
     const { applyTreeSnapshot, loomTree } = await import(url);
-    const nodes: any[] = [{id: "history-root", parent_id: null, role: "system", text: "", tokens: []}];
+    const nodes: any[] = [{id: "history-root", parent_id: null, role: "system", text: "", recipe: null, tokens: []}];
     const children: Record<string, string[]> = {"history-root": []};
     for (let i = 0; i < 24; i++) {
       const id = `history-${i}`;
       const parent = nodes.at(-1).id;
       const role = i % 2 === 0 ? "user" : "assistant";
       const text = i === 1 ? "Amberneedle keeps every original token." : `Message ${i}. ` + "This older message keeps its full text and token metadata. ".repeat(8);
-      nodes.push({id, parent_id: parent, role, text, role_label: null, recipe: null,
+      // 6.0: a generated node carries its recipe with its token rows; an authored one has no rows.
+      nodes.push({id, parent_id: parent, role, text, role_label: null, recipe: role === "assistant" ? { steering: null, sampling: null, thinking: null, seed: null, probes: [], probe_hashes: {} } : null,
         finish_reason: "stop", aggregate_readings: {}, thinking_tokens: [],
         tokens: role === "assistant" ? text.match(/\S+\s*/g)!.map((text, raw_index) => ({text, raw_index, token_id: raw_index + 1, logprob: -0.2})) : []});
       children[parent] = [id]; children[id] = [];
@@ -29,7 +28,7 @@ test("historical chat text remains selectable and its tokens keyboard accessible
   const old = page.locator(".msg.historical").filter({hasText: "Amberneedle"});
   await expect(old).toHaveCount(1);
   await old.scrollIntoViewIfNeeded();
-  const body = old.locator(".response-body");
+  const body = old.locator(".dw-said");
   expect(await body.evaluate(element => {
     const range = document.createRange(); range.selectNodeContents(element);
     const selection = getSelection()!; selection.removeAllRanges(); selection.addRange(range);
@@ -39,6 +38,7 @@ test("historical chat text remains selectable and its tokens keyboard accessible
   await token.focus();
   await expect(token).toBeFocused();
   await token.press("Enter");
-  await expect(page.getByRole("button", {name: "Full token details", exact: true})).toBeVisible();
+  const inspector = page.getByRole("complementary", {name: "Inspector", exact: true});
+  await expect(inspector.getByRole("region", {name: "Token", exact: true}).getByRole("heading", {name: "Amberneedle"})).toBeVisible();
   expect(await page.evaluate(async url => (await import(url)).currentLoomTreeSnapshot().nodes.find((node: any) => node.id === "history-1").tokens.length, storesUrl)).toBe(5);
 });

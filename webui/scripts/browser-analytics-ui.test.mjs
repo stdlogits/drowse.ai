@@ -52,19 +52,21 @@ try {
     new URL("../../drowse/webui/src/drawers/CorrelationDrawer.svelte", import.meta.url),
     "utf8",
   );
-  const probeInspectorSource = readFileSync(
-    new URL("../../drowse/webui/src/drawers/ProbeInspectorDrawer.svelte", import.meta.url),
+  // The trail text lives with the fitted-geometry plot (the probe inspector's and the Probes room's).
+  const geometryPlotSource = readFileSync(
+    new URL("../../drowse/webui/src/panels/manifold/ProbeGeometryPlot.svelte", import.meta.url),
     "utf8",
   );
   assert.match(compareSource, /comparisonProfileNames/);
-  assert.match(correlationSource, /Omitted unsupported probes:/);
+  assert.match(correlationSource, /omittedAnalyticsProbes\(/);
+  assert.match(correlationSource, /<span>Omitted:<\/span>/);
   assert.doesNotMatch(correlationSource, /every active probe/);
   assert.match(
-    probeInspectorSource,
+    geometryPlotSource,
     /runtimeOperationAvailability\(\s*"probe_subspace_trails"/,
   );
-  assert.match(probeInspectorSource, /live trail unavailable here/);
-  assert.match(probeInspectorSource, /The fitted geometry remains available/);
+  assert.match(geometryPlotSource, /live trail unavailable here/);
+  assert.match(geometryPlotSource, /The fitted geometry remains available/);
 
   const {
     comparisonProfileNames,
@@ -94,8 +96,8 @@ try {
     steeringEntries: instrumentEntries,
     probes: instrumentProbes,
   }), [
-    "J-lens steering: jlens/answer",
-    "J-lens readings: answer watch",
+    "R-lens steering: jlens/answer",
+    "R-lens readings: answer watch",
   ]);
   assert.deepEqual(instrumentPackDependencies({
     kind: "sae",
@@ -109,7 +111,7 @@ try {
     steeringEntries: new Map(),
     probes: [],
   }), [
-    "J-lens steering expression or condition",
+    "R-lens steering expression or condition",
     "SAE steering expression or condition",
   ]);
   assert.deepEqual(instrumentPackDependencies({
@@ -219,7 +221,7 @@ try {
       { name: "curved", reason: "curved manifold, not one direction" },
       { name: "fan", reason: "multidimensional subspace, not one direction" },
       { name: "feature one", reason: "SAE readout, not a residual direction" },
-      { name: "next hello", reason: "J-lens readout, not a residual direction" },
+      { name: "next hello", reason: "R-lens readout, not a residual direction" },
     ],
   );
   const collidingReadout = {
@@ -232,7 +234,7 @@ try {
       new Map([["local/demo", { info: collidingReadout }]]),
       ["local/demo"],
     ),
-    [{ name: "local/demo", reason: "J-lens readout, not a residual direction" }],
+    [{ name: "local/demo", reason: "R-lens readout, not a residual direction" }],
   );
 
   let probeRoster = [geometry("rank one")];

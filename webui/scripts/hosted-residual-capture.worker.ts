@@ -1,12 +1,22 @@
-import { runtimeIdentitySha256 } from "../src/lib/runtime/catalog";
+import { contextBindingSha256, runtimeIdentitySha256 } from "../src/lib/runtime/catalog";
+import type { BlockSpec } from "../src/hosted/runtime/structuredHookProfile";
 import type { ModelVariant, RuntimeIdentity } from "../../drowse/webui/src/lib/runtime/contracts";
 import {
   DrowseWebLlmRuntime,
   type DrowseWebLlmModule,
 } from "../src/hosted/runtime/webLlmEngine";
-import { compileRankOneHookProgram } from "../src/hosted/runtime/rankOneHookProgram";
+import { compileStructuredHookProgram } from "../src/hosted/runtime/structuredHookProgram";
+import { resolveStructuredHookProfile } from "../src/hosted/runtime/structuredHookProfile";
+import { anatomyTapLayout } from "../src/hosted/runtime/modelBackend";
+import { webLlmBlockSitesBackend } from "../src/hosted/runtime/webLlmBlockSites";
+import { driveReplay } from "../src/hosted/runtime/units/nodeReplay";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
+
+/** Capture schema 5 (browser-runtime/README.md, "production-q4 comparator"): neuron-write static
+ *  reads, top 8 each, at most 64. */
+const STATIC_READ_TOP = 8;
+const MAXIMUM_STATIC_READS = 64;
 
 interface CaptureRequest {
   type: "run";
@@ -14,6 +24,10 @@ interface CaptureRequest {
   artifacts: Array<{ path: string; role: string; bytes: number; sha256: string }>;
   runtimeIdentity: RuntimeIdentity;
   structuredHookProfile: ModelVariant["structuredHookProfile"];
+  /** The runtime lock's block spec (standard-v4) and unit refusal (standard-v4-residual). */
+  blockSpec: BlockSpec | null;
+  unitRefusal: string | null;
+  prefillChunkSize: number;
   thinkingProfile: ModelVariant["thinkingProfile"];
   quantization: "q4f16_1" | "q4f32_1" | "q0f32";
   requiredFeatures: GPUFeatureName[];
@@ -32,10 +46,14 @@ interface CaptureRequest {
     };
   };
   contextTokens: number;
+  /** The lock's context profiles: the adapter attests the library's prefill chunk against them. */
+  contextProfiles: number[];
   dumpShaders: boolean;
 }
 
 self.onmessage = async (event: MessageEvent<CaptureRequest>) => {
+  // Only the page that started this worker posts to it.
+  if (event.origin && event.origin !== self.location.origin) return;
   if (event.data?.type !== "run") return;
   let runtime: DrowseWebLlmRuntime | null = null;
   try {
@@ -77,7 +95,10 @@ self.onmessage = async (event: MessageEvent<CaptureRequest>) => {
         thinkingProfile: event.data.thinkingProfile,
         runtimeIdentity: event.data.runtimeIdentity,
         runtimeIdentitySha256: fingerprint,
-        contextProfiles: [{ contextTokens: event.data.contextTokens, bindingSha256: "0".repeat(64) }],
+        contextProfiles: event.data.contextProfiles.map((contextTokens) => ({
+          contextTokens,
+          bindingSha256: contextBindingSha256(fingerprint, contextTokens),
+        })),
         requirements: {
           features: event.data.requiredFeatures,
           limits: {
@@ -88,6 +109,9 @@ self.onmessage = async (event: MessageEvent<CaptureRequest>) => {
         },
       },
       contextTokens: event.data.contextTokens,
+      blockSpec: event.data.blockSpec,
+      unitRefusal: event.data.unitRefusal,
+      prefillChunkSize: event.data.prefillChunkSize,
       adapter,
       artifacts,
       optionalPacks: [],
@@ -98,18 +122,28 @@ self.onmessage = async (event: MessageEvent<CaptureRequest>) => {
       inputIds: event.data.inputIds,
       position: event.data.positions[event.data.positions.length - 1],
     }, event.data.positions);
-    const rankOne = deterministicRankOneProgram(
+    // The steered capture on hook ABI v5: one structured program, probes on a fixed
+    // orthonormal sketch at every layer (slot 0 the steering direction), with and without its
+    // affine group, measured at every captured position.
+    const steering = deterministicSteeringPrograms(
       capture.hiddenSize,
       capture.layerCount,
+      event.data.structuredHookProfile,
     );
-    const rankOneControl = await runtime.capturePreparedRankOnePositionsV1({
+    const preparedRow = {
       inputIds: event.data.inputIds,
       position: event.data.positions[event.data.positions.length - 1],
-    }, event.data.positions, rankOne.controlProgram);
-    const steered = await runtime.capturePreparedRankOnePositionsV1({
-      inputIds: event.data.inputIds,
-      position: event.data.positions[event.data.positions.length - 1],
-    }, event.data.positions, rankOne.program);
+    };
+    const control = await runtime.measurePreparedPositions(
+      preparedRow,
+      event.data.positions,
+      steering.controlProgram,
+    );
+    const steered = await runtime.measurePreparedPositions(
+      preparedRow,
+      event.data.positions,
+      steering.program,
+    );
     const greedyInputIds = await runtime.tokenizeText(event.data.greedyPrompt);
     const greedyTokenIds: number[] = [];
     await runtime.streamGeneration(
@@ -131,6 +165,11 @@ self.onmessage = async (event: MessageEvent<CaptureRequest>) => {
     const namedRolePrepared = event.data.namedRoleCheck === undefined
       ? undefined
       : (await runtime.prepareCaptureRows([event.data.namedRoleCheck.row]))[0];
+    // B1 §4.3 item 2 on a units library: the block sites at every captured layer and position,
+    // and neuron-write static reads; a residual library has neither.
+    const units = event.data.structuredHookProfile === "standard-v4"
+      ? await captureUnits(runtime, event.data.inputIds, event.data.positions, event.data.runtimeIdentity.layerMap)
+      : null;
     const bytes = new Uint8Array(
       capture.values.buffer,
       capture.values.byteOffset,
@@ -141,28 +180,26 @@ self.onmessage = async (event: MessageEvent<CaptureRequest>) => {
       steered.values.byteOffset,
       steered.values.byteLength,
     );
-    const rankOneControlBytes = new Uint8Array(
-      rankOneControl.values.buffer,
-      rankOneControl.values.byteOffset,
-      rankOneControl.values.byteLength,
+    const controlBytes = new Uint8Array(
+      control.values.buffer,
+      control.values.byteOffset,
+      control.values.byteLength,
     );
-    const response = await fetch("/capture?kind=unsteered", {
-      method: "POST",
-      body: bytes,
-    });
-    if (!response.ok) throw new Error(await response.text());
-    const rankOneControlResponse = await fetch("/capture?kind=rank-one-control", {
-      method: "POST",
-      body: rankOneControlBytes,
-    });
-    if (!rankOneControlResponse.ok) {
-      throw new Error(await rankOneControlResponse.text());
+    const sitesBytes = units === null
+      ? null
+      : new Uint8Array(units.sites.buffer, units.sites.byteOffset, units.sites.byteLength);
+    for (const [kind, body] of [
+      ["unsteered", bytes],
+      ["control-probes", controlBytes],
+      ["steered-probes", steeredBytes],
+      ...(sitesBytes === null ? [] : [["sites", sitesBytes] as const]),
+    ] as const) {
+      const response = await fetch(`/capture?kind=${kind}`, {
+        method: "POST",
+        body: body as Uint8Array<ArrayBuffer>,
+      });
+      if (!response.ok) throw new Error(await response.text());
     }
-    const steeredResponse = await fetch("/capture?kind=steered", {
-      method: "POST",
-      body: steeredBytes,
-    });
-    if (!steeredResponse.ok) throw new Error(await steeredResponse.text());
     await Promise.all(shaderPosts);
     await runtime.unload();
     runtime = null;
@@ -176,18 +213,27 @@ self.onmessage = async (event: MessageEvent<CaptureRequest>) => {
         positions: capture.positions,
         residualSha256: bytesToHex(sha256(bytes)),
         bytes: bytes.byteLength,
-        rankOneControlResidualSha256: bytesToHex(sha256(rankOneControlBytes)),
-        rankOneControlBytes: rankOneControlBytes.byteLength,
-        steeredResidualSha256: bytesToHex(sha256(steeredBytes)),
-        steeredBytes: steeredBytes.byteLength,
-        probeMeasurements: [...steered.measurements],
-        rankOneProgram: rankOne.descriptor,
+        probeCount: steered.probeCount,
+        controlProbeSha256: bytesToHex(sha256(controlBytes)),
+        steeredProbeSha256: bytesToHex(sha256(steeredBytes)),
+        probeBytes: steeredBytes.byteLength,
+        steeringProgram: steering.descriptor,
         greedyPrompt: event.data.greedyPrompt,
         greedyInputIds,
         greedyTokenIds,
         ...(namedRolePrepared === undefined
           ? {}
           : { namedRolePrepared }),
+        ...(units === null || sitesBytes === null
+          ? {}
+          : {
+              units: {
+                block: units.block,
+                sitesSha256: bytesToHex(sha256(sitesBytes)),
+                sitesBytes: sitesBytes.byteLength,
+                staticReads: units.staticReads,
+              },
+            }),
       },
     });
   } catch (error) {
@@ -199,43 +245,142 @@ self.onmessage = async (event: MessageEvent<CaptureRequest>) => {
   }
 };
 
-function deterministicRankOneProgram(hiddenSize: number, layerCount: number) {
-  const enabledLayer = Math.floor(layerCount / 2);
-  const zero = new Float32Array(hiddenSize);
-  const direction = new Float32Array(hiddenSize);
-  const component = Math.fround(1 / Math.sqrt(hiddenSize));
-  for (let index = 0; index < hiddenSize; index += 1) {
-    direction[index] = index % 2 === 0 ? component : -component;
+/** The units member's inputs (capture schema 5): `sites` fp32 `[layers, positions, d_ff + H·hd +
+ *  d]`, each row `act | z | mid` from the block sites' anatomy taps of an unsteered replay of the
+ *  input up to that position (causal, so equal to the full input's sites there); and one
+ *  neuron-write static read per captured layer, `vocabReadoutTopK(unitWeightRows("neuron_write"))`. */
+async function captureUnits(
+  runtime: DrowseWebLlmRuntime,
+  inputIds: readonly number[],
+  positions: readonly number[],
+  layerMap: readonly number[],
+) {
+  const capabilities = runtime.blockSitesCapabilities();
+  if (capabilities === null || capabilities.blockSpec === null) {
+    throw new Error("a standard-v4 capture needs the library's attested unit sites");
   }
+  const backend = webLlmBlockSitesBackend(capabilities, runtime.blockSitesDevice());
+  const spec = capabilities.blockSpec;
+  const d = capabilities.hiddenSize;
+  const zWidth = spec.nHeads * spec.headDim;
+  const width = spec.dFF + zWidth + d;
+  const layout = anatomyTapLayout(d, spec);
+  const sites = new Float32Array(layerMap.length * positions.length * width);
+  for (const [positionIndex, position] of positions.entries()) {
+    const ids = Int32Array.from(inputIds.slice(0, position + 1));
+    const replay = await driveReplay(
+      backend,
+      { program: null, anatomyPosition: position, activity: null, patternLayers: null },
+      { ids, promptLength: ids.length, rawIds: new Int32Array(0), spans: [] },
+    );
+    const taps = replay.anatomyTaps;
+    if (taps === null || taps.shape[0] !== capabilities.layerCount || taps.shape[1] !== layout.stride) {
+      throw new Error(`the replay at position ${position} returned no anatomy taps`);
+    }
+    for (const [layerIndex, layer] of layerMap.entries()) {
+      const row = taps.data.subarray(layer * layout.stride, (layer + 1) * layout.stride);
+      const out = sites.subarray(
+        (layerIndex * positions.length + positionIndex) * width,
+        (layerIndex * positions.length + positionIndex + 1) * width,
+      );
+      out.set(row.subarray(layout.act, layout.act + spec.dFF), 0);
+      out.set(row.subarray(layout.z, layout.z + zWidth), spec.dFF);
+      out.set(row.subarray(layout.mid, layout.mid + d), spec.dFF + zWidth);
+    }
+  }
+  if (sites.some((value) => !Number.isFinite(value))) {
+    throw new Error("the replayed block sites are not finite");
+  }
+  if (layerMap.length > MAXIMUM_STATIC_READS) {
+    throw new Error(`${layerMap.length} captured layers exceed ${MAXIMUM_STATIC_READS} static reads`);
+  }
+  // A fixed spread of neurons, one per captured layer.
+  const units = layerMap.map((layer) => ({
+    kind: "neuron" as const,
+    layer,
+    index: (layer * 7919 + 13) % spec.dFF,
+  }));
+  const staticReads: Array<{ layer: number; neuron: number; ids: number[]; probabilities: number[] }> = [];
+  for (let start = 0; start < units.length; start += 8) {
+    const batch = units.slice(start, start + 8);
+    const rows = await backend.unitWeightRows("neuron_write", batch);
+    const top = await backend.vocabReadoutTopK(rows, STATIC_READ_TOP);
+    for (const [index, unit] of batch.entries()) {
+      const ids = [...top.ids.data.subarray(index * STATIC_READ_TOP, (index + 1) * STATIC_READ_TOP)];
+      const logSumExp = top.logSumExp.data[index];
+      const probabilities = [...top.logits.data.subarray(index * STATIC_READ_TOP, (index + 1) * STATIC_READ_TOP)]
+        .map((logit) => Math.exp(logit - logSumExp));
+      staticReads.push({ layer: unit.layer, neuron: unit.index, ids, probabilities });
+    }
+  }
+  return {
+    block: { d_ff: spec.dFF, n_heads: spec.nHeads, head_dim: spec.headDim },
+    sites,
+    staticReads,
+  };
+}
+
+/** The q4 gate's steering: a rank-1 affine group at the middle layer (`h += along·(target −
+ *  kappa·(h·u))·u`, neutral 0), and linear probes on an orthonormal sketch `D` (`D[0] = u`, the
+ *  rest a fixed deterministic set, Gram-Schmidt) at every layer, so each probe reads `h·D[k]` of
+ *  the residual after the hook. The control is the same program with the group inactive. */
+function deterministicSteeringPrograms(
+  hiddenSize: number,
+  layerCount: number,
+  profileId: CaptureRequest["structuredHookProfile"],
+) {
+  const profile = resolveStructuredHookProfile(profileId);
+  const enabledLayer = Math.floor(layerCount / 2);
+  const component = 1 / Math.sqrt(hiddenSize);
+  const directions: Float64Array[] = [
+    Float64Array.from({ length: hiddenSize }, (_, index) => index % 2 === 0 ? component : -component),
+  ];
+  for (let row = 1; directions.length < Math.min(profile.maxProbes, hiddenSize); row += 1) {
+    const candidate = Float64Array.from({ length: hiddenSize }, (_, index) => Math.sin((row + 1) * (index + 1)));
+    for (const basis of directions) {
+      let projection = 0;
+      for (let index = 0; index < hiddenSize; index += 1) projection += candidate[index] * basis[index];
+      for (let index = 0; index < hiddenSize; index += 1) candidate[index] -= projection * basis[index];
+    }
+    const norm = Math.hypot(...candidate);
+    if (norm < 1e-6) continue;
+    directions.push(candidate.map((value) => value / norm));
+  }
+  const probeDirections = directions.map((row) => Float32Array.from(row));
   const target = Math.fround(1.25);
   const along = Math.fround(0.4);
-  const collapse = Math.fround(0.3);
-  const program = compileRankOneHookProgram(
+  const kappa = Math.fround(0.3);
+  const zero = new Float32Array(hiddenSize);
+  const probes = probeDirections.map((direction) => ({ kind: "linear" as const, direction, bias: 0 }));
+  const program = compileStructuredHookProgram(
     hiddenSize,
     Array.from({ length: layerCount }, (_, layer) => ({
-      enabled: layer === enabledLayer,
-      basis: layer === enabledLayer ? direction : zero,
-      neutral: zero,
-      target: layer === enabledLayer ? target : 0,
-      along: layer === enabledLayer ? along : 0,
-      collapse: layer === enabledLayer ? collapse : 0,
-      probeBasis: direction,
-      probeNeutral: zero,
+      probes,
+      ...(layer === enabledLayer
+        ? {
+            affineGroups: [{
+              active: true,
+              basis: [probeDirections[0]],
+              neutral: zero,
+              target: [target],
+              along,
+              kappa: [kappa],
+            }],
+          }
+        : {}),
     })),
+    profile,
   );
   return {
     program,
-    controlProgram: {
-      ...program,
-      enabled: new Uint32Array(program.layerCount),
-    },
+    controlProgram: { ...program, affineActive: new Uint32Array(program.affineActive.length) },
     descriptor: {
-      abiVersion: 1,
+      format: program.format,
       enabledLayer,
-      direction: [...direction],
+      probeDirections: probeDirections.map((direction) => [...direction]),
       target,
       along,
-      collapse,
+      kappa,
     },
   };
 }

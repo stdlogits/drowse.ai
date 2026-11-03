@@ -1,8 +1,5 @@
-import { clickWorkspaceAction } from "./workbench-navigation";
-import { openWorkspaceMenu } from "./workbench-navigation";
 import { expect, test, type Locator, type Page } from "@playwright/test";
-
-const devUrl = "http://127.0.0.1:4176";
+import { composer as composerOf, devUrl } from "./workbench-navigation";
 const desktopViewports = [
   { width: 1024, height: 768 },
   { width: 1280, height: 800 },
@@ -148,11 +145,11 @@ test("desktop landing documents supported browsers and supplies runtime prerequi
 
   for (const viewport of desktopViewports) {
     await page.setViewportSize(viewport);
-    await expect(page.locator(".hero-action-row").getByRole("link", { name: "Open Drowse" })).toBeVisible();
+    await expect(page.getByRole("main").getByRole("link", { name: "Open Drowse", exact: true }).first()).toBeVisible();
     await expectNoHorizontalOverflow(page);
   }
 
-  const browserSupport = page.locator(".hero-action-row > span");
+  const browserSupport = page.locator("main [data-webgpu]");
   await expect(browserSupport).toHaveAttribute("data-webgpu", /^(available|unavailable)$/);
   await expect(browserSupport).toHaveText(await browserSupport.getAttribute("data-webgpu") === "available"
     ? "WebGPU is available in this browser. Drowse checks your device's memory next."
@@ -165,52 +162,38 @@ test("fixture workbench stays usable across desktop widths and keyboard navigati
 }) => {
   const pageErrors = collectPageErrors(page);
   await page.goto(`${devUrl}/app?layoutFixture=1`);
-
-  const shell = page.locator(".shell");
-  const composer = page.getByRole("textbox", { name: /^Compose as / });
-  const sidebar = page.getByRole("complementary", { name: "Workspace sidebar" });
-  const send = page.getByRole("button", { name: /^(Send|Generate reply|Add message)$/ });
-  await expect(shell).toBeVisible();
+  const composer = composerOf(page);
+  const send = page.getByRole("button", { name: "Send", exact: true });
+  const thread = page.getByRole("complementary", { name: "Thread", exact: true });
+  const inspector = page.getByRole("complementary", { name: "Inspector", exact: true });
+  const rooms = page.getByRole("navigation", { name: "Rooms", exact: true });
   await expect(composer).toBeVisible();
 
   for (const viewport of desktopViewports) {
     await page.setViewportSize(viewport);
     await composer.focus();
     await expect(send).toBeVisible();
-    const conversation = sidebar.getByRole("button", { name: "Conversation", exact: true });
-    const controls = sidebar.getByRole("button", { name: "Controls", exact: true });
-    const loom = sidebar.getByRole("button", { name: "Loom", exact: true });
-    await expect(conversation).toBeVisible();
-    await expect(controls).toBeVisible();
-    await expect(loom).toBeVisible();
-    await expectInsideViewport(conversation);
-    await expectInsideViewport(controls);
-    await expectInsideViewport(loom);
+    await expect(inspector).toBeVisible();
+    await expectInsideViewport(rooms);
     await expectInsideViewport(composer);
     await expectInsideViewport(send);
+    if (await thread.isVisible()) await expectInsideViewport(thread);
     await expectNoHorizontalOverflow(page);
   }
 
   await composer.fill("Cross-browser keyboard check");
-  await page.keyboard.press("Meta+K");
-  const palette = page.getByRole("dialog", { name: "Command palette" });
-  await expect(palette).toHaveCount(0);
-  await clickWorkspaceAction(page, "All tools");
-  const paletteInput = page.getByRole("combobox", { name: "Filter commands" });
+  const palette = page.getByRole("dialog", { name: "Search everything", exact: true });
+  await page.getByRole("button", { name: "Search everything (⌘K)", exact: true }).click();
   await expect(palette).toBeVisible();
-  await expect(paletteInput).toBeFocused();
+  await expect(palette.getByRole("combobox", { name: "Search everything" })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(palette).toHaveCount(0);
   await expect(composer).toHaveValue("Cross-browser keyboard check");
 
-  const controls = sidebar.getByRole("button", { name: "Controls", exact: true });
-  await controls.focus();
-  await controls.press("Enter");
-  await expect(page.locator("#controls-title")).toHaveText("Response, model, and chat controls");
-  await expect(controls).toHaveAttribute("aria-current", "page");
-  await expect(page.locator('.workspace-page[data-page-id="3"]')).toHaveAttribute(
-    "aria-hidden",
-    "false",
-  );
+  const lens = rooms.getByRole("button", { name: "Lens", exact: true });
+  await lens.focus();
+  await lens.press("Enter");
+  await expect(page.locator("main h1")).toHaveText("Lens");
+  await expect(lens).toHaveAttribute("aria-pressed", "true");
   expect(pageErrors).toEqual([]);
 });

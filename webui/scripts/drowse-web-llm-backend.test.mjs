@@ -72,6 +72,7 @@ try {
   };
   const compiled = [];
   const deltas = [];
+  const manifoldReads = [];
   const authoring = [];
   let id = 0;
   const instrumentLive = { geometry: true, lens: false, lensLayers: null, sae: false };
@@ -140,6 +141,7 @@ try {
       const word = request.selector.slice("jlens/".length);
       const probe = {
         family: "lens",
+        namespace: "jlens",
         name: request.name || request.selector,
         layers: [0, 1],
         intrinsic_dim: 1,
@@ -174,6 +176,8 @@ try {
       if (featureId > 3) throw new Error("unknown feature");
       return { id: featureId, label: null, layer: 1, max_act: null };
     },
+    unitSource: undefined,
+    setUnitSource(source) { this.unitSource = source; },
   };
   const refreshedAttachedProbes = [];
   const refreshedCompiler = {
@@ -203,6 +207,7 @@ try {
       const probe = request.selector.startsWith("jlens/")
         ? {
             family: "lens",
+            namespace: "jlens",
             name: request.name || request.selector,
             layers: [0, 1],
             intrinsic_dim: 1,
@@ -245,11 +250,17 @@ try {
           ...context,
           profiles: steeringCompiler.listProfiles().profiles.map((profile) => profile.name),
         });
-        return { hookAbi: "post-block-residual-v4" };
+        return context.expression.includes("head/")
+          ? { format: "drowse-structured-v4", hookAbi: "block-sites-v5", unitMeta: new Int32Array(1) }
+          : { format: "drowse-structured-v4", hookAbi: "block-sites-v5" };
       },
       steeringDelta(context) {
         deltas.push(context);
         return `${context.parent ?? "none"}->${context.child ?? "none"}`;
+      },
+      steeringManifolds(loadRequest) {
+        manifoldReads.push(loadRequest);
+        return [];
       },
       async authoringRequest(context) {
         authoring.push(context);
@@ -290,6 +301,14 @@ try {
     prefillTokensPerSecond: 12,
     decodeTokensPerSecond: 6,
   });
+  // The load wires the units members and hands the compiler their unit source: this library
+  // predates hook ABI v5, so the source carries native's refusal and every member answers 422.
+  assert.equal(instrumentCompiler.unitSource.spec, null);
+  assert.equal(instrumentCompiler.unitSource.refusal, "the loaded model library predates hook ABI block-sites-v5");
+  await assert.rejects(
+    backend.request(service("instruments", "unitRead", ["neuron/L0n0"]), () => {}, new AbortController().signal),
+    (error) => error.status === 422 && error.message === "the loaded model library predates hook ABI block-sites-v5",
+  );
   assert.deepEqual(loadProgress, [
     {
       event: "progress",
@@ -339,7 +358,8 @@ try {
   assert.equal(session.scene_mode, true);
   assert.equal(session.default_user_role, "user");
   assert.equal(session.default_assistant_role, "model");
-  assert.equal(session.instruments.length, 3);
+  // geometry, lens, sae and the units family the load configured.
+  assert.deepEqual(session.instruments.map((item) => item.family).sort(), ["geometry", "lens", "sae", "units"]);
   assert.equal(session.jlens_fitted, true);
   assert.deepEqual(
     session.instruments.find((item) => item.family === "lens").capabilities.preparations,
@@ -369,14 +389,18 @@ try {
     () => {},
     new AbortController().signal,
   )).model, "fixture-model");
-  assert.equal(session.instruments.every((item) => item.capabilities.token_readout === true), true);
+  // Every family reads a token but units, whose reads are the anatomy replay (native's block).
+  assert.deepEqual(
+    session.instruments.map((item) => [item.family, item.capabilities.token_readout]).sort(),
+    [["geometry", true], ["lens", true], ["sae", true], ["units", false]],
+  );
   const capturedLens = {
-    version: 1,
+    version: 2,
     scope: "token",
     provenance: "captured",
     instruments: {
       lens: {
-        binding: { source: "fixture-jlens", steering: null },
+        binding: { sources: { R: "fixture-jlens" }, steering: null },
         readout: { layers: [], aggregate: [] },
       },
     },
@@ -413,18 +437,18 @@ try {
     assert.equal(options.layers, "1");
     assert.deepEqual(instrumentCompiler.instrumentLiveState().lensLayers, [1]);
     return {
-      version: 1,
+      version: 2,
       scope: "token",
       provenance: "captured",
       instruments: {
         lens: {
-          binding: { source: "fixture-jlens", steering: null },
+          binding: { sources: { R: "fixture-jlens" }, steering: null },
           readout: {
             layers: [{
               layer: 1,
               tokens: [{ token: "yes", id: 7, logprob: Math.log(0.75) }],
             }],
-            aggregate: [{ token: "yes", strength: 0.75, com: 1, spread: 0 }],
+            aggregate: [{ token: "yes", id: 7, strength: 0.75, com: 1, spread: 0 }],
           },
         },
       },
@@ -463,12 +487,12 @@ try {
       logprob: -index - 0.25,
     }));
     return {
-      version: 1,
+      version: 2,
       scope: "token",
       provenance: "captured",
       instruments: {
         lens: {
-          binding: { source: "fixture-jlens", steering: null },
+          binding: { sources: { R: "fixture-jlens" }, steering: null },
           readout: {
             layers: [0, 1].map((layer) => ({
               layer,
@@ -476,6 +500,7 @@ try {
             })),
             aggregate: tokens.map((token, index) => ({
               token: token.token,
+              id: token.id,
               strength: 1 / (index + 1),
               com: 0.5,
               spread: 0.5,
@@ -652,6 +677,21 @@ try {
   assert.equal(authoring.length, 1);
   assert.equal(authoring[0].loadRequest, request);
   assert.equal(authoring[0].runtime, runtime);
+  // A program with a unit section leaves the compiler bound to the loaded library (its head
+  // taps' grams filled); one without passes through untouched.
+  const bound = [];
+  const realBlockSites = backend.blockSites;
+  backend.blockSites = () => ({
+    async bindStructuredProgram(program) { bound.push(program); return { ...program, bound: true }; },
+  });
+  try {
+    assert.equal((await authoring[0].compileSteering("0.5 calm")).bound, undefined);
+    assert.equal((await authoring[0].compileSteering("0.5 calm@when:head/L0h1>0.2")).bound, true);
+    assert.equal(bound.length, 1);
+  } finally {
+    backend.blockSites = realBlockSites;
+    compiled.length = 0;
+  }
   assert.deepEqual(fitProgress, [{ event: "progress", data: { stage: "capturing" } }]);
   assert.equal(instrumentRefreshes, 2);
   assert.deepEqual(preparedJlensWords, [["yes"], ["yes"], ["yes"]]);
@@ -737,7 +777,7 @@ try {
   assert.equal(compiled[0].expression, "0.5 local/fitted");
   assert.equal(compiled[0].loadRequest, request);
   assert.deepEqual(compiled[0].profiles, ["local/demo", "local/fitted"]);
-  assert.equal(calls.find((call) => call[0] === "generate")[1].hookProgram.hookAbi, "post-block-residual-v4");
+  assert.equal(calls.find((call) => call[0] === "generate")[1].hookProgram.hookAbi, "block-sites-v5");
 
   const tree = await backend.request(
     service("tree", "get"),
@@ -852,6 +892,18 @@ try {
     calls.filter((call) => call[0] === "generate").length,
     generationCalls,
   );
+  // The `inverted` regen resolves against the session compiler's manifolds.
+  await backend.generate(
+    {
+      type: "generate",
+      parent_node_id: tree.nodes[2].id,
+      stateless: false,
+      recipe_override: "inverted",
+    },
+    () => {},
+  );
+  assert.deepEqual(manifoldReads, [request]);
+  assert.equal(compiled.at(-1).expression, "-0.5 local/fitted");
   await backend.stop();
   assert.equal(calls.at(-1)[0], "stop");
   await backend.unload();
@@ -1018,7 +1070,7 @@ try {
         text: "question",
         authored_role: "user",
         generated_role: "assistant",
-        steering: "0.5 honest",
+        steering: "0.5 deceptive",
       },
       () => {},
     ),

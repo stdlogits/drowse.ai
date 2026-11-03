@@ -1,10 +1,19 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
+import {
+  EXACT_READOUT_ABI,
+  HOOK_ABI,
+  RUNTIME_ABI,
+  architectureStructuredHookProfile,
+} from "./hosted-model-profiles.mjs";
+import { validateLockBlockSpec } from "./runtime-lock-block-spec.mjs";
+
+export const RUNTIME_LOCK_SCHEMA_VERSION = 2;
+export const LOCK_ARCHITECTURES = Object.freeze(["gemma3_text", "qwen3", "gpt2", "gpt_neox", "qwen3_5"]);
+const BASE_ARCHITECTURES = ["gpt2", "gpt_neox", "qwen3_5"];
 
 export async function readRuntimeLock(path) {
-  const info = await stat(path);
-  if (!info.isFile()) throw new Error(`runtime lock is not a regular file: ${path}`);
-  if (info.size > 1024 * 1024) throw new Error("runtime lock exceeds 1048576 bytes");
   const bytes = await readFile(path);
+  if (bytes.byteLength > 1024 * 1024) throw new Error("runtime lock exceeds 1048576 bytes");
   let value;
   try {
     value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
@@ -27,11 +36,12 @@ export function validateRuntimeLock(value) {
     "models",
   ], "runtime lock");
   if (
-    value.$schema !== "./runtime-lock.schema.json" || value.schemaVersion !== 1 ||
+    value.$schema !== "./runtime-lock.schema.json" ||
+    value.schemaVersion !== RUNTIME_LOCK_SCHEMA_VERSION ||
     !["feasibility-required", "verified"].includes(value.status) ||
-    !/^drowse-web-runtime-v[0-9]+$/.test(value.runtimeAbi) ||
-    value.hookAbi !== "post-block-residual-v4" ||
-    value.exactReadoutAbi !== "exact-readout-v1"
+    value.runtimeAbi !== RUNTIME_ABI ||
+    value.hookAbi !== HOOK_ABI ||
+    value.exactReadoutAbi !== EXACT_READOUT_ABI
   ) throw new Error("runtime lock has an unsupported schema or ABI");
   validateRuntimeToolchain(value.toolchain);
   if (!Array.isArray(value.models) || value.models.length < 1) {
@@ -60,6 +70,7 @@ function validateRuntimeToolchain(value) {
     "emccPlatform",
     "llvmVersion",
     "llvmArtifacts",
+    "llvmSourceBuild",
     "compilerImage",
   ], "runtime lock toolchain");
   validateRepositoryPin(value.mlcLlmFork, "MLC-LLM fork");
@@ -92,8 +103,12 @@ function validateRuntimeToolchain(value) {
     value.emccPlatform !== "linux/amd64" ||
     !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(value.llvmVersion)
   ) throw new Error("runtime lock toolchain is invalid");
-  if (!Array.isArray(value.llvmArtifacts) || value.llvmArtifacts.length === 0) {
-    throw new Error("runtime lock LLVM artifacts are invalid");
+  // One release archive per compiler platform (linux/amd64's is the source build's bootstrap).
+  if (
+    !Array.isArray(value.llvmArtifacts) || value.llvmArtifacts.length !== 2 ||
+    value.llvmArtifacts.map((artifact) => artifact?.platform).sort().join(",") !== "linux/amd64,linux/arm64"
+  ) {
+    throw new Error("runtime lock LLVM artifacts must name one archive for each of linux/amd64 and linux/arm64");
   }
   const llvmArtifacts = new Set();
   for (const artifact of value.llvmArtifacts) {
@@ -107,6 +122,7 @@ function validateRuntimeToolchain(value) {
     if (llvmArtifacts.has(identity)) throw new Error("runtime lock repeats an LLVM artifact");
     llvmArtifacts.add(identity);
   }
+  validateLlvmSourceBuild(value.llvmSourceBuild, value);
   exactKeys(
     value.compilerImage,
     ["reference", "digest", "recipeSha256"],
@@ -122,6 +138,30 @@ function validateRuntimeToolchain(value) {
   ) throw new Error("runtime lock compiler image is invalid");
 }
 
+// linux/amd64 compiles TVM against LLVM built from source at the release tag, by the release
+// archive's own clang (the archive's libraries carry GCC 7's std::optional ABI, which no C++20
+// libstdc++ shares; parity handoff B40-toolchain.md §3); linux/arm64 links the archive directly.
+export function validateLlvmSourceBuild(value, toolchain) {
+  exactKeys(value, [
+    "platform",
+    "repository",
+    "tag",
+    "tagObject",
+    "commit",
+    "bootstrapArchive",
+  ], "runtime lock LLVM source build");
+  const bootstrap = toolchain.llvmArtifacts.find((artifact) => artifact.platform === value.platform);
+  if (
+    value.platform !== "linux/amd64" ||
+    value.repository !== "https://github.com/llvm/llvm-project.git" ||
+    value.tag !== `llvmorg-${toolchain.llvmVersion}` ||
+    !/^[0-9a-f]{40}$/.test(value.tagObject) ||
+    !/^[0-9a-f]{40}$/.test(value.commit) ||
+    value.tagObject === value.commit ||
+    bootstrap?.archive !== value.bootstrapArchive
+  ) throw new Error("runtime lock LLVM source build is invalid");
+}
+
 function validateRepositoryPin(value, label) {
   exactKeys(value, ["repository", "commit"], label);
   if (
@@ -131,10 +171,12 @@ function validateRepositoryPin(value, label) {
 }
 
 function validateRuntimeModel(value) {
+  const units = value?.structuredHookProfile === "standard-v4";
   exactKeys(value, [
     "id",
     "architecture",
     "structuredHookProfile",
+    units ? "blockSpec" : "unitRefusal",
     "thinkingProfile",
     "sourceRepository",
     "sourceRevision",
@@ -148,20 +190,18 @@ function validateRuntimeModel(value) {
     "layerMap",
     "quantization",
     "contextProfiles",
+    "prefillChunkSize",
     ...("modelType" in value ? ["modelType"] : []),
-  ], "runtime lock model");
+  ], `runtime lock model ${String(value?.id)}`);
   if (
-    typeof value.id !== "string" || value.id.length === 0 ||
-    !["qwen3", "llama", "gemma3_text", "gpt2", "gpt_neox", "qwen3_5"].includes(value.architecture) ||
+    typeof value.id !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(value.id) ||
+    !LOCK_ARCHITECTURES.includes(value.architecture) ||
     (value.modelType !== undefined && !["chat", "base"].includes(value.modelType)) ||
-    (["gpt2", "gpt_neox", "qwen3_5"].includes(value.architecture) && value.modelType !== "base") ||
-    !["standard-v1", "standard-v2", "standard-v3"].includes(
-      value.structuredHookProfile,
-    ) ||
-    typeof value.sourceRepository !== "string" || value.sourceRepository.length === 0 ||
+    (BASE_ARCHITECTURES.includes(value.architecture) && value.modelType !== "base") ||
+    typeof value.sourceRepository !== "string" || !value.sourceRepository.includes("/") ||
     !/^[0-9a-f]{40}$/.test(value.sourceRevision) ||
     typeof value.convertedRepository !== "string" ||
-    value.convertedRepository.length === 0 ||
+    !value.convertedRepository.includes("/") ||
     !nullablePattern(value.convertedRevision, /^[0-9a-f]{40}$/) ||
     !nullablePattern(value.manifestSha256, /^[0-9a-f]{64}$/) ||
     !nullablePattern(value.librarySha256, /^[0-9a-f]{64}$/) ||
@@ -171,6 +211,18 @@ function validateRuntimeModel(value) {
       (!Number.isSafeInteger(value.hiddenSize) || value.hiddenSize < 1)) ||
     !["q4f16_1", "q4f32_1", "q0f32"].includes(value.quantization)
   ) throw new Error(`runtime lock model ${String(value.id)} is invalid`);
+  // Hook ABI v5 (B1 §7, §8.2): the profile follows the architecture; a units library carries the
+  // block description its descriptor attests, a residual one the refusal its unit calls answer.
+  try {
+    architectureStructuredHookProfile(value.architecture, value.structuredHookProfile);
+  } catch (error) {
+    throw new Error(`runtime lock model ${value.id}: ${error.message}`, { cause: error });
+  }
+  if (units) {
+    validateLockBlockSpec(value.blockSpec, `runtime lock model ${value.id} block spec`);
+  } else if (!boundedText(value.unitRefusal, 1, 512)) {
+    throw new Error(`runtime lock model ${value.id} has no unit refusal text`);
+  }
   if (value.thinkingProfile !== null) {
     exactKeys(value.thinkingProfile, [
       "start",
@@ -199,6 +251,12 @@ function validateRuntimeModel(value) {
     (value.architecture === "gpt2" && value.contextProfiles.some((context) => context > 1024)) ||
     new Set(value.contextProfiles).size !== value.contextProfiles.length
   ) throw new Error(`runtime lock model ${value.id} context profiles are invalid`);
+  // The library's compiled prefill chunk, which its descriptor attests (HOOK_ABI.md §6): no forward
+  // carries more rows, so it never exceeds the smallest context the model is offered at.
+  if (
+    !Number.isSafeInteger(value.prefillChunkSize) || value.prefillChunkSize < 1 ||
+    value.prefillChunkSize > Math.min(...value.contextProfiles)
+  ) throw new Error(`runtime lock model ${value.id} prefill chunk size is invalid`);
 }
 
 function exactKeys(value, expected, label) {

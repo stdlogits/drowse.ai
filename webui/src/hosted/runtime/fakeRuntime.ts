@@ -32,13 +32,23 @@ import type {
   WSServerMessage,
   WSSubmitRequest,
 } from "../../../../drowse/webui/src/lib/types";
-import { DROWSE_HOOK_ABI, type RankOneHookProgramBuffers } from "./rankOneHookProgram";
+import { STANDARD_STRUCTURED_HOOK_PROFILE_V4 } from "./structuredHookProfile";
+import {
+  compileStructuredHookProgram,
+  type StructuredHookProgramBuffers,
+} from "./structuredHookProgram";
 import { BrowserLoomRuntime, type BrowserGenerationPort } from "./browserLoom";
-import type {
-  WebLlmGeneratedToken,
-  WebLlmGenerationPlan,
-  WebLlmGenerationResult,
+import { createFixtureUnitsService } from "./units/fixtureUnits";
+import { aggregateEnvelope, MEASUREMENTS_VERSION, roundReading } from "./measurementRows";
+import {
+  finishReasonFor,
+  type WebLlmGeneratedToken,
+  type WebLlmGenerationPlan,
+  type WebLlmGenerationResult,
 } from "./webLlmGeneration";
+
+/** The families with sources and preparations here. `units` is in the contract and refused. */
+type SourcedFamily = "lens" | "sae";
 
 type FakeInstrumentPack = Pick<CatalogInstrumentPack, "id" | "kind" | "displayName">;
 
@@ -52,6 +62,8 @@ export interface FakeRuntimeOptions {
   tokenDelayMs?: number;
   instrumentPacks?: readonly FakeInstrumentPack[];
   contextBindingSha256?: string;
+  /** Serve the units members as a residual library does: each answers this refusal (422). */
+  unitRefusal?: string;
 }
 
 export class DeterministicFakeRuntime implements RuntimeClient {
@@ -68,11 +80,11 @@ export class DeterministicFakeRuntime implements RuntimeClient {
   private loom: LoomTreeJSON;
   private readonly generation: DeterministicGenerationPort;
   private activeLoom: BrowserLoomRuntime | null = null;
-  private readonly sourcesByFamily: Record<"lens" | "sae", InstrumentSourceJSON[]> = {
+  private readonly sourcesByFamily: Record<SourcedFamily, InstrumentSourceJSON[]> = {
     lens: [],
     sae: [],
   };
-  private readonly preparations: Record<"lens" | "sae", PreparationStatusJSON> = {
+  private readonly preparations: Record<SourcedFamily, PreparationStatusJSON> = {
     lens: idlePreparation(),
     sae: idlePreparation(),
   };
@@ -93,6 +105,7 @@ export class DeterministicFakeRuntime implements RuntimeClient {
       (text, index, scope) => this.fixtureMeasurements(text, index, scope),
     );
     this.contextBindingSha256 = options.contextBindingSha256 ?? "fixture-context-binding";
+    this.unitRefusal = options.unitRefusal ?? null;
     this.configureInstrumentPacks(options.instrumentPacks ?? []);
 
     this.sessions = {
@@ -257,6 +270,15 @@ export class DeterministicFakeRuntime implements RuntimeClient {
       saeFeaturesMetadata: async (ids: number[]) => ({
         features: Object.fromEntries(ids.map((id) => [String(id), featureMetadata(id)])),
       }),
+      // The units members run the real host ports over the tiny fixture model on the CPU
+      // reference backend (units/fixtureUnits.ts): drowse-shaped, deterministic answers.
+      tokenAnatomy: async (...args: unknown[]) => this.units().request("tokenAnatomy", args) as never,
+      unitActivity: async (...args: unknown[]) => this.units().request("unitActivity", args) as never,
+      unitRead: async (...args: unknown[]) => this.units().request("unitRead", args) as never,
+      unitTop: async (...args: unknown[]) => this.units().request("unitTop", args) as never,
+      unitFind: async (...args: unknown[]) => this.units().request("unitFind", args) as never,
+      unitCatalog: async (...args: unknown[]) => this.units().request("unitCatalog", args) as never,
+      unitLabels: async (...args: unknown[]) => this.units().request("unitLabels", args) as never,
     } satisfies RuntimeInstrumentsService;
     this.events = new FakeEventChannel(
       (request, emit) => this.generate(request, emit),
@@ -324,12 +346,18 @@ export class DeterministicFakeRuntime implements RuntimeClient {
     const lensPack = lensPacks[0];
     const saePack = packs.find((pack) => pack.kind === "sae");
     if (lensPack) {
+      // The browser runtime's row shape: an R-family pack read at its out site.
       this.sourcesByFamily.lens = lensPacks.map((pack, index) => ({
         source: pack.id,
-        name: pack.displayName,
         kind: "catalog",
-        provider: "catalog",
+        name: pack.displayName,
+        lens: "R",
+        family: "R",
+        sites: ["out"],
+        layers: { out: [0, 1] },
+        n_prompts: 64,
         active: index === 0,
+        provider: "catalog",
       }));
       const block = this.instrumentBlock("lens");
       block.source = lensPack.id;
@@ -368,13 +396,14 @@ export class DeterministicFakeRuntime implements RuntimeClient {
     family: InstrumentFamily,
   ): { sources: InstrumentSourceJSON[]; releases?: never[] } {
     if (family === "geometry") return { sources: [] };
-    return { sources: clone(this.sourcesByFamily[family]), releases: [] };
+    return { sources: clone(this.sourcesByFamily[sourcedFamily(family)]), releases: [] };
   }
 
   private setInstrumentLive(
     family: InstrumentFamily,
     body: { enabled: boolean; layers?: number[] | null },
   ): InstrumentFamilyBlock["live"] {
+    if (family === "units") throw fakeUnitsUnavailable();
     if (typeof body.enabled !== "boolean") {
       throw fakeError("INVALID_INSTRUMENT_STATE", "enabled must be boolean");
     }
@@ -385,7 +414,7 @@ export class DeterministicFakeRuntime implements RuntimeClient {
       if (body.enabled && !block.source) {
         throw fakeError(
           "INSTRUMENT_SOURCE_REQUIRED",
-          "Install a J-lens pack before enabling live readout",
+          "Install an R-lens pack before enabling live readout",
         );
       }
       block.live = {
@@ -414,7 +443,7 @@ export class DeterministicFakeRuntime implements RuntimeClient {
     if (!selected) {
       throw fakeError(
         "INSTRUMENT_SOURCE_NOT_FOUND",
-        `J-lens source ${source} is not installed`,
+        `R-lens source ${source} is not installed`,
       );
     }
     for (const candidate of this.sourcesByFamily.lens) candidate.active = candidate === selected;
@@ -448,13 +477,13 @@ export class DeterministicFakeRuntime implements RuntimeClient {
     if (selected === null) {
       throw fakeError(
         "INSTRUMENT_PACK_NOT_LOADED",
-        `No compatible ${family === "lens" ? "J-lens" : "SAE"} pack is loaded. Download it in Model settings, then close and reopen the model`,
+        `No compatible ${family === "lens" ? "R-lens" : "SAE"} pack is loaded. Download it in Model settings, then close and reopen the model`,
       );
     }
     if (body.source !== selected.source) {
       throw fakeError(
         "INSTRUMENT_PACK_SOURCE_MISMATCH",
-        `The loaded ${family === "lens" ? "J-lens" : "SAE"} pack is ${selected.source}; close the model before changing model tools`,
+        `The loaded ${family === "lens" ? "R-lens" : "SAE"} pack is ${selected.source}; close the model before changing model tools`,
       );
     }
     if (
@@ -485,7 +514,7 @@ export class DeterministicFakeRuntime implements RuntimeClient {
     if (family === "lens" && body.operation === "fit") {
       throw fakeError(
         "HOSTED_JLENS_FITTING_EXCLUDED",
-        "J-lens fitting is available in the Python runtime; install a compatible browser pack instead",
+        "Lens fitting is available in the Python runtime; install a compatible browser pack instead",
       );
     }
     if (family === "sae" && body.operation === "train") {
@@ -524,34 +553,42 @@ export class DeterministicFakeRuntime implements RuntimeClient {
     return status;
   }
 
-  private preparedFamily(family: InstrumentFamily): "lens" | "sae" {
+  private preparedFamily(family: InstrumentFamily): SourcedFamily {
     if (family === "geometry") {
       throw fakeError(
         "INSTRUMENT_PREPARATION_UNAVAILABLE",
         "Geometry has no downloadable preparation job",
       );
     }
-    return family;
+    return sourcedFamily(family);
+  }
+
+  private unitsService: ReturnType<typeof createFixtureUnitsService> | null = null;
+  private readonly unitRefusal: string | null;
+
+  private units(): ReturnType<typeof createFixtureUnitsService> {
+    this.unitsService ??= createFixtureUnitsService(this.session.model_id, () => this.loom, this.unitRefusal);
+    return this.unitsService;
   }
 
   private tokenReadout(family: InstrumentFamily): MeasurementsEnvelopeJSON {
+    if (family === "units") throw fakeUnitsUnavailable();
     const envelope: MeasurementsEnvelopeJSON = {
-      version: 1,
+      version: MEASUREMENTS_VERSION,
       scope: "replay",
       provenance: "replayed",
       instruments: {},
       scores: {},
-      per_layer_scores: {},
     };
     if (family === "lens" && this.instrumentBlock("lens").source) {
       envelope.instruments.lens = {
-        binding: { source: this.instrumentBlock("lens").source, steering: null },
+        binding: { sources: { R: this.instrumentBlock("lens").source }, steering: null },
         readout: {
           layers: [0, 1].map((layer) => ({
             layer,
             tokens: [{ token: " fixture", id: 7, logprob: -0.1 - layer * 0.05 }],
           })),
-          aggregate: [{ token: " fixture", strength: 0.88, com: 0.5, spread: 0.25 }],
+          aggregate: [{ token: " fixture", id: 7, strength: 0.88, com: 0.5, spread: 0.25 }],
         },
       };
     } else if (family === "sae" && this.instrumentBlock("sae").source) {
@@ -590,18 +627,21 @@ export class DeterministicFakeRuntime implements RuntimeClient {
     const saeBlock = this.instrumentBlock("sae");
     const lensLive = lensBlock.live.enabled;
     const saeLive = saeBlock.live.enabled;
+    // Native's per-token payload: attached lens and SAE probe readings ride a token only while
+    // their family is live; the reply's aggregate carries them always.
+    const lensProbesRead = scope === "aggregate" || lensLive ? lensProbes : [];
+    const saeProbesRead = scope === "aggregate" || saeLive ? saeProbes : [];
     if (
-      geometryProbes.length === 0 && lensProbes.length === 0 && saeProbes.length === 0 &&
+      geometryProbes.length === 0 && lensProbesRead.length === 0 && saeProbesRead.length === 0 &&
       !lensLive && !saeLive
     ) return undefined;
 
     const envelope: MeasurementsEnvelopeJSON = {
-      version: 1,
+      version: MEASUREMENTS_VERSION,
       scope,
       provenance: "captured",
       instruments: {},
       scores: {},
-      per_layer_scores: { "0": {}, "1": {} },
     };
     const position = Math.max(-0.9, Math.min(0.9, -0.55 + index * 0.18));
 
@@ -617,12 +657,14 @@ export class DeterministicFakeRuntime implements RuntimeClient {
           fraction_per_layer: { "0": (position + 0.95) / 2, "1": (position + 1) / 2 },
           coords_per_layer: { "0": [position - 0.05], "1": [position] },
           residual_per_layer: { "0": 0.04, "1": 0.03 },
+          assignment: [[nearestLabel, 1]],
+          membership: 0.9,
+          depth_com: [0.75],
+          depth_spread: [0.2],
           subspace_coords_per_layer: { "0": [position - 0.05], "1": [position] },
         };
         readings[probe.name] = reading;
-        envelope.scores![probe.name] = position;
-        envelope.per_layer_scores!["0"][probe.name] = position - 0.05;
-        envelope.per_layer_scores!["1"][probe.name] = position;
+        envelope.scores![probe.name] = roundReading(position);
       }
       envelope.instruments.geometry = {
         binding: { source: "fixture-core", steering: null },
@@ -630,18 +672,16 @@ export class DeterministicFakeRuntime implements RuntimeClient {
       };
     }
 
-    if (lensBlock.source && (lensLive || lensProbes.length > 0)) {
+    if (lensBlock.source && (lensLive || lensProbesRead.length > 0)) {
       const value = Math.min(0.96, 0.58 + index * 0.025);
       const readings: Record<string, ScalarReadingJSON> = {};
-      for (const probe of lensProbes) {
+      for (const probe of lensProbesRead) {
         readings[probe.name] = fixtureScalarReading(value, "mean_token_probability");
-        envelope.scores![probe.name] = value;
-        envelope.per_layer_scores!["0"][probe.name] = value - 0.08;
-        envelope.per_layer_scores!["1"][probe.name] = value;
+        envelope.scores![probe.name] = roundReading(value);
       }
       envelope.instruments.lens = {
-        binding: { source: lensBlock.source, steering: null },
-        ...(lensProbes.length > 0 ? { readings } : {}),
+        binding: { sources: { R: lensBlock.source }, steering: null },
+        ...(lensProbesRead.length > 0 ? { readings } : {}),
         ...(lensLive ? {
           readout: {
             layers: [0, 1].map((layer) => ({
@@ -652,27 +692,26 @@ export class DeterministicFakeRuntime implements RuntimeClient {
               ],
             })),
             aggregate: [
-              { token: text, strength: value, com: 0.55, spread: 0.2 },
-              { token: " honest", strength: value - 0.12, com: 0.62, spread: 0.18 },
+              { token: text, id: stableId(text), strength: value, com: 0.55, spread: 0.2 },
+              { token: " honest", id: stableId("honest"), strength: value - 0.12, com: 0.62, spread: 0.18 },
             ],
           },
         } : {}),
       };
     }
 
-    if (saeBlock.source && (saeLive || saeProbes.length > 0)) {
+    if (saeBlock.source && (saeLive || saeProbesRead.length > 0)) {
       const value = Math.min(0.95, 0.42 + index * 0.035);
       const readings: Record<string, ScalarReadingJSON> = {};
-      for (const probe of saeProbes) {
+      for (const probe of saeProbesRead) {
         readings[probe.name] = fixtureScalarReading(value, "activation_over_max");
-        envelope.scores![probe.name] = value;
-        envelope.per_layer_scores!["1"][probe.name] = value;
+        envelope.scores![probe.name] = roundReading(value);
       }
       const pinnedFeatureIds = saeProbes.map((probe) => probe.feature_id);
       const featureIds = [...new Set([...pinnedFeatureIds, 7, 12])];
       envelope.instruments.sae = {
         binding: { source: saeBlock.source, steering: null, layer: 1 },
-        ...(saeProbes.length > 0 ? { readings } : {}),
+        ...(saeProbesRead.length > 0 ? { readings } : {}),
         ...(saeLive ? {
           readout: {
             features: featureIds.map((id, featureIndex) => ({
@@ -687,11 +726,6 @@ export class DeterministicFakeRuntime implements RuntimeClient {
     }
 
     if (Object.keys(envelope.scores!).length === 0) delete envelope.scores;
-    if (
-      Object.values(envelope.per_layer_scores!).every(
-        (layer) => Object.keys(layer).length === 0,
-      )
-    ) delete envelope.per_layer_scores;
     return envelope;
   }
 
@@ -699,14 +733,14 @@ export class DeterministicFakeRuntime implements RuntimeClient {
     if (!this.instrumentBlock("lens").source) {
       throw fakeError(
         "INSTRUMENT_SOURCE_REQUIRED",
-        "Install a J-lens pack before selecting a token",
+        "Install an R-lens pack before selecting a token",
       );
     }
     const trimmed = word.trim().replace(/^jlens\//, "");
     if (!trimmed || /\s/.test(trimmed)) {
       throw fakeError(
         "INVALID_LENS_TOKEN",
-        "J-lens tokens must be one non-empty tokenizer token",
+        "R-lens tokens must be one non-empty tokenizer token",
       );
     }
     return { word: trimmed, token_id: stableId(trimmed) };
@@ -746,6 +780,7 @@ export class DeterministicFakeRuntime implements RuntimeClient {
       const validated = this.validateLensToken(selector.slice("jlens/".length));
       probe = {
         family: "lens",
+        namespace: "jlens",
         name,
         layers: [0, 1],
         intrinsic_dim: 1,
@@ -947,6 +982,7 @@ class DeterministicGenerationPort implements BrowserGenerationPort {
     const maxTokens = plan.sampling?.max_tokens ?? pieces.length;
     const limit = Math.min(pieces.length, maxTokens);
     const forcedPrefix = plan.replay?.forcedPrefixTokenIds ?? [];
+    const returnsAggregate = plan.sampling?.return_probe_readings !== false;
     const alternativeCount = Math.max(
       0,
       Math.min(5, Math.floor(plan.sampling?.return_top_k ?? 0)),
@@ -971,6 +1007,11 @@ class DeterministicGenerationPort implements BrowserGenerationPort {
       const logprob = topAlts?.find((row) => row.id === tokenId)?.logprob ?? -0.1;
       emitted.push(text);
       const measurements = this.measurements(text, index, "token");
+      // As the WebLLM port: each token offers the reply's aggregate its view while the request
+      // returns probe readings (a stopped reply pools it), and none otherwise.
+      const aggregateMeasurements = returnsAggregate
+        ? this.measurements(text, index, "aggregate")
+        : undefined;
       await plan.onRawToken?.({
         text,
         tokenId,
@@ -991,6 +1032,7 @@ class DeterministicGenerationPort implements BrowserGenerationPort {
         rawIndex: index,
         topAlts,
         measurements,
+        ...(aggregateMeasurements === undefined ? {} : { aggregateMeasurements }),
       });
       if (this.tokenDelayMs > 0) {
         await new Promise<void>((resolve) => setTimeout(resolve, this.tokenDelayMs));
@@ -999,24 +1041,26 @@ class DeterministicGenerationPort implements BrowserGenerationPort {
     const tokens = emitted.length;
     const text = emitted.join("");
     const capped = limit < pieces.length;
-    const finishReason = this.stopped || stoppedBySequence
-      ? "stop"
-      : capped
-        ? "length"
-        : "stop";
+    const terminalReason = this.stopped
+      ? "external_stop"
+      : stoppedBySequence
+        ? "stop_sequence"
+        : capped
+          ? "length"
+          : "eos";
     const promptTokens = generationPromptTokens(plan);
+    // drowse's done aggregate: the last token's readings and bindings, no readouts (none when the
+    // request returns no probe readings).
+    const last = tokens > 0 && returnsAggregate
+      ? this.measurements(emitted[tokens - 1], tokens - 1, "aggregate")
+      : undefined;
+    const aggregate = last === undefined ? undefined : aggregateEnvelope(last);
     return {
       text,
       thinkingText: null,
       tokens,
-      finishReason,
-      terminalReason: this.stopped
-        ? "external_stop"
-        : stoppedBySequence
-          ? "stop_sequence"
-          : capped
-            ? "length"
-            : "eos",
+      finishReason: finishReasonFor(terminalReason),
+      terminalReason,
       usage: {
         promptTokens,
         completionTokens: tokens,
@@ -1026,9 +1070,7 @@ class DeterministicGenerationPort implements BrowserGenerationPort {
       meanSurprise: tokens > 0 ? 0.1 : null,
       prefillTokensPerSecond: 120,
       decodeTokensPerSecond: 48,
-      ...(tokens > 0
-        ? { measurements: this.measurements(emitted[tokens - 1], tokens - 1, "aggregate") }
-        : {}),
+      ...(aggregate === undefined ? {} : { measurements: aggregate }),
     };
   }
 
@@ -1130,7 +1172,7 @@ class FakeEventChannel implements RuntimeEventChannel {
             terminal = "cancelled";
           }
         } else if (event.type === "error") terminal = "failed";
-        this.emit(message.request_id ? { ...event, request_id: message.request_id } : event);
+        this.emit(message.request_id && event.type !== "resync" ? { ...event, request_id: message.request_id } : event);
       })
         .catch((error) => {
           terminal = "failed";
@@ -1238,6 +1280,7 @@ function fakeTree(modelId: string, rootId = "root"): LoomTreeJSON {
     role_label: null,
     thinking_text: null,
     aggregate_readings: {},
+    aggregate_measurements: null,
     applied_steering: null,
     finish_reason: null,
     starred: false,
@@ -1251,6 +1294,7 @@ function fakeTree(modelId: string, rootId = "root"): LoomTreeJSON {
     tokens: null,
     thinking_tokens: null,
     raw_token_ids: null,
+    prompt_capture: null,
   };
   return {
     tree_format: 2,
@@ -1280,20 +1324,9 @@ function idlePreparation(): PreparationStatusJSON {
   };
 }
 
-function fixtureHookProgram(): RankOneHookProgramBuffers {
-  return {
-    hookAbi: DROWSE_HOOK_ABI,
-    hiddenSize: 1,
-    layerCount: 1,
-    enabled: new Uint32Array([1]),
-    basis: new Float32Array([1]),
-    neutral: new Float32Array([0]),
-    target: new Float32Array([0]),
-    along: new Float32Array([0]),
-    collapse: new Float32Array([0]),
-    probeBasis: new Float32Array([1]),
-    probeNeutral: new Float32Array([0]),
-  };
+/** An empty one-layer drowse-structured-v4 program: the fake engine never runs it. */
+function fixtureHookProgram(): StructuredHookProgramBuffers {
+  return compileStructuredHookProgram(1, [{}], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
 }
 
 function generationPromptTokens(plan: WebLlmGenerationPlan): number {
@@ -1309,9 +1342,9 @@ function featureMetadata(id: number): { label: string; max_act: number } {
 
 function fixtureScalarReading(value: number, unit: string): ScalarReadingJSON {
   return {
-    value,
+    value: roundReading(value),
     unit,
-    per_layer: { "0": value - 0.08, "1": value },
+    per_layer: { "0": roundReading(value - 0.08), "1": roundReading(value) },
     depth: { center: [1], spread: [0.45], basis: "layer" },
   };
 }
@@ -1361,6 +1394,20 @@ function readErrorCode(error: unknown): string {
     ? (error as { code: string }).code
     : "FIXTURE_GENERATION_FAILED";
 }
+
+function sourcedFamily(family: Exclude<InstrumentFamily, "geometry">): SourcedFamily {
+  if (family === "units") throw fakeUnitsUnavailable();
+  return family;
+}
+
+/** The units family and the unit and anatomy reads: in the contract, not in this runtime. */
+function fakeUnitsUnavailable(): Error & { code: string } {
+  return fakeError(
+    "INSTRUMENT_FAMILY_UNAVAILABLE",
+    "units have no source lifecycle or preparations in the browser runtime (neurons and heads are the model's own parts; their statistics ride the neutral cache)",
+  );
+}
+
 
 function fakeFittingUnavailable(): Error & { code: string } {
   return fakeError(

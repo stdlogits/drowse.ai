@@ -1,19 +1,12 @@
 <script lang="ts">
-  import MorphText from "../../../../drowse/webui/src/lib/ui/MorphText.svelte";
-  import FluentIcon from "../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
-  import StateIcon from "../../../../drowse/webui/src/lib/ui/StateIcon.svelte";
+  import { Expander, Icon, MorphText, fadeIn, fadeOut, rise, tips } from "@stdlogits/ledger";
   import BaseModelTag from "../../../../drowse/webui/src/lib/ui/BaseModelTag.svelte";
-  import { animatedDetails } from "../../../../drowse/webui/src/lib/animatedDetails";
   import RollingNumber from "../../../../drowse/webui/src/lib/ui/RollingNumber.svelte";
-  import TabIdentity from "../../../../drowse/webui/src/lib/ui/TabIdentity.svelte";
-  import { setupTabState } from "../../../../drowse/webui/src/lib/tabIdentity";
   import { onMount } from "svelte";
   import { registerModelPicker } from "../../../../drowse/webui/src/lib/webmcp/lifecycle";
-  import { fade, fly } from "svelte/transition";
-  import InfoTip from "../../../../drowse/webui/src/lib/ui/InfoTip.svelte";
-  import PageHeader from "../../../../drowse/webui/src/lib/ui/PageHeader.svelte";
+  import TipText from "./TipText.svelte";
+  import SiteHeader from "./SiteHeader.svelte";
   import PageFooter from "./PageFooter.svelte";
-  import ModelProviderLogo from "../../../../drowse/webui/src/lib/ui/ModelProviderLogo.svelte";
   import { formatEtaRange } from "../../lib/runtime/eta";
   import type {
     HostedCheckState,
@@ -22,7 +15,6 @@
     HostedShellSnapshot,
   } from "../../../../drowse/webui/src/lib/shell";
   import type { BrowserRuntimeClass } from "../../../../drowse/webui/src/lib/runtime/contracts";
-  import { contentIn, contentOut } from "../../../../drowse/webui/src/lib/motion";
   import { userFacingError } from "../../../../drowse/webui/src/lib/runtime/userFacingError";
   import { reloadInstructions, appRefreshSafetyMessage } from "../runtime/chunkRecovery";
   import { clearConversationOpen } from "../../../../drowse/webui/src/lib/conversationOpen";
@@ -71,6 +63,12 @@
       phase: "locked",
       reason: "Checking the local model engine.",
     },
+  });
+  $effect(() => { document.title = "Models · Drowse"; });
+  // The device check's details open by themselves when the check fails.
+  let deviceDetailsOpen = $state(false);
+  $effect(() => {
+    if (snapshot.phase === "unsupported" || snapshot.phase === "failed") deviceDetailsOpen = true;
   });
   let selectedModel = $state<string | null>(null);
   // The model chosen for the visitor on first run, so its reason can be explained.
@@ -258,7 +256,9 @@
       : formatBytes(model.remainingDownloadBytes);
 
   const toolChips = (model: HostedModelOption) => [
-    ...(model.firstRunPacks.some((pack) => pack.kind === "jlens") ? ["Word insights (J-lens)"] : []),
+    ...(model.firstRunPacks.some((pack) => pack.kind === "jlens") ? ["Word insights (R lens)"] : []),
+    ...(model.firstRunPacks.some((pack) => pack.kind === "slens") ? ["Early-layer reads (S lens)"] : []),
+    ...(model.firstRunPacks.some((pack) => pack.kind === "units") ? ["Neurons and heads (units)"] : []),
     ...(model.firstRunPacks.some((pack) => pack.kind === "sae") ? ["Feature insights (SAE)"] : []),
   ];
 
@@ -283,14 +283,31 @@
   const packTitle = (pack: HostedModelOption["firstRunPacks"][number]) =>
     pack.kind === "jlens"
       ? "Word insights"
-      : /gemma scope/i.test(pack.name)
-        ? "Gemma Scope features"
-        : "Feature explorer";
+      : pack.kind === "slens"
+        ? "Early-layer reads"
+        : pack.kind === "units"
+          ? "Neurons and heads"
+          : /gemma scope/i.test(pack.name)
+            ? "Gemma Scope features"
+            : "Feature explorer";
+
+  const packTag = (pack: HostedModelOption["firstRunPacks"][number]) =>
+    pack.kind === "jlens"
+      ? "optional readout"
+      : pack.kind === "slens"
+        ? "S lens"
+        : pack.kind === "units"
+          ? "units"
+          : "optional SAE";
 
   const packDescription = (pack: HostedModelOption["firstRunPacks"][number]) =>
     pack.kind === "jlens"
       ? `${pack.name}. Read word predictions across layers. This lens is already fitted; your browser doesn't train it.`
-      : `${pack.name}. Inspect and steer learned features. This SAE is already trained; your browser doesn't train it.`;
+      : pack.kind === "slens"
+        ? `${pack.name}. Read early layers as input tokens. Already fitted; each layer downloads the first time it is read.`
+        : pack.kind === "units"
+          ? `${pack.name}. Read, rank and ablate neurons and heads. Already computed; each layer's statistics download the first time they are read.`
+          : `${pack.name}. Inspect and steer learned features. This SAE is already trained; your browser doesn't train it.`;
   const appleStorageHelp =
     "Adding Drowse to your iPhone or iPad Home Screen can help it keep data. Back up your chats first. Existing chats and models won't transfer to the Home Screen app.";
   const macDesktop = /Macintosh|Mac OS X/i.test(navigator.userAgent) ||
@@ -522,12 +539,10 @@
   </div>
 {/snippet}
 
-<TabIdentity state={setupTabState(snapshot)} />
-
 <a class="skip-link" href="#device-check">Skip to device check</a>
 
-<div class="app-shell" class:hardware-compatible={snapshot.phase === "supported"} class:download-complete={downloadComplete}>
-  <PageHeader current="models" variant="app" onChats={onChats ?? onBack} onModels={() => document.querySelector<HTMLElement>("#models-title")?.focus()} />
+<div class="app-shell" use:tips class:hardware-compatible={snapshot.phase === "supported"} class:download-complete={downloadComplete}>
+  <SiteHeader current="models" variant="app" onChats={onChats ?? onBack} onModels={() => document.querySelector<HTMLElement>("#models-title")?.focus()} />
 
   <main id="device-check">
     <div class="intro" data-page-group="0">
@@ -574,8 +589,8 @@
       <section
         class="workbench-error"
         role="alert"
-        in:fly={contentIn()}
-        out:fly={contentOut()}
+        in:rise
+        out:fadeOut
       >
         <div>
           <strong>The workbench could not open.</strong>
@@ -593,22 +608,13 @@
       </section>
     {/if}
 
-    <section class="check-panel" data-status={checkStatus} data-page-group="1" class:loading-pulse={snapshot.phase === "checking"} aria-label="Device check" aria-busy={snapshot.phase === "checking"}>
+    <section class="check-panel" data-status={checkStatus} data-page-group="1" aria-label="Device check" aria-busy={snapshot.phase === "checking"}>
       <h2 class="sr-only">Device checks</h2>
-      <details use:animatedDetails class="device-details" open={snapshot.phase === "unsupported" || snapshot.phase === "failed"}>
-        <summary>
-          <span class="check-summary-copy">
-            <strong><MorphText text={checkSummaryLabel} numbers={false} /></strong>
-            {#if snapshot.checks.length > 0}<small><MorphText text={checkCountLabel} /></small>{/if}
-          </span>
-          <span>View details</span>
-        </summary>
+      <div class="device-details">
+        <Expander label={snapshot.checks.length > 0 ? `${checkSummaryLabel} · ${checkCountLabel}` : checkSummaryLabel} bind:open={deviceDetailsOpen}>
         <ul class="check-list">
           {#each snapshot.checks as check}
             <li class:failed={check.state === "fail"} class:warning={check.state === "warn"}>
-              <span class="check-mark {check.state}" aria-hidden="true">
-                <StateIcon icons={["ready", "error", "warning", "info"]} name={check.state === "pass" ? "ready" : check.state === "fail" ? "error" : check.state === "warn" ? "warning" : "info"} size={18} />
-              </span>
               <div>
                 <h3>{check.label}</h3>
                 <p>{check.detail}</p>
@@ -617,10 +623,11 @@
             </li>
           {/each}
         </ul>
-      </details>
+        </Expander>
+      </div>
 
       {#if snapshot.phase === "unsupported" || snapshot.phase === "failed" || downloadsLocked}
-        <div class="recovery" in:fly={contentIn()} out:fly={contentOut()}>
+        <div class="recovery" in:rise out:fadeOut>
           {#if snapshot.phase === "unsupported" || snapshot.phase === "failed"}
             <p>{recoveryGuidance}</p>
           {:else if lockedDownloadGuidance}
@@ -636,8 +643,8 @@
         class="model-panel"
         data-page-group="2"
         aria-labelledby="models-title"
-        in:fly={contentIn(8)}
-        out:fly={contentOut()}
+        in:rise
+        out:fadeOut
       >
         <div
           class="panel-heading"
@@ -651,7 +658,7 @@
                 : "Current model requirements"}
             </h2>
           <div class="heading-side">
-            <InfoTip label="About model choices" text="Smaller models use less memory and download faster. Larger models usually give better answers. The recommendation is an estimate of what this device can run." />
+            <TipText label="About model choices" text="Smaller models use less memory and download faster. Larger models usually give better answers. The recommendation is an estimate of what this device can run." />
             <code>{formatAvailable(snapshot.storage?.availableBytes)}</code>
           </div>
         </div>
@@ -689,7 +696,6 @@
                 <code>{model.catalogAvailable === false ? "Chat model" : cardSize(model)}</code>
               </span>
               <span class="model-name">
-                <ModelProviderLogo modelId={model.id} />
                 <strong><span id={`model-name-${model.id}`}>{model.name}</span>{#if model.modelType === "base"}<BaseModelTag plain /><span class="sr-only" id={`model-kind-${model.id}`}>Base model</span>{/if}</strong>
                 {#if model.firstRunPacks.some((pack) => pack.kind === "sae")}
                   <span class="sae-available" {...{ "aria-description": "Sparse autoencoder available" }}>SAE</span>
@@ -738,8 +744,8 @@
           {/each}
         </div>
 
-        <details use:animatedDetails class="base-models" bind:open={baseModelsOpen}>
-          <summary>Base models <span class="base-models-note">Text completion</span></summary>
+        <div class="base-models">
+        <Expander label="Base models · Text completion" bind:open={baseModelsOpen}>
           <p class="base-model-warning">
             Base models predict what comes next in a piece of text. They don't follow instructions reliably
             and can produce unreliable or offensive text. Use a chat model for everyday conversations.
@@ -753,11 +759,12 @@
           {:else}
             <p class="base-model-description">No verified base-model downloads are available in this catalog yet. Choose a chat model above to continue.</p>
           {/if}
-        </details>
+        </Expander>
+        </div>
 
         {#if comparableModels.length > 1}
-          <details use:animatedDetails class="compare-models">
-            <summary>Compare models</summary>
+          <div class="compare-models">
+          <Expander label="Compare models">
             <!-- svelte-ignore a11y_no_noninteractive_tabindex (keyboard access for the horizontally scrolling table) -->
             <div class="compare-scroll" role="region" aria-label="Model comparison" tabindex="0">
               <table>
@@ -789,17 +796,19 @@
                 </tbody>
               </table>
             </div>
-          </details>
+          </Expander>
+          </div>
         {/if}
 
         {#if selectedOption}
           {#key selectedOption.id}
-          <div class="selected-model-details" in:fly={contentIn()}>
+          <div class="selected-model-details" in:rise>
           {#if autoSelectedModel === selectedOption.id && selectedOption.fit !== "blocked"}
-            <details use:animatedDetails class="why-this">
-              <summary>Why this one?</summary>
-              <p>{selectedOption.fit === "recommended" ? `${selectedOption.name} is the recommended model for this device. ` : ""}{selectedOption.reason}</p>
-            </details>
+            <div class="why-this">
+              <Expander label="Why this one?">
+                <p>{selectedOption.fit === "recommended" ? `${selectedOption.name} is the recommended model for this device. ` : ""}{selectedOption.reason}</p>
+              </Expander>
+            </div>
           {/if}
           <p class="model-provenance">
             <a href={selectedOption.sourceUrl} target="_blank" rel="noreferrer">
@@ -815,7 +824,7 @@
               <div>
                 <h3 id="tools-title">{selectedOption.firstRunPacks.some((pack) => !pack.requiredForSetup) ? "Tools for" : "Included with"} {selectedOption.name}</h3>
               </div>
-              <InfoTip
+              <TipText
                 label="About model tools"
                 text={selectedOption.modelType === "base"
                   ? "This setup includes response controls and compatible SAE features when available. Word insights are optional for base models."
@@ -823,7 +832,7 @@
               />
             </div>
             <div class="tool-option required-tool">
-              <span class="tool-check" aria-hidden="true"><FluentIcon name="check" /></span>
+              <span class="tool-check" aria-hidden="true"><Icon name="check" /></span>
               <div>
                 <strong>Response controls</strong>
                 <p>Measure and shape replies.</p>
@@ -832,9 +841,9 @@
             </div>
             {#each selectedOption.firstRunPacks.filter((pack) => pack.requiredForSetup) as pack (pack.id)}
               <div class="tool-option required-tool" class:tool-installed={pack.installed}>
-                <span class="tool-check" aria-hidden="true"><FluentIcon name="check" /></span>
+                <span class="tool-check" aria-hidden="true"><Icon name="check" /></span>
                 <div>
-                  <strong>{pack.kind === "jlens" ? "Word insights" : "Feature insights"} <span>({pack.kind === "jlens" ? "J-lens" : "SAE"})</span></strong>
+                  <strong>{pack.kind === "jlens" ? "Word insights" : "Feature insights"} <span>({pack.kind === "jlens" ? "R lens" : "SAE"})</span></strong>
                   <p>{pack.kind === "jlens" ? `${pack.name}. Read word predictions across layers and steer toward a word.` : packDescription(pack)}</p>
                 </div>
                 <span><MorphText text={pack.installed ? "Included · already downloaded" : `Included · ${formatBytes(pack.bytes)}`} /></span>
@@ -856,7 +865,7 @@
                       onchange={(event) => setPackSelected(pack.id, event.currentTarget.checked)}
                     />
                     <div>
-                      <strong>{pack.kind === "jlens" ? selectedOption.modelType === "base" ? pack.name : "Alternative R-lens" : packTitle(pack)} <span>({pack.kind === "jlens" ? "optional readout" : "optional SAE"})</span></strong>
+                      <strong>{pack.kind === "jlens" ? selectedOption.modelType === "base" ? pack.name : "Alternative R lens" : packTitle(pack)} <span>({packTag(pack)})</span></strong>
                       <p>{packDescription(pack)}</p>
                     </div>
                     <span><MorphText text={pack.installed ? "Already downloaded" : formatBytes(pack.bytes)} /></span>
@@ -883,7 +892,7 @@
         {/if}
 
         {#if selectedOption?.installed && !showDownloadAction}
-          <div class="release-gate runtime-gate" class:loading-pulse={snapshot.runtime.phase === "loading"}>
+          <div class="release-gate runtime-gate">
             <div>
               <strong><MorphText text={runtimeGateTitle} /></strong>
               <p>{snapshot.runtime.reason}</p>
@@ -906,8 +915,8 @@
             <div
               class="unsafe-warning"
               role="alert"
-              in:fly={contentIn()}
-              out:fly={contentOut()}
+              in:rise
+              out:fadeOut
             >
               <div>
                 <strong>{selectedOption.requiresOomRetry ? "This model ran out of memory with these settings." : "Check this model on your device"}</strong>
@@ -925,8 +934,8 @@
           <div
             class="unsafe-warning"
             role="alert"
-            in:fly={contentIn()}
-            out:fly={contentOut()}
+            in:rise
+            out:fadeOut
           >
             <div>
               <strong>The saved conversation cannot open with this runtime.</strong>
@@ -944,7 +953,7 @@
         {/if}
 
         {#if showDownloadAction}
-          <div class="release-gate download-gate" class:loading-pulse={selectedDownloadPhase === "requesting_persistence" || selectedDownloadPhase === "cancelling" || (selectedDownloadPhase === "downloading" && !selectedProgress?.offline && !selectedProgress?.stalled)}>
+          <div class="release-gate download-gate">
             <div>
               {#if selectedDownloadPhase !== "idle" && selectedDownloadPhase !== "locked"}
               <strong><MorphText text={selectedDownloadPhase === "installed" ? "Setup complete" : selectedDownloadPhase === "requesting_persistence" ? "Preparing download" : selectedDownloadPhase === "downloading" ? "Downloading model files" : selectedDownloadPhase === "cancelling" ? "Pausing download" : selectedDownloadPhase === "paused" ? "Download paused" : "Download interrupted"} /></strong>
@@ -970,8 +979,8 @@
                   aria-valuemax="100"
                   aria-valuenow={Math.round(progressPercent())}
                   aria-valuetext={`${Math.round(progressPercent())}% complete. ${etaLabel()}.`}
-                  in:fade={{ duration: contentIn().duration, easing: contentIn().easing }}
-                  out:fade={{ duration: contentOut().duration, easing: contentOut().easing }}
+                  in:fadeIn
+                  out:fadeOut
                 >
                   <span style={`width: ${progressPercent()}%`}></span>
                 </div>
@@ -1016,8 +1025,8 @@
             <div
               class="unsafe-warning"
               role="alert"
-              in:fly={contentIn()}
-              out:fly={contentOut()}
+              in:rise
+              out:fadeOut
             >
               <div>
                 <strong>{selectedOption.requiresOomRetry ? "This model ran out of memory with these settings." : "Check this model on your device"}</strong>
@@ -1094,568 +1103,160 @@
 </div>
 
 <style>
-  .skip-link {
-    position: fixed;
-    z-index: 1000;
-    top: 8px;
-    inset-inline-start: 8px;
-    padding: var(--space-xs) var(--space-sm);
-    border-radius: var(--radius);
-    background: var(--accent);
-    color: var(--text-on-accent);
-    transform: translateY(-160%);
-  }
-  .skip-link:focus { transform: translateY(0); }
+  /* The models page in Ledger: paper, washes for each surface (wash2 for the chosen model), ink in
+     three weights, no lines. The device check sits above the model list; the gates under the list
+     are the one way forward. */
+  .skip-link { position: fixed; z-index: 1000; top: var(--s2); inset-inline-start: var(--s2); padding: var(--s2) var(--s4); border-radius: var(--r-pill); background: var(--ink); color: var(--paper); font: var(--type-control); translate: 0 calc(-100% - var(--s4)); transition: translate var(--fast) var(--ease); }
+  .skip-link:focus { translate: 0 0; }
 
-  .app-shell {
-    display: flex;
-    flex-direction: column;
-    position: relative;
-    isolation: isolate;
-    min-height: 100vh;
-    min-height: 100dvh;
-    box-sizing: border-box;
-    background: var(--ambient-canvas);
-  }
+  .app-shell { display: flex; flex-direction: column; min-height: 100dvh; }
+  main { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: var(--s7); width: 100%; max-width: var(--page); margin: 0 auto; padding: var(--s6) var(--gutter) var(--s8); }
+  main:focus { outline: none; }
 
-  main {
-    position: relative;
-    z-index: 1;
-    width: min(100%, var(--page-max));
-    margin-inline: auto;
-  }
+  .intro { display: grid; justify-items: start; gap: var(--s4); }
+  h1 { color: var(--ink); font: var(--type-title); letter-spacing: -0.04em; }
+  h1:focus { outline: none; }
+  .intro p { max-width: 60ch; color: var(--ink2); font: var(--type-lead); }
+  .intro > p + p { font: var(--type-body); }
 
+  .status-region, .alert-region { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
-  main { flex: 1; padding-block: var(--surface-padding) var(--surface-padding); }
-  main {
-    padding-inline: max(var(--surface-padding), env(safe-area-inset-left)) max(var(--surface-padding), env(safe-area-inset-right));
-  }
-  .intro { max-width: var(--copy-measure); }
-  h1 {
-    margin: 0;
-    color: var(--fg);
-    font-size: var(--text-onboarding-heading);
-    font-weight: var(--weight-display);
-    letter-spacing: -0.065em;
-    line-height: 1.05;
-  }
-  .intro > p:last-child {
-    max-width: var(--copy-measure);
-    margin: var(--space-md) 0 0;
-    color: var(--fg-dim);
-    font-size: var(--text-onboarding-lede);
-    line-height: 1.6;
+  /* A plain sentence and one way out. */
+  .workbench-error, .recovery, .release-gate, .unsafe-warning, .persistence-notice, .delete-confirmation { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s3) var(--s5); padding: var(--s5); border-radius: var(--r-row); background: var(--wash); }
+  .workbench-error > div, .release-gate > div, .unsafe-warning > div, .persistence-notice > div { display: grid; gap: var(--s2); flex: 1 1 320px; min-width: 0; }
+  .workbench-error strong, .release-gate strong, .unsafe-warning strong, .persistence-notice strong { color: var(--ink); font: var(--type-label); }
+  .workbench-error p, .recovery p, .release-gate p, .unsafe-warning p, .persistence-notice p, .delete-confirmation p { color: var(--ink2); font: var(--type-small); overflow-wrap: anywhere; }
+  .persistence-notice { padding: var(--s4); background: var(--wash2); }
+  .delete-confirmation { flex-basis: 100%; background: var(--wash2); }
+  .warning-actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
+
+  /* Buttons: the gates' and the recovery's are filled; a choice that keeps things is quiet; a
+     follow-up is text. A destructive one is confirmed first, then filled like any other. */
+  button { display: inline-flex; align-items: center; justify-content: center; gap: var(--s2); height: 36px; padding: 0 var(--s5); border: 0; border-radius: var(--r-pill); background: var(--ink); color: var(--paper); font: var(--type-control); white-space: nowrap; cursor: pointer; transition: opacity var(--fast) var(--ease), background-color var(--fast) var(--ease), color var(--fast) var(--ease), scale var(--fast) var(--ease); }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button:active:not(:disabled) { scale: 0.97; }
+  .secondary, .safe-action { padding: 0 var(--s4); background: var(--paper); color: var(--ink); }
+  .quiet-action { height: auto; padding: 0; background: transparent; color: var(--ink3); }
+  @media (hover: hover) {
+    button:hover:not(:disabled) { opacity: 0.86; }
+    .secondary:hover:not(:disabled), .safe-action:hover:not(:disabled) { opacity: 1; background: var(--wash2); }
+    .quiet-action:hover:not(:disabled) { opacity: 1; color: var(--ink); }
   }
 
-  .status-region,
-  .alert-region {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
-  .workbench-error {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-md);
-    margin-top: var(--space-lg);
-    padding: var(--surface-padding);
-    border: 1px solid color-mix(in srgb, var(--accent-red) 38%, transparent);
-    border-radius: var(--radius-lg);
-    background: color-mix(in srgb, var(--accent-red) 8%, var(--input-well));
-  }
-  .workbench-error > div { flex: 1 1 24rem; min-width: 0; }
-  .workbench-error > button { flex: 0 0 auto; max-width: 100%; padding: var(--space-4) var(--space-6); }
-  .workbench-error strong { color: var(--accent-red); }
-  .workbench-error p { margin: var(--space-xs) 0 0; color: var(--fg-dim); }
+  /* The device check. */
+  .check-panel { display: grid; gap: var(--s4); }
+  .device-details { padding: var(--s4) var(--s5); border-radius: var(--r-row); background: var(--wash); }
+  .check-list { display: grid; gap: var(--s3); padding-top: var(--s4); }
+  .check-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s1) var(--s4); align-items: baseline; }
+  .check-list h3 { color: var(--ink); font: var(--type-label); }
+  .check-list p { grid-column: 1; color: var(--ink2); font: var(--type-small); overflow-wrap: anywhere; }
+  .check-label { grid-column: 2; grid-row: 1; color: var(--ink3); font: var(--type-meta); }
+  .check-list li.failed .check-label, .check-list li.warning .check-label { color: var(--ink); }
 
-  .check-panel { margin-top: var(--space-xl); }
-  .model-panel { margin-top: var(--space-xl); }
-  .check-panel,
-  .model-panel { padding: 0; }
-  .check-panel {
-    --check-bg: var(--bg-alt);
-    --check-ink: var(--fg-strong);
-    padding: var(--surface-padding);
-    border-radius: var(--radius-lg);
-    background: var(--check-bg);
-    color: var(--check-ink);
-    box-shadow: var(--shadow-card);
-  }
-  .check-panel[data-status="ready"] { --check-bg: var(--success-bg); --check-ink: var(--success-ink); }
-  .check-panel[data-status="partial"] { --check-bg: var(--warning-bg); --check-ink: var(--warning-ink); }
-  .check-panel[data-status="unavailable"] { --check-bg: var(--danger-bg); --check-ink: var(--danger-ink); }
-  @media (prefers-contrast: more) {
-    .check-panel { outline: 2px solid var(--check-ink); }
-  }
-  @media (forced-colors: active) {
-    .check-panel[data-status] { --check-bg: Canvas; --check-ink: CanvasText; outline: 1px solid CanvasText; }
-  }
-
-  .panel-heading {
-    display: flex;
-    align-items: end;
-    justify-content: space-between;
-    gap: var(--space-md);
-    padding-bottom: var(--space-md);
-    border-bottom: 1px solid var(--glass-line);
-  }
-  .panel-heading.choice-heading { border-bottom: 0; }
-  h2 { margin: 0; color: var(--fg); font-size: var(--text-onboarding-heading); font-weight: var(--weight-structure-bold); letter-spacing: -0.035em; }
-  .heading-side {
-    margin-inline-start: auto;
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-    color: var(--fg-muted);
-    font-family: var(--font-data);
-    font-size: var(--text-xs);
-  }
-  .device-details > summary {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    min-height: 3.5rem;
-    padding-block: var(--space-4);
-    color: var(--check-ink);
-    cursor: pointer;
-    font-family: var(--font-structure);
-    list-style: none;
-  }
-  .device-details > summary::-webkit-details-marker { display: none; }
-  .device-details > summary span:last-child {
-    color: var(--check-ink);
-    font-family: var(--font-data);
-    font-size: var(--text-xs);
-  }
-  .check-summary-copy {
-    display: flex;
-    align-items: baseline;
-    gap: var(--space-sm);
-  }
-  .check-summary-copy strong {
-    color: var(--check-ink);
-    font-family: var(--font-structure);
-    font-size: var(--text-md);
-    font-weight: var(--weight-structure-bold);
-  }
-  .check-summary-copy small {
-    color: var(--check-ink);
-    font-family: var(--font-data);
-    font-size: var(--text-xs);
-  }
-  .device-details[open] > summary span:last-child { font-size: 0; }
-  .device-details[open] > summary span:last-child::before {
-    content: "Hide details";
-    font-size: var(--text-xs);
-  }
-
-  .check-list {
-    display: grid;
-    gap: var(--space-6);
-    margin: var(--space-6) 0 0;
-    padding: 0;
-    list-style: none;
-  }
-  .check-list li {
-    display: grid;
-    grid-template-columns: 30px minmax(0, 1fr) auto;
-    gap: var(--space-sm);
-    align-items: start;
-    min-height: 3.5rem;
-    padding: var(--space-3) 0;
-  }
-  .check-mark {
-    display: grid;
-    place-items: center;
-    margin-top: var(--space-xs);
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    background: var(--glass-strong);
-    color: var(--check-ink);
-    font-family: var(--font-mono);
-    font-weight: var(--weight-bold);
-    transform: scale(1);
-    transition:
-      color var(--dur-fast) var(--ease-out),
-      background var(--dur-fast) var(--ease-out),
-      transform var(--dur) var(--ease-out);
-  }
-  .check-mark.pending,
-  .check-mark.running { transform: scale(0.97); }
-  .check-mark.pass { background: color-mix(in srgb, var(--live) 17%, transparent); color: var(--live); }
-  .check-mark.fail { background: color-mix(in srgb, var(--accent-red) 17%, transparent); color: var(--accent-red); }
-  .check-mark.warn { background: color-mix(in srgb, var(--accent-yellow) 17%, transparent); color: var(--accent-yellow); }
-  .check-list h3 { margin: var(--space-xs) 0 0; color: var(--check-ink); font-size: var(--text-md); font-weight: var(--weight-medium); }
-  .check-list p { margin: var(--space-xs) 0 0; color: var(--check-ink); line-height: 1.5; }
-  .check-label { margin-top: var(--space-xs); color: var(--check-ink); font-family: var(--font-mono); font-size: var(--text-xs); }
-
-  .recovery,
-  .release-gate {
-    display: grid;
-    gap: var(--space-md);
-    margin-top: calc(var(--space-unit) * 7);
-    padding: var(--surface-padding) 0 0;
-    border-top: 1px solid var(--glass-line);
-    border-radius: 0;
-    background: transparent;
-  }
-  .recovery p,
-  .release-gate p { margin: 0; color: var(--fg-dim); line-height: 1.5; }
-  .recovery p { color: var(--check-ink); }
-  .release-gate { padding: var(--surface-padding); border-radius: var(--radius); }
-  .recovery > button,
-  .release-gate > button {
-    width: 100%;
-    min-height: 56px;
-    font-size: var(--text-md);
-  }
-  button {
-    min-height: 42px;
-    padding: 0 var(--space-sm);
-    border: 0;
-    border-radius: var(--radius);
-    background: var(--control-sheen), var(--action-bg);
-    box-shadow: var(--shadow-control);
-    color: var(--action-ink);
-    font-family: var(--font-structure);
-    font-weight: var(--weight-structure);
-    transition:
-      color var(--dur-fast) var(--ease-out),
-      background var(--dur-fast) var(--ease-out),
-      border-color var(--dur-fast) var(--ease-out),
-      box-shadow var(--dur-fast) var(--ease-out),
-      transform var(--dur-fast) var(--ease-out);
-  }
-  button:disabled { cursor: not-allowed; background: var(--glass-strong); color: var(--fg-muted); box-shadow: none; }
-  button:hover:not(:disabled) { box-shadow: var(--shadow-control-hover); }
-  button:active:not(:disabled) { transform: scale(var(--press-scale)); box-shadow: var(--shadow-control-pressed); }
-
-  .model-grid { display: grid; grid-template-columns: 1fr; gap: var(--space-6); }
-  .model-storage { display: grid; gap: var(--space-5); margin-block: var(--space-7); padding-block: var(--space-5); border-top: 1px solid var(--glass-line); }
-  .model-storage h3 { margin: 0; color: var(--fg); font-family: var(--font-structure); font-size: var(--text-onboarding-subheading); font-weight: var(--weight-structure-bold); }
-  .model-storage p { margin-block: var(--space-3); color: var(--fg-dim); overflow-wrap: anywhere; }
-  .stored-list { display: grid; gap: var(--space-4); margin: 0; padding: 0; list-style: none; }
-  .stored-list > li { padding-block: var(--space-4); border-bottom: 1px solid var(--glass-line); }
-  .stored-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-5); }
-  .stored-row > div { flex: 1 1 16rem; min-width: 0; }
-  .stored-row p { margin: var(--space-1) 0 0; font-family: var(--font-data); font-size: var(--text-xs); }
-  .stored-size,
-  .stored-total { color: var(--fg-muted); font-family: var(--font-data); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
-  .stored-total { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-4); }
-  .stored-total strong { color: var(--fg); font-size: var(--text-sm); }
-  .stored-quota { font-size: var(--text-sm); }
-  .delete-confirmation { flex-basis: 100%; }
-  .kept-copy { font-family: var(--font-data); font-size: var(--text-xs); }
-  .download-gate > .quiet-action { justify-self: start; }
-  .why-this { margin: var(--space-sm) var(--space-xs) 0; color: var(--fg-dim); }
-  .why-this > summary { display: inline-flex; align-items: center; min-height: var(--control-target); color: var(--fg); cursor: pointer; font-family: var(--font-structure); }
-  .why-this p { max-width: 62ch; margin: var(--space-xs) 0 0; line-height: 1.5; }
-  .compare-models { margin-block: var(--space-7); }
-  .compare-models > summary { display: flex; align-items: center; min-height: var(--control-target); color: var(--fg); cursor: pointer; font-family: var(--font-structure); font-size: var(--text-md); font-weight: var(--weight-medium); }
-  .compare-scroll { max-width: 100%; margin-top: var(--space-4); overflow-x: auto; }
-  .compare-scroll table { width: 100%; min-width: 52rem; border-collapse: collapse; font-size: var(--text-sm); }
-  .compare-scroll th,
-  .compare-scroll td { padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--glass-line); text-align: start; vertical-align: top; }
-  .compare-scroll thead th { color: var(--fg-muted); font-family: var(--font-data); font-size: var(--text-xs); font-weight: var(--weight-medium); }
-  .compare-scroll tbody th { color: var(--fg); font-family: var(--font-structure); font-weight: var(--weight-structure); }
-  .compare-scroll td { color: var(--fg-dim); font-variant-numeric: tabular-nums; }
-  .compare-scroll .selected-row > * { background: color-mix(in srgb, var(--pillar-lens) 8%, transparent); }
-  .compare-note,
-  .compare-reason { color: var(--fg-muted); font-family: var(--font-data); font-size: var(--text-xs); }
-  .compare-reason { display: block; max-width: 28ch; margin-top: var(--space-1); }
-  .delete-model { color: var(--accent-red); background: var(--control-sheen), var(--surface-hi); }
-  .base-models { margin-block: var(--space-7); }
-  .base-models > summary {
-    min-height: 56px;
-    font-size: var(--text-lg);
-    line-height: 1.4;
-    padding-block: var(--space-5);
-    cursor: pointer;
-    color: var(--fg);
-    font-weight: var(--weight-medium);
-  }
-  .base-models-note {
-    display: inline-block;
-    margin-inline-start: var(--space-4);
-    color: var(--fg-muted);
-    font-size: var(--text-md);
-    font-weight: var(--weight-normal);
-  }
-  .base-model-warning,
-  .base-model-description {
-    margin: 0 0 var(--space-6);
-    max-width: 70ch;
-    color: var(--fg-dim);
-    line-height: 1.6;
-  }
-  .base-model-warning { color: var(--accent-yellow); }
+  /* The models. */
+  .model-panel { display: grid; gap: var(--s5); }
+  .panel-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--s2) var(--s4); }
+  h2 { color: var(--ink); font: var(--type-heading); letter-spacing: -0.02em; }
+  .heading-side { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s4); color: var(--ink3); font: var(--type-meta); }
+  .heading-side code { font: var(--type-meta); }
+  .model-grid { display: grid; gap: var(--s2); }
   .model-grid > button {
     display: grid;
-    grid-template-columns: minmax(115px, 0.32fr) minmax(0, 1fr) minmax(130px, auto);
-    gap: var(--space-xs) var(--space-md);
+    grid-template-columns: minmax(120px, 180px) minmax(0, 1fr) minmax(120px, auto);
+    gap: var(--s1) var(--s5);
     align-items: baseline;
-    min-height: 100px;
-    padding: var(--surface-padding);
-    border: 0;
-    border-radius: var(--radius);
-    background: var(--surface-card);
-    background-image: var(--surface-sheen) !important;
-    box-shadow: var(--shadow-card);
-    color: var(--fg);
+    justify-content: stretch;
+    height: auto;
+    padding: var(--s4) var(--s5);
+    border-radius: var(--r-row);
+    background: var(--wash);
+    color: var(--ink2);
+    font: var(--type-small);
+    white-space: normal;
     text-align: start;
   }
-  .model-grid > button:hover:not(:disabled) {
-    background: var(--surface-card-hover);
-    box-shadow: var(--shadow-rack-hover);
-    transform: translateY(-1px);
-  }
-  .model-grid > button:active:not(:disabled) {
-    transform: scale(var(--press-scale));
-  }
-  .model-grid > button.selected,
-  .model-grid > button.selected:hover:not(:disabled),
-  .model-grid > button.selected:active:not(:disabled) {
-    background: color-mix(in srgb, var(--pillar-lens) 8%, var(--surface-card));
-    box-shadow: 0 0 0 2px var(--pillar-lens), 0 10px 28px -8px color-mix(in srgb, var(--pillar-lens) 40%, transparent), var(--shadow-card);
-  }
-  .model-grid > button.blocked {
-    background: var(--danger-bg);
-  }
-  .model-topline { grid-row: 1 / span 5; display: flex; flex-direction: column; gap: var(--space-xs); color: var(--fg-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
-  .model-topline code { color: var(--fg-muted); text-transform: none; }
-  .model-name {
-    grid-column: 2;
-    display: flex;
-    min-width: 0;
-    align-items: center;
-    gap: var(--space-sm);
-  }
-  .model-name strong { display: flex; align-items: baseline; gap: var(--space-xs); min-width: 0; margin: 0; font-family: var(--font-structure); font-size: var(--text-onboarding-card-title); font-weight: var(--weight-structure-bold); line-height: 1.2; }
-  .model-name strong > span { min-width: 0; overflow-wrap: anywhere; }
-  .sae-available {
-    flex: 0 0 auto;
-    padding: var(--space-xs) var(--space-xs);
-    border-radius: var(--radius-pill);
-    background: color-mix(in srgb, var(--pillar-sae) 12%, transparent);
-    color: var(--pillar-sae);
-    font-family: var(--font-mono);
-    font-size: var(--text-2xs);
-    font-weight: var(--weight-data-bold);
-    letter-spacing: 0.08em;
-    line-height: 1;
-  }
-  .model-meta { margin-top: var(--space-xs); color: var(--fg-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
-  .model-meta,
-  .model-detail,
-  .model-reason { grid-column: 2; }
-  .model-detail { margin-top: var(--space-xs); color: var(--fg-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
-  .model-reason { max-width: 58ch; margin-top: var(--space-xs); color: var(--fg-dim); font-size: var(--text-sm); line-height: 1.5; }
-  .model-fit { grid-column: 3; grid-row: 1; text-align: end; font-family: var(--font-mono); font-size: var(--text-xs); }
-  .model-fit.recommended,
-  .model-fit.eligible { color: var(--live); }
-  .model-fit.uncertain { color: var(--accent-yellow); }
-  .model-fit.blocked { color: var(--accent-red); }
-  .installed-mark { grid-column: 3; color: var(--live); font-family: var(--font-mono); font-size: var(--text-xs); text-align: end; }
-  .model-provenance {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: var(--space-xs);
-    margin: var(--space-sm) var(--space-xs) 0;
-    color: var(--fg-muted);
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-  }
-  .selected-model-details { min-width: 0; }
-  .model-provenance a { display: inline-flex; align-items: center; min-height: var(--control-target); color: var(--fg-dim); text-underline-offset: 3px; }
-  .model-provenance a:hover { color: var(--fg); }
-  .tool-picker {
-    display: grid;
-    gap: var(--space-5);
-    margin-top: var(--space-lg);
-    padding: var(--space-lg) 0 0;
-    border-top: 1px solid var(--glass-line);
-  }
-  .tool-picker-heading {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-4);
-  }
-  .tool-picker h3 {
-    margin: 0;
-    color: var(--fg);
-    font-family: var(--font-structure);
-    font-size: var(--text-onboarding-subheading);
-    font-weight: var(--weight-structure-bold);
-  }
-  .tool-option {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    gap: var(--space-5);
-    align-items: start;
-    min-height: var(--control-target);
-    padding: var(--space-4) 0;
-    border-bottom: 1px solid var(--glass-line);
-    border-radius: 0;
-    background: transparent;
-    color: var(--fg);
-  }
-  label.tool-option { cursor: pointer; }
-  label.tool-option:has(input:focus-visible) {
-    outline: 2px solid var(--focus-ring);
-    outline-offset: 2px;
-  }
-  .tool-option input {
-    width: 18px;
-    height: 18px;
-    margin: var(--space-xs) 0 0;
-    accent-color: var(--accent);
-  }
-  .tool-option strong {
-    display: block;
-    font-family: var(--font-structure);
-    font-weight: var(--weight-structure);
-  }
-  .tool-option strong span {
-    color: var(--fg-muted);
-    font-family: var(--font-data);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-medium);
-  }
-  .tool-option p,
-  .tool-empty {
-    margin: var(--space-1) 0 0;
-    color: var(--fg-dim);
-    font-family: var(--font-reading);
-    line-height: 1.5;
-  }
-  .tool-option > span:last-child,
-  .tool-total {
-    color: var(--fg-muted);
-    font-family: var(--font-data);
-    font-size: var(--text-xs);
-  }
-  /* A plain mark, not a box: included tools cannot be switched off. */
-  .tool-check {
-    display: grid;
-    place-items: center;
-    width: 18px;
-    height: 20px;
-    color: var(--live);
-    font-family: var(--font-data);
-  }
-  .tool-installed { opacity: 0.78; }
-  .tool-total {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: var(--space-4);
-    padding: var(--space-2) var(--space-1) 0;
-  }
-  .tool-total strong { color: var(--fg); font-size: var(--text-sm); }
-  .tool-error { margin: 0; color: var(--accent-red); }
-  .runtime-gate { margin-top: calc(var(--space-unit) * 7); border: 0; }
-  .unavailable-gate { border-top: 0; }
-  .unsafe-warning {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-6);
-    margin-top: var(--space-6);
-    padding: var(--surface-padding);
-    border: 1px solid var(--warning-border);
-    border-radius: var(--radius-lg);
-    background: var(--warning-bg);
-  }
-  .unsafe-warning strong { color: var(--warning-ink); }
-  .unsafe-warning p { margin: var(--space-xs) 0 0; color: var(--warning-ink); line-height: 1.5; }
-  .warning-actions { display: flex; flex-wrap: wrap; gap: var(--space-6); flex: 0 0 auto; }
-  .unsafe-warning .safe-action {
-    background: var(--action-bg);
-    color: var(--action-ink);
-  }
-  .unsafe-warning .danger-action {
-    background: var(--danger-bg);
-    color: var(--accent-red);
-  }
-  .unsafe-warning .warning-action {
-    background: var(--warning-action);
-    color: var(--warning-action-ink);
-  }
-  .unsafe-warning .warning-action:hover:not(:disabled) { background: var(--warning-action-hover); }
-  .release-gate strong { color: var(--fg); }
-  .release-gate p { margin-top: var(--space-xs); max-width: 680px; }
-  .persistence-notice { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: var(--space-6); margin-top: var(--space-6); }
-  .persistence-notice strong { color: var(--accent-yellow); }
-  .persistence-notice p { margin: var(--space-1) 0 0; }
-  .warning-copy { color: var(--accent-yellow) !important; }
-  .persistence-help { color: var(--fg-dim); }
-  .quiet-action { min-height: var(--control-target); border: 0; background: var(--control-sheen), var(--bg-elev); color: var(--fg); }
-  .progress-track {
-    width: min(520px, 100%);
-    height: 7px;
-    margin-top: var(--space-sm);
-    overflow: hidden;
-    border-radius: var(--radius-pill);
-    background: var(--glass-strong);
-  }
-  .progress-track span {
-    display: block;
-    height: 100%;
-    border-radius: inherit;
-    background: var(--accent);
-    transition: width var(--dur) linear;
-  }
-  .progress-copy { font-family: var(--font-mono); font-size: var(--text-xs); }
+  .model-grid > button.selected { background: var(--wash2); }
+  .model-grid > button[aria-disabled="true"] { opacity: 0.55; }
+  .model-grid > button:active:not(:disabled) { scale: 0.995; }
+  @media (hover: hover) { .model-grid > button:hover:not(:disabled) { opacity: 1; background: var(--wash2); } }
+  .model-topline { display: grid; gap: 2px; color: var(--ink3); font: var(--type-meta); }
+  .model-topline code { font: var(--type-meta); }
+  .model-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s2); min-width: 0; }
+  .model-name strong { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: var(--s2); color: var(--ink); font: var(--type-label); overflow-wrap: anywhere; }
+  .sae-available { padding: 0 var(--s2); border-radius: var(--r-chip); background: var(--paper); color: var(--ink2); font: var(--type-meta); }
+  .model-meta, .model-detail, .model-reason { grid-column: 2; color: var(--ink2); font: var(--type-small); }
+  .model-meta { color: var(--ink3); }
+  .model-fit { grid-column: 3; grid-row: 1; justify-self: end; color: var(--ink3); font: var(--type-meta); text-align: end; }
+  .model-fit.recommended, .model-fit.blocked { color: var(--ink); }
+  .installed-mark { grid-column: 3; justify-self: end; color: var(--ink3); font: var(--type-meta); text-align: end; }
 
-  @keyframes pulse { 50% { opacity: 0.35; } }
+  .base-models, .compare-models, .why-this { display: grid; gap: var(--s3); }
+  .base-models :global(.inner) { display: grid; gap: var(--s4); padding-top: var(--s3); }
+  .base-model-warning, .base-model-description, .why-this p { max-width: 64ch; color: var(--ink2); font: var(--type-small); }
+  .compare-scroll { overflow-x: auto; margin-top: var(--s3); border-radius: var(--r-box); background: var(--wash); }
+  .compare-scroll:focus-visible { outline-offset: 2px; }
+  .compare-scroll table { width: 100%; min-width: 760px; border-collapse: collapse; font: var(--type-small); }
+  .compare-scroll th, .compare-scroll td { padding: var(--s3) var(--s4); text-align: start; vertical-align: top; }
+  .compare-scroll thead th { color: var(--ink3); font: var(--type-head); }
+  .compare-scroll tbody th { color: var(--ink); font-weight: 500; }
+  .compare-scroll td { color: var(--ink2); }
+  .compare-scroll .selected-row > * { background: var(--wash2); }
+  .compare-note, .compare-reason { color: var(--ink3); font: var(--type-meta); }
+  .compare-reason { display: block; margin-top: 2px; }
 
-  @media (max-width: 760px) {
-    .model-grid > button { grid-template-columns: 1fr auto; min-height: 0; }
-    .model-topline { grid-column: 1 / -1; grid-row: auto; flex-direction: row; justify-content: space-between; }
+  .selected-model-details { display: grid; gap: var(--s4); }
+  .model-provenance { display: flex; flex-wrap: wrap; gap: var(--s2); color: var(--ink3); font: var(--type-small); }
+  .model-provenance a { color: var(--ink2); text-decoration: underline; text-decoration-color: var(--wash2); text-decoration-thickness: 2px; text-underline-offset: 4px; transition: color var(--fast) var(--ease); }
+  @media (hover: hover) { .model-provenance a:hover { color: var(--ink); } }
+
+  .tool-picker { display: grid; gap: var(--s2); }
+  .tool-picker-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--s2) var(--s4); margin-bottom: var(--s2); }
+  .tool-picker h3 { color: var(--ink); font: var(--type-label); }
+  .tool-option { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: var(--s1) var(--s3); align-items: start; padding: var(--s3) var(--s4); border-radius: var(--r-box); background: var(--wash); color: var(--ink2); font: var(--type-small); }
+  label.tool-option { cursor: pointer; transition: background-color var(--fast) var(--ease); }
+  @media (hover: hover) { label.tool-option:hover { background: var(--wash2); } }
+  label.tool-option:has(input:focus-visible) { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .tool-option input { width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--ink); }
+  .tool-check { display: grid; place-items: center; height: 20px; color: var(--ink); }
+  .tool-option strong { color: var(--ink); font: var(--type-control); }
+  .tool-option strong span { color: var(--ink3); font-weight: 400; }
+  .tool-option > span:last-child { color: var(--ink3); font: var(--type-meta); text-align: end; }
+  .tool-empty, .tool-error { color: var(--ink2); font: var(--type-small); }
+  .tool-error { color: var(--ink); }
+  .tool-total { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--s2); padding: var(--s2) var(--s4) 0; color: var(--ink3); font: var(--type-small); }
+  .tool-total strong { color: var(--ink); font-weight: 500; }
+
+  /* Download progress: a wash track with an ink bar, numbers beside it. */
+  .progress-track { position: relative; width: 100%; height: 4px; margin-top: var(--s2); border-radius: 2px; background: var(--wash2); overflow: hidden; }
+  .progress-track span { position: absolute; inset: 0 auto 0 0; border-radius: 2px; background: var(--ink); transition: width var(--glide) var(--ease); }
+  .progress-copy { color: var(--ink3); font: var(--type-meta); }
+  .kept-copy { color: var(--ink2); }
+
+  /* Models stored on this device. */
+  .model-storage { display: grid; gap: var(--s4); }
+  .model-storage h3 { color: var(--ink); font: var(--type-label); }
+  .model-storage p { color: var(--ink2); font: var(--type-small); overflow-wrap: anywhere; }
+  .stored-list { display: grid; gap: var(--s2); }
+  .stored-list > li { display: grid; gap: var(--s3); padding: var(--s4) var(--s5); border-radius: var(--r-row); background: var(--wash); }
+  .stored-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s5); }
+  .stored-row > div { flex: 1 1 240px; min-width: 0; }
+  .stored-row strong { color: var(--ink); font: var(--type-label); }
+  .stored-size { color: var(--ink3); font: var(--type-meta); }
+  .stored-total { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--s2); padding: 0 var(--s5); color: var(--ink3); font: var(--type-small); }
+  .stored-total strong { color: var(--ink); font-weight: 500; }
+  .stored-quota { padding: 0 var(--s5); color: var(--ink3); font: var(--type-meta); }
+
+  @media (max-width: 720px) {
+    main { gap: var(--s6); padding-top: var(--s4); }
+    button { height: 44px; }
+    .quiet-action { height: auto; min-height: 44px; }
+    .model-grid > button { grid-template-columns: minmax(0, 1fr) auto; padding: var(--s4); }
+    .model-topline { grid-column: 1; grid-row: 1; }
     .model-name { grid-column: 1 / -1; }
     .model-meta, .model-detail, .model-reason { grid-column: 1 / -1; }
-    .model-fit, .installed-mark { grid-column: auto; grid-row: auto; text-align: start; }
-    .unsafe-warning { align-items: stretch; flex-direction: column; }
-    .persistence-notice { grid-template-columns: 1fr; }
-    .persistence-notice .quiet-action { width: 100%; }
-    .tool-option { grid-template-columns: auto minmax(0, 1fr); }
-    .tool-option > span:last-child { grid-column: 2; }
-    .warning-actions { flex-direction: column; }
-    button { min-height: 44px; }
-    .check-list li { grid-template-columns: 30px minmax(0, 1fr); }
-    .check-label { grid-column: 2; margin-top: 0; }
-  }
-
-  @media (max-width: 460px) {
-    .panel-heading { align-items: start; flex-direction: column; }
-    .device-details > summary { align-items: flex-start; flex-direction: column; justify-content: center; gap: var(--space-xs); }
-    .check-summary-copy { align-items: flex-start; flex-direction: column; gap: var(--space-xs); }
-  }
-
-  @media (max-height: 600px) and (orientation: landscape) {
-    main {
-      padding-top: var(--surface-padding);
-    }
-  }
-
-  @media (prefers-reduced-motion: no-preference) {
-    .recovery button,
-    .release-gate button,
-    .unsafe-warning button,
-    .workbench-error button {
-      transition: transform var(--dur-fast) var(--ease-out);
-    }
-    .check-mark.running { animation: pulse 1.2s var(--ease-in-out) infinite; }
+    .model-fit { grid-column: 2; grid-row: 1; }
+    .installed-mark { grid-column: 1 / -1; justify-self: start; text-align: start; }
+    .workbench-error, .recovery, .release-gate, .unsafe-warning, .persistence-notice { padding: var(--s4); }
+    .release-gate > button, .warning-actions > button { flex: 1 1 auto; }
   }
 </style>

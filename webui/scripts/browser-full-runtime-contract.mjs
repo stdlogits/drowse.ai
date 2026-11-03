@@ -1,19 +1,35 @@
-export const BROWSER_FULL_RUNTIME_TOOL_VERSION = "drowse-real-browser-e2e-v4";
+export const BROWSER_FULL_RUNTIME_TOOL_VERSION = "drowse-real-browser-e2e-v5";
 
-export const REQUIRED_BROWSER_FULL_RUNTIME_CHECKS = Object.freeze([
-  "local_artifacts",
-  "webgpu_adapter",
-  "load",
-  "ordinary_generation",
-  "forced_replay",
-  "explicit_capture",
-  "flat_gated_instruments",
-  "curved_fitting",
-  "curved_generation",
-  "stop",
-  "unload_reload",
-  "offline_reuse",
-]);
+/** The physical harness's checks for a hook ABI v5 library, in order. `load` attests the
+ *  library's schema-4 descriptor against the lock (profile, block spec, capacities); a
+ *  `standard-v4` library then runs `units` (a unit ablation that moves the next-token
+ *  distribution, finite unit taps, one token-anatomy replay, one static unit read and the S
+ *  readout), a `standard-v4-residual` one `unit_refusal` (each unit call answers the lock's
+ *  `unitRefusal`, and the library exports no unit function). */
+export function requiredBrowserFullRuntimeChecks(structuredHookProfile) {
+  const unitCheck = {
+    "standard-v4": "units",
+    "standard-v4-residual": "unit_refusal",
+  }[structuredHookProfile];
+  if (unitCheck === undefined) {
+    throw new Error(`structured hook profile ${JSON.stringify(structuredHookProfile)} predates hook ABI v5`);
+  }
+  return Object.freeze([
+    "local_artifacts",
+    "webgpu_adapter",
+    "load",
+    "ordinary_generation",
+    "forced_replay",
+    "explicit_capture",
+    "flat_gated_instruments",
+    "curved_fitting",
+    "curved_generation",
+    unitCheck,
+    "stop",
+    "unload_reload",
+    "offline_reuse",
+  ]);
+}
 
 export function validatePairedSteeringControls(logprobs) {
   const names = ["baseline", "zero", "positive", "negative"];
@@ -52,8 +68,12 @@ export function parseBrowserFullRuntimeArguments(args) {
     runtimeLock: null,
     saeDirectory: null,
     saeFeature: 0,
+    slensDirectory: null,
+    slensWord: "ocean",
     stopMaxTokens: 64,
     timeoutMs: 900_000,
+    unitsDirectory: null,
+    verbose: false,
     webLlm: null,
     coreDirectory: null,
     jlensDirectory: null,
@@ -74,8 +94,11 @@ export function parseBrowserFullRuntimeArguments(args) {
     ["--runtime-lock", "runtimeLock"],
     ["--sae-directory", "saeDirectory"],
     ["--sae-feature", "saeFeature"],
+    ["--slens-directory", "slensDirectory"],
+    ["--slens-word", "slensWord"],
     ["--stop-max-tokens", "stopMaxTokens"],
     ["--timeout-ms", "timeoutMs"],
+    ["--units-directory", "unitsDirectory"],
     ["--webllm", "webLlm"],
   ]);
   const numeric = new Set([
@@ -89,11 +112,13 @@ export function parseBrowserFullRuntimeArguments(args) {
   const seen = new Set();
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
-    if (argument === "--headed") {
+    // `--verbose` echoes the page's console to stderr; without it the run writes only its report
+    // (stdout), as the release evidence producer requires of an observer.
+    if (argument === "--headed" || argument === "--verbose") {
       if (seen.has(argument))
         throw new Error(`${argument} may be supplied only once`);
       seen.add(argument);
-      result.headed = true;
+      result[argument.slice(2)] = true;
       continue;
     }
     const field = fields.get(argument);
@@ -106,23 +131,21 @@ export function parseBrowserFullRuntimeArguments(args) {
       throw new Error(`${argument} requires a value`);
     result[field] = numeric.has(field) ? Number(value) : value;
   }
+  // The instrument packs past the core are optional here; which ones a library must (or may not)
+  // carry follows its profile (`validateBrowserFullRuntimePackSets`, once the lock is read).
   for (const field of [
     "modelId",
     "modelDirectory",
     "modelLibrary",
     "webLlm",
     "coreDirectory",
-    "jlensDirectory",
-    "saeDirectory",
   ]) {
     if (result[field] === null)
       throw new Error(`${flagFor(field)} is required`);
   }
-  if (
-    result.browserChannel !== "chrome" &&
-    result.browserChannel !== "msedge"
-  ) {
-    throw new Error("--browser-channel must be chrome or msedge");
+  // Chrome's release channels and Edge (a machine may carry only one, such as Chrome Beta).
+  if (!["chrome", "chrome-beta", "msedge"].includes(result.browserChannel)) {
+    throw new Error("--browser-channel must be chrome, chrome-beta or msedge");
   }
   if (
     result.browserFlags !== "compatibility" &&
@@ -143,14 +166,39 @@ export function parseBrowserFullRuntimeArguments(args) {
   if (!Number.isSafeInteger(result.timeoutMs) || result.timeoutMs < 60_000) {
     throw new Error("--timeout-ms must be an integer of at least 60000");
   }
-  if (
-    typeof result.jlensWord !== "string" ||
-    !result.jlensWord.trim() ||
-    result.jlensWord.length > 128
-  ) {
-    throw new Error("--jlens-word must be a non-empty single-token candidate");
+  for (const [flag, field] of [["--jlens-word", "jlensWord"], ["--slens-word", "slensWord"]]) {
+    if (
+      typeof result[field] !== "string" ||
+      !result[field].trim() ||
+      result[field].length > 128
+    ) {
+      throw new Error(`${flag} must be a non-empty single-token candidate`);
+    }
   }
-  return Object.freeze({ ...result, jlensWord: result.jlensWord.trim() });
+  return Object.freeze({ ...result, jlensWord: result.jlensWord.trim(), slensWord: result.slensWord.trim() });
+}
+
+/** The instrument packs a hook ABI v5 library runs with, as the catalog admits them
+ *  (`build-hosted-catalog.mjs`): a `standard-v4` library carries its R, S and units packs, a
+ *  `standard-v4-residual` one no S or units pack (an R pack is optional: a provider lens). An SAE
+ *  pack is optional on both. Returns the pack kinds present, in staging order. */
+export function validateBrowserFullRuntimePackSets(structuredHookProfile, directories) {
+  requiredBrowserFullRuntimeChecks(structuredHookProfile);
+  const present = (kind) => directories[kind] !== null && directories[kind] !== undefined;
+  if (structuredHookProfile === "standard-v4") {
+    for (const [kind, flag] of [["jlens", "--jlens-directory"], ["slens", "--slens-directory"], ["units", "--units-directory"]]) {
+      if (!present(kind)) {
+        throw new Error(`${flag} is required: a standard-v4 library ships its R, S and units packs`);
+      }
+    }
+  } else {
+    for (const [kind, flag] of [["slens", "--slens-directory"], ["units", "--units-directory"]]) {
+      if (present(kind)) {
+        throw new Error(`${flag} is refused: a standard-v4-residual library has no S lens or units`);
+      }
+    }
+  }
+  return Object.freeze(["jlens", "slens", "units", "sae"].filter(present));
 }
 
 export function validateBrowserFullRuntimeModelClosure({
@@ -165,10 +213,8 @@ export function validateBrowserFullRuntimeModelClosure({
   }
   if (manifest.schemaVersion !== 1)
     throw new Error("browser model closure schema is unsupported");
-  const legacyRuntimeAlias = runtimeLock.runtimeAbi === "drowse-web-runtime-v1" &&
-    ["saklas-web-runtime-v1", "polythetic-web-runtime-v1"].includes(manifest.runtimeAbi);
   for (const [label, actual, expected] of [
-    ["runtime ABI", legacyRuntimeAlias ? runtimeLock.runtimeAbi : manifest.runtimeAbi, runtimeLock.runtimeAbi],
+    ["runtime ABI", manifest.runtimeAbi, runtimeLock.runtimeAbi],
     ["hook ABI", manifest.hookAbi, runtimeLock.hookAbi],
     ["architecture", manifest.architecture, lock.architecture],
     ["quantization", manifest.quantization, lock.quantization],
@@ -263,12 +309,12 @@ export function validateBrowserFullRuntimeAudit(audit) {
   return structuredClone(audit);
 }
 
-export function validateBrowserFullRuntimeTranscript(events) {
+export function validateBrowserFullRuntimeTranscript(events, structuredHookProfile) {
   if (!Array.isArray(events))
     throw new Error("browser check transcript must be an array");
   const checks = {};
   let eventIndex = 0;
-  for (const expected of REQUIRED_BROWSER_FULL_RUNTIME_CHECKS) {
+  for (const expected of requiredBrowserFullRuntimeChecks(structuredHookProfile)) {
     const started = events[eventIndex++];
     if (
       !started ||
@@ -309,9 +355,10 @@ export function validateBrowserFullRuntimeTranscript(events) {
 export function createBrowserFullRuntimeReport({
   events,
   environment,
+  structuredHookProfile,
   producedAt = new Date(),
 }) {
-  const checks = validateBrowserFullRuntimeTranscript(events);
+  const checks = validateBrowserFullRuntimeTranscript(events, structuredHookProfile);
   if (!isRecord(environment) || Object.keys(environment).length === 0) {
     throw new Error("browser E2E environment is required");
   }
@@ -328,6 +375,7 @@ export function createBrowserFullRuntimeReport({
     producedAt: timestamp,
     passed: true,
     releaseEvidence: false,
+    structuredHookProfile,
     environment: structuredClone(environment),
     checks,
   };

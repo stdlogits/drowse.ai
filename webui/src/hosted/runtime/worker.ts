@@ -20,6 +20,7 @@ import type {
   WorkerRequest,
   WorkerSuccessResponse,
 } from "../../../../drowse/webui/src/lib/runtime/contracts";
+import { isUnitsServiceMethod } from "./units/unitsService";
 import {
   isRuntimeServiceMethod,
   RUNTIME_PROTOCOL_VERSION,
@@ -31,7 +32,8 @@ import { assessModelVariant } from "../../lib/runtime/recommendation";
 import { outputTokenLimitForSignals } from "../../../../drowse/webui/src/lib/runtime/outputTokenPolicy";
 import {
   CatalogValidationError,
-  runtimeIdentitySha256,
+  lockedLibraryContract,
+  type CatalogRuntimeLockModel,
 } from "../../lib/runtime/catalog";
 import { BrowserCapabilityChecker, requestPersistentStorage, storageEstimate } from "./capabilities";
 import type { GpuAdapterLike } from "./capabilities";
@@ -72,19 +74,24 @@ import {
   type SessionCoordinatorPersistencePort,
 } from "./sessionCoordinator";
 import { BrowserSessionPersistence } from "../../../../drowse/webui/src/lib/sessionPersistence";
+import { LegacyStashingSessionStateStore } from "../../lib/runtime/legacyAutosaves";
 import {
   isFittingLifecycleRequest,
   runtimeServiceOperationPolicy,
   runtimeServiceRoute,
 } from "./operationPolicy";
 import { BrowserDrowseArchiveService } from "../artifacts/service";
-import { optionalPackHardwareBlock } from "./optionalPackCompatibility";
+import {
+  optionalPackHardwareBlock,
+  packInstallCovers,
+  packInstallFiles,
+} from "./optionalPackCompatibility";
 import { clearOwnedRuntimeStorage } from "./legacyRuntimeStorage";
-import { LEGACY_PRODUCT_SLUGS } from "../../../../drowse/webui/src/lib/brandMigration";
 import {
   ActivationSpool,
   BrowserActivationSpool,
 } from "../fitting/activationSpool";
+import { engineBusy, preflightSteeringValidation } from "./browserLoom";
 import type {
   WSServerMessage,
   WSGenerateRequest,
@@ -125,6 +132,15 @@ interface ArtifactDownloaderLike {
     packId: string,
     options: ArtifactDownloadOptions,
   ): Promise<ArtifactDownloadResult>;
+  /** One on-demand layer file into an installed pack (`VerifiedArtifactDownloader`). */
+  downloadPackFile?(
+    catalog: VerifiedCatalog,
+    modelVariantId: string,
+    packId: string,
+    path: string,
+    installedHashes: readonly string[],
+    options: ArtifactDownloadOptions,
+  ): Promise<ArtifactDownloadResult>;
   cancel(): boolean;
 }
 
@@ -142,7 +158,6 @@ interface SessionCoordinatorLike {
   restore(
     identity: HostedSessionRuntimeIdentity,
     mode?: "replace" | "reset",
-    compatibleRuntimeIdentitySha256s?: readonly string[],
   ): Promise<HostedSessionRestoreResult>;
   persist(identity: HostedSessionRuntimeIdentity): Promise<unknown>;
   close(): Promise<void>;
@@ -172,6 +187,9 @@ export interface HostedRuntimeWorkerDependencies {
   activationSpool?: ActivationSpool;
   storageEstimator?: () => Promise<RuntimeCapabilities["storage"]>;
   modelBackend?: BrowserModelBackend;
+  /** The runtime lock's models a load takes its library's block sites from (the embedded
+   *  lock's by default, the one the catalog was verified against). */
+  runtimeLockModels?: readonly CatalogRuntimeLockModel[];
   sessionPersistence?: SessionCoordinatorPersistencePort;
   sessionCoordinatorFactory?: SessionCoordinatorFactory;
   clearRuntimeStorage?: () => Promise<void>;
@@ -182,6 +200,7 @@ export class HostedRuntimeWorker {
   private readonly capabilityChecker: CapabilityCheckerLike;
   private readonly contentStore: ContentAddressedStore;
   private readonly catalogRepository: CatalogRepositoryLike;
+  private readonly runtimeLockModels: readonly CatalogRuntimeLockModel[];
   private readonly downloader: ArtifactDownloaderLike;
   private readonly artifactService: ArtifactServicePort;
   private readonly activationSpool: ActivationSpool;
@@ -191,6 +210,9 @@ export class HostedRuntimeWorker {
   private readonly sessionCoordinatorFactory: SessionCoordinatorFactory;
   private readonly clearRuntimeStorage: () => Promise<void>;
   private acceptedCatalog: VerifiedCatalog | null = null;
+  /** On-demand pack files are fetched one at a time: each fetch rewrites its pack's install
+   *  record from the record it reads, so two at once would drop one's object from the record. */
+  private packFileFetches: Promise<unknown> = Promise.resolve();
   private checkedCapabilities: RuntimeCapabilities | null = null;
   private admittedDownloadRequestId: string | null = null;
   private cancelAdmittedDownload = false;
@@ -237,6 +259,7 @@ export class HostedRuntimeWorker {
     this.capabilityChecker = dependencies.capabilityChecker ?? new BrowserCapabilityChecker();
     this.contentStore = dependencies.contentStore ?? new BrowserContentStore();
     this.catalogRepository = dependencies.catalogRepository ?? new VerifiedCatalogRepository();
+    this.runtimeLockModels = dependencies.runtimeLockModels ?? HOSTED_DISTRIBUTION_CONFIG.runtimeLockModels;
     this.downloader = dependencies.downloader ?? new VerifiedArtifactDownloader(
       this.contentStore,
       {
@@ -249,7 +272,10 @@ export class HostedRuntimeWorker {
     this.artifactService = dependencies.artifactService ?? new BrowserDrowseArchiveService();
     this.activationSpool = dependencies.activationSpool ?? new BrowserActivationSpool();
     this.modelBackend = dependencies.modelBackend ?? new UnavailableBrowserModelBackend();
-    this.sessionPersistence = dependencies.sessionPersistence ?? new BrowserSessionPersistence();
+    // Autosaves this version cannot open are stashed for the old-chats export, not deleted.
+    this.sessionPersistence = dependencies.sessionPersistence ?? new BrowserSessionPersistence({
+      store: new LegacyStashingSessionStateStore(),
+    });
     this.sessionCoordinatorFactory = dependencies.sessionCoordinatorFactory ?? (
       (persistence, execute, options) =>
         new BrowserSessionCoordinator(persistence, execute, options)
@@ -331,6 +357,20 @@ export class HostedRuntimeWorker {
           return;
         }
         this.admittedFittingRequestId = request.requestId;
+      }
+      if (
+        isSteeringValidationRequest(request) && this.loadedSelection !== null &&
+        (this.admittedGenerationRequestId !== null || this.admittedFittingRequestId !== null)
+      ) {
+        // drowse's session_lock_or_busy: a validation is worthless once stale, so while a
+        // generation or fit holds the model it answers now (in-band, or 409) instead of
+        // queueing behind the whole operation.
+        this.answerBusySteeringValidation(
+          request.requestId,
+          request.payload.args,
+          this.loadedSelection.model.id,
+        );
+        return;
       }
       if (
         this.admittedGenerationRequestId !== null &&
@@ -1133,10 +1173,7 @@ export class HostedRuntimeWorker {
         !pack.compatibleContextBindingSha256.includes(contextBindingSha256)
       ) continue;
       const install = installedPacks.get(pack.id);
-      if (
-        !install ||
-        !sameObjectHashes(install.objectHashes, pack.files.map((file) => file.sha256))
-      ) {
+      if (!install || !packInstallCovers(pack, selection.variant, install.objectHashes)) {
         continue;
       }
       if (
@@ -1148,7 +1185,8 @@ export class HostedRuntimeWorker {
         ) !== null
       ) continue;
       const packArtifacts: BrowserModelArtifact[] = [];
-      for (const manifest of pack.files) {
+      const installFiles = packInstallFiles(pack, selection.variant);
+      for (const manifest of installFiles) {
         const file = await this.contentStore.verifiedFile(manifest.sha256);
         if (!file || file.size !== manifest.bytes) {
           await this.contentStore.removeInstall(pack.id, "pack");
@@ -1157,7 +1195,7 @@ export class HostedRuntimeWorker {
         }
         packArtifacts.push({ manifest, file });
       }
-      if (packArtifacts.length === pack.files.length) {
+      if (packArtifacts.length === installFiles.length) {
         const activeKind = optionalPacks.find(({ pack: active }) => active.kind === pack.kind);
         if (activeKind && pack.kind !== "jlens") {
           throw runtimeFailure(
@@ -1167,7 +1205,11 @@ export class HostedRuntimeWorker {
             409,
           );
         }
-        optionalPacks.push({ pack, artifacts: packArtifacts });
+        optionalPacks.push({
+          pack,
+          artifacts: packArtifacts,
+          fetchFile: this.packFileFetcher(selection.variant.id, pack),
+        });
         selectedPackManifests.push(pack);
       }
     }
@@ -1309,6 +1351,29 @@ export class HostedRuntimeWorker {
     }
   }
 
+  /** `sessions.validateSteering` during an admitted generation or fit: the checks that need no
+   *  model answer in-band (the empty expression, a parse or fold error, malformed options), as
+   *  drowse answers them before its lock; anything that needs the compiler answers 409
+   *  ENGINE_BUSY. */
+  private answerBusySteeringValidation(
+    requestId: string,
+    args: readonly unknown[],
+    modelId: string,
+  ): void {
+    try {
+      const preflight = preflightSteeringValidation(
+        args, modelId, this.modelBackend.steeringManifolds?.() ?? null,
+      );
+      if ("response" in preflight) {
+        this.success(requestId, preflight.response);
+        return;
+      }
+      throw engineBusy();
+    } catch (error) {
+      this.error(requestId, asFailure(error));
+    }
+  }
+
   private async handleServiceRequest(
     requestId: string,
     request: RuntimeServiceRequest,
@@ -1445,8 +1510,7 @@ export class HostedRuntimeWorker {
       (progress) => {
         this.emitBackendRequestEvent(progress, requestId);
       },
-      concurrentTreeMutation ||
-          (request.service === "instruments" && request.method === "tokenReadout")
+      concurrentTreeMutation || waitsForModelUse(request)
         ? { waitForActiveRequest: true, requireReadyAfterWait: true }
         : undefined,
     );
@@ -1555,7 +1619,9 @@ export class HostedRuntimeWorker {
           if (queuedFailure !== null) return;
           try {
             await this.emitModelMessage(
-              request.request_id === undefined ? message : { ...message, request_id: request.request_id },
+              request.request_id === undefined || message.type === "resync"
+                ? message
+                : { ...message, request_id: request.request_id },
               requestId, protocol,
             );
           } catch (error) {
@@ -1614,6 +1680,11 @@ export class HostedRuntimeWorker {
   ): Promise<void> {
     if (message.type === "request_complete") {
       throw generationProtocolViolation("Request completion belongs to the transport");
+    }
+    if (message.type === "resync") {
+      // A server's outbound queue drops frames for a slow reader; the
+      // in-process model backend has no such queue and never drops one.
+      throw generationProtocolViolation("The browser runtime never drops a frame to resync");
     }
     if (message.type === "error") {
       protocol.terminalError = true;
@@ -2113,7 +2184,7 @@ export class HostedRuntimeWorker {
       const pack = current.variant.packs.find((candidate) =>
         candidate.id === previousPack.pack.id
       );
-      const previousHashes = previousPack.artifacts.map(({ manifest }) => manifest.sha256);
+      const previousHashes = previousPack.pack.files.map((file) => file.sha256);
       if (
         !pack || pack.kind !== previousPack.pack.kind || pack.required ||
         pack.kind === "core" ||
@@ -2139,7 +2210,7 @@ export class HostedRuntimeWorker {
           409,
         );
       }
-      if (!sameObjectHashes(install.objectHashes, pack.files.map((file) => file.sha256))) {
+      if (!packInstallCovers(pack, current.variant, install.objectHashes)) {
         throw runtimeFailure(
           "INSTRUMENT_PACK_BINDING_MISMATCH",
           `Reinstall ${pack.displayName} from the current verified catalog before recovering it`,
@@ -2159,10 +2230,11 @@ export class HostedRuntimeWorker {
       optionalPacks.push({
         pack,
         artifacts: await this.reopenVerifiedArtifacts(
-          pack.files,
+          packInstallFiles(pack, current.variant),
           "VERIFIED_PACK_OBJECT_MISSING",
           `instrument pack ${pack.displayName}`,
         ),
+        fetchFile: this.packFileFetcher(current.variant.id, pack),
       });
       selectedPackManifests.push(pack);
     }
@@ -2182,6 +2254,89 @@ export class HostedRuntimeWorker {
       artifacts,
       optionalPacks,
     };
+  }
+
+  /** A pack's on-demand layer files (`BrowserInstrumentPackArtifacts.fetchFile`): the verified
+   *  local copy, else a download of that one file into the pack's install, authorized by the
+   *  accepted catalog like any download. */
+  private packFileFetcher(
+    modelVariantId: string,
+    pack: CatalogInstrumentPack,
+  ): (manifest: BrowserModelArtifact["manifest"], signal: AbortSignal) => Promise<File> {
+    return (manifest, signal) => {
+      const fetch = this.packFileFetches.then(() => this.fetchPackFile(modelVariantId, pack, manifest, signal));
+      this.packFileFetches = fetch.catch(() => undefined);
+      return fetch;
+    };
+  }
+
+  private async fetchPackFile(
+    modelVariantId: string,
+    pack: CatalogInstrumentPack,
+    manifest: BrowserModelArtifact["manifest"],
+    signal: AbortSignal,
+  ): Promise<File> {
+    signal.throwIfAborted();
+    if (!pack.files.some((file) => file.path === manifest.path && file.sha256 === manifest.sha256)) {
+      throw runtimeFailure(
+        "INSTRUMENT_PACK_ARTIFACT_MISMATCH",
+        `${manifest.path} is not in ${pack.displayName}'s verified closure`,
+        false,
+        409,
+      );
+    }
+    const install = (await this.contentStore.listInstalls()).find((candidate) =>
+      candidate.kind === "pack" && candidate.id === pack.id
+    );
+    if (!install) {
+      throw runtimeFailure(
+        "INSTRUMENT_PACK_NOT_INSTALLED",
+        `Instrument pack ${pack.displayName} is no longer installed`,
+        true,
+        409,
+      );
+    }
+    const stored = await this.contentStore.verifiedFile(manifest.sha256);
+    if (stored && stored.size === manifest.bytes && install.objectHashes.includes(manifest.sha256)) {
+      return stored;
+    }
+    const catalog = this.acceptedCatalog;
+    if (catalog === null || this.downloader.downloadPackFile === undefined) {
+      throw runtimeFailure(
+        "CATALOG_UNAVAILABLE",
+        `Reconnect to fetch ${manifest.path} of ${pack.displayName}`,
+        true,
+        503,
+      );
+    }
+    await this.downloader.downloadPackFile(
+      catalog,
+      modelVariantId,
+      pack.id,
+      manifest.path,
+      install.objectHashes,
+      {
+        signal,
+        withCatalogAuthorization: (operation, authorizationSignal) =>
+          this.catalogRepository.withDownloadAuthorization(catalog, operation, authorizationSignal),
+        checkQuota: async ({ remainingManifestBytes }) => {
+          if (remainingManifestBytes === 0) return true;
+          const estimate = await this.storageEstimator();
+          return estimate.availableBytes !== null &&
+            estimate.availableBytes >= remainingManifestBytes + 64 * MEBIBYTE;
+        },
+      },
+    );
+    const fetched = await this.contentStore.verifiedFile(manifest.sha256);
+    if (!fetched || fetched.size !== manifest.bytes) {
+      throw runtimeFailure(
+        "VERIFIED_PACK_OBJECT_MISSING",
+        `${manifest.path} of ${pack.displayName} is missing after its download`,
+        true,
+        409,
+      );
+    }
+    return fetched;
   }
 
   private async reopenVerifiedArtifacts(
@@ -2230,7 +2385,6 @@ export class HostedRuntimeWorker {
     const restore = await sessionCoordinator.restore(
       sessionIdentity,
       resetSession ? "reset" : "replace",
-      compatibleSessionRuntimeIdentitySha256s(selection),
     );
     this.snapshot = { ...this.snapshot, modelDefaults: sessionCoordinator.modelDefaults };
     if (restore.status === "incompatible") {
@@ -2267,7 +2421,13 @@ export class HostedRuntimeWorker {
     this.activeBackendLoadController = controller;
     this.activeBackendLoadSettled = settled.promise;
     try {
-      return await this.modelBackend.load({ ...request, signal: controller.signal });
+      // A v5 library attests the lock's block spec and prefill chunk (or answers with its unit
+      // refusal).
+      return await this.modelBackend.load({
+        ...request,
+        ...lockedLibraryContract(this.runtimeLockModels, request.variant),
+        signal: controller.signal,
+      });
     } finally {
       settled.resolve();
       if (this.activeBackendLoadController === controller) {
@@ -2718,6 +2878,13 @@ const CONCURRENT_TREE_MUTATION_METHODS = new Set([
   "transcriptLoad",
 ]);
 
+function isSteeringValidationRequest(
+  request: WorkerRequest,
+): request is Extract<WorkerRequest, { command: "request" }> {
+  return request.command === "request" && request.payload.service === "sessions" &&
+    request.payload.method === "validateSteering";
+}
+
 function isConcurrentTreeMutationRequest(request: WorkerRequest): boolean {
   return request.command === "request" && request.payload.service === "tree" &&
     CONCURRENT_TREE_MUTATION_METHODS.has(request.payload.method);
@@ -2782,18 +2949,6 @@ function sessionIdentityFor(
     contextTokens: selection.contextTokens,
     ownerEpoch: randomUuid(),
   };
-}
-
-function compatibleSessionRuntimeIdentitySha256s(
-  selection: LoadedModelSelection,
-): readonly string[] {
-  if (selection.variant.runtimeIdentity.runtimeAbi !== "drowse-web-runtime-v1") {
-    return [];
-  }
-  return LEGACY_PRODUCT_SLUGS.map((slug) => runtimeIdentitySha256({
-    ...selection.variant.runtimeIdentity,
-    runtimeAbi: `${slug}-web-runtime-v1`,
-  }));
 }
 
 function validRequest(value: unknown): value is WorkerRequest {
@@ -2981,7 +3136,7 @@ function operationUnavailableFallback(
     case "jlens_fitting":
       return {
         code: "HOSTED_JLENS_FITTING_EXCLUDED",
-        message: "J-lens fitting is available only in the Python runtime",
+        message: "Lens fitting is available only in the Python runtime",
       };
     case "sae_training":
       return {
@@ -3193,13 +3348,13 @@ function packInstallIds(
   catalog: VerifiedCatalog | null,
 ): string[] {
   const packs = catalog?.document.models.flatMap((model) =>
-    model.variants.flatMap((variant) => variant.packs)
+    model.variants.flatMap((variant) => variant.packs.map((pack) => ({ pack, variant })))
   );
   return installs
     .filter((install) => {
       if (install.kind !== "pack") return false;
-      const pack = packs?.find((candidate) => candidate.id === install.id);
-      return !pack || sameObjectHashes(install.objectHashes, pack.files.map((file) => file.sha256));
+      const entry = packs?.find((candidate) => candidate.pack.id === install.id);
+      return !entry || packInstallCovers(entry.pack, entry.variant, install.objectHashes);
     })
     .map((install) => install.id)
     .sort();
@@ -3236,4 +3391,13 @@ function capabilitiesWithoutStorageAdmission(
       availableBytes: Number.MAX_SAFE_INTEGER,
     },
   };
+}
+
+/** Requests that queue behind the model task in flight, as drowse's session lock queues them:
+ *  a token readout, and the units members that use the device (node replays and static reads).
+ *  The catalog and its labels are disk only and take no lock (native `unit_routes`). */
+function waitsForModelUse(request: RuntimeServiceRequest): boolean {
+  return request.service === "instruments" &&
+    (request.method === "tokenReadout" ||
+      (isUnitsServiceMethod(request.method) && request.method !== "unitCatalog" && request.method !== "unitLabels"));
 }

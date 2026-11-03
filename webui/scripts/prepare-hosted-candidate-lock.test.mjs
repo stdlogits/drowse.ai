@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
+  adoptedRuntimeLock,
   deriveCandidateRuntimeLock,
   parseArguments,
 } from "./prepare-hosted-candidate-lock.mjs";
@@ -12,63 +13,198 @@ const repositoryRoot = resolve(import.meta.dirname, "../..");
 const runtimeLock = JSON.parse(
   await readFile(resolve(repositoryRoot, "browser-runtime/runtime-lock.json"), "utf8"),
 );
-const modelId = "qwen3-1.7b";
-const original = runtimeLock.models.find((model) => model.id === modelId);
-const candidateDigest = "b".repeat(64);
-const candidate = deriveCandidateRuntimeLock(runtimeLock, modelId, {
-  files: [{ path: "model.wasm", role: "model_library", sha256: candidateDigest }],
-});
-assert.equal(candidate.models.find((model) => model.id === modelId).librarySha256, candidateDigest);
-assert.equal(original.librarySha256, runtimeLock.models.find((model) => model.id === modelId).librarySha256);
-const normalized = structuredClone(candidate);
-normalized.models.find((model) => model.id === modelId).librarySha256 = original.librarySha256;
-assert.deepEqual(normalized, runtimeLock);
-for (const architecture of ["gpt2", "gpt_neox", "qwen3_5", "gemma3_text"]) {
-  const base = structuredClone(runtimeLock);
-  const pin = base.models[0];
-  Object.assign(pin, {
-    architecture, modelType: "base", thinkingProfile: null,
-    quantization: architecture === "qwen3_5" ? "q4f16_1" : "q0f32",
-    contextProfiles: architecture === "gpt2" ? [1024] : [2048],
-  });
-  assert.doesNotThrow(() => validateRuntimeLock(base));
-  assert.equal(lockedModelExecutionProfiles(pin, pin).requiredFeatures.length,
-    pin.quantization === "q0f32" ? 0 : 1);
-  if (architecture !== "gemma3_text") {
-    delete pin.modelType;
-    assert.throws(() => validateRuntimeLock(base), /invalid/);
-    pin.modelType = "base";
-  }
-  if (architecture === "gpt2") {
-    pin.contextProfiles = [2048];
-    assert.throws(() => validateRuntimeLock(base), /context profiles/);
-  }
+
+// The converted closure W4 assembles for one model, consistent with the lock.
+function closure(model, { library = "b".repeat(64), converted = "c".repeat(64), ...fields } = {}) {
+  return {
+    schemaVersion: 1,
+    runtimeAbi: runtimeLock.runtimeAbi,
+    hookAbi: runtimeLock.hookAbi,
+    structuredHookProfile: model.structuredHookProfile,
+    thinkingProfile: model.thinkingProfile,
+    architecture: model.architecture,
+    ...(model.modelType ? { modelType: model.modelType } : {}),
+    quantization: model.quantization,
+    contextWindowSize: Math.max(...model.contextProfiles),
+    prefillChunkSize: model.prefillChunkSize,
+    hiddenSize: model.hiddenSize,
+    layerMap: model.layerMap,
+    files: [
+      { path: "model.wasm", role: "model_library", sha256: library },
+      { path: "tensor-cache.json", role: "converted_manifest", sha256: converted },
+      { path: "tokenizer.json", role: "tokenizer", sha256: model.tokenizerSha256 },
+      { path: "tokenizer_config.json", role: "chat_template", sha256: model.chatTemplateSha256 },
+    ],
+    ...fields,
+  };
 }
 
+// The mlc-chat-config.json the overlay reads the descriptor's block constants from.
+function chatConfig(model) {
+  const spec = model.blockSpec;
+  const prefill = { prefill_chunk_size: model.prefillChunkSize };
+  if (!spec) return { ...prefill, model_config: { ...prefill } };
+  if (model.architecture === "qwen3") {
+    return { ...prefill, model_config: {
+      ...prefill,
+      intermediate_size: spec.dFF, num_attention_heads: spec.nHeads,
+      num_key_value_heads: spec.nKvHeads, head_dim: spec.headDim, rms_norm_eps: spec.rmsEps,
+      rope_theta: spec.ropeTheta,
+    } };
+  }
+  return { ...prefill, model_config: { text_config: {
+    ...prefill,
+    hidden_size: Math.round(spec.embedScale ** 2), intermediate_size: spec.dFF,
+    num_attention_heads: spec.nHeads, num_key_value_heads: spec.nKvHeads, head_dim: spec.headDim,
+    rms_norm_eps: spec.rmsEps, query_pre_attn_scalar: Math.round(spec.attnScaling ** -2),
+    position_embedding_base: spec.ropeTheta, rope_local_base_freq: spec.ropeLocalTheta,
+    rope_scaling: spec.ropeGlobalScale === 1 ? null : { factor: 1 / spec.ropeGlobalScale, rope_type: "linear" },
+    sliding_window_size: spec.slidingWindow, sliding_window_pattern: spec.slidingPattern,
+  } } };
+}
+
+const model = (id) => runtimeLock.models.find((entry) => entry.id === id);
+const derive = (lock, id, options = {}) => deriveCandidateRuntimeLock(lock, id, {
+  manifest: closure(model(id), options.closure),
+  chatConfig: options.chatConfig ?? chatConfig(model(id)),
+  convertedRevision: options.convertedRevision ?? null,
+});
+
+// One model filled: its library and converted manifest digests, nothing else.
+const qwen = "qwen3-1.7b";
+const candidate = derive(runtimeLock, qwen);
+const filled = candidate.models.find((entry) => entry.id === qwen);
+assert.equal(filled.librarySha256, "b".repeat(64));
+assert.equal(filled.manifestSha256, "c".repeat(64));
+assert.equal(filled.convertedRevision, null);
+assert.equal(candidate.status, "feasibility-required");
+// A new library clears the model's converted revision and the lock's verified status, whether or
+// not the repository lock is adopted yet; everything else is the lock's.
+const normalized = structuredClone(candidate);
+Object.assign(normalized.models.find((entry) => entry.id === qwen), {
+  librarySha256: model(qwen).librarySha256,
+  manifestSha256: model(qwen).manifestSha256,
+  convertedRevision: model(qwen).convertedRevision,
+});
+normalized.status = runtimeLock.status;
+assert.deepEqual(normalized, runtimeLock);
+
+// Every refusal: ABI, profile, architecture, tokenizer drift, a block spec the converted
+// configuration would not attest, a closure without its library.
+const refusals = [
+  [{ closure: { hookAbi: "post-block-residual-v4" } }, /hookAbi differs/],
+  [{ closure: { structuredHookProfile: "standard-v4-residual" } }, /structuredHookProfile differs/],
+  [{ closure: { architecture: "llama" } }, /architecture differs/],
+  [{ closure: { contextWindowSize: 2048 } }, /contextWindowSize differs/],
+  [{ closure: { layerMap: [0, 1] } }, /layerMap differs/],
+  [{ closure: { prefillChunkSize: 4096 } }, /prefillChunkSize differs/],
+  [{ chatConfig: { ...chatConfig(model(qwen)), prefill_chunk_size: 4096 } }, /mlc-chat-config prefill_chunk_size differs/],
+  [{ chatConfig: { ...chatConfig(model(qwen)), model_config: { ...chatConfig(model(qwen)).model_config, prefill_chunk_size: 1024 } } }, /model_config prefill_chunk_size differs/],
+  [{ closure: { files: closure(model(qwen)).files.map((file) => file.role === "tokenizer" ? { ...file, sha256: "d".repeat(64) } : file) } }, /tokenizer digest differs/],
+  [{ closure: { files: closure(model(qwen)).files.filter((file) => file.role !== "model_library") } }, /no unique model\.wasm/],
+  [{ chatConfig: { ...chatConfig(model(qwen)), model_config: { ...chatConfig(model(qwen)).model_config, rope_theta: 10_000 } } }, /block spec differs from its converted configuration/],
+  [{ chatConfig: { ...chatConfig(model(qwen)), model_config: { ...chatConfig(model(qwen)).model_config, rope_scaling: { factor: 2 } } } }, /without scaling or a window/],
+];
+for (const [options, pattern] of refusals) {
+  assert.throws(() => derive(runtimeLock, qwen, options), pattern);
+}
+// A base library compiled with a prefill chunk below its one context (1024 against 2048) is the
+// lock's value, not the smallest context: the closure and chat config agree with it, and a
+// publish directory whose chat config still says 2048 is refused.
+const basePt = "gemma3-1b-pt";
+assert.equal(model(basePt).prefillChunkSize, 1024);
+assert.deepEqual(model(basePt).contextProfiles, [2048]);
+assert.doesNotThrow(() => derive(runtimeLock, basePt));
 assert.throws(
-  () => deriveCandidateRuntimeLock(runtimeLock, "missing", { files: [] }),
+  () => derive(runtimeLock, basePt, { chatConfig: { ...chatConfig(model(basePt)), prefill_chunk_size: 2048 } }),
+  /mlc-chat-config prefill_chunk_size differs/,
+);
+assert.throws(() => derive(runtimeLock, basePt, { closure: { prefillChunkSize: 2048 } }), /prefillChunkSize differs/);
+// MLC compiles model_config's own prefill when it is positive, else its text_config's: a converted
+// Gemma config keeps the source's 8192 in text_config under the compiled 1024.
+const nested = (own, text) => {
+  const config = chatConfig(model(basePt));
+  config.model_config = { ...config.model_config, ...(own === undefined ? {} : { prefill_chunk_size: own }) };
+  config.model_config.text_config = { ...(config.model_config.text_config ?? {}), prefill_chunk_size: text };
+  return { chatConfig: config };
+};
+assert.doesNotThrow(() => derive(runtimeLock, basePt, nested(1024, 8192)));
+assert.throws(() => derive(runtimeLock, basePt, nested(2048, 1024)), /model_config prefill_chunk_size differs/);
+assert.throws(() => derive(runtimeLock, basePt, nested(undefined, 8192)), /model_config prefill_chunk_size differs/);
+assert.throws(() => derive(runtimeLock, basePt, nested(-1, 2048)), /model_config prefill_chunk_size differs/);
+// The lock refuses a prefill chunk above its smallest context, or none.
+const overPrefill = structuredClone(runtimeLock);
+overPrefill.models.find((entry) => entry.id === qwen).prefillChunkSize = 4096;
+assert.throws(() => validateRuntimeLock(overPrefill), /qwen3-1\.7b prefill chunk size is invalid/);
+const noPrefill = structuredClone(runtimeLock);
+delete noPrefill.models.find((entry) => entry.id === qwen).prefillChunkSize;
+assert.throws(() => validateRuntimeLock(noPrefill), /unknown or missing fields/);
+
+// A Gemma 3 block spec differs in float32 only when the configuration does.
+const gemma = "gemma3-4b-instruct";
+assert.doesNotThrow(() => derive(runtimeLock, gemma));
+const scaled = chatConfig(model(gemma));
+scaled.model_config.text_config.rope_scaling = null;
+assert.throws(() => derive(runtimeLock, gemma, { chatConfig: scaled }), /block spec differs/);
+assert.throws(
+  () => deriveCandidateRuntimeLock(runtimeLock, "missing", { manifest: closure(model(qwen)), chatConfig: {} }),
   /unknown runtime-lock model/,
 );
-assert.throws(
-  () => deriveCandidateRuntimeLock(runtimeLock, modelId, {
-    files: [
-      { path: "model.wasm", role: "model_library", sha256: candidateDigest },
-      { path: "other.wasm", role: "model_library", sha256: candidateDigest },
-    ],
-  }),
-  /no unique model\.wasm library digest/,
+
+// Chained over all nine (residual libraries carry no block spec), then adopted as verified.
+assert.throws(() => adoptedRuntimeLock(candidate), /candidate runtime lock is incomplete/);
+let chained = runtimeLock;
+for (const [index, entry] of runtimeLock.models.entries()) {
+  chained = derive(chained, entry.id, {
+    convertedRevision: String(index + 1).repeat(40),
+    closure: { library: `${index}`.repeat(64), converted: "e".repeat(64) },
+  });
+}
+const adopted = adoptedRuntimeLock(chained);
+// Recompiling a library after publication clears its revision until the new one is published.
+const recompiled = derive(adopted, qwen, { closure: { library: "f".repeat(64), converted: "e".repeat(64) } });
+assert.equal(recompiled.models.find((entry) => entry.id === qwen).convertedRevision, null);
+assert.throws(() => adoptedRuntimeLock(recompiled), /incomplete/);
+const unchanged = derive(adopted, qwen, {
+  closure: { library: adopted.models.find((entry) => entry.id === qwen).librarySha256, converted: "e".repeat(64) },
+});
+assert.equal(
+  unchanged.models.find((entry) => entry.id === qwen).convertedRevision,
+  adopted.models.find((entry) => entry.id === qwen).convertedRevision,
 );
+// One LLVM archive per compiler platform.
 assert.throws(
-  () => parseArguments([modelId, "model"]),
-  /MODEL_ID MODEL_DIR OUTPUT\.json/,
+  () => adoptedRuntimeLock({ ...adopted, toolchain: { ...adopted.toolchain, llvmArtifacts: adopted.toolchain.llvmArtifacts.slice(0, 1) } }),
+  /one archive for each of linux\/amd64 and linux\/arm64/,
 );
+assert.equal(adopted.status, "verified");
+assert.equal(adopted.models.every((entry) => entry.librarySha256 && entry.convertedRevision), true);
+assert.doesNotThrow(() => validateRuntimeLock(adopted));
+
+// The lock still describes base-model architectures and their execution profiles.
+for (const id of ["gpt2-base", "pythia-70m-base", "qwen35-2b-base"]) {
+  const pin = model(id);
+  assert.equal(lockedModelExecutionProfiles(pin, pin).structuredHookProfile, "standard-v4-residual");
+  const base = structuredClone(runtimeLock);
+  delete base.models.find((entry) => entry.id === id).modelType;
+  assert.throws(() => validateRuntimeLock(base), /invalid|unknown or missing/);
+}
+const gpt2 = structuredClone(runtimeLock);
+gpt2.models.find((entry) => entry.id === "gpt2-base").contextProfiles = [2048];
+assert.throws(() => validateRuntimeLock(gpt2), /context profiles/);
+
+assert.throws(() => parseArguments([qwen, "model"]), /MODEL_ID PUBLISH_DIR OUTPUT\.json/);
+assert.throws(() => parseArguments([qwen, "model", "out.json", "--converted-revision", "abc"]), /40-character/);
 assert.deepEqual(
-  parseArguments([modelId, "model", "candidate.json"]),
+  parseArguments([qwen, "model", "candidate.json", "--base", "base.json", "--converted-revision", "f".repeat(40)]),
   {
-    modelId,
+    modelId: qwen,
     modelDirectory: resolve("model"),
     outputPath: resolve("candidate.json"),
+    basePath: resolve("base.json"),
+    convertedRevision: "f".repeat(40),
   },
 );
+assert.deepEqual(parseArguments(["--adopt", "candidate.json"]), { adopt: resolve("candidate.json") });
 
 console.log("Hosted candidate runtime-lock checks passed");

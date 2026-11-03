@@ -388,6 +388,62 @@ try {
     assert.equal(generationOnly.current().models[0].setupComplete, true);
   });
 
+  test("choosing units on a base model chooses the R and S packs it reads through", async () => {
+    const document = catalogFixture();
+    document.models[0].modelType = "base";
+    const variant = document.models[0].variants[0];
+    variant.packs.push(
+      optionalInstrumentPack(variant, "base-slens", "slens", 64, "b".repeat(64)),
+      optionalInstrumentPack(variant, "base-units", "units", 64, "c".repeat(64)),
+    );
+    const shell = createShellController(createBundle({}, document).bundle);
+    await shell.check();
+    const selection = () => Object.fromEntries(
+      shell.current().models[0].firstRunPacks.map((pack) => [pack.kind, pack.selected]),
+    );
+    assert.deepEqual(selection(), { jlens: false, slens: false, units: false }, "a base model chooses no lens by default");
+    shell.setOptionalPackSelected(variant.id, "base-units", true);
+    assert.deepEqual(selection(), { jlens: true, slens: true, units: true });
+    const lens = shell.current().models[0].firstRunPacks.find((pack) => pack.kind === "jlens");
+    shell.setOptionalPackSelected(variant.id, lens.id, false);
+    assert.deepEqual(selection(), { jlens: false, slens: true, units: false }, "dropping the R pack drops units");
+    shell.setOptionalPackSelected(variant.id, "base-units", true);
+    shell.setOptionalPackSelected(variant.id, "base-slens", false);
+    assert.deepEqual(selection(), { jlens: true, slens: false, units: false }, "dropping the S pack drops units");
+    shell.dispose();
+  });
+
+  test("the lenses units bring count against the combined instrument memory budget", async () => {
+    // Units and the S pack each fit alone; together (with the R pack units also bring) they do not,
+    // so choosing units is refused and the selection stays as it was.
+    const document = catalogFixture();
+    document.models[0].modelType = "base";
+    const variant = document.models[0].variants[0];
+    const share = Math.floor(OPTIONAL_PACK_RESIDENT_BUDGET_BYTES * 0.6);
+    variant.packs.push(
+      optionalInstrumentPack(variant, "big-slens", "slens", share, "b".repeat(64)),
+      optionalInstrumentPack(variant, "big-units", "units", share, "c".repeat(64)),
+    );
+    const shell = createShellController(createBundle({
+      async check() {
+        const device = capabilities();
+        device.webGpu.limits.maxBufferSize = 64 * 1024 * 1024;
+        device.webGpu.limits.maxStorageBufferBindingSize = 64 * 1024 * 1024;
+        return device;
+      },
+    }, document).bundle);
+    await shell.check();
+    const selection = () => Object.fromEntries(
+      shell.current().models[0].firstRunPacks.map((pack) => [pack.kind, pack.selected]),
+    );
+    assert.deepEqual(selection(), { jlens: false, slens: false, units: false });
+    assert.throws(() => shell.setOptionalPackSelected(variant.id, "big-units", true), /graphics memory/);
+    assert.deepEqual(selection(), { jlens: false, slens: false, units: false }, "nothing was chosen");
+    shell.setOptionalPackSelected(variant.id, "big-slens", true);
+    assert.deepEqual(selection(), { jlens: false, slens: true, units: false }, "the S pack alone fits");
+    shell.dispose();
+  });
+
   test("base models cannot bypass the combined instrument memory budget", async () => {
     const document = catalogFixture();
     document.models[0].modelType = "base";
@@ -1068,7 +1124,7 @@ try {
     shell.dispose();
   });
 
-  test("a model with no released J-lens is blocked before download", async () => {
+  test("a model with no released R lens is blocked before download", async () => {
     const document = catalogFixture();
     const variant = document.models[0].variants[0];
     removeFixtureJlens(variant);
@@ -1078,7 +1134,7 @@ try {
 
     const option = shell.current().models[0];
     assert.equal(option.fit, "blocked");
-    assert.match(option.setupIssue, /no compatible precomputed J-lens/u);
+    assert.match(option.setupIssue, /no compatible precomputed R lens/u);
     assert.equal(option.toolNotice, undefined);
     assert.deepEqual(option.firstRunPacks, []);
 
@@ -1310,22 +1366,21 @@ try {
     assert.equal(bufferBlock.limitBytes, adapterLimitBytes);
     assert.deepEqual(bufferBlock.packIds, [sae.id]);
 
-    const largeJlens = {
+    // A pre-6.0 lens pack's one multi-layer file installs whole, so all of it stays resident.
+    const lensPack = (id, bytes) => ({
       ...base,
-      id: "fixture-jlens-large",
+      id,
       kind: "jlens",
-      bytes: Math.ceil(OPTIONAL_PACK_RESIDENT_BUDGET_BYTES * 0.6),
-    };
+      bytes,
+      files: [{ path: "packs/jlens/layers.safetensors", bytes }],
+    });
+    const largeJlens = lensPack("fixture-jlens-large", Math.ceil(OPTIONAL_PACK_RESIDENT_BUDGET_BYTES * 0.6));
     const largeSae = {
       ...sae,
       id: "fixture-sae-large",
       bytes: Math.ceil(OPTIONAL_PACK_RESIDENT_BUDGET_BYTES * 0.6),
     };
-    const alternateLargeJlens = {
-      ...largeJlens,
-      id: "fixture-rlens-large",
-      bytes: Math.ceil(OPTIONAL_PACK_RESIDENT_BUDGET_BYTES * 0.7),
-    };
+    const alternateLargeJlens = lensPack("fixture-rlens-large", Math.ceil(OPTIONAL_PACK_RESIDENT_BUDGET_BYTES * 0.7));
     const ampleWebGpu = {
       ...normalWebGpu,
       limits: {
@@ -1518,7 +1573,7 @@ try {
     );
   });
 
-  test("a J-lens that exceeds GPU limits is omitted without blocking the model", async () => {
+  test("an R lens that exceeds GPU limits is omitted without blocking the model", async () => {
     const document = catalogFixture();
     const variant = document.models[0].variants[0];
     removeFixtureJlens(variant);
@@ -1585,7 +1640,7 @@ try {
       ["fixture-sae-supported"],
     );
     assert.equal(shell.current().models[0].fit, "blocked");
-    assert.match(shell.current().models[0].setupIssue, /cannot safely load the J-lens required/u);
+    assert.match(shell.current().models[0].setupIssue, /cannot safely load the R lens this model needs/u);
     assert.equal(shell.current().models[0].toolNotice, undefined);
     await assert.rejects(() => shell.download(variant.id));
     assert.equal(fixture.calls.includes(`download:${variant.id}`), false);
@@ -1692,7 +1747,7 @@ try {
     ]);
   });
 
-  test("an installed model requires its released J-lens before opening", async () => {
+  test("an installed model requires its released R lens before opening", async () => {
     const document = catalogFixture();
     const variant = document.models[0].variants[0];
     variant.packs.push({
@@ -1730,7 +1785,7 @@ try {
     assert.equal(shell.current().models[0].remainingDownloadBytes, 100);
     assert.throws(
       () => shell.setOptionalPackSelected(variant.id, "smollm2-jlens", false),
-      /J-lens is required/u,
+      /R lens is required/u,
     );
     assert.equal(shell.current().models[0].setupComplete, false);
     assert.throws(() => shell.setOptionalPackSelected(variant.id, "fixture-sae", false), /SAE is required/);

@@ -11,21 +11,27 @@ import type {
   WSSubmitRequest,
 } from "../../../../drowse/webui/src/lib/types";
 import { BrowserLoomRuntime, type BrowserGenerationPort } from "./browserLoom";
-import type {
-  BrowserGenerationPerformance,
-  BrowserGenerationStopReason,
-  BrowserModelBackend,
-  BrowserModelLoadRequest,
-  BrowserModelLoadResult,
+import {
+  rejectingBlockSitesBackend,
+  UnsupportedBlockError,
+  type BlockSitesCapabilities,
+  type BrowserBlockSitesBackend,
+  type BrowserGenerationPerformance,
+  type BrowserGenerationStopReason,
+  type BrowserModelBackend,
+  type BrowserModelLoadRequest,
+  type BrowserModelLoadResult,
 } from "./modelBackend";
 import { runtimeServiceRoute } from "./operationPolicy";
-import type { RankOneHookProgramBuffers } from "./rankOneHookProgram";
 import type { StructuredHookProgramBuffers } from "./structuredHookProgram";
+import type { SteeringManifoldEntry } from "./steeringExpression";
 import { DrowseWebLlmRuntime, type DrowseWebLlmModule } from "./webLlmEngine";
+import { webLlmBlockSitesBackend, type WebLlmBlockSitesDevice } from "./webLlmBlockSites";
 import type { WebLlmCaptureRuntimePort } from "./webLlmActivationCapture";
 import type { BrowserInstrumentRuntime } from "./browserInstrumentRuntime";
-import type { WebLlmRuntimeCapabilities } from "./webLlmGeneration";
-import type { WebLlmThinkingProfile } from "./webLlmGeneration";
+import { BrowserUnitsService } from "./units/unitsService";
+import { sTokenResolver } from "./units/packSource";
+import { geometryGateScores, type WebLlmRuntimeCapabilities, type WebLlmThinkingProfile } from "./webLlmGeneration";
 import { defaultOutputTokenCount, outputTokenLimitForRuntime } from "../../../../drowse/webui/src/lib/runtime/outputTokenPolicy";
 
 interface DrowseWebLlmRuntimePort extends BrowserGenerationPort, WebLlmCaptureRuntimePort {
@@ -35,12 +41,18 @@ interface DrowseWebLlmRuntimePort extends BrowserGenerationPort, WebLlmCaptureRu
   thinkingProfileForSession(): WebLlmThinkingProfile | null;
   tokenizeText(text: string): Promise<number[]>;
   decodeTokens(tokenIds: readonly number[]): Promise<string>;
+  /** Each id's own text (`decode([id])`). */
+  tokenTexts(tokenIds: readonly number[]): Promise<string[]>;
   resolveJlensTokenDirections(
     bindingId: string,
     layerIndices: readonly number[],
     tokenIds: readonly number[],
   ): Promise<Float32Array>;
   generationPerformance(): BrowserGenerationPerformance;
+  /** Hook ABI v5's attested surface, or null when the loaded library predates it. */
+  blockSitesCapabilities?(): BlockSitesCapabilities | null;
+  /** The loaded model's block-sites bridge (replay, residents), or null without one. */
+  blockSitesDevice?(): WebLlmBlockSitesDevice | null;
 }
 
 export interface BrowserAuthoringRequestContext {
@@ -49,9 +61,7 @@ export interface BrowserAuthoringRequestContext {
   runtime: DrowseWebLlmRuntimePort;
   onProgress: (event: RuntimeProgressEvent) => void;
   signal: AbortSignal;
-  compileSteering?: (
-    expression: string,
-  ) => Promise<RankOneHookProgramBuffers | StructuredHookProgramBuffers>;
+  compileSteering?: (expression: string) => Promise<StructuredHookProgramBuffers>;
 }
 
 export interface BrowserSteeringCompileContext {
@@ -71,9 +81,10 @@ export interface DrowseWebLlmBackendOptions {
   runtime?: DrowseWebLlmRuntimePort;
   compileSteering?: (
     context: BrowserSteeringCompileContext,
-  ) => Promise<RankOneHookProgramBuffers | StructuredHookProgramBuffers> |
-    RankOneHookProgramBuffers | StructuredHookProgramBuffers;
+  ) => Promise<StructuredHookProgramBuffers> | StructuredHookProgramBuffers;
   steeringDelta?: (context: BrowserSteeringDeltaContext) => string;
+  /** The installed manifolds the session's compiler resolves bare atoms against. */
+  steeringManifolds?: (loadRequest: BrowserModelLoadRequest) => readonly SteeringManifoldEntry[];
   prepareLoad?: (
     request: BrowserModelLoadRequest,
   ) => Promise<BrowserInstrumentRuntime> | BrowserInstrumentRuntime;
@@ -93,6 +104,8 @@ export class DrowseWebLlmBackend implements BrowserModelBackend {
   private readonly options: DrowseWebLlmBackendOptions;
   private loom: BrowserLoomRuntime | null = null;
   private loadRequest: BrowserModelLoadRequest | null = null;
+  /** Aborts the units members' pack reads when the model unloads. */
+  private unitsAbort: AbortController | null = null;
 
   constructor(module: DrowseWebLlmModule, options: DrowseWebLlmBackendOptions) {
     if (!options.drowseVersion) throw new TypeError("Drowse browser source version is required");
@@ -136,11 +149,12 @@ export class DrowseWebLlmBackend implements BrowserModelBackend {
         ...(instruments ? { probeHashes: () => instruments.probeHashes() } : {}),
         ...(this.options.compileSteering
           ? {
-              compileSteering: (expression: string, probeRequests?: readonly ProbeRequest[]) => this.options.compileSteering!({
-                expression,
-                loadRequest: request,
-                ...(probeRequests === undefined ? {} : { probeRequests }),
-              }),
+              compileSteering: async (expression: string, probeRequests?: readonly ProbeRequest[]) =>
+                this.boundProgram(await this.options.compileSteering!({
+                  expression,
+                  loadRequest: request,
+                  ...(probeRequests === undefined ? {} : { probeRequests }),
+                })),
             }
           : {}),
         ...(this.options.steeringDelta
@@ -149,9 +163,17 @@ export class DrowseWebLlmBackend implements BrowserModelBackend {
                 this.options.steeringDelta!({ parent, child, loadRequest: request }),
             }
           : {}),
+        ...(this.options.steeringManifolds
+          ? { steeringManifolds: () => this.options.steeringManifolds!(request) }
+          : {}),
       });
       this.loom = loom;
       this.loadRequest = request;
+      if (instruments) {
+        await this.configureUnits(request, instruments, loom);
+        // The session names the units family once its members are configured.
+        loom.refreshInstrumentSession();
+      }
       return result;
     } catch (error) {
       try {
@@ -169,7 +191,63 @@ export class DrowseWebLlmBackend implements BrowserModelBackend {
     this.clearLoadedState();
   }
 
+  private readonly v4BlockSites = rejectingBlockSitesBackend(
+    () => new UnsupportedBlockError("the loaded model library predates hook ABI block-sites-v5"),
+  );
+  private blockSitesSurface: {
+    capabilities: BlockSitesCapabilities;
+    backend: BrowserBlockSitesBackend;
+  } | null = null;
+
+  /** Every program a generation installs or a replay runs leaves the compiler here: one with a
+   *  unit section is bound to the loaded library first, which fills each tapped head's gram
+   *  (`G_h`, B1 §2.2; install and replay refuse an unbound one with TAP_GRAMS_UNBOUND). */
+  private async boundProgram(
+    program: StructuredHookProgramBuffers,
+  ): Promise<StructuredHookProgramBuffers> {
+    return program.unitMeta === undefined
+      ? program
+      : this.blockSites().bindStructuredProgram(program);
+  }
+
+  blockSites(): BrowserBlockSitesBackend {
+    const capabilities = this.runtime.blockSitesCapabilities?.() ?? null;
+    if (capabilities === null) return this.v4BlockSites;
+    if (this.blockSitesSurface?.capabilities !== capabilities) {
+      this.blockSitesSurface = {
+        capabilities,
+        backend: webLlmBlockSitesBackend(capabilities, this.runtime.blockSitesDevice?.() ?? null),
+      };
+    }
+    return this.blockSitesSurface.backend;
+  }
+
+  /** The units members over the loaded library (B5's host ports): its block sites, the
+   *  session's packs through the instrument runtime's compiler, the engine's tokenizer and the
+   *  loom's node replays. The instrument runtime hands the compiler its unit source too. */
+  private async configureUnits(
+    request: BrowserModelLoadRequest,
+    instruments: BrowserInstrumentRuntime,
+    loom: BrowserLoomRuntime,
+  ): Promise<void> {
+    this.unitsAbort = new AbortController();
+    const packs = instruments.unitsPackSource(request.model.id, this.unitsAbort.signal);
+    const runtime = this.runtime;
+    await instruments.configureUnits(new BrowserUnitsService({
+      modelId: request.model.id,
+      blockSites: () => this.blockSites(),
+      packs: () => packs,
+      tokenTexts: (tokenIds) => runtime.tokenTexts(tokenIds),
+      resolveToken: sTokenResolver(runtime, () => this.blockSites().capabilities()?.vocabSize ?? 0),
+      resolveSelector: (selector) => instruments.selectorDirections(selector),
+      replay: () => loom.unitsNodeReplay(),
+      geometryGateScores,
+    }));
+  }
+
   private clearLoadedState(): void {
+    this.unitsAbort?.abort(new DOMException("The browser model was unloaded", "AbortError"));
+    this.unitsAbort = null;
     this.loom = null;
     this.loadRequest = null;
     this.options.onUnload?.();
@@ -198,8 +276,8 @@ export class DrowseWebLlmBackend implements BrowserModelBackend {
         signal,
         ...(this.options.compileSteering
           ? {
-              compileSteering: (expression: string) =>
-                Promise.resolve(this.options.compileSteering!({
+              compileSteering: async (expression: string) =>
+                this.boundProgram(await this.options.compileSteering!({
                   expression,
                   loadRequest: this.requireLoadRequest(),
                 })),
@@ -234,6 +312,10 @@ export class DrowseWebLlmBackend implements BrowserModelBackend {
   stop(reason: BrowserGenerationStopReason = "internal"): Promise<void> {
     if (this.loom === null) return this.runtime.stop();
     return this.loom.stop(reason === "user");
+  }
+
+  steeringManifolds(): readonly SteeringManifoldEntry[] | null {
+    return this.loom?.installedSteeringManifolds() ?? null;
   }
 
   private requireLoom(): BrowserLoomRuntime {

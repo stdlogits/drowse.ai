@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { CURRENT_CATALOG_URLS } from "./hosted-catalog-location.mjs";
 import { verifiedSaeDescriptionSource, parseSaeDescription, loadSaeDescription } from "../../drowse/webui/src/lib/saeDescriptions.ts";
 
 const headers = await readFile(new URL("../public-hosted/_headers", import.meta.url), "utf8");
@@ -92,7 +93,9 @@ try {
 console.log("SAE descriptions: exact dictionary binding, provenance, missing labels, retry, cache, and request privacy passed");
 
 if (process.argv.includes("--live-catalog")) {
-  const catalog = await (await fetch("https://huggingface.co/stdlogits/drowse-web-catalog/resolve/main/catalog.json")).json();
+  // The catalog this checkout's builds read (the distribution lock's URL).
+  const { catalogUrl } = CURRENT_CATALOG_URLS;
+  const catalog = await (await fetch(catalogUrl)).json();
   for (const model of catalog.models) for (const variant of model.variants) {
     for (const pack of variant.packs.filter(pack => pack.kind === "sae")) {
       const file = pack.files.find(file => file.path.endsWith("/manifest.json"));

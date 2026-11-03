@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "purpose": "The corpus every hosted R and S lens is fitted on: drowse's own `lens fit` (fit_lens) over the dequantized browser weights in fp32, 64 documents of 128 tokens after the first 16, both sites, every layer (B2-fits.md). No corpus text is redistributed; the packs carry fitted matrices and token counts.",
+  "corpusSpec": "hf:HuggingFaceFW/fineweb-edu/sample-10BT@87f09149ef4734204d70ed1d046ddc9ca3f2b8f9;preprocess=1;doc_chars=4000",
+  "dataset": {
+    "repository": "HuggingFaceFW/fineweb-edu",
+    "config": "sample-10BT",
+    "revision": "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9",
+    "license": "ODC-By-1.0",
+    "url": "https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu"
+  },
+  "minimums": {
+    "prompts": 64,
+    "sequenceLength": 128
+  },
+  "attributionApproval": {
+    "reviewStatus": "approved",
+    "reviewedBy": "a9lim",
+    "reviewedAt": "2026-11-02T08:05:00-05:00",
+    "attribution": "FineWeb-Edu (HuggingFaceFW/fineweb-edu, config sample-10BT, revision 87f09149ef4734204d70ed1d046ddc9ca3f2b8f9) by Hugging Face (Lozhkov, Ben Allal, von Werra and Wolf, 2024), used under the Open Data Commons Attribution License v1.0 (ODC-By 1.0); its use is also subject to Common Crawl's Terms of Use. The lens packs carry matrices fitted on 64 of its documents and token counts, not corpus text."
+  }
+}

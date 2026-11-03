@@ -1,6 +1,5 @@
-import { chooseFixtureModel } from "./workbench-navigation";
 import { expect, test } from "@playwright/test";
-import { resolve } from "node:path";
+import { composer, openFixtureWorkbench, storesUrl, waitForReply } from "./workbench-navigation";
 
 test("changing the model role updates requests, messages, and saved recipes", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -13,25 +12,24 @@ test("changing the model role updates requests, messages, and saved recipes", as
       return postMessage.call(this, message, ...rest);
     };
   });
-  await page.goto("http://127.0.0.1:4176/app?fixture=1");
-  await chooseFixtureModel(page);
-  await page.getByRole("button", { name: "Download and open", exact: true }).click();
-  await expect(page.locator(".shell")).toBeVisible();
-  await page.getByRole("button", { name: /^Roles / }).click();
+  await openFixtureWorkbench(page);
+  await page.getByRole("button", { name: "user → assistant", exact: true }).click();
   const role = page.getByRole("combobox", { name: "Model writes as", exact: true });
-  const storesUrl = `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
   const labels: string[] = [];
   for (const name of ["pirate", "forest_guide", "assistant"]) {
     await role.fill(name);
     await role.press("Tab");
-    await page.getByRole("textbox", { name: /^Compose as / }).fill("Arrgh");
+    await composer(page).fill("Arrgh");
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await expect.poll(() => page.evaluate(() => (window as any).__roleRequests.length)).toBe(labels.length + 1);
-    await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
+    await expect(page.locator(".chat .msg:not(.user)")).toHaveCount(labels.length + 1);
+    await waitForReply(page);
     expect(await page.evaluate(() => (window as any).__roleRequests.at(-1).sampling.assistant_role ?? null))
       .toBe(name === "assistant" ? null : name);
     labels.push(name);
-    await expect(page.locator(".msg:has(.model-avatar) .role-label")).toHaveText(labels);
+    // The seat names a custom role; the default assistant seat names the model.
+    await expect(page.locator(".chat .msg:not(.user) > .dw-seat"))
+      .toHaveText(labels.map(label => label === "assistant" ? "qwen3-1.7b-fixture" : label));
     expect(await page.evaluate(async url => {
       const stores = await import(url);
       const generated = [...stores.loomTree.nodes.values()].filter((node: any) => node.role === "assistant");

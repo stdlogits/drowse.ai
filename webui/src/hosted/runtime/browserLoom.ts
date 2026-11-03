@@ -1,3 +1,4 @@
+import type { UnitsNodeReplay, UnitsNodeReplayPort } from "./units/unitsService";
 import type { RuntimeProgressEvent, RuntimeServiceRequest } from "../../../../drowse/webui/src/lib/runtime/contracts";
 import {
   clampOutputTokenCount,
@@ -8,12 +9,16 @@ import { SAMPLING_TEMPERATURE_MAX } from "../../../../drowse/webui/src/lib/runti
 import { normalizeSteeringPositions, type SteeringPositionSpan, type SteeringPositionSelection } from "../../../../drowse/webui/src/lib/runtime/steeringPositions";
 import type {
   ChatRole,
+  FinishReason,
   LoomNodeJSON,
+  LoomTokenRowJSON,
   LoomTreeJSON,
+  MeasurementsEnvelopeJSON,
   ProbeRequest,
   RecipeJSON,
   RecipeSamplingJSON,
   SessionInfo,
+  SteeringValidationResponse,
   WSGenerateRequest,
   WSInputMessage,
   WSSampling,
@@ -21,13 +26,21 @@ import type {
   WSSubmitRequest,
   WSTreeMutatedEvent,
 } from "../../../../drowse/webui/src/lib/types";
-import type { RankOneHookProgramBuffers } from "./rankOneHookProgram";
 import type { StructuredHookProgramBuffers } from "./structuredHookProgram";
 import type {
   BrowserInstrumentRuntime,
   BrowserTokenReplayRequest,
 } from "./browserInstrumentRuntime";
-import { parseSteeringExpression } from "./steeringExpression";
+import {
+  foldSteering,
+  formatSteering,
+  invertSteeringExpression,
+  parseSteeringExpression,
+  pythonStrip,
+  steeringParts,
+  type SteeringExpression,
+  type SteeringManifoldEntry,
+} from "./steeringExpression";
 import { validateHostedLoomTree } from "../../../../drowse/webui/src/lib/sessionPersistence";
 import { filterBrowserTree } from "./browserTreeFilter";
 import {
@@ -53,8 +66,17 @@ import {
 } from "./webLlmGeneration";
 import { randomUuid } from "./randomId";
 import { isRoleSlug } from "../../../../drowse/webui/src/lib/roleSlug";
+import { aggregateEnvelope, aggregateMeasurements, rowMeasurements } from "./measurementRows";
+import { wholeEnvelope } from "../../../../drowse/webui/src/lib/tokenRows";
 
-type BrowserHookProgram = RankOneHookProgramBuffers | StructuredHookProgramBuffers;
+/** Below this many seconds a reply reports `tok_per_sec = 0` (drowse's `finalize`). */
+const MIN_ELAPSED_FOR_RATE = 0.1;
+
+/** Whether a reply node holds any of its output (drowse keeps such a node after an engine error). */
+function holdsTokens(node: LoomNodeJSON): boolean {
+  return (node.tokens?.length ?? 0) > 0 || (node.thinking_tokens?.length ?? 0) > 0 ||
+    node.text !== "" || (node.thinking_text ?? "") !== "";
+}
 
 interface GenerationReservation {
   anchorId: string;
@@ -63,7 +85,6 @@ interface GenerationReservation {
 
 interface ContinuationContext {
   node: LoomNodeJSON;
-  original: LoomNodeJSON;
   parentId: string;
   forcedPrefix: number[];
 }
@@ -77,6 +98,11 @@ export interface BrowserGenerationPort {
   runtimeCapabilities?(): WebLlmRuntimeCapabilities;
   tokenizeText?(text: string): Promise<number[]>;
   decodeTokens?(tokenIds: readonly number[]): Promise<string>;
+  /** The token ids the engine prefills for a generation plan's input (its chat template, roles
+   *  and thinking state), so a node replays on the block-sites backend exactly as it ran. */
+  renderPromptTokenIds?(
+    plan: Pick<WebLlmGenerationPlan, "input" | "thinking" | "generationSeat" | "generationRoleName">,
+  ): Promise<number[]>;
 }
 
 export interface BrowserLoomOptions {
@@ -89,8 +115,11 @@ export interface BrowserLoomOptions {
   compileSteering?: (
     expression: string,
     probeRequests?: readonly ProbeRequest[],
-  ) => Promise<BrowserHookProgram> | BrowserHookProgram;
+  ) => Promise<StructuredHookProgramBuffers> | StructuredHookProgramBuffers;
   steeringDelta?: (parent: string | null, child: string | null) => string;
+  /** The installed manifolds bare atoms resolve against (the compiler's), for the `inverted`
+   *  regen; without them nothing resolves, as with an empty registry. */
+  steeringManifolds?: () => readonly SteeringManifoldEntry[];
   probeHashes?: () =>
     | Readonly<Record<string, string>>
     | Promise<Readonly<Record<string, string>>>;
@@ -106,6 +135,7 @@ export class BrowserLoomRuntime {
   private readonly createId: (kind: "generation" | "node") => string;
   private readonly compileSteering: BrowserLoomOptions["compileSteering"];
   private readonly steeringDelta: BrowserLoomOptions["steeringDelta"];
+  private readonly steeringManifolds: BrowserLoomOptions["steeringManifolds"];
   private readonly probeHashes: BrowserLoomOptions["probeHashes"];
   private readonly instruments: BrowserInstrumentRuntime | undefined;
   private readonly runtimeCapabilities: WebLlmRuntimeCapabilities | null;
@@ -133,6 +163,7 @@ export class BrowserLoomRuntime {
     this.createId = options.createId ?? ((kind) => `${kind}-${randomUuid()}`);
     this.compileSteering = options.compileSteering;
     this.steeringDelta = options.steeringDelta;
+    this.steeringManifolds = options.steeringManifolds;
     this.probeHashes = options.probeHashes;
     this.instruments = options.instruments;
     this.runtimeCapabilities = this.generation.runtimeCapabilities?.() ?? null;
@@ -326,6 +357,7 @@ export class BrowserLoomRuntime {
 
     const settings = fork?.settings ?? resolveGenerationSettings(
       request, this.session, this.tree, selectedParentId, this.maxOutputTokens,
+      () => this.steeringManifolds?.() ?? [],
     );
     const effectiveSteering = settings.steering;
     const effectiveSystemPrompt = rawCompletion ? null : settings.systemPrompt;
@@ -473,8 +505,9 @@ export class BrowserLoomRuntime {
         };
       }
       validateWebLlmGenerationSettings(siblingSampling, effectiveThinking);
+      // The node keeps the canonical steering its envelopes bind (native's recipe steering).
       const nodeRecipe = recipe(
-        effectiveSteering,
+        boundSteering(hookProgram, effectiveSteering) ?? null,
         siblingSampling,
         effectiveThinking,
         this.session.probes,
@@ -504,6 +537,7 @@ export class BrowserLoomRuntime {
             text: "",
             thinking_text: null,
             aggregate_readings: {},
+            aggregate_measurements: null,
             applied_steering: null,
             finish_reason: null,
             mean_logprob: null,
@@ -512,6 +546,7 @@ export class BrowserLoomRuntime {
             tokens: [],
             thinking_tokens: [],
             raw_token_ids: null,
+            prompt_capture: null,
           };
       if (prefix !== null) {
         node.text = prefix.text;
@@ -565,6 +600,8 @@ export class BrowserLoomRuntime {
         break;
       }
       let result: WebLlmGenerationResult;
+      const startedAt = performance.now();
+      let lastEnvelope: MeasurementsEnvelopeJSON | undefined;
       try {
         const plan: WebLlmGenerationPlan = {
           signal: this.generationController!.signal,
@@ -580,9 +617,10 @@ export class BrowserLoomRuntime {
           thinking: effectiveThinking,
           generationSeat: rawCompletion ? null : role,
           generationRoleName: rawCompletion ? null : generationHeaderRoleLabel,
-          steeringExpression: effectiveSteering,
+          steeringExpression: boundSteering(hookProgram, effectiveSteering),
           position_spans: settings.positionSpans,
           hookProgram,
+          liveInstruments: this.instruments?.liveInstruments() ?? null,
           maxOutputTokens: this.maxOutputTokens,
           ...(fork === null ? {} : { measurementStartRawIndex: prefix!.length }),
           ...(fork !== null
@@ -602,7 +640,8 @@ export class BrowserLoomRuntime {
           },
         };
         result = await this.generation.streamGeneration(plan, async (token) => {
-          const row = {
+          // The row keeps the generated projection; the token frame the whole envelope.
+          const row: LoomTokenRowJSON = {
             text: token.text,
             logprob: token.logprob,
             ...(token.samplerEntropy === undefined
@@ -613,9 +652,10 @@ export class BrowserLoomRuntime {
             ...(token.rawIndex !== null ? { raw_index: token.rawIndex } : {}),
             ...(token.topAlts ? { top_alts: token.topAlts } : {}),
             ...(token.measurements ? {
-              measurements: clone(token.measurements),
-              probes: clone(token.measurements.scores ?? {}),
-              per_layer_scores: clone(token.measurements.per_layer_scores ?? {}),
+              measurements: rowMeasurements(
+                token.measurements,
+                siblingSampling.persist_per_layer_scores === true,
+              ),
             } : {}),
           };
           if (token.rawIndex !== null && token.rawIndex < (prefix?.length ?? 0)) {
@@ -636,6 +676,10 @@ export class BrowserLoomRuntime {
             node.tokens ??= [];
           }
           (token.thinking ? node.thinking_tokens! : node.tokens!).push(row);
+          // A stopped reply pools the last token's aggregate view (its readings of families whose
+          // live readout is off ride no token envelope). A token offers none when the request
+          // returns no probe readings, and then the stopped reply has no aggregate either.
+          if (token.aggregateMeasurements) lastEnvelope = token.aggregateMeasurements;
           await emit({
             type: "token",
             text: token.text,
@@ -659,6 +703,7 @@ export class BrowserLoomRuntime {
               node,
               rawTokenCount,
               partialUsage?.promptTokens ?? 0,
+              lastEnvelope,
             ),
             "cancelled",
             rawTokenIds,
@@ -669,19 +714,25 @@ export class BrowserLoomRuntime {
             siblingIndex,
             siblingCount,
             emit,
+            (performance.now() - startedAt) / 1000,
           );
           break;
         }
         if (!stateless && this.tree.nodes.some((candidate) => candidate.id === node.id)) {
-          if (continuation !== null) {
-            this.tree.active_node_id = continuation.original.id;
-            this.replaceNodeWithoutActivation(continuation.original);
+          if (continuation !== null || holdsTokens(node)) {
+            // drowse's `_discard_unanswered`: a continuation is never removed and a
+            // reply cut after some tokens keeps them. Neither is finalized, so the
+            // node stays as streamed: no finish reason, raw ids or applied steering.
+            node.raw_token_ids = null;
+            node.applied_steering = null;
+            const kept = this.replaceGeneratedNode(node);
             await emit(this.updatedMutation(
               "finalize_assistant",
-              continuation.original,
-              continuation.original.id,
+              kept,
+              continuation !== null ? kept.id : null,
             ));
           } else {
+            // An engine error before the first token leaves no empty assistant node.
             this.removeLeaf(node.id);
             await emit({
               type: "tree_mutated",
@@ -700,7 +751,7 @@ export class BrowserLoomRuntime {
       const externallyStopped = this.stopRequested || result.terminalReason === "external_stop";
       const finishReason = externallyStopped ? "cancelled" : result.finishReason;
       if (externallyStopped && prefix !== null && rawTokenCount < prefix.length) {
-        result = cancelledGenerationResult(node, rawTokenCount, result.usage.promptTokens);
+        result = cancelledGenerationResult(node, rawTokenCount, result.usage.promptTokens, lastEnvelope);
       }
       await this.finalizeGeneration(
         node,
@@ -714,6 +765,7 @@ export class BrowserLoomRuntime {
         siblingIndex,
         siblingCount,
         emit,
+        (performance.now() - startedAt) / 1000,
       );
       if (this.stopRequested) break;
     }
@@ -722,7 +774,7 @@ export class BrowserLoomRuntime {
   private async finalizeGeneration(
     node: LoomNodeJSON,
     result: WebLlmGenerationResult,
-    finishReason: string,
+    finishReason: FinishReason,
     rawTokenIds: readonly number[],
     sawRawToken: boolean,
     rawTokenIdentityComplete: boolean,
@@ -731,6 +783,7 @@ export class BrowserLoomRuntime {
     siblingIndex: number,
     siblingCount: number,
     emit: (message: WSServerMessage) => void | Promise<void>,
+    elapsed = 0,
   ): Promise<void> {
     node.raw_token_ids = sawRawToken && rawTokenIdentityComplete
       ? [...rawTokenIds]
@@ -740,6 +793,9 @@ export class BrowserLoomRuntime {
     node.mean_logprob = result.meanLogprob;
     node.mean_surprise = result.meanSurprise;
     node.aggregate_readings = clone(result.measurements?.scores ?? {});
+    node.aggregate_measurements = result.measurements
+      ? aggregateMeasurements(result.measurements)
+      : null;
     if (!stateless) {
       const finalized = this.replaceGeneratedNode(node);
       await emit(this.updatedMutation("finalize_assistant", finalized));
@@ -761,6 +817,9 @@ export class BrowserLoomRuntime {
         },
         mean_logprob: result.meanLogprob,
         mean_surprise: result.meanSurprise,
+        // The engine's own rate (drowse's `finalize`: none under 0.1 s).
+        tok_per_sec: elapsed > MIN_ELAPSED_FOR_RATE ? result.tokens / elapsed : 0,
+        elapsed,
         ...(result.measurements ? { measurements: clone(result.measurements) } : {}),
       },
       node_id: wireNodeId,
@@ -787,40 +846,68 @@ export class BrowserLoomRuntime {
       return clone(this.session);
     }
     if (method === "validateSteering") {
-      const expression = args[0];
-      if (typeof expression !== "string") {
-        throw loomError("INVALID_STEERING", "Steering expression must be a string");
-      }
+      // `POST .../steering/validate`: parse, resolve and dry-compile, then answer in-band. The
+      // checks that need no model answer first (preflightSteeringValidation), as drowse answers
+      // the empty expression and a parse or fold error before taking its lock; past them, a model
+      // operation in flight answers busy (drowse's EngineBusyError, 409) instead of a verdict,
+      // and the dashboard asks again. The worker refuses the same way, without queueing, while
+      // it has a generation or a fit admitted.
+      const preflight = preflightSteeringValidation(
+        args, this.session.model_id, this.installedSteeringManifolds(),
+      );
+      if ("response" in preflight) return preflight.response;
+      const { expression, syntax, probeRequests } = preflight;
+      type Compiled = {
+        steeringExpression?: string;
+        steeringParts?: import("../../../../drowse/webui/src/lib/types").SteeringPartJSON[];
+        steeringTerms?: import("../../../../drowse/webui/src/lib/types").SteeringTermLayersJSON[];
+        steeringDepth?: number;
+      };
+      if (this.generating) throw engineBusy();
       try {
-        const options = validateSteeringOptions(args[2]);
-        if (options.tree !== undefined) {
-          validateHostedLoomTree(options.tree);
-          if (options.tree.model_id !== this.session.model_id) {
-            throw loomError(
-              "LOOM_SESSION_MISMATCH",
-              "Restored conversation belongs to another model",
-            );
-          }
+        if (syntax === null) {
+          await this.preflightGenerationSteering("", probeRequests);
+          return { valid: true, expression: "", error: null };
         }
-        const probeRequests = options.probeRequests;
-        const parsed = expression.trim() ? parseSteeringExpression(expression) : null;
-        if (expression.trim() || probeRequests !== undefined) {
-          await this.preflightGenerationSteering(expression, probeRequests);
-        }
+        const compiled = await this.preflightGenerationSteering(expression, probeRequests) as Compiled;
+        // A runtime without the core-pack compiler (the fake one) returns no steering fields.
+        const ir = compiled.steeringExpression === undefined || compiled.steeringParts === undefined
+          ? foldSteering(syntax)
+          : null;
         return {
           valid: true,
-          expression: parsed === null ? "" : formatParsedSteering(parsed),
+          expression: compiled.steeringExpression ?? formatSteering(ir!),
           error: null,
+          ...(compiled.steeringTerms !== undefined && compiled.steeringDepth !== undefined
+            ? {
+                n_layers: compiled.steeringDepth,
+                terms: compiled.steeringTerms.map((term) => ({
+                  key: term.key,
+                  fitted: [...term.fitted],
+                  share: [...term.share],
+                  layers: [...term.layers],
+                })),
+              }
+            : {}),
+          parts: compiled.steeringParts ?? steeringParts(ir!),
         };
       } catch (error) {
-        return {
-          valid: false,
-          expression,
-          error: error instanceof Error ? error.message : String(error),
-        };
+        const code = (error as { code?: unknown } | null)?.code;
+        if (code === "ENGINE_BUSY" || code === "GENERATION_BUSY") throw error;
+        return invalidSteeringValidation(expression, error);
       }
     }
     throw loomError("BROWSER_SERVICE_UNAVAILABLE", `sessions.${method} is not implemented`);
+  }
+
+  /** The compiler's installed manifolds, or `null` when there is no compiler to ask. */
+  installedSteeringManifolds(): readonly SteeringManifoldEntry[] | null {
+    if (this.steeringManifolds === undefined) return null;
+    try {
+      return this.steeringManifolds();
+    } catch {
+      return null;
+    }
   }
 
   private async treeRequest(method: string, args: unknown[]): Promise<unknown> {
@@ -1185,7 +1272,7 @@ export class BrowserLoomRuntime {
       );
       const total = forcedPrefix.length;
       const readoutLabel = request.family === "lens"
-        ? "J-lens"
+        ? "R-lens"
         : request.family === "sae"
           ? "model features"
           : "geometry";
@@ -1230,9 +1317,10 @@ export class BrowserLoomRuntime {
         thinking: settings.thinking,
         generationSeat: this.session.is_base_model || request.options.raw ? null : node.role as ChatRole,
         generationRoleName: this.session.is_base_model || request.options.raw ? null : node.role_label,
-        steeringExpression: settings.steering,
+        steeringExpression: boundSteering(hookProgram, settings.steering),
         position_spans: settings.positionSpans,
         hookProgram,
+        liveInstruments: this.instruments?.liveInstruments() ?? null,
         maxOutputTokens: this.maxOutputTokens,
         replay: { forcedPrefixTokenIds: forcedPrefix },
         measurementTargetRawIndex: request.rawIndex,
@@ -1403,9 +1491,10 @@ export class BrowserLoomRuntime {
       thinking: settings.thinking,
       generationSeat: this.session.is_base_model ? null : node.role as ChatRole,
       generationRoleName: this.session.is_base_model ? null : node.role_label,
-      steeringExpression: settings.steering,
+      steeringExpression: boundSteering(hookProgram, settings.steering),
       position_spans: settings.positionSpans,
       hookProgram,
+      liveInstruments: this.instruments?.liveInstruments() ?? null,
       maxOutputTokens: this.maxOutputTokens,
       replay: { forcedPrefixTokenIds: forcedPrefix, scoreTokenIds },
       onRawToken: (token) => {
@@ -1444,6 +1533,64 @@ export class BrowserLoomRuntime {
     return node;
   }
 
+  /** The units members' node replays (B5), or null when the engine cannot render a prompt to
+   *  token ids or the session has no steering compiler. */
+  unitsNodeReplay(): UnitsNodeReplayPort | null {
+    if (!this.generation.renderPromptTokenIds || !this.compileSteering) return null;
+    return { nodeForward: (nodeId, rawIndex, options) => this.unitsNodeForward(nodeId, rawIndex, options) };
+  }
+
+  private async unitsNodeForward(
+    nodeId: string,
+    rawIndex: number | null,
+    options: { steered: boolean; raw: boolean; label: string; produced: boolean },
+  ): Promise<UnitsNodeReplay> {
+    return this.withReplayLock(async () => {
+      const authored = this.requireNode(nodeId);
+      if (authored.recipe === null && (authored.role === "user" || authored.role === "assistant")) {
+        // Native `NodeReplayer.forward` replays an authored turn's captured prompt tokens
+        // (`resolve_prompt_anchor`). The browser measures no prompts, so its authored turns hold
+        // no capture, and drowse refuses such a turn in these words.
+        throw Object.assign(
+          new Error(`${options.label}: '${authored.id}' is an authored turn no generation has measured yet, so it has no prompt tokens to replay`),
+          { code: "INVALID_NODE_OPERATION", status: 400, recoverable: false },
+        );
+      }
+      const node = this.replayableNode(nodeId);
+      const raw = node.raw_token_ids!;
+      const anchor = rawIndex ?? raw.length - 1;
+      if (!(Number.isSafeInteger(anchor) && anchor >= 0 && anchor < raw.length)) {
+        throw loomError("INVALID_NODE_OPERATION", `Raw token index ${anchor} is outside node ${node.id}`);
+      }
+      const settings = replaySettings(this.session, node, anchor + 1, options.steered, this.maxOutputTokens);
+      const program = settings.steering
+        ? await this.compileRequiredSteering(settings.steering)
+        : null;
+      const raw_ = this.session.is_base_model || options.raw;
+      const promptIds = await this.generation.renderPromptTokenIds!({
+        input: generationInput({ type: "generate", input: null, raw: raw_ }, this.tree, node.parent_id!, settings.systemPrompt),
+        thinking: settings.thinking,
+        generationSeat: raw_ ? null : node.role as ChatRole,
+        generationRoleName: raw_ ? null : node.role_label,
+      });
+      const ids = Int32Array.from([...promptIds, ...raw.slice(0, anchor)]);
+      return {
+        forward: {
+          ids,
+          promptLength: promptIds.length,
+          rawIds: Int32Array.from(raw),
+          rawIndex: anchor,
+          spans: [{ firstRow: 0, stopRow: raw.length, at: promptIds.length - 1 }],
+          // Position-targeted steering replays with its recorded spans (B1 §2.3, §3.1).
+          positionSpans: program === null ? null : settings.positionSpans ?? null,
+        },
+        program,
+        steering: boundSteering(program, settings.steering) ?? null,
+        canThink: settings.thinking === true,
+      };
+    });
+  }
+
   private async withReplayLock<T>(operation: () => Promise<T>): Promise<T> {
     if (this.generating) {
       throw loomError("GENERATION_BUSY", "The browser model is already generating or replaying");
@@ -1459,7 +1606,7 @@ export class BrowserLoomRuntime {
   private compileRequiredSteering(
     expression: string,
     probeRequests?: readonly ProbeRequest[],
-  ): Promise<BrowserHookProgram> {
+  ): Promise<StructuredHookProgramBuffers> {
     if (!this.compileSteering) {
       throw loomError(
         "STEERING_COMPILER_UNAVAILABLE",
@@ -1472,7 +1619,7 @@ export class BrowserLoomRuntime {
   private async preflightGenerationSteering(
     expression: string,
     probeRequests?: readonly ProbeRequest[],
-  ): Promise<BrowserHookProgram> {
+  ): Promise<StructuredHookProgramBuffers> {
     const program = await this.compileRequiredSteering(expression, probeRequests);
     const activeRole = activeAssistantRole(program);
     if (activeRole !== null && !this.session.role_substitution_supported) {
@@ -1487,11 +1634,13 @@ export class BrowserLoomRuntime {
   private tokenMeasurements(
     nodeId: string,
     rawIndex: number,
-  ): import("../../../../drowse/webui/src/lib/types").MeasurementsEnvelopeJSON | null {
+  ): MeasurementsEnvelopeJSON | null {
+    // Only a row kept whole is a readout; a generated row's projection replays.
     const node = this.requireNode(nodeId);
     for (const row of [...(node.thinking_tokens ?? []), ...(node.tokens ?? [])]) {
-      if (row.raw_index === rawIndex && row.measurements !== undefined) {
-        return clone(row.measurements);
+      if (row.raw_index === rawIndex) {
+        const whole = wholeEnvelope(row.measurements);
+        return whole === null ? null : clone(whole);
       }
     }
     return null;
@@ -1557,6 +1706,7 @@ export class BrowserLoomRuntime {
           recipe: clone(turn.recipe),
         });
         node.aggregate_readings = clone(turn.readings);
+        node.finish_reason = turn.finishReason;
         node.tokens = null;
         node.thinking_tokens = null;
         if (firstImportedId === null && guards.length > 0) {
@@ -1647,8 +1797,10 @@ export class BrowserLoomRuntime {
     }
     node.tokens = null;
     node.thinking_tokens = null;
+    node.prompt_capture = null;
     node.recipe = null;
     node.aggregate_readings = {};
+    node.aggregate_measurements = null;
     node.applied_steering = null;
     node.finish_reason = "stop";
     node.mean_logprob = null;
@@ -1715,7 +1867,6 @@ export class BrowserLoomRuntime {
     }
     return {
       node: candidate,
-      original: clone(candidate),
       parentId: candidate.parent_id,
       forcedPrefix: [...forcedPrefix],
     };
@@ -1738,6 +1889,7 @@ export class BrowserLoomRuntime {
       role_label: input.roleLabel,
       thinking_text: input.thinkingText,
       aggregate_readings: {},
+      aggregate_measurements: null,
       applied_steering: input.steering,
       finish_reason: null,
       starred: false,
@@ -1751,6 +1903,7 @@ export class BrowserLoomRuntime {
       tokens: [],
       thinking_tokens: [],
       raw_token_ids: null,
+      prompt_capture: null,
     };
   }
 
@@ -2047,6 +2200,7 @@ function cancelledGenerationResult(
   node: LoomNodeJSON,
   rawTokenCount: number,
   promptTokens = 0,
+  lastEnvelope?: MeasurementsEnvelopeJSON,
 ): WebLlmGenerationResult {
   const responseRows = node.tokens ?? [];
   const logprobs = responseRows
@@ -2056,8 +2210,7 @@ function cancelledGenerationResult(
     ? null
     : logprobs.reduce((sum, value) => sum + value, 0) / logprobs.length;
   const allRows = [...(node.thinking_tokens ?? []), ...responseRows];
-  const latestMeasurements = allRows.findLast((row) => row.measurements !== undefined)
-    ?.measurements;
+  const measurements = lastEnvelope === undefined ? undefined : aggregateEnvelope(lastEnvelope);
   const tokens = rawTokenCount > 0 ? rawTokenCount : allRows.length;
   return {
     text: node.text,
@@ -2074,14 +2227,7 @@ function cancelledGenerationResult(
     meanSurprise: meanLogprob === null ? null : -meanLogprob,
     prefillTokensPerSecond: null,
     decodeTokensPerSecond: null,
-    ...(latestMeasurements === undefined
-      ? {}
-      : {
-          measurements: {
-            ...clone(latestMeasurements),
-            scope: "aggregate" as const,
-          },
-        }),
+    ...(measurements === undefined ? {} : { measurements }),
   };
 }
 
@@ -2248,6 +2394,7 @@ function rootNode(id: string, createdAt: number): LoomNodeJSON {
     role_label: null,
     thinking_text: null,
     aggregate_readings: {},
+    aggregate_measurements: null,
     applied_steering: null,
     finish_reason: null,
     starred: false,
@@ -2261,6 +2408,7 @@ function rootNode(id: string, createdAt: number): LoomNodeJSON {
     tokens: null,
     thinking_tokens: null,
     raw_token_ids: null,
+    prompt_capture: null,
   };
 }
 
@@ -2394,7 +2542,7 @@ function roleLabel(role: ChatRole, sampling: WSSampling | null | undefined): str
   return sampling?.assistant_role?.trim() || null;
 }
 
-function activeAssistantRole(program: BrowserHookProgram | null): string | null {
+function activeAssistantRole(program: StructuredHookProgramBuffers | null): string | null {
   const role = program?.activeRole;
   return typeof role === "string" ? role.trim() || null : null;
 }
@@ -2429,51 +2577,118 @@ interface PartialRecipe {
   seed: number | null;
 }
 
-/** drowse/loom/recipe.py `compose_call`: the one composition rule. Tiers,
- *  weakest first: the cast member's standing recipe, the call, the regen
- *  anchor, and the regen modifier. At each tier a set field wins (steering
- *  and thinking when not null, the system prompt when not inherited), and
- *  sampling merges field by field, so a tier cannot reset a field to its
- *  default. Observation knobs always come from the call, and the seed
- *  resolves modifier > call > anchor > cast. */
+/** One tier of `composeCall` below the call: a cast member's standing recipe,
+ *  a regen anchor's, or a regen modifier. */
+export interface ComposeTier {
+  steering: string | null;
+  thinking: boolean | null;
+  /** Absent: inherit. */
+  system_prompt?: string | null;
+  sampling: RecipeSamplingJSON | null;
+  seed?: number | null;
+}
+
+export interface ComposedCall {
+  steering: string | null;
+  thinking: boolean | null;
+  /** Absent: inherit the session's. */
+  systemPrompt?: string | null;
+  /** The merged sampling with the call's observation knobs and the resolved seed, or null when
+   *  no tier set any. */
+  sampling: WSSampling | null;
+}
+
+/** drowse/loom/recipe.py `compose_call`: the one composition rule (golden:
+ *  `recipe-compose-v1.json`). Steering, thinking and the system prompt rank
+ *  cast < call < anchor < modifier: a set field wins (steering and thinking
+ *  when not null, the system prompt when not inherited). Sampling ranks cast <
+ *  anchor < call < modifier and merges field by field, so a tier cannot reset
+ *  a field to its default: a field the call sets is what this generation
+ *  asked for, and a regenerate that sends no sampling reproduces its anchor.
+ *  Observation knobs always come from the call, and the seed resolves
+ *  modifier > call > anchor > cast. */
+export function composeCall(input: {
+  steering: string | null;
+  thinking: boolean | null;
+  systemPrompt?: string | null;
+  sampling: WSSampling | null;
+  cast: ComposeTier | null;
+  anchor: ComposeTier | null;
+  modifier: ComposeTier | null;
+}): ComposedCall {
+  const { cast, anchor, modifier } = input;
+  const call = input.sampling;
+  let steering = input.steering;
+  let thinking = input.thinking;
+  let systemPrompt = input.systemPrompt;
+  let promptSet = Object.hasOwn(input, "systemPrompt") && input.systemPrompt !== undefined;
+  if (cast !== null) {
+    steering ??= cast.steering;
+    thinking ??= cast.thinking;
+    if (!promptSet && cast.system_prompt !== undefined) {
+      systemPrompt = cast.system_prompt;
+      promptSet = true;
+    }
+  }
+  for (const layer of [anchor, modifier]) {
+    if (layer === null) continue;
+    if (layer.steering !== null) steering = layer.steering;
+    if (layer.thinking !== null) thinking = layer.thinking;
+    if (layer.system_prompt !== undefined) {
+      systemPrompt = layer.system_prompt;
+      promptSet = true;
+    }
+  }
+  const tierSampling = (tier: ComposeTier | null): WSSampling | null =>
+    tier === null || tier.sampling === null ? null : recipeSampling(tier.sampling);
+  let sampling: WSSampling | null = null;
+  for (const tier of [tierSampling(cast), tierSampling(anchor), call, tierSampling(modifier)]) {
+    sampling = mergeSampling(sampling, tier);
+  }
+  if (sampling !== null) {
+    const seed = [seedOf(modifier), call?.seed ?? null, seedOf(anchor), seedOf(cast)]
+      .find((value) => value !== null) ?? null;
+    sampling = {
+      ...sampling,
+      return_top_k: call?.return_top_k ?? 0,
+      return_probe_readings: call?.return_probe_readings ?? true,
+      persist_per_layer_scores: call?.persist_per_layer_scores ?? false,
+      persist_subspace_coords: call?.persist_subspace_coords ?? false,
+      seed,
+    };
+  }
+  return {
+    steering,
+    thinking,
+    ...(promptSet ? { systemPrompt: systemPrompt ?? null } : {}),
+    sampling,
+  };
+}
+
 function resolveGenerationSettings(
   request: WSSubmitRequest | WSGenerateRequest,
   session: SessionInfo,
   tree: LoomTreeJSON,
   parentId: string,
   maxOutputTokens: number,
+  manifolds: () => readonly SteeringManifoldEntry[],
 ): ResolvedGenerationSettings {
   const cast = request.raw ? null : generationCastRecipe(request, tree);
   const call = request.sampling ?? null;
   const override = request.recipe_override;
   const anchor = override === null || override === undefined ? null : anchorRecipe(tree, parentId);
-  const modifier = anchor === null ? null : recipeModifier(override!, anchor);
-
-  let steering: string | null = request.steering ?? null;
-  let thinking: boolean | null = request.thinking ?? null;
-  let systemPrompt: string | null | undefined = request.system_prompt;
-  let sampling: WSSampling | null = call;
-  if (cast !== null) {
-    steering ??= cast.steering;
-    thinking ??= cast.thinking;
-    if (systemPrompt === undefined) systemPrompt = cast.system_prompt;
-    sampling = mergeSampling(cast.sampling === null ? null : recipeSampling(cast.sampling), sampling);
-  }
-  for (const layer of [anchor, modifier]) {
-    if (layer === null) continue;
-    if (layer.steering !== null) steering = layer.steering;
-    if (layer.thinking !== null) thinking = layer.thinking;
-    if (layer.system_prompt !== undefined) systemPrompt = layer.system_prompt;
-    sampling = mergeSampling(sampling, layer.sampling === null ? null : recipeSampling(layer.sampling));
-  }
-  const seed = [seedOf(modifier), call?.seed ?? null, seedOf(anchor), seedOf(cast)]
-    .find((value) => value !== null) ?? null;
-  const observation: WSSampling = {
-    return_top_k: call?.return_top_k ?? 0,
-    return_probe_readings: call?.return_probe_readings ?? true,
-    persist_per_layer_scores: call?.persist_per_layer_scores ?? false,
-    persist_subspace_coords: call?.persist_subspace_coords ?? false,
-  };
+  const modifier = anchor === null ? null : recipeModifier(override!, anchor, manifolds);
+  const composed = composeCall({
+    steering: request.steering ?? null,
+    thinking: request.thinking ?? null,
+    ...(request.system_prompt === undefined ? {} : { systemPrompt: request.system_prompt }),
+    // A call always samples (drowse's engine passes its `SamplingConfig`): an absent block is
+    // one with every field unset, so the seed and the observation knobs always resolve.
+    sampling: call ?? {},
+    cast,
+    anchor,
+    modifier,
+  });
 
   const positionSpans = modifier !== null
     ? normalizeSteeringPositions(modifier.position_spans !== undefined ? modifier : anchor!)
@@ -2482,15 +2697,17 @@ function resolveGenerationSettings(
         ? request : cast ?? {},
     );
   return {
-    steering: resolveSteering(steering, session.default_steering),
-    sampling: effectiveSampling(session, { ...sampling, ...observation, seed }, maxOutputTokens),
-    thinking: thinking ?? session.config.thinking ?? session.supports_thinking,
-    systemPrompt: systemPrompt === undefined ? session.config.system_prompt : systemPrompt,
+    steering: resolveSteering(composed.steering, session.default_steering),
+    sampling: effectiveSampling(session, composed.sampling!, maxOutputTokens),
+    thinking: composed.thinking ?? session.config.thinking ?? session.supports_thinking,
+    systemPrompt: composed.systemPrompt === undefined
+      ? session.config.system_prompt
+      : composed.systemPrompt,
     positionSpans,
   };
 }
 
-function seedOf(recipe: Pick<PartialRecipe, "seed" | "sampling"> | null): number | null {
+function seedOf(recipe: Pick<ComposeTier, "seed" | "sampling"> | null): number | null {
   if (recipe === null) return null;
   return recipe.seed ?? recipe.sampling?.seed ?? null;
 }
@@ -2563,17 +2780,18 @@ function anchorRecipe(tree: LoomTreeJSON, parentId: string): PartialRecipe {
   return { steering: null, sampling: null, thinking: null, seed: null };
 }
 
-function recipeModifier(
+export function recipeModifier(
   value: NonNullable<
     WSGenerateRequest["recipe_override"] | WSSubmitRequest["recipe_override"]
   >,
   anchor: PartialRecipe,
+  manifolds: () => readonly SteeringManifoldEntry[] = () => [],
 ): PartialRecipe {
   if (typeof value === "string") {
     const trimmed = value.trim();
     if (trimmed === "unsteered") return partialRecipe({ steering: "" });
     if (trimmed === "inverted") {
-      return partialRecipe({ steering: invertSteering(anchor.steering) });
+      return partialRecipe({ steering: invertSteering(anchor.steering, manifolds) });
     }
     if (trimmed === "reseed") return partialRecipe({ seed: randomSeed() });
     if (trimmed === "cool") {
@@ -2825,68 +3043,11 @@ function randomSeed(): number {
   return crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fffffff;
 }
 
-function invertSteering(value: string | null): string {
-  if (!value?.trim()) return "";
-  const parsed = parseSteeringExpression(value);
-  return formatParsedSteering({
-    ...parsed,
-    terms: parsed.terms.map((term) => ({
-    ...term,
-    coefficients: term.coefficients.map((coefficient, index) =>
-      index === 0 ? -coefficient : coefficient
-    ),
-    })),
-  });
-}
-
-function formatParsedSteering(
-  parsed: ReturnType<typeof parseSteeringExpression>,
+function invertSteering(
+  value: string | null,
+  manifolds: () => readonly SteeringManifoldEntry[],
 ): string {
-  return parsed.terms.map(formatSteeringTerm).join(" + ").replaceAll("+ -", "- ");
-}
-
-function formatSteeringTerm(term: ReturnType<typeof parseSteeringExpression>["terms"][number]): string {
-  const leadingSign = term.coefficients[0] < 0 ? -1 : 1;
-  const coefficients = term.coefficients
-    .map((coefficient, index) =>
-      formatSteeringNumber(index === 0 ? coefficient : coefficient * leadingSign)
-    )
-    .join(",");
-  const selector = term.selector;
-  let output = `${coefficients} ${term.ablation ? "!" : ""}${formatSteeringAtom(selector.base)}`;
-  if (selector.manifoldPosition !== null) {
-    output += `%${Array.isArray(selector.manifoldPosition)
-      ? selector.manifoldPosition.map(formatSteeringNumber).join(",")
-      : selector.manifoldPosition}`;
-  } else if (selector.projection !== null && selector.onto !== null) {
-    output += `${selector.projection}${formatSteeringAtom(selector.onto)}`;
-  }
-  if (term.trigger !== null) output += formatSteeringTrigger(term.trigger);
-  return output;
-}
-
-function formatSteeringAtom(atom: ReturnType<typeof parseSteeringExpression>["terms"][number]["selector"]["base"]): string {
-  return `${atom.namespace === null ? "" : `${atom.namespace}/`}${atom.concept}${
-    atom.variant === "raw" ? "" : `:${atom.variant}`
-  }`;
-}
-
-function formatSteeringTrigger(trigger: NonNullable<ReturnType<typeof parseSteeringExpression>["terms"][number]["trigger"]>): string {
-  const gate = trigger.gate === null
-    ? ""
-    : `when:${trigger.gate.probe}${trigger.gate.operator}${formatSteeringNumber(trigger.gate.threshold)}`;
-  if (gate && trigger.phase.kind === "generated_only") return `@${gate}`;
-  const phase = trigger.phase.kind === "both" ? "both"
-    : trigger.phase.kind === "after_thinking" ? "after"
-    : trigger.phase.kind === "prompt_only" ? "prompt"
-    : trigger.phase.kind === "thinking_only" ? "thinking"
-    : trigger.phase.kind === "generated_only" ? "response"
-    : `${trigger.phase.kind}:${trigger.phase.tokens}`;
-  return `@${phase}${gate ? `&${gate}` : ""}`;
-}
-
-function formatSteeringNumber(value: number): string {
-  return Object.is(value, -0) ? "0" : String(value);
+  return value && pythonStrip(value) ? invertSteeringExpression(value, { manifolds: manifolds() }) : "";
 }
 
 function nodeSteering(node: LoomNodeJSON): string | null {
@@ -3192,6 +3353,69 @@ function clampSessionOutputTokens(
   };
 }
 
+/** What `sessions.validateSteering` decides before it needs the model: a non-string expression
+ *  throws; malformed options, a tree for another model, a syntax error and a fold error answer
+ *  in-band (`valid: false`); the empty expression without a probe roster answers valid. Anything
+ *  else needs the compiler (`expression`, its syntax tree, the staged probe roster). Pure, so the
+ *  worker can answer a validation that arrives during a generation or fit without queueing it.
+ *
+ *  drowse's `parse_expr` runs before the session lock and folds as it parses, resolving bare
+ *  atoms against the installed manifolds, so conflicting triggers on one concept or an ambiguous
+ *  bare label answer `valid: false` even while a model operation holds the lock. `manifolds` is
+ *  the compiler's installed list; `null` (no compiler to ask) leaves the fold to the compiler,
+ *  since folding against an empty registry would refuse what the real one resolves. */
+export function preflightSteeringValidation(
+  args: readonly unknown[],
+  modelId: string,
+  manifolds: readonly SteeringManifoldEntry[] | null = null,
+):
+  | { response: SteeringValidationResponse }
+  | {
+      expression: string;
+      syntax: SteeringExpression | null;
+      probeRequests: ProbeRequest[] | undefined;
+    } {
+  const raw = args[0];
+  if (typeof raw !== "string") {
+    throw loomError("INVALID_STEERING", "Steering expression must be a string");
+  }
+  const expression = pythonStrip(raw);
+  let options: ReturnType<typeof validateSteeringOptions>;
+  let syntax: SteeringExpression | null = null;
+  try {
+    options = validateSteeringOptions(args[2]);
+    if (options.tree !== undefined) {
+      validateHostedLoomTree(options.tree);
+      if (options.tree.model_id !== modelId) {
+        throw loomError("LOOM_SESSION_MISMATCH", "Restored conversation belongs to another model");
+      }
+    }
+    if (expression) {
+      syntax = parseSteeringExpression(expression);
+      if (manifolds !== null) foldSteering(syntax, { manifolds });
+    }
+  } catch (error) {
+    return { response: invalidSteeringValidation(expression, error) };
+  }
+  if (!expression && options.probeRequests === undefined) {
+    return { response: { valid: true, expression: "", error: null } };
+  }
+  return { expression, syntax, probeRequests: options.probeRequests };
+}
+
+/** drowse's EngineBusyError (409): a validation that will not wait behind a model operation. */
+export function engineBusy(): Error & { code: string; status: number; recoverable: boolean } {
+  return loomError("ENGINE_BUSY", "a model operation is in flight; retry shortly");
+}
+
+function invalidSteeringValidation(expression: string, error: unknown): SteeringValidationResponse {
+  return {
+    valid: false,
+    expression,
+    error: error instanceof Error ? error.message : String(error),
+  };
+}
+
 function validateSteeringOptions(value: unknown): {
   probeRequests?: ProbeRequest[];
   tree?: LoomTreeJSON;
@@ -3317,4 +3541,14 @@ function loomError(code: string, message: string): Error & {
   recoverable: boolean;
 } {
   return Object.assign(new Error(message), { code, status: 409, recoverable: true });
+}
+
+/** The steering a generation's envelopes bind (native's recipe steering): the compiled
+ *  expression's canonical text (`formatSteering`), so `a @when:x > 0.2` binds as `a@when:x>0.2`. */
+function boundSteering(
+  program: StructuredHookProgramBuffers | null,
+  expression: string | null | undefined,
+): string | null | undefined {
+  if (!expression) return expression;
+  return (program as (StructuredHookProgramBuffers & { steeringExpression?: string }) | null)?.steeringExpression || expression;
 }

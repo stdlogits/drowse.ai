@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "status": "feasibility-overlay",
-  "hookAbi": "post-block-residual-v4",
-  "structuredHookProfile": "standard-v3",
-  "exactReadoutAbi": "exact-readout-v1",
+  "hookAbi": "block-sites-v5",
+  "structuredHookProfile": "standard-v4",
+  "exactReadoutAbi": "exact-readout-v2",
   "tvmRepository": "https://github.com/apache/tvm.git",
   "tvmCommit": "68ba2b31c2a6d202fcd44e5780ef10ce08721dd5",
   "tvmFfiCommit": "12dbf053b3d9ba4ebd9da3123b1aeca79cf74229",
@@ -24,6 +24,14 @@
       "sha256": "dcaa1bebbfbb86953fdfbdc7f938800229f75ad26c5c9375ef242edad737d999"
     }
   ],
+  "llvmSourceBuild": {
+    "platform": "linux/amd64",
+    "repository": "https://github.com/llvm/llvm-project.git",
+    "tag": "llvmorg-18.1.8",
+    "tagObject": "76caf4176cd7877ad5952737d56da6f515ee4602",
+    "commit": "3b5b5c1ec4a3095ab096dd780e84d7ab81f3d7ff",
+    "bootstrapArchive": "clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz"
+  },
   "overlays": [
     {
       "id": "tvm-webgpu-readonly",
@@ -32,12 +40,12 @@
       "baseCommit": "68ba2b31c2a6d202fcd44e5780ef10ce08721dd5",
       "baseTree": "be3cfff2686e6fe08acac33211d031eb154b62b4",
       "patch": "tvm-webgpu-readonly.patch",
-      "patchBytes": 20558,
-      "patchSha256": "8d68492fa0ae767815d3dfc8588209ffda03e1eb4a448300a61538e4fda593fb",
+      "patchBytes": 28925,
+      "patchSha256": "ca454317449ed53a5627aba3438bcc7feeef270037fcda009ae86660d3b87c65",
       "resultFiles": {
-        "python/tvm/relax/frontend/nn/llm/_decode_kernels.py": "4cfba82db3cd92e0b02081bd9679f24663fdca327de767966ae50c135c92e3ce",
+        "python/tvm/relax/frontend/nn/llm/_decode_kernels.py": "a3e8d8158217b3284f0f741dd9a94d3f8924cf6af1c3b3c500459f38351e2318",
         "python/tvm/relax/frontend/nn/llm/_kernel_common.py": "f5bc8999ae5a6f06e96da1c8262fedc5ae53230c61439285be0cdb0828a43012",
-        "python/tvm/relax/frontend/nn/llm/_prefill_kernels.py": "cbb41ed61ece7c8741c73dcd3690635c66fd7cdb71a755b78d1b70e0c5ad992e",
+        "python/tvm/relax/frontend/nn/llm/_prefill_kernels.py": "e14f94f6acd2007ce26b492541c74b979bc0714cfd1a106aead2ec929e788d16",
         "src/backend/webgpu/codegen/codegen_webgpu.cc": "753ff21703a741cf7a8bc49678f4737127f04fa1f28f0fef06aefb4859b5d4a7",
         "src/runtime/vm/paged_kv_cache.cc": "90ec1ed27fa2cc3faf426f60ab46e1b5c6ba352de177d50db168a4357dba3ed2",
         "tests/python/codegen/test_target_codegen_webgpu.py": "3da351a5fd03a1a0b05ed926581fe3d46e5160c23f926f931b0a8776d3f2e9c9"
@@ -50,15 +58,17 @@
       "baseCommit": "9fa644f54b04983adea4d0168f49fc6af4a893ba",
       "baseTree": "3ecd325c3ab1f631e4c1390917ae48bbf07bf965",
       "patch": "mlc-llm-drowse.patch",
-      "patchBytes": 324160,
-      "patchSha256": "e8f6c00f7cd9c262564820d590495f690c77f50cb80911681043a891b410d2b3",
+      "patchBytes": 449691,
+      "patchSha256": "835ec7626b9e929fb0b4aca54b09d8b2ec45489dc8a6467f1ac60341791db0c3",
       "resultFiles": {
         "python/mlc_llm/interface/compile.py": "435876d96e9ba6fbc3f02dd6f5ed858df559ebded169ce91c5cdd8151e610d32",
         "python/mlc_llm/interface/convert_weight.py": "dffc4af8487f54087bc27f9a35f959df318a70c4c33326b65d4a6d9f6479a1b5",
-        "python/mlc_llm/model/drowse_hooks.py": "4fadef9db1c875c81ca9cde76dfdbc477a3755f4d982ba9d097ccc730f6778b1",
-        "python/mlc_llm/model/gemma3/gemma3_model.py": "fd219c4779b1a7497fa533b264d5c77a973c5a1f46f41ed29923c312d6220f18",
-        "python/mlc_llm/model/llama/llama_model.py": "2a34402c81074ce0a773f9a73dc95aea20a7a0533b2561708d32ceeb72aec7dc",
-        "python/mlc_llm/model/qwen3/qwen3_model.py": "0621190a80fc12ec58ca3fd5d439411135815c4f4f6596a5a0d258475b5c7291",
+        "python/mlc_llm/model/drowse_hooks.py": "dd2d9779692360bdddd214553804e90c82942f47011fa947f830321bd3c67cd6",
+        "python/mlc_llm/model/drowse_reads.py": "f6ef0f42e2b49d0e6c8729cdc8aa93dd6cdbd4d614045173e28deba4d129d4b2",
+        "python/mlc_llm/model/drowse_units.py": "70c890ea5362763dac19b6c6eeae03a10aef3fcfc48879eadbda20f68db1afe2",
+        "python/mlc_llm/model/gemma3/gemma3_model.py": "8a8f423b8ef28c43bbca065857b8a344118f30319c80550c58ee50bf7b777867",
+        "python/mlc_llm/model/llama/llama_model.py": "43898289270c720e1a255ca458ce85ea7e3ab4e3798c234caa422e419ae80825",
+        "python/mlc_llm/model/qwen3/qwen3_model.py": "98312ccb7ecd9452b0cc77a7a5ddfb71a7fcda6e4a4c33815b9e05eeec8c8574",
         "python/mlc_llm/op/moe_misc.py": "4141be404d6d31b1ee152ef495fd5bdfc75b16af968ad01e07c3d1d26637ef92"
       }
     },
@@ -69,40 +79,39 @@
       "baseCommit": "90f67096b68d3b77509c938f2221e4cef03b7d76",
       "baseTree": "ac223f95dc7ea27acaba299fe6b780ccb5d67b6f",
       "patch": "web-llm-drowse.patch",
-      "patchBytes": 444550,
-      "patchSha256": "db6d95842fc2bdc332724c6c709eabf8989e78698003d2e02f91592cae7eeae5",
+      "patchBytes": 529085,
+      "patchSha256": "84e6efdde332516132cf46926c212c7168b0bec5e9d4c492cd0a8f0427686827",
       "resultFiles": {
-        "package-lock.json": "a7886e6abbf0e35dfcc21fdbbd2855536597312d00e66b1ec8231d2e1181de16",
-        "package.json": "559f5720388b8734233a8deee314964821dc3bc80150d625b60e632286a28477",
+        "package-lock.json": "158f6ef9f096ad78bedc5afff5a9a36fd4693a69eb81dac210ccf1a588513340",
+        "package.json": "c393c1981c58fd6461580876256d501c5572da9f93281d6f8eefba051a128538",
         "rollup.config.js": "509d7ae65c5f1d3a9844f317854c191c2e4ea0978880b1e9cb4abb9216209273",
         "src/cache_util.ts": "22068a3108e0df16d9bd6c1397283cdb0f33aafa5f22eb2c26678cc30342ec08",
-        "src/config.ts": "2d30bcc6ffd8ce39cea8207a1313e76469fdc83cbb2436532db72854cdee6492",
-        "src/conversation.ts": "2a078e8a777689a8ebb885916d68823e674c4e5c56b0834dfd3be0496e9ff63c",
+        "src/config.ts": "ee61e5876d51038eb7d6235fd1de1ea066e5f1f103242ffb7e69dba7f6ac86bd",
+        "src/conversation.ts": "f76b93d1306a8eef8735236f7e7b37fdc0c6df0bc85448e5ed4b73eaf8f768c1",
+        "src/drowse.ts": "e17e329c5af01bf3cf75725c8a2988ec6e8a51e215c8ac6faa3f7f02f809ffc3",
         "src/drowse_gpu_controls.ts": "31415bce2481fa0df2ef59d0c5d937001f688ef84ab30ee43dc098df03e34c08",
         "src/drowse_gpu_topk.ts": "b6267e699827327913e6513eb46868a769de5535fe8e042608821509cc93850b",
-        "src/drowse.ts": "01b7afd74097326b46f7eaa62b2eb428f1fd5557a0eed92051aec56953793f3f",
-        "src/engine.ts": "6ed37de53cca1dd1ae68aab17247f8163bf5c70667173983c7f9a86e841d8006",
-        "src/gpu.ts": "0a8659a2b19f9ecad0ce9d7aeae621ff276190fb895d9cc0e5d8097889f8ca3d",
-        "src/index.ts": "8b647f34e23eda8725295c5921c59748366deaf94e7483d0f35813cc4b17aaf7",
-        "src/llm_chat.ts": "2d981af8a79655d921d3a05a98fb64d118ad8bc943140abe5122de7b445e7b86",
-        "src/message.ts": "6e8e949e1313fd782fb72b801409eba0fc19b3b7237fa300cce58ff58c4f032e",
-        "src/openai_api_protocols/chat_completion.ts": "46d335621a17b0f20d21fd5a980166b8eba7bf7a9bb00b069869fe4d3e445521",
-        "src/openai_api_protocols/completion.ts": "b49405d53beafb0fac21468a2d8d716c5580dd2cea967acaa6c350267641aa8b",
+        "src/engine.ts": "edbdb0df747b32c90c2b83f7b7c83c300b28e57fe1e001c2fa7efed67a93540d",
+        "src/gpu.ts": "7680a9f6742b36174b0175085fd5148da70ea599a70b5daf246f35c678a4a2d5",
+        "src/index.ts": "bf7caa4dae80f8c15ee2f11dbadc1d82adf4ed041c24c182b6e92aa02c02bf17",
+        "src/llm_chat.ts": "d4417c658bc20bcb4b5c7ad3f313c74119d2562391ef20fd566e5427403cddf0",
+        "src/message.ts": "9425730f4136fc688c100a3761465b7bd972e3daf265e79b82b30ddd70f572c5",
+        "src/openai_api_protocols/chat_completion.ts": "c58e06d58841e18b6e6a9a0e08fa789663999224f308846fad835f25bc42ade7",
+        "src/openai_api_protocols/completion.ts": "4dd7e554b4467630f1f53882b2c2d196b35df7c0f392d0a8d253e09a9741e0b4",
         "src/openai_api_protocols/index.ts": "13b993b69d41bdfc8d7118dd2dbc5dd45021b87853cf7fe396000ba9e3c85cbe",
-        "src/types.ts": "6bfbd71fe8015fa26dc3b1f86b0c88a22ae40eae5ac53ef16b832d68d4212c28",
+        "src/types.ts": "726726eacd2ff3768d5fad22a05bf11cd452977d2807aeab55b7a41d8cbcdbad",
         "src/utils.ts": "d462c6a68a159c863ce382dd3ea367da649f5801b877265d3080d9436ae8fef4",
-        "src/web_worker.ts": "1f17d1cd3468aa497aa0244f4f4b21080ba5c3fc7a145d00422e1828d704a4bf",
+        "src/web_worker.ts": "a9ffcabfdbfe44df51f13743ea50f22bb2ef6c06563a54f6d987e28d95e3acc9",
         "tests/cache_util.test.ts": "7ea1dd54414e9a9b8cff3c82bf3bedcf5d7d4e44bc7f1aae57d54ef2cebf2a94",
-        "tests/conversation.test.ts": "b8f9da1d951f507db7f49596d1d96b9ea6a44a14689015c7234acd60af9114cb",
-        "tests/drowse_pipeline.test.ts": "77d1d9a752d8c9095aad0302141b0518ff7620fee0e6e46b112aaaaea127806b",
-        "tests/drowse_positions.test.ts": "42045f74a0eb599d612486861a161e7e25895c2811fac55deead61a9ff96017f",
-        "tests/drowse.test.ts": "034c5a81ea624df0bd4bd9ee35ffefc05bee9a9818544244cf0890364a1c4e4f",
-        "tests/engine_integration.test.ts": "03bfb342c51808c2c37f8e4747d5b2a7ae7843b9a96efb823415830ddf05b02a",
-        "tests/generation_config.test.ts": "da77e7217e89947160baa806b5c97e1ac80409820e33a13b746811e141969d3e",
-        "tests/gpu.test.ts": "d6e798cf62547d2835569d9e59636fc578d9a2d43db09e603e26bcd13a783edf",
-        "tests/llm_chat_abi.test.ts": "11e39a16bbd4015f6db94f9499f77ee60f43d90549d5bc548adc72ec4835328b",
-        "tests/llm_chat_pipeline.test.ts": "9f6830bb1f2f96c0d4a1fe6ce47dc2b9ec41e7dbd179b935f88d9eb6ac395671",
-        "tests/web_worker_handler.test.ts": "726f53f4e38496c6d00ac5ccca0087d37345f6544f5f038abb073118851d405a",
+        "tests/conversation.test.ts": "a71ec20e05dc616cefab552bb16dc51efd6cb47e56ec8553b917240d2a8e65fa",
+        "tests/drowse.test.ts": "dc3f490542af4af9f9c1f50e8a817187d673d1d58273d2c7dd66ecc1aae39c1e",
+        "tests/drowse_pipeline.test.ts": "7d2576a9f6684f9c438fcd4768574bacf5b86cc1f894f3eff3c3335a3c5342cb",
+        "tests/drowse_positions.test.ts": "5c44a8c5d73dcfabc19b9ecefbfefebcdcace1de20a16185bf4e1e9fc0f20823",
+        "tests/engine_integration.test.ts": "7e10bc6daaf25f3d09e6a30d3cc8a61cc699154c65efc39d14dddac61c2b9227",
+        "tests/generation_config.test.ts": "e1feaec25dbfad77fdd7a9e7e298a11a5af2eefe3cd690cadc5b90849a5f5920",
+        "tests/gpu.test.ts": "f85aa0e7880baac7431e3ade67a701a0a3a2963f9a22084b6be7026d9d70aa14",
+        "tests/llm_chat_pipeline.test.ts": "8b28d081d4e500796463663c2fb1a7873e45e91ed23d715e8be10f359f11c04f",
+        "tests/web_worker_handler.test.ts": "64e862cd3b532e87b4e20d89f0f52972ff0047158f6db62c920daca208cc6dc8",
         "tvm-direct-upload.mjs": "d9bb0ff1cc8402d00f5483446fc84dead774fb5f8a9efc91f9cfb8928f7f3973",
         "tvm-direct-upload.test.mjs": "f39680d8817baf4eb7563f8411d5be32e3321c34cc8a73ce695f7e458ed0b895"
       }
@@ -111,7 +120,7 @@
   "baseModels": {
     "gpt2": {
       "modelAdapterFiles": {
-        "base_model_adapters.py": "8056482704d65958065f8c32ff46be798c84bb0b49acb636affab7f9555f6fd5"
+        "base_model_adapters.py": "92606e6406f81221e76a30f41f3aa0a08e4acb830fdcdd4b5ec5b4034b974c1c"
       },
       "modelSourceFiles": {
         "python/mlc_llm/model/gpt2/gpt2_loader.py": "d9e91af06a275b8b4e6b2419e51c9670702fddfb3ad9e3fecdf63901310e4c36",
@@ -120,7 +129,7 @@
     },
     "gpt_neox": {
       "modelAdapterFiles": {
-        "base_model_adapters.py": "8056482704d65958065f8c32ff46be798c84bb0b49acb636affab7f9555f6fd5"
+        "base_model_adapters.py": "92606e6406f81221e76a30f41f3aa0a08e4acb830fdcdd4b5ec5b4034b974c1c"
       },
       "modelSourceFiles": {
         "python/mlc_llm/model/gpt_neox/gpt_neox_loader.py": "0440155050e86cba299b8b6ce18cc016dfcc25e790e3cfdc3b209f86b99cd3c9",
@@ -129,8 +138,8 @@
     },
     "qwen3_5": {
       "modelAdapterFiles": {
-        "base_model_adapters.py": "8056482704d65958065f8c32ff46be798c84bb0b49acb636affab7f9555f6fd5",
-        "qwen35_adapter.py": "02f78f5acc870f27d46efd1dea5551dbddf67cd5e18b7280cb71fb0ef0b77fdf",
+        "base_model_adapters.py": "92606e6406f81221e76a30f41f3aa0a08e4acb830fdcdd4b5ec5b4034b974c1c",
+        "qwen35_adapter.py": "77865be561dfebca0a888d5f0cb8a060206a28ef0c18ff8300bf759d8df73514",
         "hybrid_state_kernels.py": "7075a4b80b11093503ca5048074095eb41c39cade72edf4fa6a0f69b2fdfb8a3"
       },
       "modelSourceFiles": {

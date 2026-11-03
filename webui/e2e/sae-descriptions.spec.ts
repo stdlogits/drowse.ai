@@ -1,98 +1,143 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { inspectToken, openLayoutWorkbench, sendMessage, sourceUrl } from "./workbench-navigation";
 
-const storesUrl = `/@fs/${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
-const registryUrl = `/@fs${resolve("../drowse/webui/src/lib/runtime/registry.ts")}`;
+// SAE feature labels in the Token view's Features: published Gemma Scope labels come from the
+// bundled index (no request leaves the device, and they stay once offline); labels for any other
+// dictionary load from Neuronpedia by feature id, report a failure and retry.
 
-async function openFeatures(page: Page, size: string, layer: number) {
-  const index = JSON.parse(await readFile(resolve(`../drowse/webui/src/lib/data/sae-descriptions/gemma-3-${size}-it.json`), "utf8"));
-  await page.evaluate(async ({ storesUrl, registryUrl, source, layer }) => {
-    const { chatLog, openDrawer, saeSourceState } = await import(storesUrl);
+const registryUrl = sourceUrl("lib/runtime/registry.ts");
+// Enough features that the Features list offers its filter (more than eight).
+const featureIds = [0, 1, 2, 3, 4, 5, 6, 7, 8, 2286];
+
+interface DescriptionSource { model: string; source: string; repository: string; folder: string }
+
+/** Binds the in-page runtime's SAE to `source` at `layer` and makes its token replay answer
+ *  unlabelled features, so the Token view has to find their labels. */
+async function bindSae(page: Page, source: DescriptionSource, layer: number) {
+  await page.evaluate(async ({ registryUrl, source, layer, featureIds }) => {
     const runtime = (await import(registryUrl)).getRuntimeClient();
-    const row = { source: "fixture-sae", layer, active: true, description_source: source };
-    const original = runtime.instruments.sources.bind(runtime.instruments);
-    runtime.instruments.sources = async (family: string) => family === "sae" ? { sources: [row] } : original(family);
-    saeSourceState.sources = [row];
-    chatLog.turns.at(-1).tokens[0].measurements.instruments.sae = {
-      binding: { source: "fixture-sae", steering: null, layer },
-      readout: { features: [0, 2286].map(id => ({ id, activation: 4.25, label: null, max_act: 10 })) },
+    const instruments = runtime.instruments;
+    const sources = instruments.sources.bind(instruments);
+    instruments.sources = async (family: string) => {
+      const result = await sources(family);
+      return family === "sae"
+        ? { ...result, sources: result.sources.map((row: object) => ({ ...row, layer, description_source: source })) }
+        : result;
     };
-    openDrawer("token_drilldown", { turnIdx: 1, tokenIdx: 0 });
-  }, { storesUrl, registryUrl, source: index.source, layer });
-  const sheet = page.locator('aside[aria-label="Token drilldown"]');
-  await sheet.getByRole("button", { name: /^sae\b/i }).click();
-  return { sheet, index };
+    const tokenReadout = instruments.tokenReadout.bind(instruments);
+    instruments.tokenReadout = async (family: string, ...rest: unknown[]) => {
+      const result = await tokenReadout(family, ...rest);
+      const sae = result.measurements.instruments.sae;
+      if (family === "sae" && sae) {
+        sae.binding.layer = layer;
+        sae.readout.features = featureIds.map((id: number, i: number) => ({ id, activation: 9 - i * 0.5, label: null, max_act: 10 }));
+      }
+      return result;
+    };
+  }, { registryUrl, source, layer, featureIds });
+}
+
+async function openFeatures(page: Page): Promise<Locator> {
+  await sendMessage(page, "Inspect the feature labels.");
+  const token = await inspectToken(page, "deterministic");
+  const features = token.getByRole("region", { name: "Features", exact: true });
+  await expect(features.getByRole("listitem")).toHaveCount(featureIds.length);
+  return features;
+}
+
+const featureRow = (features: Locator, id: number) =>
+  features.getByRole("listitem").filter({ has: features.page().getByText(new RegExp(`^L\\d+ f${id}$`)) });
+
+async function open(page: Page) {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.setViewportSize({ width: 1280, height: 1000 });
+  await openLayoutWorkbench(page, "instruments");
 }
 
 for (const [size, layer] of [["270m", 12], ["1b", 13], ["4b", 17]] as const) {
-  test(`published SAE descriptions are visible for Gemma ${size} without external requests`, async ({ page }, testInfo) => {
-    test.setTimeout(60_000);
-    await page.emulateMedia({ reducedMotion: "reduce" });
-    await page.setViewportSize({ width: 1280, height: 1000 });
+  test(`published SAE labels for Gemma ${size} come from the bundled index and stay offline`, async ({ page }) => {
+    const index = JSON.parse(await readFile(resolve(`../drowse/webui/src/lib/data/sae-descriptions/gemma-3-${size}-it.json`), "utf8"));
+    const label = (id: number): string => index.explanations[String(id)][0];
     const external: string[] = [];
     await page.route("https://www.neuronpedia.org/**", async route => {
       external.push(route.request().url());
       await route.abort();
     });
-    await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
-    await expect(page.locator(".shell")).toBeVisible();
-    await page.getByRole("textbox", { name: /^Compose as / }).fill("Inspect the published feature descriptions.");
-    await page.getByRole("button", { name: /^(Send|Generate reply)$/ }).click();
-    await expect(page.locator(".chat").getByRole("button", { name: "Stop", exact: true, includeHidden: true })).toBeDisabled();
-    const { sheet, index } = await openFeatures(page, size, layer);
-    const feature = sheet.getByRole("listitem", { name: `SAE feature 2286, layer ${layer}`, exact: true });
-    await expect(feature.locator(".feature-description")).toHaveText(index.explanations["2286"][0]);
-    await feature.scrollIntoViewIfNeeded();
-    await expect(feature.locator(".feature-description")).toBeVisible();
-    await expect(feature.getByRole("link", { name: /Neuronpedia/ })).toHaveAttribute("href", `https://www.neuronpedia.org/${index.source.model}/${index.source.source}/2286`);
+    await open(page);
+    await bindSae(page, index.source, layer);
+    const features = await openFeatures(page);
+
+    const row = featureRow(features, 2286);
+    await expect(row).toContainText(label(2286));
+    await expect(features).toContainText("labels from Neuronpedia");
+    await expect(features.getByRole("button", { name: /^(Load|Retry) labels$/ })).toHaveCount(0);
+    await row.getByRole("button").first().click();
+    await expect(row.getByRole("link", { name: /^Neuronpedia/ }))
+      .toHaveAttribute("href", `https://www.neuronpedia.org/${index.source.model}/${index.source.source}/2286`);
     expect(external).toEqual([]);
+
+    // Offline, the labels stay and the filter finds a feature by its label.
     await page.context().setOffline(true);
-    await sheet.getByRole("searchbox", { name: "Find a feature" }).fill(index.explanations["2286"][0]);
-    await expect(sheet.getByRole("listitem", { name: /^SAE feature/ })).toHaveCount(1);
-    for (const width of [1280, 390]) {
-      await page.setViewportSize({ width, height: 1000 });
-      await feature.scrollIntoViewIfNeeded();
-      await expect(feature.locator(".feature-description")).toBeVisible();
-      expect(await feature.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-      await sheet.screenshot({ path: testInfo.outputPath(`sae-${size}-${width}.png`) });
-    }
+    const query = label(2286);
+    await features.getByRole("searchbox", { name: "Find a feature", exact: true }).fill(query);
+    const expected = featureIds.filter(id => `f${id} sae/${id} ${label(id)}`.toLowerCase().includes(query.toLowerCase()));
+    await expect(features.getByRole("listitem")).toHaveCount(expected.length);
+    await expect(row).toContainText(label(2286));
     await page.context().setOffline(false);
+    expect(external).toEqual([]);
   });
 }
 
-test("published SAE descriptions remain readable in the live feature panel", async ({ page }, testInfo) => {
-  const index = JSON.parse(await readFile(resolve("../drowse/webui/src/lib/data/sae-descriptions/gemma-3-1b-it.json"), "utf8"));
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
-  await expect(page.locator(".shell")).toBeVisible();
-  await page.route("https://www.neuronpedia.org/**", route => route.abort());
-  await page.evaluate(async ({ storesUrl, registryUrl, source, descriptionUrl }) => {
-    const { saeState, setInspectorTab, recordSaeReadoutFrame, backfillSaeMeta } = await import(storesUrl);
-    const runtime = (await import(registryUrl)).getRuntimeClient();
-    const { loadSaeDescription } = await import(descriptionUrl);
-    runtime.instruments.saeFeaturesMetadata = async (ids: number[]) => ({ features: Object.fromEntries(
-      await Promise.all(ids.map(async id => [id, {
-        label: (await loadSaeDescription(source, id, new AbortController().signal)).label, max_act: 10,
-      }]))),
+test("labels for an unpublished dictionary load by feature id, report a failure and retry", async ({ page }) => {
+  const source = {
+    model: "gemma-3-12b-it",
+    source: "20-gemmascope-2-res-16k",
+    repository: "google/gemma-scope-2-12b-it",
+    folder: "resid_post/layer_20_width_16k_l0_medium",
+  };
+  const requests: { method: string; url: string; body: string | null }[] = [];
+  let online = false;
+  await page.route("https://www.neuronpedia.org/**", async route => {
+    const request = route.request();
+    requests.push({ method: request.method(), url: request.url(), body: request.postData() });
+    if (!online) return route.abort();
+    const id = Number(new URL(request.url()).pathname.split("/").at(-1));
+    await route.fulfill({
+      status: 200,
+      headers: { "access-control-allow-origin": "*" },
+      contentType: "application/json",
+      body: JSON.stringify({
+        modelId: source.model, layer: source.source, index: id,
+        source: { hfRepoId: source.repository, hfFolderId: source.folder },
+        explanations: [{ description: `published label ${id}`, explanationModelName: "fixture-explainer" }],
+      }),
     });
-    saeState.live = true;
-    saeState.layer = 13;
-    recordSaeReadoutFrame([{ id: 1, activation: 4, label: null, max_act: 10 }]);
-    await backfillSaeMeta();
-    setInspectorTab("sae");
-  }, { storesUrl, registryUrl, source: index.source, descriptionUrl: `/@fs${resolve("../drowse/webui/src/lib/saeDescriptions.ts")}` });
-  await page.getByRole("button", { name: /^Controls/ }).click();
-  const panel = page.getByRole("list", { name: "SAE feature probes" });
-  const label = panel.locator(".feature-description").filter({ hasText: index.explanations["1"][0] });
-  for (const width of [1280, 390]) {
-    await page.setViewportSize({ width, height: 1000 });
-    await label.scrollIntoViewIfNeeded();
-    await expect(label).toBeVisible();
-    expect(await label.evaluate(element => {
-      const style = getComputedStyle(element);
-      return style.whiteSpace !== "nowrap" && style.textOverflow !== "ellipsis" && element.scrollWidth <= element.clientWidth;
-    })).toBe(true);
-    await panel.screenshot({ path: testInfo.outputPath(`sae-live-${width}.png`) });
+  });
+  await open(page);
+  await bindSae(page, source, 20);
+  const features = await openFeatures(page);
+
+  // The automatic lookup fails: the rows stay unlabelled, and the section says so and offers a retry.
+  await expect(features.getByRole("alert")).toHaveText("Some labels did not load");
+  const retry = features.getByRole("button", { name: "Retry labels", exact: true });
+  await expect(retry).toBeVisible();
+  await expect(featureRow(features, 2286)).not.toContainText("published label");
+
+  online = true;
+  await retry.click();
+  await expect(featureRow(features, 2286)).toContainText("published label 2286");
+  await expect(featureRow(features, 0)).toContainText("published label 0");
+  await expect(features).toContainText("labels from Neuronpedia");
+  await expect(features.getByRole("alert")).toHaveCount(0);
+  await expect(features.getByRole("button", { name: /^(Load|Retry) labels$/ })).toHaveCount(0);
+
+  // Only feature ids leave: GETs to the feature records, with no body.
+  expect(requests.length).toBeGreaterThan(0);
+  for (const request of requests) {
+    expect(request.method).toBe("GET");
+    expect(request.body).toBeNull();
+    expect(request.url).toMatch(new RegExp(`^https://www\\.neuronpedia\\.org/api/feature/${source.model}/${source.source}/\\d+$`));
   }
 });

@@ -1,30 +1,19 @@
 <script lang="ts">
   import { onConversationLibraryChanged } from "../../../../drowse/webui/src/lib/stores/savedConversations.svelte";
   import { registerHomeController } from "../../../../drowse/webui/src/lib/homeController";
-  import MorphText from "../../../../drowse/webui/src/lib/ui/MorphText.svelte";
-  import FluentIcon from "../../../../drowse/webui/src/lib/ui/FluentIcon.svelte";
+  import { Expander, GLIDE, Icon, MorphText, ease, expand, fadeOut, reducedMotion, rise, tips } from "@stdlogits/ledger";
   import BaseModelTag from "../../../../drowse/webui/src/lib/ui/BaseModelTag.svelte";
-  import TabIdentity from "../../../../drowse/webui/src/lib/ui/TabIdentity.svelte";
-  import "../../../../drowse/webui/src/lib/style/workspace.css";
-  import { Blobatar } from "@blobatar/svelte";
   import { onDestroy, onMount, tick } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
-  import ChatAccentPicker from "../../../../drowse/webui/src/lib/ui/ChatAccentPicker.svelte";
-  import { chatAccentStyle, type ChatAccent } from "../../../../drowse/webui/src/lib/chatAccent";
-  import { animatedDetails } from "../../../../drowse/webui/src/lib/animatedDetails";
-  import { slide } from "svelte/transition";
   import { flip } from "svelte/animate";
-  import { cubicOut } from "svelte/easing";
-  import { collapseIn, collapseOut, motionDuration } from "../../../../drowse/webui/src/lib/motion";
 
-  import { ConversationLibraryError, displayModelName, randomAvatarSeed, summarizeConversation, type SavedConversationIssue, type SavedConversationRecord, type SavedConversationSummary } from "../../../../drowse/webui/src/lib/conversationLibrary";
+  import { ConversationLibraryError, displayModelName, summarizeConversation, type SavedConversationIssue, type SavedConversationRecord, type SavedConversationSummary } from "../../../../drowse/webui/src/lib/conversationLibrary";
   import { conversationLibrary, flushConversationAutosave, requestPersistentConversationStorage } from "../../../../drowse/webui/src/lib/stores/savedConversations.svelte";
   import { downloadAllChatBackups, downloadChatBackup, findImportedChat, readChatBackupFiles, saveChatImport } from "../../../../drowse/webui/src/lib/chatBackup";
   import Select from "../../../../drowse/webui/src/lib/Select.svelte";
-  import PageHeader from "../../../../drowse/webui/src/lib/ui/PageHeader.svelte";
+  import SiteHeader from "./SiteHeader.svelte";
   import PageFooter from "./PageFooter.svelte";
   import SavedChatMenu from "./SavedChatMenu.svelte";
-  import ModelProviderLogo from "../../../../drowse/webui/src/lib/ui/ModelProviderLogo.svelte";
   import ModelDownloadChoices from "./ModelDownloadChoices.svelte";
   import { userFacingError } from "../../../../drowse/webui/src/lib/runtime/userFacingError";
   import { reloadInstructions, appRefreshSafetyMessage } from "../runtime/chunkRecovery";
@@ -34,6 +23,7 @@
     queueConversationOpen,
   } from "../../../../drowse/webui/src/lib/conversationOpen";
   import { readEntryMemory } from "./entryMemory";
+  import { NO_LEGACY_CHATS, deleteLegacyChats, dismissLegacyChats, downloadLegacyChats, findLegacyChats, legacyChatsTitle, legacyNoticeShown, readDismissedLegacyChats, type LegacyChats } from "./legacyChats";
   import type { HostedModelOption, HostedShellController, HostedShellSnapshot } from "../../../../drowse/webui/src/lib/shell";
 
   let {
@@ -59,14 +49,19 @@
 
   let conversations: SavedConversationSummary[] = $state([]);
   let issues: SavedConversationIssue[] = $state([]);
+  // Chats saved before Drowse 6.0 (pre-v8 library rows and stashed 5.x autosaves): one notice offers
+  // them as a file, so the old rows leave the list of unreadable chats.
+  let legacyChats = $state.raw<LegacyChats>(NO_LEGACY_CHATS);
+  let legacyDismissed = $state.raw(readDismissedLegacyChats());
+  let legacyDownloading = $state(false);
+  let legacyConfirming = $state(false);
+  let legacyDeleting = $state(false);
+  let legacyResult = $state("");
   let loading = $state(true);
   let error = $state<string | null>(null);
   let openingId = $state<string | null>(null);
   let changingId = $state<string | null>(null);
   let duplicatingId = $state<string | null>(null);
-  const changingAvatars = new SvelteSet<string>();
-  const changingAccents = new SvelteSet<string>();
-  let revealedAvatarId = $state<string | null>(null);
   let confirmDeleteId = $state<string | null>(null);
   let editingId = $state<string | null>(null);
   let editingName = $state("");
@@ -148,6 +143,9 @@
   // still lists chats, but open and recovery actions wait for the check.
   const deviceChecking = $derived(snapshot.phase === "idle" || snapshot.phase === "checking");
   const visibleConversations = $derived(conversations.filter(record => !pendingDeleteIds.has(record.id)));
+  const legacyIds = $derived(new Set(legacyChats.conversationIds));
+  const unreadable = $derived(issues.filter((issue) => !legacyIds.has(issue.id)));
+  const legacyShown = $derived(legacyNoticeShown(legacyChats, legacyDismissed));
   const missingChats = $derived(
     deviceChecking ? [] : visibleConversations.filter((record) => modelForConversation(record)?.setupComplete !== true),
   );
@@ -202,6 +200,9 @@
     openingId === `new:${model.id}` || openingId === `continue:${model.id}`
     || (openingId !== null && snapshot.runtime.modelVariantId === model.id),
   ));
+  $effect(() => {
+    document.title = openingId !== null && !workbenchError ? `${openingStatus} · Drowse` : "Your chats · Drowse";
+  });
   const openingStatus = $derived(snapshot.runtime.phase === "ready"
     ? "Opening your chat…" : `Loading ${openingModel?.name ?? "your model"}…`);
 
@@ -374,10 +375,53 @@
       const result = await conversationLibrary.listSummaries();
       conversations = result.conversations;
       issues = result.issues;
+      void refreshLegacyChats();
     } catch (cause) {
       error = userFacingError(cause, "Saved chats could not be opened. Your stored data was not changed.");
     } finally {
       loading = false;
+    }
+  }
+
+  async function refreshLegacyChats(): Promise<void> {
+    try {
+      legacyChats = await findLegacyChats();
+    } catch {
+      // Without a count the old rows stay in the list as unreadable chats.
+      legacyChats = NO_LEGACY_CHATS;
+    }
+  }
+
+  async function downloadOldChats(): Promise<void> {
+    legacyDownloading = true;
+    legacyResult = "";
+    try {
+      const file = await downloadLegacyChats();
+      legacyResult = file ? `Downloaded ${file.filename}.` : "There are no old chats left to download.";
+    } catch (cause) {
+      legacyResult = userFacingError(cause, "The old chats could not be downloaded. They are still stored in this browser.");
+    } finally {
+      legacyDownloading = false;
+    }
+  }
+
+  function dismissOldChats(): void {
+    legacyDismissed = dismissLegacyChats(legacyChats);
+    legacyResult = "";
+  }
+
+  async function deleteOldChats(): Promise<void> {
+    legacyDeleting = true;
+    legacyResult = "";
+    try {
+      await deleteLegacyChats(legacyChats, (id) => conversationLibrary.delete(id));
+      legacyConfirming = false;
+      await refreshChats();
+    } catch (cause) {
+      legacyResult = userFacingError(cause, "The old chats could not be deleted.");
+      void refreshLegacyChats();
+    } finally {
+      legacyDeleting = false;
     }
   }
 
@@ -576,33 +620,6 @@
     }
   }
 
-  async function setAvatar(id: string, avatarSeed: string): Promise<string> {
-    const updated = await conversationLibrary.update(id, { avatarSeed });
-    const summary = conversations.find((conversation) => conversation.id === id);
-    if (summary) summary.avatarSeed = updated.avatarSeed;
-    return updated.avatarSeed;
-  }
-
-  async function regenerateAvatar(record: SavedConversationSummary): Promise<void> {
-    if (changingAvatars.has(record.id) || changingId === record.id) return;
-    changingAvatars.add(record.id);
-    error = null;
-    const previousSeed = record.avatarSeed;
-    try {
-      await setAvatar(record.id, randomAvatarSeed());
-      revealedAvatarId = record.id;
-      pushUndo({
-        key: `avatar:${record.id}`,
-        message: `New avatar for “${record.name}”.`,
-        undo: async () => { await setAvatar(record.id, previousSeed); },
-      });
-    } catch (cause) {
-      error = userFacingError(cause, "The avatar could not be changed.");
-    } finally {
-      changingAvatars.delete(record.id);
-    }
-  }
-
   function beginRename(record: SavedConversationSummary): void {
     confirmDeleteId = null;
     editingId = record.id;
@@ -613,20 +630,6 @@
     });
   }
 
-  async function changeAccent(record: SavedConversationSummary, accent: ChatAccent): Promise<void> {
-    if (changingAccents.has(record.id)) return;
-    changingAccents.add(record.id);
-    error = null;
-    try {
-      const updated = await conversationLibrary.update(record.id, { accent });
-      const summary = conversations.find(conversation => conversation.id === record.id);
-      if (summary) summary.accent = updated.accent;
-    } catch (cause) {
-      error = userFacingError(cause, "The chat color could not be saved.");
-    } finally {
-      changingAccents.delete(record.id);
-    }
-  }
 
   async function saveRename(record: SavedConversationSummary): Promise<void> {
     if (changingId !== null || editingId !== record.id || !editingName.trim()) return;
@@ -763,13 +766,11 @@
 
 <svelte:window bind:innerWidth={viewportWidth} />
 
-<TabIdentity state={openingId !== null && !workbenchError ? "loading" : "chats"}
-  title={openingId !== null && !workbenchError ? `${openingStatus} · Drowse` : undefined} />
 
 <a class="skip-link" href="#saved-chats">Skip to saved chats</a>
 
-<div class="home-shell workspace-material workspace-library">
-  <PageHeader current="chats" compact variant="app" onChats={onChats ?? (() => document.getElementById("home-title")?.focus())} onModels={() => onChooseModels()} />
+<div class="home-shell" use:tips>
+  <SiteHeader current="chats" variant="app" onChats={onChats ?? (() => document.getElementById("home-title")?.focus())} onModels={() => onChooseModels()} />
 
   <main>
     <section class="hero" aria-labelledby="home-title" data-page-group="0">
@@ -795,7 +796,7 @@
     </section>
 
     {#if deviceChecking}
-      <p class="device-check loading-pulse" role="status">Checking this device…</p>
+      <p class="device-check" role="status">Checking this device…</p>
     {/if}
 
     {#if workbenchError}
@@ -813,7 +814,7 @@
         </button>
       </section>
     {:else if openingId !== null}
-      <section class="notice model-opening loading-pulse" role="status" aria-live="polite">
+      <section class="notice model-opening" role="status" aria-live="polite">
         <div>
           <h2>{openingStatus}</h2>
           <p>Your conversation will open here when the model is ready. Keep this tab open.</p>
@@ -837,8 +838,8 @@
                 ? "Your chats and models are saved in this browser. Ask it to keep them during automatic cleanup, and back up your chats."
                 : "This browser can't request storage protection. Back up your chats to keep a copy outside this browser."}
           </p>
-          <details class="storage-guide" bind:open={storageGuideOpen} use:animatedDetails>
-            <summary>How to keep your data</summary>
+          <div class="storage-guide">
+          <Expander label="How to keep your data" bind:open={storageGuideOpen}>
             <ol>
               <li>
                 Select Back up all chats, or Download beside a saved chat, to keep a copy. Use Import chats to restore a backup. Autosave alone won't protect against cleared browser data.
@@ -858,7 +859,8 @@
               <a href="https://support.google.com/chrome/answer/14114868?hl=en" target="_blank" rel="noopener noreferrer">Chrome site data settings</a>
               · <a href="https://support.apple.com/en-us/104996" target="_blank" rel="noopener noreferrer">Safari web apps on Mac</a>.
             </p>
-          </details>
+          </Expander>
+          </div>
         </div>
         {#if persistenceRequestAvailable}
           <button type="button" class="secondary" aria-busy={persistenceRequesting} disabled={persistenceRequesting} onclick={() => void protectStorage()}>
@@ -869,7 +871,7 @@
     {/if}
 
     {#if newChatModelId !== null}
-      <section class="new-chat-panel" aria-labelledby="new-chat-title" in:slide={collapseIn()} out:slide={collapseOut()}>
+      <section class="new-chat-panel" aria-labelledby="new-chat-title" in:expand out:expand>
         {#if newChatModelId === "choose"}
           <div class="chooser-heading">
             <h2 id="new-chat-title">Choose a model</h2>
@@ -974,6 +976,34 @@
 
     {#if error}<p class="error" role="alert">{error}</p>{/if}
 
+    {#if legacyShown}
+      <section class="notice legacy-chats" aria-labelledby="legacy-chats-title" in:expand out:expand>
+        <div>
+          <h2 id="legacy-chats-title">{legacyChatsTitle(legacyChats.keys.length)}</h2>
+          {#if legacyConfirming}
+            <p>Delete them from this browser? Download them first if you want to keep them. This can’t be undone.</p>
+          {:else}
+            <p>Download them as one file to keep them. Dismissing this leaves them stored in this browser.</p>
+          {/if}
+          {#if legacyResult}<p role="status">{legacyResult}</p>{/if}
+        </div>
+        <div class="panel-actions">
+          {#if legacyConfirming}
+            <button type="button" class="quiet" disabled={legacyDeleting} onclick={() => (legacyConfirming = false)}>Cancel</button>
+            <button type="button" class="delete" aria-busy={legacyDeleting} disabled={legacyDeleting} onclick={() => void deleteOldChats()}>
+              <MorphText text={legacyDeleting ? "Deleting…" : "Delete old chats"} />
+            </button>
+          {:else}
+            <button type="button" class="quiet" onclick={dismissOldChats}>Dismiss</button>
+            <button type="button" class="delete-control" disabled={legacyDownloading} onclick={() => { legacyConfirming = true; legacyResult = ""; }}>Delete</button>
+            <button type="button" class="secondary" aria-busy={legacyDownloading} disabled={legacyDownloading} onclick={() => void downloadOldChats()}>
+              <MorphText text={legacyDownloading ? "Preparing file…" : "Download"} />
+            </button>
+          {/if}
+        </div>
+      </section>
+    {/if}
+
     <section id="saved-chats" class="chats-section" aria-labelledby="chats-title" data-page-group="2">
       <div class="section-heading">
         <div>
@@ -983,12 +1013,10 @@
           <span>{visibleConversations.length} {visibleConversations.length === 1 ? "chat" : "chats"}</span>
           {#if visibleConversations.length > 0}
             <button type="button" class="secondary backup-action" disabled={backingUpAll || importing || changingId !== null} aria-busy={backingUpAll} onclick={() => void backUpAllChats()}>
-              <FluentIcon name="download" size={18} />
               <MorphText text={backingUpAll ? "Preparing backup…" : "Back up all chats"} />
             </button>
           {/if}
           <button type="button" class="secondary backup-action" disabled={importing || changingId !== null} aria-busy={importing} onclick={() => importInput?.click()}>
-            <FluentIcon name="upload" size={18} />
             <MorphText text={importing ? "Importing…" : "Import chats"} />
           </button>
           <input bind:this={importInput} type="file" multiple accept=".drowsechat,.json,.zip,application/json,application/zip" hidden aria-label="Import chat backup files" onchange={importBackup} />
@@ -1014,7 +1042,7 @@
         <div class="chat-tools" role="search" aria-label="Find saved chats">
           <label class="chat-search">
             <span class="sr-only">Search chats by name</span>
-            <FluentIcon name="search" size={18} />
+            <Icon name="search" />
             <input type="search" bind:value={searchQuery} placeholder="Search chats" autocomplete="off" spellcheck="false" />
           </label>
           <span class="chat-tool">
@@ -1033,8 +1061,8 @@
       {/if}
 
       {#if loading}
-        <p class="empty loading-pulse" role="status">Loading saved chats…</p>
-      {:else if visibleConversations.length === 0 && issues.length === 0}
+        <p class="empty" role="status">Loading saved chats…</p>
+      {:else if visibleConversations.length === 0 && unreadable.length === 0}
         <div class="empty">
           {#if !deviceChecking && installedModels.length === 0}
             <strong>No chats yet. Choose a model to start.</strong>
@@ -1044,7 +1072,7 @@
             <button type="button" class="primary" disabled={openingId !== null || deviceChecking} onclick={beginNewChat}>New chat</button>
           {/if}
         </div>
-      {:else if shownConversations.length === 0 && issues.length === 0}
+      {:else if shownConversations.length === 0 && unreadable.length === 0}
         <div class="empty" role="status">
           <strong>No chats match your search.</strong>
           <button type="button" class="secondary" onclick={clearFilters}>Clear search</button>
@@ -1056,24 +1084,7 @@
             {@const model = modelForConversation(record)}
             {@const canOpen = model?.setupComplete && model.fit !== "blocked" && snapshot.runtime.available}
             {@const modelActionUnavailable = deviceChecking || model === null || model.fit === "blocked" || !snapshot.runtime.available}
-            <div animate:flip={{ duration: () => motionDuration(180), easing: cubicOut }} class="chat-card" role="listitem" data-saved-conversation={record.id} data-chat-accent={record.accent ?? "purple"} style={chatAccentStyle(record.accent)}>
-              <button
-                type="button"
-                class="avatar"
-                class:revealed={revealedAvatarId === record.id}
-                disabled={changingId === record.id}
-                aria-disabled={changingAvatars.has(record.id)}
-                aria-busy={changingAvatars.has(record.id)}
-                aria-label={`New avatar for ${record.name}. You can undo this.`}
-                onpointerleave={() => { if (revealedAvatarId === record.id) revealedAvatarId = null; }}
-                onblur={() => { if (revealedAvatarId === record.id) revealedAvatarId = null; }}
-                onclick={() => void regenerateAvatar(record)}
-              >
-                <span class="avatar-image"><Blobatar name={record.avatarSeed} size={58} background="circle" alt="" /></span>
-                <span class="avatar-shuffle" aria-hidden="true">
-                  <FluentIcon name="shuffle" size={24} />
-                </span>
-              </button>
+            <div animate:flip={{ duration: reducedMotion() ? 0 : GLIDE, easing: ease }} class="chat-card" role="listitem" data-saved-conversation={record.id}>
               <div class="chat-copy">
                 <div class="chat-title-row">
                 {#if editingId === record.id}
@@ -1091,7 +1102,7 @@
                     onduplicate={() => void duplicateConversation(record)} ondelete={() => beginDelete(record)} />
                 </div>
                 </div>
-                <span class="chat-model"><ModelProviderLogo modelId={record.modelId} /><span>{model?.name ?? displayModelName(record.modelId)}{#if (model?.modelType ?? record.modelType) === "base"}<BaseModelTag />{/if}</span></span>
+                <span class="chat-model"><span>{model?.name ?? displayModelName(record.modelId)}{#if (model?.modelType ?? record.modelType) === "base"}<BaseModelTag />{/if}</span></span>
                 <span class="chat-counts"><MorphText text={`${record.messageCount} ${record.messageCount === 1 ? "message" : "messages"} · ${record.threadCount} Loom ${record.threadCount === 1 ? "thread" : "threads"}`} /></span>
                 {#if !deviceChecking && !model?.setupComplete}<span class="missing">Download required</span>{/if}
               </div>
@@ -1113,9 +1124,6 @@
                               : "Model unavailable"} />
                   </button>
                 {/if}
-                <div class="chat-color">
-                  <ChatAccentPicker value={record.accent ?? "purple"} disabled={changingAccents.has(record.id)} onchange={(accent) => changeAccent(record, accent)} />
-                </div>
                 <div class="chat-actions">
                 {#if editingId === record.id}
                   <button type="button" class="quiet" data-cancel-rename disabled={changingId !== null} onpointerdown={(event) => event.preventDefault()} onclick={() => (editingId = null)}>Cancel</button>
@@ -1126,7 +1134,6 @@
                   <button type="button" class="delete" disabled={changingId === record.id} onclick={(event) => deleteConversation(record, event.currentTarget)}>Delete chat</button>
                 {:else}
                   <button type="button" class="secondary backup-action" disabled={changingId !== null || importing} aria-label={`Download backup of ${record.name}`} aria-busy={changingId === record.id && duplicatingId === null} onclick={() => void downloadBackup(record)}>
-                    <FluentIcon name="download" size={18} />
                     <span class="backup-label"><MorphText text={changingId === record.id && duplicatingId === null ? "Preparing…" : "Download"} /></span>
                   </button>
                 {/if}
@@ -1135,9 +1142,8 @@
             </div>
           {/each}
 
-          {#each issues as issue (issue.id)}
+          {#each unreadable as issue (issue.id)}
             <div class="chat-card unavailable" role="listitem">
-              <div class="unavailable-avatar" aria-hidden="true">?</div>
               <div class="chat-copy">
                 <strong>{issue.name || "Unreadable saved chat"}</strong>
                 <span>The stored data has not been removed.</span>
@@ -1164,7 +1170,7 @@
 
 <div class="undo-region" role="status" aria-live="polite">
   {#each undoItems as item (item.key)}
-    <div class="undo-toast" in:slide={collapseIn()} out:slide={collapseOut()}>
+    <div class="undo-toast" in:rise out:fadeOut>
       <span dir="auto">{item.message}</span>
       <button type="button" class="secondary compact" onclick={() => void runUndo(item.key)}>Undo</button>
     </div>
@@ -1172,274 +1178,125 @@
 </div>
 
 <style>
-  .skip-link {
-    position: fixed;
-    z-index: 1000;
-    top: var(--space-4);
-    inset-inline-start: var(--space-4);
-    padding: var(--space-3) var(--space-5);
-    border-radius: var(--radius);
-    color: var(--text-on-accent);
-    background: var(--accent);
-    transform: translateY(-160%);
-  }
-  .skip-link:focus { transform: translateY(0); }
-  .home-shell {
-    --workspace-surface-padding: 16px;
-    --page-max: 90rem;
-    --radius: 8px;
-    --radius-lg: 12px;
-    --text-md: var(--type-heading);
-    --text-onboarding-heading: var(--text-page-title);
-    min-height: 100dvh;
-    display: flex;
-    flex-direction: column;
-    color: var(--fg);
-    background: var(--ambient-canvas);
-  }
-  main { min-width: 0; width: min(100%, var(--page-max)); margin-inline: auto; }
-  main {
-    padding-inline: max(var(--page-gutter), env(safe-area-inset-left)) max(var(--page-gutter), env(safe-area-inset-right));
-  }
-  .hero-actions, .panel-actions, .chat-actions {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: var(--space-5);
-    min-width: 0;
-  }
-  main {
-    flex: 1 1 auto;
-    display: grid;
-    align-content: start;
-    gap: var(--surface-padding);
-    padding-block: var(--page-top-space);
-  }
-  .hero {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: end;
-    justify-content: space-between;
-    gap: var(--space-8);
-    padding-bottom: var(--space-6);
-  }
-  h1 { margin: 0; font-size: var(--text-onboarding-heading); font-weight: var(--weight-display); letter-spacing: -0.035em; line-height: 1.15; }
-  .new-chat-panel p, .notice p {
-    margin: var(--space-3) 0 0;
-    color: var(--fg-dim);
-    line-height: 1.5;
-  }
-  button {
-    max-width: 100%;
-    white-space: normal;
-    overflow-wrap: anywhere;
-    min-height: var(--control-target);
-    border: 0;
-    border-radius: var(--radius);
-    padding: var(--space-4) var(--space-6);
-    color: var(--fg-strong);
-    background: transparent;
-    transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
-  }
-  button:active:not(:disabled) { transform: scale(0.96); }
-  button:disabled { opacity: var(--disabled-opacity); }
-  button.primary { color: var(--action-ink); background: var(--control-sheen), var(--action-bg); box-shadow: var(--shadow-control); }
-  button.primary:hover:not(:disabled) { background: var(--control-sheen), var(--action-hover); box-shadow: var(--shadow-control-hover); }
-  button.secondary { background: var(--control-sheen), var(--glass-strong); box-shadow: var(--shadow-control); }
-  button.secondary:hover:not(:disabled), button.quiet:hover:not(:disabled) { color: var(--fg); background: var(--control-sheen), var(--bg-hover); }
-  button.secondary:hover:not(:disabled) { box-shadow: var(--shadow-control-hover); }
-  button:is(.primary, .secondary):active:not(:disabled) { box-shadow: var(--shadow-control-pressed); }
-  button.quiet { padding-inline: var(--space-4); }
-  button.compact { min-height: var(--control-compact); padding-inline: var(--space-5); }
-  button.delete { color: var(--text-on-accent); background: var(--accent-red); }
-  .new-chat-panel, .notice {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, auto);
-    align-items: center;
-    gap: var(--space-6);
-    padding: var(--surface-padding);
-    border-radius: var(--radius-lg);
-    background: var(--surface-card);
-    box-shadow: var(--shadow-rack);
-  }
-  .new-chat-panel { grid-template-columns: minmax(0, 1fr); gap: var(--space-7); padding: var(--space-8); }
-  .new-chat-panel > *, .notice > * { min-width: 0; }
-  .new-chat-panel h2, .notice h2 { overflow-wrap: anywhere; }
-  .chooser-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-5); }
-  .new-chat-panel h2, .notice h2 { margin: 0; font-size: var(--text-onboarding-heading); letter-spacing: -0.035em; line-height: 1.25; }
-  .storage-notice button.secondary {
-    color: var(--warning-action-ink);
-    background: var(--warning-action);
-    box-shadow: none;
-  }
-  .storage-notice button.secondary:hover:not(:disabled) { color: var(--warning-action-ink); background: var(--warning-action-hover); }
-  .storage-notice {
-    align-items: start;
-    background: var(--surface-card);
-    color: var(--fg);
-    box-shadow: var(--shadow-card);
-  }
-  .storage-notice > div { min-width: 0; flex: 1; }
-  .storage-notice h2 { color: var(--fg-strong); }
-  .storage-notice p { color: var(--fg-muted); }
-  .storage-guide { margin-top: var(--space-3); overflow-wrap: anywhere; }
-  .storage-guide summary { cursor: pointer; color: var(--fg); padding-block: var(--space-2); min-height: var(--control-target); }
-  .storage-guide summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: var(--radius-sm); }
-  .storage-guide ol { padding-inline-start: var(--space-5); margin-block: var(--space-2); color: var(--fg-muted); }
-  .storage-guide li + li { margin-top: var(--space-2); }
-  .storage-sources a { color: var(--fg); text-underline-offset: 0.2em; }
-  .notice.danger { background: var(--danger-bg); }
-  .error { margin: 0; color: var(--accent-red); }
-  .chats-section {
-    min-width: 0;
-    display: grid;
-    gap: var(--space-5);
-    padding-top: var(--space-7);
-  }
-  .section-heading {
-    display: flex;
-    align-items: end;
-    justify-content: space-between;
-    gap: var(--space-5);
-  }
-  .section-heading h2 { margin: 0; font-size: var(--text-onboarding-heading); letter-spacing: -0.035em; line-height: 1.15; }
-  .section-heading { flex-wrap: wrap; }
-  .library-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-5); }
-  .library-actions > span { color: var(--fg-muted); font-family: var(--font-data); font-size: var(--text-sm); }
-  .backup-action { display: inline-flex; align-items: center; justify-content: center; gap: var(--control-label-gap); }
-  .backup-action :global(svg) { flex-shrink: 0; }
-  .backup-result { margin: 0; color: var(--fg-muted); font-size: var(--text-sm); line-height: 1.5; max-width: 78ch; }
-  .model-recovery { grid-template-columns: minmax(0, 1fr); justify-items: start; }
-  .recovery-heading { width: 100%; display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: var(--space-5); }
-  .device-check { margin: 0; color: var(--fg-muted); font-size: var(--text-sm); }
-  .backup-nudge { color: var(--fg-strong); }
-  .import-duplicates { display: grid; justify-items: start; gap: var(--space-4); padding: var(--space-5); border-radius: var(--radius-lg); background: var(--surface-card); box-shadow: var(--shadow-card); }
-  .import-duplicate { width: 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-4); }
-  .import-duplicate > span { min-width: 0; overflow-wrap: anywhere; color: var(--fg-dim); font-size: var(--text-sm); }
-  .chat-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-5); min-width: 0; }
-  .chat-search { flex: 1 1 14rem; min-width: 0; display: flex; align-items: center; gap: var(--control-label-gap); padding-inline: var(--space-4); min-height: var(--control-field); border-radius: var(--radius); color: var(--fg-muted); background: var(--input-well); box-shadow: var(--shadow-well); }
-  .chat-search:focus-within { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-  .chat-search input { flex: 1; min-width: 0; min-height: var(--control-field); border: 0; padding: 0; color: var(--fg); background: transparent; font: inherit; outline: none; }
-  .chat-tool { display: inline-flex; align-items: center; gap: var(--control-label-gap); min-width: 0; }
-  .tool-label { color: var(--fg-muted); font-size: var(--text-sm); }
-  .undo-region { position: fixed; z-index: calc(var(--z-drawer) - 2); inset-inline-start: calc(var(--space-6) + env(safe-area-inset-left, 0px)); bottom: calc(var(--space-6) + env(safe-area-inset-bottom, 0px)); display: grid; gap: var(--space-4); width: min(26rem, calc(100vw - var(--space-8))); pointer-events: none; }
-  .undo-toast { display: flex; align-items: center; justify-content: space-between; gap: var(--space-5); padding: var(--space-4) var(--space-4) var(--space-4) var(--space-6); border: 1px solid var(--popup-border); border-radius: var(--popup-radius); color: var(--fg); background: var(--popup-bg); box-shadow: var(--popup-shadow); pointer-events: auto; }
-  .undo-toast > span { min-width: 0; overflow-wrap: anywhere; font-size: var(--text-sm); }
-  .recovery-progress { width: 100%; min-width: 0; display: grid; gap: var(--space-5); }
-  .recovery-progress p { margin: 0; }
-  .recovery-progress .error { color: var(--accent-red); }
-  .recovery-warning { color: var(--accent-yellow); }
-  .recovery-choices { display: grid; gap: var(--space-4); margin: 0; padding: 0; border: 0; min-width: 0; }
-  .recovery-choices legend { margin-bottom: var(--space-5); color: var(--fg-muted); }
-  .recovery-choices label { display: flex; align-items: center; gap: var(--space-5); min-height: var(--control-target); cursor: pointer; }
-  .recovery-choices input { width: 18px; height: 18px; accent-color: var(--accent); }
-  .recovery-choices span { min-width: 0; overflow-wrap: anywhere; }
-  .recovery-choices small { display: block; color: var(--fg-muted); }
-  .progress-track { width: min(520px, 100%); height: 7px; overflow: hidden; border-radius: var(--radius-pill); background: var(--glass-strong); }
-  .progress-track span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width var(--dur) linear; }
-  .progress-track .indeterminate { opacity: 0.6; }
-  .progress-copy { font-family: var(--font-mono); font-size: var(--text-xs); }
-  @media (prefers-reduced-motion: reduce) { .progress-track span { transition: none; } }
-  .chat-list { display: grid; gap: var(--space-sm); }
-  .chat-card {
-    min-width: 0;
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-    gap: var(--surface-padding);
-    padding: var(--surface-padding);
-    border-radius: var(--radius);
-    background: var(--surface-card);
-    box-shadow: var(--shadow-card);
-  }
-  button.delete-control { color: var(--accent-red); background: var(--danger-bg); box-shadow: var(--shadow-control); }
-  button.delete-control:hover:not(:disabled) { background: var(--danger-hover); }
-  .avatar, .unavailable-avatar {
-    width: 62px;
-    height: 62px;
-    display: grid;
-    place-items: center;
-    padding: 0;
-    border-radius: 50%;
-    background: var(--bg-elev);
-    box-shadow: var(--shadow-control);
-  }
-  .unavailable-avatar { color: var(--fg-muted); font-family: var(--font-data); }
-  .avatar { position: relative; overflow: hidden; align-self: start; }
-  .avatar-image { display: block; width: 100%; height: 100%; border-radius: inherit; transition: filter 200ms var(--ease-out); }
-  .avatar-shuffle { position: absolute; inset: 0; display: grid; place-items: center; color: white; opacity: 0; scale: 0.25; filter: blur(4px); pointer-events: none; transition: opacity var(--dur-slow) cubic-bezier(0.2, 0, 0, 1), scale var(--dur-slow) cubic-bezier(0.2, 0, 0, 1), filter var(--dur-slow) cubic-bezier(0.2, 0, 0, 1); }
-  .avatar:focus-visible:not(.revealed) .avatar-image { filter: blur(3px) brightness(0.5); }
-  .avatar:focus-visible:not(.revealed) .avatar-shuffle { opacity: 1; scale: 1; filter: blur(0); }
+  /* Your chats, in Ledger: the saved chats as rows of wash on paper, notices as washes with one
+     plain sentence and one way out, the filled button for the one way forward. */
+  .skip-link { position: fixed; z-index: 1000; top: var(--s2); inset-inline-start: var(--s2); padding: var(--s2) var(--s4); border-radius: var(--r-pill); background: var(--ink); color: var(--paper); font: var(--type-control); translate: 0 calc(-100% - var(--s4)); transition: translate var(--fast) var(--ease); }
+  .skip-link:focus { translate: 0 0; }
+
+  .home-shell { display: flex; flex-direction: column; min-height: 100dvh; }
+  main { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: var(--s6); width: 100%; max-width: var(--page); margin: 0 auto; padding: var(--s6) var(--gutter) var(--s8); }
+
+  .hero { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: var(--s4) var(--s5); }
+  h1 { color: var(--ink); font: var(--type-title); letter-spacing: -0.04em; }
+  h1:focus { outline: none; }
+  h2 { color: var(--ink); font: var(--type-label); }
+  .hero-actions, .panel-actions, .library-actions, .chat-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+
+  /* Buttons: primary is filled ink, secondary a quiet wash, quiet text only. */
+  button { display: inline-flex; align-items: center; justify-content: center; gap: var(--s2); height: 36px; padding: 0 var(--s4); border: 0; border-radius: var(--r-pill); background: var(--wash); color: var(--ink); font: var(--type-control); white-space: nowrap; cursor: pointer; transition: opacity var(--fast) var(--ease), background-color var(--fast) var(--ease), color var(--fast) var(--ease), scale var(--fast) var(--ease); }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button:active:not(:disabled) { scale: 0.97; }
+  button.primary, button.delete { padding: 0 var(--s5); background: var(--ink); color: var(--paper); }
+  button.quiet, button.delete-control { padding: 0 var(--s2); background: transparent; color: var(--ink3); }
+  button.compact { height: 32px; padding: 0 var(--s3); }
   @media (hover: hover) {
-    .avatar:hover:not(.revealed) .avatar-image { filter: blur(3px) brightness(0.5); }
-    .avatar:hover:not(.revealed) .avatar-shuffle { opacity: 1; scale: 1; filter: blur(0); }
+    button:hover:not(:disabled) { background: var(--wash2); }
+    button.primary:hover:not(:disabled), button.delete:hover:not(:disabled) { background: var(--ink); opacity: 0.86; }
+    button.quiet:hover:not(:disabled), button.delete-control:hover:not(:disabled) { background: transparent; color: var(--ink); }
   }
-  .avatar :global(img) { display: block; width: 100%; height: 100%; min-width: 0; border-radius: inherit; }
-  .chat-copy { min-width: 0; display: grid; gap: var(--space-4); }
-  .chat-title-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: var(--space-5); }
-  .chat-meta { display: flex; align-items: center; justify-content: end; gap: var(--space-2); }
-  .chat-title-row time { color: var(--fg-muted); font-family: var(--font-data); font-size: var(--text-xs); white-space: nowrap; }
-  .chat-copy strong { display: block; min-width: 0; overflow-wrap: anywhere; font-size: var(--text-md); }
-  button.chat-name { --control-sheen: none; appearance: none; min-width: 40px; width: fit-content; max-width: 100%; min-height: var(--control-target); padding: 0; text-align: start; justify-content: start; border-radius: var(--radius-sm); color: var(--fg-strong); background: transparent; box-shadow: none; }
-  button.chat-name:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 3px; }
-  button.chat-name:active { transform: none; }
-  .chat-counts { font-variant-numeric: tabular-nums; }
-  .chat-copy > span { color: var(--fg-muted); font-size: var(--text-sm); }
-  .chat-model, .chat-counts { font-weight: var(--weight-structure-bold); line-height: 24px; }
-  .chat-model { display: flex; align-items: center; gap: var(--space-xs); }
-  .chat-model > span { min-width: 0; overflow-wrap: anywhere; }
-  .chat-copy .missing { color: var(--accent-yellow); }
-  .panel-actions { gap: var(--space-6); }
-  .chat-actions { grid-column: 2 / -1; justify-content: end; gap: var(--space-6); }
-  .chat-footer { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); }
-  .chat-color { min-width: 0; max-width: 100%; }
-  .chat-footer .chat-actions { display: contents; }
-  .chat-footer > .primary { margin-inline-end: auto; }
-  .chat-footer.confirming .chat-actions { display: flex; flex-wrap: wrap; }
-  .chat-actions > span, .issue { margin-inline-end: auto; color: var(--fg-dim); font-size: var(--text-sm); }
-  .rename-field input {
-    width: min(100%, 34rem);
-    min-height: var(--control-field);
-    border: 0;
-    border-radius: var(--radius);
-    padding: var(--space-3) var(--space-4);
-    color: var(--fg);
-    background: var(--input-well);
-    box-shadow: var(--shadow-well);
+
+  .device-check { color: var(--ink3); font: var(--type-small); }
+  .error { color: var(--ink); font: var(--type-small); }
+
+  .notice, .new-chat-panel { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: var(--s3) var(--s5); padding: var(--s5); border-radius: var(--r-row); background: var(--wash); color: var(--ink2); font: var(--type-small); }
+  .notice > div, .new-chat-panel > div:first-child { display: grid; gap: var(--s2); flex: 1 1 320px; min-width: 0; }
+  .notice > div.panel-actions { display: flex; flex: none; }
+  .notice p { max-width: 72ch; }
+  .notice button:not(.primary, .quiet, .delete, .delete-control), .new-chat-panel button:not(.primary, .quiet) { background: var(--paper); }
+  @media (hover: hover) { .notice button:not(.primary, .quiet, .delete, .delete-control):hover:not(:disabled), .new-chat-panel button:not(.primary, .quiet):hover:not(:disabled) { background: var(--wash2); } }
+  .new-chat-panel { display: grid; justify-content: stretch; }
+  .chooser-heading, .recovery-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--s2) var(--s4); }
+  .notice.model-recovery { display: grid; justify-content: stretch; }
+  .backup-nudge { color: var(--ink); }
+  .storage-guide { margin-top: var(--s1); }
+  .storage-guide ol { display: grid; gap: var(--s2); margin: var(--s3) 0; padding-inline-start: var(--s5); list-style: decimal; }
+  .storage-guide p { margin-top: var(--s2); }
+  .storage-sources a { color: var(--ink2); text-decoration: underline; text-decoration-color: var(--wash2); text-decoration-thickness: 2px; text-underline-offset: 4px; }
+  @media (hover: hover) { .storage-sources a:hover { color: var(--ink); } }
+
+  .recovery-progress { display: grid; gap: var(--s2); }
+  .recovery-progress strong { color: var(--ink); font: var(--type-label); }
+  .recovery-warning { color: var(--ink); }
+  .recovery-choices { display: grid; gap: var(--s2); margin: 0; padding: 0; border: 0; }
+  .recovery-choices legend { margin-bottom: var(--s2); color: var(--ink3); font: var(--type-head); }
+  .recovery-choices label { display: flex; align-items: start; gap: var(--s3); cursor: pointer; }
+  .recovery-choices input { width: 18px; height: 18px; margin: 1px 0 0; accent-color: var(--ink); }
+  .recovery-choices span { display: grid; color: var(--ink); }
+  .recovery-choices small { color: var(--ink3); font: var(--type-meta); }
+  .progress-track { position: relative; height: 4px; border-radius: 2px; background: var(--wash2); overflow: hidden; }
+  .progress-track span { display: block; height: 100%; border-radius: 2px; background: var(--ink); transition: width var(--glide) var(--ease); }
+  .progress-track span.indeterminate { opacity: 0.35; }
+  .progress-copy { color: var(--ink3); font: var(--type-meta); }
+
+  /* The saved chats. */
+  .chats-section { display: grid; gap: var(--s4); }
+  .section-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s3) var(--s4); }
+  .section-heading h2 { font: var(--type-heading); letter-spacing: -0.02em; }
+  .library-actions > span { margin-inline-end: var(--s2); color: var(--ink3); font: var(--type-meta); }
+  .backup-result { color: var(--ink2); font: var(--type-small); }
+  .import-duplicates { display: grid; gap: var(--s2); justify-items: start; padding: var(--s4); border-radius: var(--r-box); background: var(--wash); color: var(--ink2); font: var(--type-small); }
+  .import-duplicate { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s4); }
+  .import-duplicates button:not(.quiet) { background: var(--paper); }
+
+  .chat-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s4); }
+  .chat-search { display: flex; align-items: center; gap: var(--s2); flex: 1 1 240px; height: 36px; padding: 0 var(--s3); border-radius: var(--r-pill); background: var(--wash); color: var(--ink3); }
+  .chat-search input { flex: 1; min-width: 0; min-height: 0; height: 100%; padding: 0; background: transparent; }
+  .chat-search input:focus { outline: none; }
+  .chat-search:has(input:focus-visible) { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .chat-tool { display: inline-flex; align-items: center; gap: var(--s2); }
+  .tool-label { color: var(--ink3); font: var(--type-meta); }
+
+  .empty { display: grid; justify-items: start; gap: var(--s3); padding: var(--s6); border-radius: var(--r-row); background: var(--wash); color: var(--ink3); font: var(--type-small); }
+  .empty strong { color: var(--ink2); font-weight: 500; }
+
+  .chat-list { display: grid; gap: var(--s2); }
+  .chat-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s3) var(--s5); align-items: center; padding: var(--s4) var(--s5); border-radius: var(--r-row); background: var(--wash); color: var(--ink2); font: var(--type-small); }
+  .chat-card button:not(.primary, .quiet, .delete, .delete-control, .chat-name) { background: var(--paper); }
+  @media (hover: hover) { .chat-card button:not(.primary, .quiet, .delete, .delete-control, .chat-name):hover:not(:disabled) { background: var(--wash2); } }
+  .chat-copy { display: grid; gap: 2px; min-width: 0; }
+  .chat-title-row { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); min-width: 0; }
+  .chat-name { justify-content: start; height: auto; min-width: 0; padding: 0; background: transparent; color: var(--ink); font: var(--type-label); text-align: start; white-space: normal; }
+  .chat-name strong { font-weight: 500; overflow-wrap: anywhere; }
+  @media (hover: hover) { .chat-name:hover:not(:disabled) { background: transparent; opacity: 0.86; } }
+  .chat-meta { display: flex; align-items: center; gap: var(--s2); flex: none; color: var(--ink3); font: var(--type-meta); }
+  .rename-field { flex: 1; min-width: 0; }
+  .rename-field input { width: 100%; background: var(--paper); font: var(--type-label); }
+  .chat-model, .chat-counts { color: var(--ink3); font: var(--type-meta); }
+  .chat-model > span { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: var(--s2); }
+  .missing { color: var(--ink); font: var(--type-meta); }
+  .chat-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: end; gap: var(--s2); }
+  .chat-footer.confirming { grid-column: 1 / -1; justify-content: start; }
+  .chat-actions > span { color: var(--ink2); }
+  .chat-card.unavailable { color: var(--ink3); }
+  .chat-card.unavailable strong { color: var(--ink2); font-weight: 500; }
+  .issue { color: var(--ink3); }
+
+  .undo-region { position: fixed; z-index: 40; inset: auto var(--s4) max(var(--s4), env(safe-area-inset-bottom)) auto; display: grid; gap: var(--s2); justify-items: end; pointer-events: none; }
+  .undo-toast { display: flex; align-items: center; gap: var(--s4); max-width: min(480px, calc(100vw - var(--s4) * 2)); padding: var(--s2) var(--s2) var(--s2) var(--s4); border-radius: var(--r-pill); background: var(--ink); color: var(--paper); font: var(--type-small); pointer-events: auto; }
+  /* A long chat name wraps inside the toast so Undo stays on screen. */
+  .undo-toast > span { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+  .undo-toast button { flex: none; background: var(--paper); color: var(--ink); }
+
+  @media (max-width: 720px) {
+    main { gap: var(--s5); padding-top: var(--s4); }
+    button { height: 44px; }
+    button.compact { height: 44px; }
+    .chat-search { height: 44px; }
+    .chat-card { grid-template-columns: minmax(0, 1fr); padding: var(--s4); }
+    .chat-footer { justify-content: start; }
+    .notice, .new-chat-panel { padding: var(--s4); }
+    .undo-region { inset-inline-start: var(--s4); justify-items: stretch; }
+    .undo-toast { max-width: none; border-radius: var(--r-box); }
   }
-  .empty {
-    margin: 0;
-    padding: var(--surface-padding);
-    border-radius: var(--radius-lg);
-    color: var(--fg-dim);
-    background: var(--surface-sheen), var(--glass);
-    text-align: center;
-  }
-  .empty { display: grid; justify-items: center; gap: var(--space-5); }
-  .empty strong { color: var(--fg); font-family: var(--font-structure); }
-  @media (min-width: 761px) and (pointer: fine) {
-    .home-shell { --control-target: 40px; --control-field: 40px; --control-compact: 40px; }
-  }
-  @media (max-width: 700px) {
-    .hero { align-items: stretch; flex-direction: column; gap: var(--space-6); }
-    .hero-actions > button { flex: 1 1 9rem; }
-    .new-chat-panel, .notice { grid-template-columns: 1fr; }
-    .new-chat-panel > .panel-actions > button, .notice > button { width: 100%; }
-    .chat-card { grid-template-columns: auto minmax(0, 1fr); }
-    .chat-actions { grid-column: 1 / -1; }
-    .chat-footer > .primary { flex: 1 1 auto; }
-    .chat-footer .backup-action { min-width: var(--control-target); padding-inline: var(--space-5); }
-  }
-  @media (max-width: 430px) {
-    .avatar, .unavailable-avatar { width: 54px; height: 54px; }
-    .chat-title-row { grid-template-columns: minmax(0, 1fr); gap: var(--space-2); }
-    .chat-meta { grid-row: 1; justify-self: end; }
-    button.chat-name { min-height: var(--control-target); }
-    .chat-actions button { flex: 1 1 auto; }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    button { transition: none; }
-    .avatar-image, .avatar-shuffle { transition: none; }
-    button:active:not(:disabled) { transform: none; }
-  }
+  @media (forced-colors: active) { .undo-toast { border: 1px solid CanvasText; } }
 </style>

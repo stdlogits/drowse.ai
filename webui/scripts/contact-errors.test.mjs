@@ -62,7 +62,10 @@ try {
 
   const form = await readFile("../drowse/webui/src/lib/ui/ContactForm.svelte", "utf8");
   assert.match(form, /ariaLabelledby=\{`\$\{uid\}-reason-label`\}/, "Reason announces its label and current value");
-  assert.match(form, /All fields are required unless marked optional\./);
+  // Required fields say so to the browser; the one optional field is marked in its label.
+  assert.match(form, /name="title"[^>]*\brequired\b/);
+  assert.match(form, /name="body"[^>]*\brequired\b/);
+  assert.match(form, /Email <span class="optional">optional<\/span>/);
   const select = await readFile("../drowse/webui/src/lib/Select.svelte", "utf8");
   assert.match(select, /aria-labelledby=\{ariaLabelledby \? `\$\{ariaLabelledby\} \$\{uid\}-value` : undefined\}/);
   const storeSource = await readFile("../drowse/webui/src/lib/stores/contact.svelte.ts", "utf8");

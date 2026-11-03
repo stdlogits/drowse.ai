@@ -46,6 +46,9 @@ export interface InstalledContentRecord {
 
 export interface RegisterInstallOptions {
   selectAsCurrentModel?: boolean;
+  /** Add the record's objects to the existing install, in the same transaction, instead of
+   *  replacing its closure; refuses when the install no longer exists. */
+  mergeObjectHashes?: boolean;
 }
 
 export interface ContentReservationRecord {
@@ -458,8 +461,14 @@ export class BrowserContentStore implements ContentAddressedStore {
       const previous = await requestValue<InstalledContentRecord | undefined>(
         installs.get(record.id),
       );
+      if (options.mergeObjectHashes === true && (!previous || previous.kind !== record.kind)) {
+        transaction.abort();
+        throw new Error(`Install ${record.id} was removed before its file was added`);
+      }
       const previousHashes = new Set(previous?.objectHashes ?? []);
-      const nextHashes = new Set(uniqueHashes);
+      const nextHashes = new Set(
+        options.mergeObjectHashes === true ? [...previousHashes, ...uniqueHashes] : uniqueHashes,
+      );
 
       for (const hash of nextHashes) {
         const object = await requestValue<StoredObjectRecord | undefined>(objects.get(hash));
@@ -484,7 +493,10 @@ export class BrowserContentStore implements ContentAddressedStore {
         const object = await requestValue<StoredObjectRecord | undefined>(objects.get(hash));
         if (object) objects.put({ ...object, refCount: Math.max(0, object.refCount - 1) });
       }
-      installs.put({ ...record, objectHashes: uniqueHashes });
+      installs.put({
+        ...(options.mergeObjectHashes === true ? previous : record),
+        objectHashes: [...nextHashes],
+      });
       if (options.selectAsCurrentModel === true) {
         transaction.objectStore(SETTINGS_STORE).put({
           key: "selected_model_variant_id",

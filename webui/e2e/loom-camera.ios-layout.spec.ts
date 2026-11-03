@@ -1,17 +1,23 @@
 import { expect, test, type Page } from "@playwright/test";
-import { resolve } from "node:path";
-import { selectWorkspaceView, showWorkspaceTools } from "./workbench-navigation";
+import { devUrl, openLoom, storesUrl } from "./workbench-navigation";
 
-const storesUrl = `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
 test.use({ hasTouch: true });
 
+const openMap = (page: Page) => openLoom(page, "Map");
+
+async function leaveLoom(page: Page) {
+  await page.getByRole("button", { name: "Back to the conversation", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Loom", exact: true })).toHaveCount(0);
+}
+
 async function seed(page: Page, count = 3) {
-  await page.goto("http://127.0.0.1:4176/app?layoutFixture=1");
+  await page.goto(`${devUrl}/app?layoutFixture=1`);
   await expect(page.locator(".shell")).toBeVisible();
   await page.evaluate(async ({ url, count }) => {
     const { applyTreeSnapshot, loomTree, loomUiState } = await import(url);
     const make = (id: string, parent_id: string | null, text: string, role = "assistant") => ({
-      id, parent_id, text, role, starred: false, role_label: null, recipe: null,
+      // 6.0: a generated node carries its recipe with its token rows; an authored one has no rows.
+      id, parent_id, text, role, starred: false, role_label: null, recipe: role === "assistant" ? { steering: null, sampling: null, thinking: null, seed: null, probes: [], probe_hashes: {} } : null,
       finish_reason: "stop", aggregate_readings: {}, thinking_tokens: [],
       tokens: role === "assistant" ? (text.match(/\S+\s*/g) ?? []).map((text, raw_index) => ({ text, raw_index, token_id: raw_index + 1, logprob: -0.2 })) : [],
     });
@@ -25,13 +31,19 @@ async function seed(page: Page, count = 3) {
     });
     loomUiState.view = "map";
   }, { url: storesUrl, count });
-  await selectWorkspaceView(page, "Loom");
+  await openMap(page);
   await expect(page.locator(".loom-viewport")).toBeVisible();
 }
 
+// Fitted: every card inside the map viewport. Since drowse PR 71 a phone's map has room too: phones
+// are screens up to 720 px wide or 520 px tall; their Loom page scrolls, and the map is at least
+// min(240px, 45dvh) tall, or a screen less 72 px on a short screen (the page scrolls to it).
 async function expectFitted(page: Page) {
   await expect.poll(() => page.evaluate(() => {
     const viewport = document.querySelector(".loom-viewport")!.getBoundingClientRect();
+    const phone = innerWidth <= 720 || innerHeight <= 520;
+    const room = innerHeight <= 520 ? innerHeight - 72 : Math.min(240, innerHeight * 0.45);
+    if (phone && (viewport.height < room - 2 || viewport.height > innerHeight)) return false;
     return [...document.querySelectorAll(".tree-node-wrap")].every(node => {
       const box = node.getBoundingClientRect();
       return box.left >= viewport.left && box.right <= viewport.right
@@ -40,7 +52,7 @@ async function expectFitted(page: Page) {
   })).toBe(true);
 }
 
-test("Loom opens fitted and follows measured cards and phone rotation", async ({ page }, testInfo) => {
+test("Loom opens fitted and follows measured cards and phone rotation", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.setViewportSize({ width: 440, height: 796 });
   await seed(page);
@@ -50,9 +62,8 @@ test("Loom opens fitted and follows measured cards and phone rotation", async ({
     await page.setViewportSize(viewport);
     await expectFitted(page);
   }
-  await page.screenshot({ path: testInfo.outputPath("loom-fitted-phone.png") });
-  await selectWorkspaceView(page, "Chat");
-  await selectWorkspaceView(page, "Loom");
+  await leaveLoom(page);
+  await openMap(page);
   await expectFitted(page);
 });
 
@@ -61,7 +72,6 @@ test("manual zoom survives resizing and Fit restores responsive framing", async 
   await page.setViewportSize({ width: 440, height: 796 });
   await seed(page, 1);
   await expectFitted(page);
-  await showWorkspaceTools(page, "Loom");
   await page.getByRole("button", { name: "Zoom in", exact: true }).click();
   const zoom = await page.locator(".loom-canvas").getAttribute("data-loom-zoom");
   await page.setViewportSize({ width: 844, height: 390 });
@@ -69,6 +79,28 @@ test("manual zoom survives resizing and Fit restores responsive framing", async 
   await page.getByRole("button", { name: "Fit whole loom", exact: true }).click();
   await expectFitted(page);
   await page.setViewportSize({ width: 320, height: 568 });
+  await expectFitted(page);
+});
+
+test("on a wide screen manual zoom survives resizing and Fit restores responsive framing", async ({ page }) => {
+  // The desktop half of the phone test above.
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await seed(page, 3);
+  await expectFitted(page);
+  const canvas = page.locator(".loom-canvas");
+  const fitted = await canvas.getAttribute("data-loom-zoom");
+  await page.getByRole("button", { name: "Zoom in", exact: true }).click();
+  await expect(canvas).not.toHaveAttribute("data-loom-zoom", fitted!);
+  const zoom = await canvas.getAttribute("data-loom-zoom");
+  await page.setViewportSize({ width: 1024, height: 700 });
+  await expect(canvas).toHaveAttribute("data-loom-zoom", zoom!);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect(canvas).toHaveAttribute("data-loom-zoom", zoom!);
+  await page.getByRole("button", { name: "Fit whole loom", exact: true }).click();
+  await expectFitted(page);
+  // Once fitted, framing follows the window again.
+  await page.setViewportSize({ width: 900, height: 700 });
   await expectFitted(page);
 });
 
@@ -82,13 +114,11 @@ test("large Loom releases token cards while hidden and restores every branch", a
   const cards = page.locator(".tree-node-wrap");
   await expect(cards).toHaveCount(61);
   await expect(page.locator(".token-node")).toHaveCount(0);
-  await expect(page.locator(".loom-canvas")).toHaveCSS("will-change", "auto");
-  await expect(page.locator(".loom-edges .edge-depth").first()).toHaveCSS("filter", "none");
   for (let i = 0; i < 4; i++) {
-    await selectWorkspaceView(page, "Chat");
+    await leaveLoom(page);
     await expect(cards).toHaveCount(0);
     await expect(page.locator(".loom-canvas")).toHaveCount(0);
-    await selectWorkspaceView(page, "Loom");
+    await openMap(page);
     await expect(cards).toHaveCount(61);
   }
   await page.locator('[data-loom-node-id="reply-0"] .map-summary').click();

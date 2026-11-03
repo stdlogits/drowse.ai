@@ -1,0 +1,23 @@
+{
+  "format_version": 10,
+  "name": "refusing",
+  "description": "One-node concept: refusing (+) against the model's default answers (0). Steer with negative alpha for more compliant than the default.",
+  "fit_mode": "pca",
+  "hyperparams": {
+    "max_dim": 1,
+    "var_threshold": 0.7
+  },
+  "nodes": [
+    {
+      "label": "refusing",
+      "kind": "abstract",
+      "role": null
+    }
+  ],
+  "files": {},
+  "tags": [
+    "alignment"
+  ],
+  "source": "bundled",
+  "template_ref": null
+}

@@ -1,29 +1,40 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
-import { resolve } from "node:path";
+import { composer, devUrl, sendMessage, sourceUrl, storesUrl, waitForReply } from "./workbench-navigation";
 
-const storesUrl = `/@fs${resolve("../drowse/webui/src/lib/stores.svelte.ts")}`;
-const registryUrl = `/@fs${resolve("../drowse/webui/src/lib/runtime/registry.ts")}`;
+// Steering in 6.0 lives in the composer's chips ("+ Steer"); each reply records the recipe it ran
+// with, and "Compare unsteered" replays the turn without it.
 
-test("Edit steering supports Enter and Space activation", async ({ page }) => {
+const registryUrl = sourceUrl("lib/runtime/registry.ts");
+
+async function open(page: Page) {
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
-  const edit = page.getByRole("button", { name: "Edit steering", exact: true });
+  await page.goto(`${devUrl}/app?layoutFixture=instruments`);
+  await expect(composer(page)).toBeVisible();
+}
+
+/** The reply's steering marker: "steered" (its tip is the recipe) or "unsteered". */
+const marker = (turn: Locator) => turn.locator(".dw-under span").filter({ hasText: /^(steered|unsteered)$/ });
+
+const submits = (page: Page) => page.evaluate(() =>
+  (window as any).steeringRequests.filter((request: any) => request.type === "submit"));
+
+test("+ Steer opens with Enter and Space", async ({ page }) => {
+  await open(page);
+  const add = page.getByRole("group", { name: "Steering", exact: true }).getByRole("button", { name: "+ Steer", exact: true });
   for (const key of ["Enter", "Space"]) {
-    await edit.focus();
-    await edit.press(key);
-    await expect(page.getByRole("group", { name: "Response guidance type" })).toBeVisible();
-    await page.getByRole("navigation", { name: "Workspace", exact: true }).getByRole("button", { name: /^(Chat|Conversation)$/ }).click();
-    await expect(edit).toBeVisible();
+    await add.focus();
+    await add.press(key);
+    await expect(add).toHaveAttribute("aria-expanded", "true");
+    await add.press(key);
+    await expect(add).toHaveAttribute("aria-expanded", "false");
   }
 });
 
-test("chat records steering, compares the saved recipe, and clears inherited steering", async ({ page }, testInfo) => {
+test("chat records steering, compares the turn unsteered, and clears steering", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("http://127.0.0.1:4176/app?layoutFixture=instruments");
-  await expect(page.getByRole("textbox", { name: /^Compose as / })).toBeVisible();
+  await open(page);
   await page.evaluate(async ({ storesUrl, registryUrl }) => {
     const stores = await import(storesUrl);
     const registry = await import(registryUrl);
@@ -32,56 +43,41 @@ test("chat records steering, compares the saved recipe, and clears inherited ste
     (window as any).steeringRequests = [];
     channel.send = (payload: unknown) => { (window as any).steeringRequests.push(payload); return original(payload); };
     await registry.getRuntimeClient().tree.castPut("assistant", { steering: "0.25 fixture/calm.focused" });
-    await stores.attachProbe("fixture/calm.focused");
-    stores.applyCustomSteeringExpression("0.5 fixture/calm.focused");
+    stores.applyRecipe("0.5 fixture/calm.focused");
   }, { storesUrl, registryUrl });
-  const next = page.getByLabel("Steering for next reply", { exact: true });
-  await expect(next).toContainText("0.5 fixture/calm.focused");
-  await page.getByRole("textbox", { name: /^Compose as / }).fill("Tell me something interesting");
-  await page.getByRole("button", { name: "Send", exact: true }).click();
-  const recorded = page.getByLabel("Recorded steering", { exact: true });
-  await expect(recorded).toContainText("0.5 fixture/calm.focused");
-  const compare = page.getByRole("button", { name: "Compare without steering", exact: true });
-  await expect(compare).toBeEnabled();
-  await page.evaluate(async url => (await import(url)).applyCustomSteeringExpression("0.8 fixture/calm.focused"), storesUrl);
-  await expect(recorded).toContainText("0.5 fixture/calm.focused");
+  await expect.poll(() => page.evaluate(async url => (await import(url)).currentSteeringExpression(), storesUrl))
+    .toBe("0.5 fixture/calm.focused");
+
+  await sendMessage(page, "Tell me something interesting");
+  expect((await submits(page)).at(-1).steering).toBe("0.5 fixture/calm.focused");
+  const reply = page.locator(".chat .msg:not(.user)").last();
+  await expect(marker(reply)).toHaveText("steered");
+  await expect(marker(reply)).toHaveAttribute("data-tip", "0.5 fixture/calm.focused");
+
+  // A later recipe change leaves the recorded reply alone.
+  await page.evaluate(async url => (await import(url)).applyRecipe("0.8 fixture/calm.focused"), storesUrl);
+  await expect(marker(reply)).toHaveAttribute("data-tip", "0.5 fixture/calm.focused");
+
+  const compare = reply.getByRole("button", { name: "Compare unsteered", exact: true });
   await compare.click();
-  await expect(page.locator(".ab-shadow").getByLabel("Recorded steering")).toHaveText("No steering");
-  await expect(compare).toBeEnabled();
-  const requests = await page.evaluate(() => (window as any).steeringRequests);
-  const readings = page.locator(".ab-shadow .recorded-readings");
-  await expect(readings).toBeVisible();
-  await readings.locator("summary").click();
-  await expect(readings).toContainText("fixture/calm.focused");
-  expect(requests.find((request: any) => request.type === "submit").steering).toBe("0.5 fixture/calm.focused");
-  const comparison = requests.find((request: any) => request.stateless);
+  await expect.poll(async () => (await page.evaluate(() => (window as any).steeringRequests))
+    .some((request: any) => request.stateless)).toBe(true);
+  await waitForReply(page);
+  const comparison = (await page.evaluate(() => (window as any).steeringRequests)).find((request: any) => request.stateless);
   expect(comparison.recipe_override).toBe("unsteered");
   expect(comparison.steering).toBe("");
   expect(comparison.input).toEqual([{ role: "user", content: "Tell me something interesting", label: null }]);
   expect(comparison.parent_node_id).toBeTruthy();
-  expect(await page.evaluate(async url => (await import(url)).autoRegenState.enabled, storesUrl)).toBe(false);
 
   for (const width of [1440, 320]) {
     await page.setViewportSize({ width, height: 1000 });
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     expect((await new AxeBuilder({ page }).include(".chat").analyze()).violations).toEqual([]);
-    await page.locator(".chat").screenshot({ path: testInfo.outputPath(`steering-comparison-${width}.png`) });
   }
-  await page.getByRole("button", { name: "Hide comparison", exact: true }).click();
-  await expect(page.locator(".ab-grid")).toHaveCount(0);
-  await page.evaluate(async url => (await import(url)).applyCustomSteeringExpression(""), storesUrl);
-  await expect(next).toContainText("No steering");
-  await page.getByRole("textbox", { name: /^Compose as / }).fill("Now without steering");
-  await page.getByRole("button", { name: "Send", exact: true }).click();
-  await expect(recorded.last()).toHaveText("No steering");
-  expect(await page.evaluate(() => (window as any).steeringRequests.filter((request: any) => request.type === "submit").at(-1).steering)).toBe("");
-  await expect(recorded.first()).toContainText("0.5 fixture/calm.focused");
-  await page.locator("#conversation-composer").evaluate(form => {
-    if (document.activeElement instanceof HTMLElement && form.contains(document.activeElement)) document.activeElement.blur();
-  });
-  await expect(page.locator(".input-actions-reveal")).toBeHidden();
-  await page.getByRole("button", { name: "Edit steering", exact: true }).click();
-  await expect(page.locator(".workspace-frame")).toHaveAttribute("data-page", "3");
-  await expect(page.getByRole("group", { name: "Response guidance type" })).toBeVisible();
+
+  await page.evaluate(async url => (await import(url)).applyRecipe(""), storesUrl);
+  await sendMessage(page, "Now without steering");
+  expect((await submits(page)).at(-1).steering).toBe("");
+  await expect(marker(page.locator(".chat .msg:not(.user):not(.shadow)").last())).toHaveText("unsteered");
   expect(errors).toEqual([]);
 });

@@ -1,12 +1,12 @@
 {
   "$schema": "./runtime-lock.schema.json",
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "status": "verified",
-  "runtimeAbi": "drowse-web-runtime-v1",
-  "hookAbi": "post-block-residual-v4",
-  "exactReadoutAbi": "exact-readout-v1",
+  "runtimeAbi": "drowse-web-runtime-v2",
+  "hookAbi": "block-sites-v5",
+  "exactReadoutAbi": "exact-readout-v2",
   "toolchain": {
-    "forkManifestSha256": "555070721b5123dc987aec596f55cc9767824f17e71ca135df040654de694fec",
+    "forkManifestSha256": "22ae995379f92fa84962e78c0c22574952cef0f9099c90285f1298f3e5bc1fd7",
     "mlcLlmFork": {
       "repository": "https://github.com/a9lim/mlc-llm-polythetic",
       "commit": null
@@ -16,10 +16,10 @@
       "commit": null
     },
     "webLlmPackage": {
-      "path": "browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.40.tgz",
-      "sha256": "e867b86a62d9277f536e2a3d435aa29bb39b0ff89c75e32249b3d7eed9932e6c",
+      "path": "browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.49.tgz",
+      "sha256": "81dbc5f7116b89bd6531bf32809530367a7e3149590bf285bc79a8aba17c249f",
       "name": "@drowse/web-llm",
-      "version": "0.2.84-drowse.40",
+      "version": "0.2.84-drowse.49",
       "repository": "https://github.com/a9lim/web-llm-polythetic",
       "sourceCommit": null
     },
@@ -43,24 +43,53 @@
         "sha256": "dcaa1bebbfbb86953fdfbdc7f938800229f75ad26c5c9375ef242edad737d999"
       }
     ],
+    "llvmSourceBuild": {
+      "platform": "linux/amd64",
+      "repository": "https://github.com/llvm/llvm-project.git",
+      "tag": "llvmorg-18.1.8",
+      "tagObject": "76caf4176cd7877ad5952737d56da6f515ee4602",
+      "commit": "3b5b5c1ec4a3095ab096dd780e84d7ab81f3d7ff",
+      "bootstrapArchive": "clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz"
+    },
     "compilerImage": {
       "reference": null,
       "digest": null,
-      "recipeSha256": "57c1817ff56248c6615b5854940fd00e447e5843198ffd9990aee3c9d95adcb8"
+      "recipeSha256": "e9556538fb971bf7c3fd46e6150c05be0d952d51a203379a8a195ea64e3d4d18"
     }
   },
   "models": [
     {
       "id": "gemma3-270m-instruct",
       "architecture": "gemma3_text",
-      "structuredHookProfile": "standard-v3",
+      "structuredHookProfile": "standard-v4",
+      "blockSpec": {
+        "dFF": 2048,
+        "nHeads": 4,
+        "nKvHeads": 1,
+        "headDim": 256,
+        "sandwich": true,
+        "normOffset": 1,
+        "activation": "gelu_tanh",
+        "embedScale": 25.298221281347036,
+        "rmsEps": 0.000001,
+        "qkNorm": true,
+        "attnScaling": 0.0625,
+        "attnLogitSoftcap": null,
+        "finalLogitSoftcap": null,
+        "ropeTheta": 1000000,
+        "ropeLocalTheta": 10000,
+        "ropeGlobalScale": 1,
+        "ropeInGraph": true,
+        "slidingWindow": 512,
+        "slidingPattern": 6
+      },
       "thinkingProfile": null,
       "sourceRepository": "unsloth/gemma-3-270m-it",
       "sourceRevision": "23cf460f6bb16954176b3ddcc8d4f250501458a9",
       "convertedRepository": "stdlogits/drowse-web-gemma3-270m",
-      "convertedRevision": "3e1d604dbc4d6587f0df8bb09f021f1eff6aec8c",
+      "convertedRevision": "1e660ed475d16f87e705ad9984556f0e1e6348e6",
       "manifestSha256": "f5fa544c45399f5551ea4f01010540036bfa02b51487bcc50094c36426fb4586",
-      "librarySha256": "4ae2284dab2453d23971bd3081683f90bbc57b742360cf5cdb8dace9abfcd780",
+      "librarySha256": "56dfbad7b5a1614084baa585eba3d0d4e9b5aac96839865f345ec3c0538e1aac",
       "tokenizerSha256": "4667f2089529e8e7657cfb6d1c19910ae71ff5f28aa7ab2ff2763330affad795",
       "chatTemplateSha256": "be2182df1ad0ea735d336418896eb06e5cc2f59136e7aaeac5de2ec2197742ac",
       "hiddenSize": 640,
@@ -88,19 +117,41 @@
       "contextProfiles": [
         2048,
         4096
-      ]
+      ],
+      "prefillChunkSize": 2048
     },
     {
       "id": "gemma3-1b-instruct",
       "architecture": "gemma3_text",
-      "structuredHookProfile": "standard-v3",
+      "structuredHookProfile": "standard-v4",
+      "blockSpec": {
+        "dFF": 6912,
+        "nHeads": 4,
+        "nKvHeads": 1,
+        "headDim": 256,
+        "sandwich": true,
+        "normOffset": 1,
+        "activation": "gelu_tanh",
+        "embedScale": 33.94112549695428,
+        "rmsEps": 0.000001,
+        "qkNorm": true,
+        "attnScaling": 0.0625,
+        "attnLogitSoftcap": null,
+        "finalLogitSoftcap": null,
+        "ropeTheta": 1000000,
+        "ropeLocalTheta": 10000,
+        "ropeGlobalScale": 1,
+        "ropeInGraph": true,
+        "slidingWindow": 512,
+        "slidingPattern": 6
+      },
       "thinkingProfile": null,
       "sourceRepository": "unsloth/gemma-3-1b-it",
       "sourceRevision": "5b11413a10db4e486ef16a20101fd028f8f2499c",
       "convertedRepository": "stdlogits/drowse-web-gemma3-1b",
-      "convertedRevision": "4891d37fe4f26a16e246134e51ec5dcef2f1121e",
+      "convertedRevision": "566dc4ff747f62cea6ab452b048944f54fb5aa77",
       "manifestSha256": "40ef8d47203ef0f1e768b819cd84bc60a146a97d63cb4883d3563cbacbdc9df4",
-      "librarySha256": "83ba8e0a9bd86e9d62437e8d7b51125ae48be42dcde7c0f8283f8819d6ed73f2",
+      "librarySha256": "130ce552350c3c42459c1f2b4edd5b5992f91f42b2c3911b98a4a39bd4fc0095",
       "tokenizerSha256": "4667f2089529e8e7657cfb6d1c19910ae71ff5f28aa7ab2ff2763330affad795",
       "chatTemplateSha256": "a622f3103725cffe1f19deed01e8675cea4443bc3eff27680f9484e5dc4acf7b",
       "hiddenSize": 1152,
@@ -136,19 +187,41 @@
       "contextProfiles": [
         2048,
         4096
-      ]
+      ],
+      "prefillChunkSize": 2048
     },
     {
       "id": "gemma3-4b-instruct",
       "architecture": "gemma3_text",
-      "structuredHookProfile": "standard-v3",
+      "structuredHookProfile": "standard-v4",
+      "blockSpec": {
+        "dFF": 10240,
+        "nHeads": 8,
+        "nKvHeads": 4,
+        "headDim": 256,
+        "sandwich": true,
+        "normOffset": 1,
+        "activation": "gelu_tanh",
+        "embedScale": 50.59644256269407,
+        "rmsEps": 0.000001,
+        "qkNorm": true,
+        "attnScaling": 0.0625,
+        "attnLogitSoftcap": null,
+        "finalLogitSoftcap": null,
+        "ropeTheta": 1000000,
+        "ropeLocalTheta": 10000,
+        "ropeGlobalScale": 0.125,
+        "ropeInGraph": true,
+        "slidingWindow": 1024,
+        "slidingPattern": 6
+      },
       "thinkingProfile": null,
       "sourceRepository": "unsloth/gemma-3-4b-it",
       "sourceRevision": "bf46152c47f5dd20b896357cb51abc4c03b8ee8c",
       "convertedRepository": "stdlogits/drowse-web-gemma3-4b",
-      "convertedRevision": "a4186633865c32c001321c7f59119c2242cda21e",
+      "convertedRevision": "bcc12ca07fb6f51ae2544a2795e34fe0a01307d4",
       "manifestSha256": "f19b31f7138a587ff9bebe2c39527c7eae829ff8bbcd56db1d1ae0913ac159a0",
-      "librarySha256": "7937326b8429e01e5e39354c7f4fcf57eec3843f0e7297c32ae655888c3e623b",
+      "librarySha256": "03f371d57997e461cf7668486dd028e53f7f1276cc5e6fcf5581c48b462f6bd8",
       "tokenizerSha256": "4667f2089529e8e7657cfb6d1c19910ae71ff5f28aa7ab2ff2763330affad795",
       "chatTemplateSha256": "8925eabb556c1897ca1bed405f0612e735a56afcd4d77e76eb90fd771e706f9c",
       "hiddenSize": 2560,
@@ -192,12 +265,34 @@
       "contextProfiles": [
         2048,
         4096
-      ]
+      ],
+      "prefillChunkSize": 2048
     },
     {
       "id": "qwen3-4b",
       "architecture": "qwen3",
-      "structuredHookProfile": "standard-v3",
+      "structuredHookProfile": "standard-v4",
+      "blockSpec": {
+        "dFF": 9728,
+        "nHeads": 32,
+        "nKvHeads": 8,
+        "headDim": 128,
+        "sandwich": false,
+        "normOffset": 0,
+        "activation": "silu",
+        "embedScale": 1,
+        "rmsEps": 0.000001,
+        "qkNorm": true,
+        "attnScaling": 0.08838834764831845,
+        "attnLogitSoftcap": null,
+        "finalLogitSoftcap": null,
+        "ropeTheta": 1000000,
+        "ropeLocalTheta": null,
+        "ropeGlobalScale": 1,
+        "ropeInGraph": false,
+        "slidingWindow": null,
+        "slidingPattern": null
+      },
       "thinkingProfile": {
         "start": "<think>",
         "end": "</think>",
@@ -212,9 +307,9 @@
       "sourceRepository": "Qwen/Qwen3-4B",
       "sourceRevision": "1cfa9a7208912126459214e8b04321603b3df60c",
       "convertedRepository": "stdlogits/drowse-web-qwen3-4b",
-      "convertedRevision": "7af57a07cb2ff2f4245ad8617fb204a1144906b3",
+      "convertedRevision": "d6a56e61353ad018e55144fc46cdfae0df46032c",
       "manifestSha256": "b19c107ebd7d637bd89dad4882e7972dd7a81ab04f2ce1960bc1dfc1dd266204",
-      "librarySha256": "94993fd70d3090f73a2bdb52f064c5d5008420fde0ef53a556a1dbf65feaeea5",
+      "librarySha256": "9f000e4972bf22ecf7ae1a71799f865b56aca8a5a0bbf29f38f3b1409dea1d1d",
       "tokenizerSha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
       "chatTemplateSha256": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101",
       "hiddenSize": 2560,
@@ -260,12 +355,34 @@
       "contextProfiles": [
         2048,
         4096
-      ]
+      ],
+      "prefillChunkSize": 2048
     },
     {
       "id": "qwen3-1.7b",
       "architecture": "qwen3",
-      "structuredHookProfile": "standard-v3",
+      "structuredHookProfile": "standard-v4",
+      "blockSpec": {
+        "dFF": 6144,
+        "nHeads": 16,
+        "nKvHeads": 8,
+        "headDim": 128,
+        "sandwich": false,
+        "normOffset": 0,
+        "activation": "silu",
+        "embedScale": 1,
+        "rmsEps": 0.000001,
+        "qkNorm": true,
+        "attnScaling": 0.08838834764831845,
+        "attnLogitSoftcap": null,
+        "finalLogitSoftcap": null,
+        "ropeTheta": 1000000,
+        "ropeLocalTheta": null,
+        "ropeGlobalScale": 1,
+        "ropeInGraph": false,
+        "slidingWindow": null,
+        "slidingPattern": null
+      },
       "thinkingProfile": {
         "start": "<think>",
         "end": "</think>",
@@ -280,9 +397,9 @@
       "sourceRepository": "Qwen/Qwen3-1.7B",
       "sourceRevision": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
       "convertedRepository": "stdlogits/drowse-web-qwen3-1.7b",
-      "convertedRevision": "6ce859176cf7d69f59f7cee2fe7d5ddb9b6fdff6",
+      "convertedRevision": "92f201148c2e45b9258014b95fae1b3a8c782e7e",
       "manifestSha256": "8eab009068b10b93d819c14dff5c04c3866feb690d5a981d163eb8eee64ff956",
-      "librarySha256": "e0e5b4b0c33f4df380b925167c61ca2f8ca0e67967488ab791d1adb64b8cd362",
+      "librarySha256": "21877d130d761218608bdb7acf33a6f8b9d3549d5b2a4f47ea261fe2308a7c55",
       "tokenizerSha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
       "chatTemplateSha256": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101",
       "hiddenSize": 2048,
@@ -320,20 +437,22 @@
       "contextProfiles": [
         2048,
         4096
-      ]
+      ],
+      "prefillChunkSize": 2048
     },
     {
       "id": "gpt2-base",
       "modelType": "base",
       "architecture": "gpt2",
-      "structuredHookProfile": "standard-v3",
+      "structuredHookProfile": "standard-v4-residual",
+      "unitRefusal": "no rotary embedding beside the block list ('rotary_emb'); a dense block here is RoPE attention",
       "thinkingProfile": null,
       "sourceRepository": "openai-community/gpt2",
       "sourceRevision": "607a30d783dfa663caf39e06633721c8d4cfcd7e",
       "convertedRepository": "stdlogits/drowse-web-gpt2-base",
-      "convertedRevision": "787a18eed89e1c5e342382c6b88fb5f4dcd5f978",
+      "convertedRevision": "6f58b167bfbae418f87f4739c9a594a0f593f490",
       "manifestSha256": "571e5c3a42148b976ceb2b714408cf48589d6fc2d71ff20101586577773124d5",
-      "librarySha256": "858a656f68972067a27d8d702dbec641300b3fff266f0be96c519f05ba1bda48",
+      "librarySha256": "a7fdaa50af197946ef48dcb31cfcaccc1a40708ff3e140dcc840e891a0b3fb3e",
       "tokenizerSha256": "8414cab924d8b9b33013f0d221c5862f365ee9be39c5c2bfae8a5a9e970478a6",
       "chatTemplateSha256": "5e04eb606e3a1583530a42e36c2a6b6615c86f34fe77e44d9ddeb43ff940931f",
       "hiddenSize": 768,
@@ -354,20 +473,22 @@
       "quantization": "q0f32",
       "contextProfiles": [
         1024
-      ]
+      ],
+      "prefillChunkSize": 1024
     },
     {
       "id": "pythia-70m-base",
       "modelType": "base",
       "architecture": "gpt_neox",
-      "structuredHookProfile": "standard-v3",
+      "structuredHookProfile": "standard-v4-residual",
+      "unitRefusal": "layer 0: block has no softmax self-attention ('self_attn'; found attention, input_layernorm, mlp, post_attention_dropout, post_attention_layernorm, post_mlp_dropout)",
       "thinkingProfile": null,
       "sourceRepository": "EleutherAI/pythia-70m-deduped",
       "sourceRevision": "e93a9faa9c77e5d09219f6c868bfc7a1bd65593c",
       "convertedRepository": "stdlogits/drowse-web-pythia-70m-base",
-      "convertedRevision": "a90f700ebb1a302bdf1f1122c013f75ad7c0b87e",
+      "convertedRevision": "7054b621200ffbbac72707e6e2e21cb88c905976",
       "manifestSha256": "587eee3dadf689c9354c76452e618a14df7c6ad50b0ea88b3e68dcca9ed4872d",
-      "librarySha256": "c8efeec167e6e8a1f1a21518d4bcd7dbbf55fd0068dfb31f571f4ac366634fa9",
+      "librarySha256": "45f4bdd114b1c7564744ce1a46808b98e751b303442bde0c20b41072d66992df",
       "tokenizerSha256": "c24618a1b3e6a38167beff1c72cffd126c3a66254347304b50547d12c5f25624",
       "chatTemplateSha256": "70e38394e494931c6f773ba41e19460dd4436526b852207367f04341b4066d3f",
       "hiddenSize": 512,
@@ -382,20 +503,42 @@
       "quantization": "q0f32",
       "contextProfiles": [
         2048
-      ]
+      ],
+      "prefillChunkSize": 1024
     },
     {
       "id": "gemma3-1b-pt",
       "modelType": "base",
       "architecture": "gemma3_text",
-      "structuredHookProfile": "standard-v3",
+      "structuredHookProfile": "standard-v4",
+      "blockSpec": {
+        "dFF": 6912,
+        "nHeads": 4,
+        "nKvHeads": 1,
+        "headDim": 256,
+        "sandwich": true,
+        "normOffset": 1,
+        "activation": "gelu_tanh",
+        "embedScale": 33.94112549695428,
+        "rmsEps": 0.000001,
+        "qkNorm": true,
+        "attnScaling": 0.0625,
+        "attnLogitSoftcap": null,
+        "finalLogitSoftcap": null,
+        "ropeTheta": 1000000,
+        "ropeLocalTheta": 10000,
+        "ropeGlobalScale": 1,
+        "ropeInGraph": true,
+        "slidingWindow": 512,
+        "slidingPattern": 6
+      },
       "thinkingProfile": null,
       "sourceRepository": "google/gemma-3-1b-pt",
       "sourceRevision": "fcf18a2a879aab110ca39f8bffbccd5d49d8eb29",
       "convertedRepository": "stdlogits/drowse-web-gemma3-1b-pt",
-      "convertedRevision": "b771368a80809580545d340358de1ceab28632f4",
+      "convertedRevision": "27b3aeff48c6b999dcfed59e580bb23a72e71519",
       "manifestSha256": "41bb76ef5854f93346114bb6ff8e6028960012470a0e96e5d6eedc060ac079cd",
-      "librarySha256": "9a53f7e3ec75a531441ad190191c7c183d945110f0c05c31882688fca4eba451",
+      "librarySha256": "bfac54784bb136fb7e2fd722a12ef22832a3c0d708cc40779f4c8117e243547c",
       "tokenizerSha256": "7d4046bf0505a327dd5a0abbb427ecd4fc82f99c2ceaa170bc61ecde12809b0c",
       "chatTemplateSha256": "4d97b6d876fd05ffaf72c3243231975c50263ad4fc620bc9f0b44be2ca11fa31",
       "hiddenSize": 1152,
@@ -430,20 +573,22 @@
       "quantization": "q4f32_1",
       "contextProfiles": [
         2048
-      ]
+      ],
+      "prefillChunkSize": 1024
     },
     {
       "id": "qwen35-2b-base",
       "modelType": "base",
       "architecture": "qwen3_5",
-      "structuredHookProfile": "standard-v3",
+      "structuredHookProfile": "standard-v4-residual",
+      "unitRefusal": "layer 0: linear-attention layer ('linear_attn') in a hybrid stack; only softmax self-attention blocks are described",
       "thinkingProfile": null,
       "sourceRepository": "Qwen/Qwen3.5-2B-Base",
       "sourceRevision": "b1485b2fa6dfa1287294f269f5fb618e03d52d7c",
       "convertedRepository": "stdlogits/drowse-web-qwen35-2b-base",
-      "convertedRevision": "4a839d1c2a91f397a91bc25dbaa07825930adea7",
+      "convertedRevision": "fc9a364cb63709766ae8effc3e832577a3322d94",
       "manifestSha256": "6f4d36a4eebec65a1764d304a0ea563a7b57ffb21b1558056207ef3a34c11831",
-      "librarySha256": "dc379bbccd2b1f5bf2c8726e02eae49ffc9925a5e76bbd305d9065b7fe85ff00",
+      "librarySha256": "c64c9aef544f71543b73270febe9c68110f295df344afc32fea9de4a08858ecc",
       "tokenizerSha256": "fe000e3ed39ed12b8d2481d527d44f93c65d37e87645d2dcc80d1bf9d50d2927",
       "chatTemplateSha256": "e611fbccc7c29ef3b1cafb1cb7ea548d189968632901d678fd62be68c47885de",
       "hiddenSize": 2048,
@@ -476,7 +621,8 @@
       "quantization": "q4f32_1",
       "contextProfiles": [
         2048
-      ]
+      ],
+      "prefillChunkSize": 1024
     }
   ]
 }
