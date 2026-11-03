@@ -213,7 +213,8 @@ try {
     const numberTol = (path) => {
       if (/\.(value|z|footprint_z|score|coeff|share|mean_share|copy_score\.[RS])$/.test(path)) return libraryTol.z_atol + 2e-6;
       if (/probability$/.test(path)) return libraryTol.probability_atol + 2e-6;
-      return 2e-6;
+      // float32 values up to ~10: a few ulps, which differ between CPUs (x64 CI against arm64).
+      return 1e-5;
     };
     for (const [i, entry] of golden.reads.entries()) {
       const actual = await units.request("unitRead", [entry.unit, { k: entry.k, hideHubs: entry.hide_hubs }]);
