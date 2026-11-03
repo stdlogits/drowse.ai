@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { CURRENT_CATALOG_URLS } from "./hosted-catalog-location.mjs";
 import { verifiedSaeDescriptionSource, parseSaeDescription, loadSaeDescription } from "../../drowse/webui/src/lib/saeDescriptions.ts";
 
 const headers = await readFile(new URL("../public-hosted/_headers", import.meta.url), "utf8");
@@ -93,7 +94,7 @@ console.log("SAE descriptions: exact dictionary binding, provenance, missing lab
 
 if (process.argv.includes("--live-catalog")) {
   // The catalog this checkout's builds read (the distribution lock's URL).
-  const { catalogUrl } = JSON.parse(await readFile(new URL("../../browser-runtime/distribution-lock.json", import.meta.url), "utf8"));
+  const { catalogUrl } = CURRENT_CATALOG_URLS;
   const catalog = await (await fetch(catalogUrl)).json();
   for (const model of catalog.models) for (const variant of model.variants) {
     for (const pack of variant.packs.filter(pack => pack.kind === "sae")) {

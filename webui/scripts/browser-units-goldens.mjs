@@ -513,7 +513,8 @@ const http = createHttpServer(async (request, response) => {
     }
     return send("not found", "text/plain", 404);
   } catch (error) {
-    return send(String(error), "text/plain", 500);
+    console.error(error);
+    return send(error instanceof Error ? error.message : "request failed", "text/plain", 500);
   }
 });
 await new Promise((ok) => http.listen(options.port, "127.0.0.1", ok));

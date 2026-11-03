@@ -174,7 +174,8 @@ const http = createHttpServer(async (request, response) => {
     }
     vite.middlewares(request, response, () => send("not found", "text/plain", 404));
   } catch (error) {
-    send(String(error?.stack ?? error), "text/plain", 500);
+    console.error(error);
+    send(error instanceof Error ? error.message : "request failed", "text/plain", 500);
   }
 });
 await new Promise((ok) => http.listen(options.port, "127.0.0.1", ok));

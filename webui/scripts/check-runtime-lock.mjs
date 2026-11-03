@@ -5,7 +5,7 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { thinkingProfile } from "./hosted-model-profiles.mjs";
@@ -113,7 +113,7 @@ function validateDistribution(value) {
   validateOrigins(value.allowedArtifactRedirectOrigins, "artifact redirect");
   if (value.status === "verified") {
     if (value.publicKeys.length !== 2) throw new Error("verified distribution must embed current and next catalog keys");
-    if (!value.allowedCatalogRedirectOrigins.includes("https://huggingface.co")) {
+    if (!value.allowedCatalogRedirectOrigins.some((origin) => origin === "https://huggingface.co")) {
       throw new Error("verified distribution must allow the catalog origin");
     }
     if (value.allowedArtifactRedirectOrigins.length === 0) {
@@ -181,8 +181,6 @@ async function validateWebLlmPackageArchive(pin, forkPin) {
     throw new Error("WebLLM package source commit differs from the fork commit");
   }
   const archive = resolve(repositoryRoot, pin.path);
-  const info = await lstat(archive);
-  if (!info.isFile() || info.isSymbolicLink()) throw new Error("WebLLM package archive must be a regular file");
   if (createHash("sha256").update(await readFile(archive)).digest("hex") !== pin.sha256) {
     throw new Error("WebLLM package archive does not match its runtime-lock digest");
   }

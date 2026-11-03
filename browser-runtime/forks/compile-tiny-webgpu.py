@@ -16,6 +16,7 @@ from overlay_checks import (  # noqa: E402
     ensure_import_roots,
     require_llvm,
     verify_emcc,
+    verify_geometry_shader_bindings,  # noqa: F401 (re-exported for the overlay tests)
     verify_library_shaders,
     verify_sources,
 )

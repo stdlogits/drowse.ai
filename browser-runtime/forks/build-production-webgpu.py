@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from overlay_checks import (  # noqa: E402
     MLC_BASE_COMMIT,
+    REQUIRED_FUNCTIONS,  # noqa: F401 (re-exported for the overlay tests)
     required_functions,
     RESULT_DIGESTS,
     TVM_COMMIT,
@@ -25,6 +26,7 @@ from overlay_checks import (  # noqa: E402
     sha256,
     verify_emcc,
     verify_files,
+    verify_geometry_shader_bindings,  # noqa: F401 (re-exported for the overlay tests)
     verify_library_shaders,
     verify_sources,
 )

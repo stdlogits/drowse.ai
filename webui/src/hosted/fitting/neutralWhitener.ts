@@ -62,7 +62,7 @@ export function fitNeutralWhitener(
 ): FittedNeutralWhitener {
   if (matrices.length !== layerMap.length) throw new Error("one neutral matrix per runtime layer is required");
   const tensors: Record<string, { shape: number[]; data: Float32Array }> = {};
-  const ridgePerLayer: Record<string, number> = {};
+  const ridges = new Map<string, number>();
   const whiteners = new Map<number, SerializedMahalanobisWhitener>();
   for (let slot = 0; slot < layerMap.length; slot += 1) {
     const layer = layerMap[slot];
@@ -78,7 +78,7 @@ export function fitNeutralWhitener(
       tensors[`layer_${layer}.basis`] = { shape: [rank, columns], data: Float32Array.from(basis) };
       tensors[`layer_${layer}.eigenvalues`] = { shape: [rank], data: Float32Array.from(eigenvalues) };
       tensors[`layer_${layer}.inverse_scales`] = { shape: [rank], data: Float32Array.from(inverseScales) };
-      ridgePerLayer[String(layer)] = fit.ridge;
+      ridges.set(String(layer), fit.ridge);
       whiteners.set(layer, { columns, rank, ridge: fit.ridge, mean, basis, eigenvalues, inverseScales });
     } finally {
       fit.free();
@@ -86,7 +86,7 @@ export function fitNeutralWhitener(
   }
   return {
     tensorBytes: encodeFp32Safetensors(tensors, { path: "neutral-whitener.safetensors" }),
-    ridgePerLayer,
+    ridgePerLayer: Object.fromEntries(ridges),
     whiteners,
   };
 }

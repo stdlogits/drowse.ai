@@ -63,7 +63,7 @@ try {
   // token 22, its five likeliest next tokens and the one it wrote.
   const run = recording.runs.find((candidate) => candidate.alpha === 0.1);
   const written = run.tokens[22];
-  const context = run.tokens.slice(14, 22).map((token) => token.text).join("").replace("'", "’");
+  const context = run.tokens.slice(14, 22).map((token) => token.text).join("").replaceAll("'", "’");
   assert.match(landingSource, new RegExp(`const heroContext = "${RegExp.escape(context)}";`));
   assert.match(landingSource, /const heroModel = "Gemma 3 4B";/);
   assert.equal(recording.modelId, "gemma3-4b-instruct");
