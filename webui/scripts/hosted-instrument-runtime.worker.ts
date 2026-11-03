@@ -56,6 +56,8 @@ const REQUIRED_MAX_COMPUTE_WORKGROUP_SIZE_X = 256;
 const REQUIRED_MAX_COMPUTE_INVOCATIONS_PER_WORKGROUP = 256;
 
 self.onmessage = async (event: MessageEvent<Request>) => {
+  // Only the page that started this worker posts to it.
+  if (event.origin && event.origin !== self.location.origin) return;
   if (event.data?.type !== "run") return;
   let runtime: DrowseWebLlmRuntime | null = null;
   try {

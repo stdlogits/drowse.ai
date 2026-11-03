@@ -3,6 +3,8 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import puppeteer, { PUPPETEER_REVISIONS } from "puppeteer";
 
+// The composer: the workbench has other textareas ahead of it.
+const COMPOSER = 'textarea[aria-label^="Compose as "]';
 const root = fileURLToPath(new URL("..", import.meta.url));
 const server = await createServer({ configFile: `${root}/vite.hosted.config.ts`, logLevel: "error", server: { watch: null, host: "127.0.0.1", port: 0 } });
 await server.listen();
@@ -69,12 +71,12 @@ try {
   await invoke(page, "drowse_set_sampling", { temperature: 0.7, expected_revision: initial.revision }, false);
   await invoke(page, "drowse_set_role_labels", { assistant: "pirate" }, false);
   await invoke(page, "drowse_set_composer", { text: "Explain why the sky is blue." });
-  assert.equal(await page.$eval("textarea", element => element.value), "Explain why the sky is blue.");
+  assert.equal(await page.$eval(COMPOSER, element => element.value), "Explain why the sky is blue.");
   const draftRevision = (await invoke(page, "drowse_get_state")).revision;
-  await page.$eval("textarea", element => { element.value = "A newer human draft"; element.dispatchEvent(new Event("input", { bubbles: true })); });
+  await page.$eval(COMPOSER, element => { element.value = "A newer human draft"; element.dispatchEvent(new Event("input", { bubbles: true })); });
   const rejected = await invoke(page, "drowse_set_composer", { text: "Outdated agent draft", expected_revision: draftRevision }, false);
   assert.equal(rejected.error.code, "stale_state");
-  assert.equal(await page.$eval("textarea", element => element.value), "A newer human draft");
+  assert.equal(await page.$eval(COMPOSER, element => element.value), "A newer human draft");
   await invoke(page, "drowse_set_composer", { text: "Explain why the sky is blue." });
   const receipt = await invoke(page, "drowse_start_generation", { use_composer: true, n: 2, sampling: { seed: 42 }, request_id: "two-siblings" });
   const completed = await finished(page, receipt.data.id);

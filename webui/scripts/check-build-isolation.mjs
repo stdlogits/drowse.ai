@@ -43,7 +43,7 @@ for (const header of [
 ]) {
   if (!headers.includes(header)) throw new Error(`hosted headers are missing ${header}`);
 }
-const fixtureAssets = paths.filter((path) => /fixture|\.bin$/i.test(path));
+const fixtureAssets = paths.filter((path) => /fixture/i.test(path) || /\.bin$/i.test(path));
 if (fixtureAssets.length) {
   throw new Error(`development fixture assets leaked into hosted build: ${fixtureAssets.join(", ")}`);
 }

@@ -139,6 +139,8 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 }) as typeof globalThis.fetch;
 
 self.onmessage = async (event: MessageEvent<RunRequest>) => {
+  // Only the page that started this worker posts to it.
+  if (event.origin && event.origin !== self.location.origin) return;
   if (event.data?.type !== "run") return;
   let currentCheck: CheckName | "start" = "start";
   let runtime: DrowseWebLlmRuntime | null = null;

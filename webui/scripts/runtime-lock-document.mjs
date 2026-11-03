@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import {
   EXACT_READOUT_ABI,
   HOOK_ABI,
@@ -12,10 +12,8 @@ export const LOCK_ARCHITECTURES = Object.freeze(["gemma3_text", "qwen3", "gpt2",
 const BASE_ARCHITECTURES = ["gpt2", "gpt_neox", "qwen3_5"];
 
 export async function readRuntimeLock(path) {
-  const info = await stat(path);
-  if (!info.isFile()) throw new Error(`runtime lock is not a regular file: ${path}`);
-  if (info.size > 1024 * 1024) throw new Error("runtime lock exceeds 1048576 bytes");
   const bytes = await readFile(path);
+  if (bytes.byteLength > 1024 * 1024) throw new Error("runtime lock exceeds 1048576 bytes");
   let value;
   try {
     value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));

@@ -8,7 +8,7 @@ import { DrowseWebLlmRuntime, type DrowseWebLlmModule } from "../src/hosted/runt
 import type { BlockSpec } from "../src/hosted/runtime/structuredHookProfile";
 import type { WebLlmGeneratedToken } from "../src/hosted/runtime/webLlmGeneration";
 
-self.onmessage = async ({ data }: MessageEvent<{
+self.onmessage = async (event: MessageEvent<{
   modelId: string;
   identity: RuntimeIdentity;
   structuredHookProfile: ModelVariant["structuredHookProfile"];
@@ -18,6 +18,9 @@ self.onmessage = async ({ data }: MessageEvent<{
   modelFiles: CatalogFile[];
   coreFiles: CatalogFile[];
 }>) => {
+  // Only the page that started this worker posts to it.
+  if (event.origin && event.origin !== self.location.origin) return;
+  const { data } = event;
   let runtime: DrowseWebLlmRuntime | undefined;
   try {
     const url = "/webllm.js";
