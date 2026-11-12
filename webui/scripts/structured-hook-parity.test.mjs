@@ -30,7 +30,7 @@ try {
 
   const multi = hooks.compileStructuredHookProgram(
     fixture.multiCurve.hiddenSize,
-    [{ curves: fixture.multiCurve.curves }],
+    [{ curves: fixture.multiCurve.curves.map((curve) => ({ ...curve, read: curve.basis })) }],
     profile,
   );
   const multiResult = hooks.runStructuredHookLayer(
@@ -52,7 +52,7 @@ try {
 
   const sphere = hooks.compileStructuredHookProgram(
     fixture.sphereCurve.hiddenSize,
-    [{ curves: [fixture.sphereCurve.curve] }],
+    [{ curves: [{ ...fixture.sphereCurve.curve, read: fixture.sphereCurve.curve.basis }] }],
     geometryProfile,
   );
   const sphereResult = hooks.runStructuredHookLayer(

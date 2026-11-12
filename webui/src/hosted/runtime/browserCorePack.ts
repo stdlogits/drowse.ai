@@ -1717,6 +1717,7 @@ export class BrowserFeasibilityCorePackCompiler {
       groups.set(programIndex, {
         active: true,
         basis: layer.basis,
+        read: layer.basis, // W2/N-steer: the typed read rows
         neutral: this.whiteners.get(this.layerMap[programIndex])!.mean,
         target: layer.target,
         along,
@@ -1840,6 +1841,8 @@ export class BrowserFeasibilityCorePackCompiler {
         active: true,
         domainKind: domain.kind,
         basis: rows(manifold.tensors.tensor(`${prefix}.basis`, [rank, this.hiddenSize]).data, rank, this.hiddenSize),
+        // W2/N-steer: the typed read rows (`${prefix}.read`).
+        read: rows(manifold.tensors.tensor(`${prefix}.basis`, [rank, this.hiddenSize]).data, rank, this.hiddenSize),
         neutral: manifold.tensors.tensor(`${prefix}.mean`, [this.hiddenSize]).data,
         nodeParameters: rows(
           manifold.tensors.tensor(`${prefix}.node_params`, [nodeCount, domain.embedDim]).data,
@@ -3736,6 +3739,7 @@ function disabledStructuredGroup(hiddenSize: number): StructuredAffineGroup {
   return {
     active: false,
     basis: [basis],
+    read: [basis],
     neutral: new Float32Array(hiddenSize),
     target: [0],
     along: 0,
@@ -3939,6 +3943,12 @@ function coreGeometryCurve(
     active: true,
     domainKind: domain.kind,
     basis: rows(
+      manifold.tensors.tensor(`${prefix}.basis`, [rank, hiddenSize]).data,
+      rank,
+      hiddenSize,
+    ),
+    // W2/N-steer: the typed read rows (`${prefix}.read`).
+    read: rows(
       manifold.tensors.tensor(`${prefix}.basis`, [rank, hiddenSize]).data,
       rank,
       hiddenSize,

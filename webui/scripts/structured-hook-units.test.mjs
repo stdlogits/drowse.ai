@@ -319,7 +319,7 @@ try {
   // ------------------ only the v4 profiles compile; a v4 program without units has no section ---
   const layers = [
     {
-      affineGroups: [{ active: true, basis: [[1, 0], [0, 1]], neutral: [0, 0], target: [1, 0], along: 0.5, kappa: [0, 1] }],
+      affineGroups: [{ active: true, basis: [[1, 0], [0, 1]], read: [[1, 0], [0, 1]], neutral: [0, 0], target: [1, 0], along: 0.5, kappa: [0, 1] }],
       probes: [{ kind: "linear", direction: [1, 0], bias: -0.25 }],
     },
     { probes: [{ kind: "linear", direction: [0, 1], bias: 0 }] },

@@ -26,7 +26,7 @@ let loaded: Promise<FixtureUnits> | null = null;
 
 function fixtureUnits(): Promise<FixtureUnits> {
   loaded ??= (async () => {
-    const file = (await import("../../../../../drowse/tests/fixtures/browser/units-tiny-models-v1.json")).default as unknown as TinyModelFile & {
+    const file = (await import("../fixtures/units-tiny-models-v1.json")).default as unknown as TinyModelFile & {
       neutral: { statements: string[] };
     };
     const record = file.arches[ARCH];
