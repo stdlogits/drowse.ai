@@ -9,7 +9,7 @@ try {
   const { measurementEnvelope, measurementGateScores } = await server.ssrLoadModule("/src/hosted/runtime/webLlmGeneration.ts");
   const points = [[1, 0], [0, 1], [-1, 0], [0, -1]];
   const curve = {
-    active: true, basis: [[1, 0], [0, 1]], neutral: [0, 0],
+    active: true, basis: [[1, 0], [0, 1]], read: [[1, 0], [0, 1]], neutral: [0, 0],
     nodeParameters: points, rbfWeights: points.map(() => [0, 0]),
     polynomial: [[0, 0], [1, 0], [0, 1]], coordinateOffset: [0, 0], coordinateScale: [1, 1],
     origin: [0], target: [0.25], axes: [{ periodic: true, period: 1, lowerBound: 0, upperBound: 1 }], along: 0, onto: 0,

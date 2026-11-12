@@ -27,6 +27,24 @@ function discoverNodesHash(labels, payloads, fitMode, roles) {
 
 const f32 = (shape, values) => ({ shape, data: Float32Array.from(values) });
 
+// A frame's read rows dual to its write rows (`read · basisᵀ = I`): the Euclidean dual
+// `(B Bᵀ)⁻¹ B` of these hand-built bases, which is `B` itself for orthonormal rows.
+function dualRows(basis) {
+  const r = basis.length;
+  const gram = basis.map((left) => basis.map((right) => left.reduce((sum, value, i) => sum + value * right[i], 0)));
+  const inverse = gram.map((_, i) => gram.map((__, j) => (i === j ? 1 : 0)));
+  for (let c = 0; c < r; c += 1) {
+    const pivot = gram[c][c];
+    for (let j = 0; j < r; j += 1) { gram[c][j] /= pivot; inverse[c][j] /= pivot; }
+    for (let i = 0; i < r; i += 1) {
+      if (i === c) continue;
+      const factor = gram[i][c];
+      for (let j = 0; j < r; j += 1) { gram[i][j] -= factor * gram[c][j]; inverse[i][j] -= factor * inverse[c][j]; }
+    }
+  }
+  return inverse.map((row) => basis[0].map((_, column) => row.reduce((sum, value, k) => sum + value * basis[k][column], 0)));
+}
+
 /**
  * `spec`:
  * - `hiddenSize`, `layerCount`, `structuredHookProfile` (default `standard-v4`), `modelId`;
@@ -70,6 +88,7 @@ export async function corePackRequest(server, spec) {
         const p = `layer_${layer}`;
         tensors[`${p}.mean`] = f32([d], new Array(d).fill(0));
         tensors[`${p}.basis`] = f32([2, d], [...Array.from({ length: d }, (_, i) => (i === 0 ? 1 : 0)), ...Array.from({ length: d }, (_, i) => (i === 1 ? 1 : 0))]);
+        tensors[`${p}.read`] = tensors[`${p}.basis`];
         tensors[`${p}.node_params`] = f32([n, 1], labels.map((_, i) => i / n));
         tensors[`${p}.rbf_weights`] = f32([n, 2], new Array(2 * n).fill(0));
         tensors[`${p}.poly_coeffs`] = f32([2, 2], [0, 0, 1, 0.5]);
@@ -87,6 +106,7 @@ export async function corePackRequest(server, spec) {
         const rank = row.basis.length;
         tensors[`${p}.mean`] = f32([d], row.mean ?? new Array(d).fill(0));
         tensors[`${p}.basis`] = f32([rank, d], row.basis.flat());
+        tensors[`${p}.read`] = f32([rank, d], dualRows(row.basis).flat());
         tensors[`${p}.node_coords`] = f32([n, rank], row.nodeCoordinates.flat());
       }
     }

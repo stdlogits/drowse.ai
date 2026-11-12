@@ -1,11 +1,15 @@
 // The four-lens read, the S readout and the reading scales on the reference backend against
 // drowse's lens-reads, slens and unit-stats goldens (B1-goldens §2.2, §2.6, §2.7).
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { ARCHES, archGolden, assertClose, compareRecord, decode, viteServer } from "./support/units-goldens.mjs";
 import { unitsFixture } from "./support/units-fixture.mjs";
 
+const whiteners = JSON.parse(readFileSync(fileURLToPath(new URL("../../browser-runtime/fixtures/units-tiny-whitener-v1.json", import.meta.url)), "utf8"));
 const server = await viteServer();
 try {
+  const { raiseLensRead } = await server.ssrLoadModule("/src/hosted/runtime/browserCorePack.ts");
   const reads = await server.ssrLoadModule("/src/hosted/runtime/units/lensReads.ts");
   const slensPort = await server.ssrLoadModule("/src/hosted/runtime/units/slens.ts");
   const scalesPort = await server.ssrLoadModule("/src/hosted/runtime/units/scales.ts");
@@ -83,8 +87,16 @@ try {
       const id = word.startsWith("#") ? Number(word.slice(1)) : fx.tokenizer.encode(word)[0];
       const directions = await slensPort.slensAtomDirections(fx.context, word, id);
       assert.deepEqual([...directions.keys()].map(String), Object.keys(atom.layers));
+      // The footprint is a read; drowse's profile is the vector it raises to (Σu, which the
+      // compiler applies when it resolves the atom), under the fixture's neutral whitener.
       for (const [layer, values] of Object.entries(atom.layers)) {
-        assertClose(directions.get(Number(layer)), decode(values), slens.tolerance.library, `${arch} ${atom.atom} L${layer}`);
+        const entry = whiteners.arches[arch].find((row) => row.layer === Number(layer));
+        const whitener = {
+          columns: 64, rank: entry.eigenvalues.length, ridge: entry.ridge,
+          basis: Float64Array.from(entry.basis.flat()), eigenvalues: Float64Array.from(entry.eigenvalues),
+        };
+        const raised = Float32Array.from(raiseLensRead(whitener, directions.get(Number(layer))));
+        assertClose(raised, decode(values), slens.tolerance.library, `${arch} ${atom.atom} L${layer}`);
       }
     }
     await assert.rejects(
