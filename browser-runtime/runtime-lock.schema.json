@@ -28,10 +28,10 @@
       ]
     },
     "runtimeAbi": {
-      "const": "drowse-web-runtime-v2"
+      "const": "drowse-web-runtime-v3"
     },
     "hookAbi": {
-      "const": "block-sites-v5"
+      "const": "block-sites-v6"
     },
     "exactReadoutAbi": {
       "const": "exact-readout-v2"
@@ -320,8 +320,8 @@
         },
         "structuredHookProfile": {
           "enum": [
-            "standard-v4",
-            "standard-v4-residual"
+            "standard-v5",
+            "standard-v5-residual"
           ]
         },
         "thinkingProfile": {
@@ -444,7 +444,7 @@
           "if": {
             "properties": {
               "structuredHookProfile": {
-                "const": "standard-v4"
+                "const": "standard-v5"
               }
             }
           },

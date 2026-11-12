@@ -217,7 +217,7 @@ export class BrowserUnitsService {
     const backend = this.options.blockSites();
     const capabilities = backend.capabilities();
     if (capabilities === null) {
-      throw new UnsupportedBlockError("the loaded model library predates hook ABI block-sites-v5");
+      throw new UnsupportedBlockError("the loaded model library predates hook ABI block-sites-v6");
     }
     if (capabilities.blockSpec === null) throw new UnsupportedBlockError(capabilities.unitRefusal!);
     return { backend, spec: capabilities.blockSpec };
@@ -349,7 +349,7 @@ export class BrowserUnitsService {
     if (capabilities === null || capabilities.blockSpec === null) {
       return {
         spec: null,
-        refusal: capabilities?.unitRefusal ?? "the loaded model library predates hook ABI block-sites-v5",
+        refusal: capabilities?.unitRefusal ?? "the loaded model library predates hook ABI block-sites-v6",
         layerCount: capabilities?.layerCount ?? 0,
         statistics: null,
         scales: null,

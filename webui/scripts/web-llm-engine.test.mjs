@@ -38,8 +38,8 @@ try {
     "/src/hosted/runtime/webLlmActivationCapture.ts",
   );
   const {
-    STANDARD_STRUCTURED_HOOK_PROFILE_V4,
-    STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL,
+    STANDARD_STRUCTURED_HOOK_PROFILE_V5,
+    STANDARD_STRUCTURED_HOOK_PROFILE_V5_RESIDUAL,
     expectedHookProfileDescriptor,
   } = await server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts");
   const { hookProfileDescriptorModel } = await server.ssrLoadModule(
@@ -100,11 +100,11 @@ try {
   // exact readout, so its variant declares the exact-readout WebGPU limits.
   const variant = {
     id: "fixture-q4",
-    structuredHookProfile: "standard-v4-residual",
+    structuredHookProfile: "standard-v5-residual",
     thinkingProfile: null,
     contextProfiles: [{ contextTokens: 2048 }],
     runtimeIdentity: {
-      hookAbi: "block-sites-v5",
+      hookAbi: "block-sites-v6",
       sourceModel: "HuggingFaceTB/SmolLM2-360M-Instruct",
       hiddenSize: 2,
       layerMap: [0, 1],
@@ -124,12 +124,12 @@ try {
   // attests element by element.
   const compiledProfile = (overrides = {}, forVariant = variant) => ({
     schemaVersion: 4,
-    id: "standard-v4-residual",
-    hookAbi: "block-sites-v5",
-    format: "drowse-structured-v4",
+    id: "standard-v5-residual",
+    hookAbi: "block-sites-v6",
+    format: "drowse-structured-v5",
     unitSites: 0,
     descriptor: Array.from(expectedHookProfileDescriptor(
-      STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL,
+      STANDARD_STRUCTURED_HOOK_PROFILE_V5_RESIDUAL,
       hookProfileDescriptorModel({ variant: forVariant, prefillChunkSize: 1024 }),
     )),
     ...overrides,
@@ -276,7 +276,7 @@ try {
     variant,
   }), null);
   const runtime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "block-sites-v5",
+    DROWSE_HOOK_ABI: "block-sites-v6",
     MLCEngine: FixtureEngine,
   });
   const loadProgress = [];
@@ -400,16 +400,16 @@ try {
   // The device's binding is the library's, derived from the verified files and the lock (one
   // 4-byte weight, 16 vocabulary rows, d = 2), not the variant's declared 128 MiB.
   const { libraryBindingBytes } = await server.ssrLoadModule("/src/hosted/runtime/modelBackend.ts");
-  const derivedBinding = libraryBindingBytes(STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL, {
+  const derivedBinding = libraryBindingBytes(STANDARD_STRUCTURED_HOOK_PROFILE_V5_RESIDUAL, {
     layerCount: 2, hiddenSize: 2, vocabSize: 16, contextTokens: 2048, prefillChunkSize: 1024,
     blockSpec: null, largestWeightBytes: 4,
   });
   assert.equal(appConfig.model_list[0].buffer_size_required_bytes, derivedBinding);
   assert.notEqual(derivedBinding, variant.requirements.limits.maxStorageBufferBindingSize);
   const hookProgram = compileStructuredHookProgram(2, [{
-    affineGroups: [{ active: true, basis: [[1, 0]], neutral: [0, 0], target: [1], along: 0.5, kappa: [0] }],
+    affineGroups: [{ active: true, basis: [[1, 0]], read: [[1, 0]], neutral: [0, 0], target: [1], along: 0.5, kappa: [0] }],
     probes: [{ kind: "linear", direction: [1, 0], bias: 0 }],
-  }, {}], STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL);
+  }, {}], STANDARD_STRUCTURED_HOOK_PROFILE_V5_RESIDUAL);
   await runtime.installHookProgram(hookProgram);
   assert.equal(engine.hookProgram, hookProgram);
   const measurements = await runtime.readMeasurements();
@@ -524,7 +524,7 @@ try {
   });
 
   const appleMobileRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "block-sites-v5",
+    DROWSE_HOOK_ABI: "block-sites-v6",
     MLCEngine: FixtureEngine,
   });
   await appleMobileRuntime.load(loadRequest({
@@ -557,7 +557,7 @@ try {
     }
   }
   const retryableUnloadRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "block-sites-v5",
+    DROWSE_HOOK_ABI: "block-sites-v6",
     MLCEngine: RetryableUnloadEngine,
   });
   await retryableUnloadRuntime.load(loadRequest());
@@ -587,7 +587,7 @@ try {
     }
   }
   const failedLoadCleanupRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "block-sites-v5",
+    DROWSE_HOOK_ABI: "block-sites-v6",
     MLCEngine: FailedLoadCleanupEngine,
   });
   await assert.rejects(
@@ -629,7 +629,7 @@ try {
   // A program of any other format (the deleted rank-one buffers) is refused.
   await assert.rejects(
     runtime.installHookProgram({
-      hookAbi: "block-sites-v5", hiddenSize: 2, layerCount: 2, enabled: Uint32Array.of(1, 0),
+      hookAbi: "block-sites-v6", hiddenSize: 2, layerCount: 2, enabled: Uint32Array.of(1, 0),
     }),
     (error) => error.code === "HOOK_FORMAT_MISMATCH",
   );
@@ -763,7 +763,7 @@ try {
     }
   }
   const lostDuringInit = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "block-sites-v5",
+    DROWSE_HOOK_ABI: "block-sites-v6",
     MLCEngine: LostDuringInitEngine,
   });
   await assert.rejects(lostDuringInit.load(loadRequest({
@@ -787,7 +787,7 @@ try {
   changedDescriptor[5] += 1;
   for (const [record, code] of [
     [compiledProfile({ descriptor: changedDescriptor }), "HOOK_ABI_MISMATCH"],
-    [compiledProfile({ id: "standard-v4" }), "HOOK_ABI_MISMATCH"],
+    [compiledProfile({ id: "standard-v5" }), "HOOK_ABI_MISMATCH"],
     [compiledProfile({ unitSites: 1 }), "HOOK_ABI_MISMATCH"],
     [compiledProfile({ schemaVersion: 3 }), "HOOK_ABI_MISMATCH"],
   ]) {
@@ -795,7 +795,7 @@ try {
       async getDrowseStructuredHookProfile() { return record; }
     }
     const mismatchedProfile = new DrowseWebLlmRuntime({
-      DROWSE_HOOK_ABI: "block-sites-v5",
+      DROWSE_HOOK_ABI: "block-sites-v6",
       MLCEngine: MismatchedProfileEngine,
     });
     await assert.rejects(mismatchedProfile.load(loadRequest()), (error) => error.code === code);
@@ -804,7 +804,7 @@ try {
   // The descriptor's PREFILL_CHUNK_SIZE is the lock's: a load whose lock entry records none, or a
   // library compiled at the context (2048) under a lock recording 1024, fails attestation.
   await assert.rejects(
-    new DrowseWebLlmRuntime({ DROWSE_HOOK_ABI: "block-sites-v5", MLCEngine: FixtureEngine })
+    new DrowseWebLlmRuntime({ DROWSE_HOOK_ABI: "block-sites-v6", MLCEngine: FixtureEngine })
       .load(loadRequest({ prefillChunkSize: null })),
     (error) => error.code === "HOOK_ABI_MISMATCH" && /prefill chunk/u.test(error.message),
   );
@@ -812,24 +812,24 @@ try {
     async getDrowseStructuredHookProfile() {
       return compiledProfile({
         descriptor: Array.from(expectedHookProfileDescriptor(
-          STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL,
+          STANDARD_STRUCTURED_HOOK_PROFILE_V5_RESIDUAL,
           hookProfileDescriptorModel({ variant, prefillChunkSize: 2048 }),
         )),
       });
     }
   }
   await assert.rejects(
-    new DrowseWebLlmRuntime({ DROWSE_HOOK_ABI: "block-sites-v5", MLCEngine: ContextPrefillEngine })
+    new DrowseWebLlmRuntime({ DROWSE_HOOK_ABI: "block-sites-v6", MLCEngine: ContextPrefillEngine })
       .load(loadRequest()),
     (error) => error.code === "HOOK_ABI_MISMATCH" && /PREFILL_CHUNK_SIZE/u.test(error.message),
   );
   await assert.rejects(
-    new DrowseWebLlmRuntime({ DROWSE_HOOK_ABI: "block-sites-v5", MLCEngine: FixtureEngine })
+    new DrowseWebLlmRuntime({ DROWSE_HOOK_ABI: "block-sites-v6", MLCEngine: FixtureEngine })
       .load(loadRequest({ variant: { ...variant, structuredHookProfile: "unknown-profile" } })),
     (error) => error.code === "STRUCTURED_HOOK_PROFILE_MISMATCH",
   );
 
-  // A standard-v4 library attested against the lock's block spec: unit sites, so the hook
+  // A standard-v5 library attested against the lock's block spec: unit sites, so the hook
   // capabilities offer `units` and `slens` (a residual library offers neither).
   const blockSpec = {
     dFF: 4, nHeads: 2, nKvHeads: 1, headDim: 2, sandwich: false, normOffset: 0, activation: "silu",
@@ -837,23 +837,23 @@ try {
     finalLogitSoftcap: null, ropeTheta: 10000, ropeLocalTheta: null, ropeGlobalScale: 1,
     ropeInGraph: true, slidingWindow: null, slidingPattern: null,
   };
-  const unitsVariant = variantWith({ structuredHookProfile: "standard-v4" });
+  const unitsVariant = variantWith({ structuredHookProfile: "standard-v5" });
   class UnitSitesEngine extends FixtureEngine {
     async getDrowseStructuredHookProfile() {
       return {
         schemaVersion: 4,
-        id: "standard-v4",
-        hookAbi: "block-sites-v5",
-        format: "drowse-structured-v4",
+        id: "standard-v5",
+        hookAbi: "block-sites-v6",
+        format: "drowse-structured-v5",
         unitSites: 1,
         descriptor: Array.from(expectedHookProfileDescriptor(
-          STANDARD_STRUCTURED_HOOK_PROFILE_V4,
+          STANDARD_STRUCTURED_HOOK_PROFILE_V5,
           hookProfileDescriptorModel({ variant: unitsVariant, blockSpec, prefillChunkSize: 1024 }),
         )),
       };
     }
   }
-  const unitSites = new DrowseWebLlmRuntime({ DROWSE_HOOK_ABI: "block-sites-v5", MLCEngine: UnitSitesEngine });
+  const unitSites = new DrowseWebLlmRuntime({ DROWSE_HOOK_ABI: "block-sites-v6", MLCEngine: UnitSitesEngine });
   await unitSites.load(loadRequest({ variant: unitsVariant, blockSpec }));
   assert.equal(unitSites.blockSitesCapabilities().blockSpec.dFF, 4);
   assert.equal(unitSites.hookCapabilities().units, true);
@@ -863,7 +863,7 @@ try {
   class MissingProfileEngine extends FixtureEngine {}
   MissingProfileEngine.prototype.getDrowseStructuredHookProfile = undefined;
   const missingProfile = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "block-sites-v5",
+    DROWSE_HOOK_ABI: "block-sites-v6",
     MLCEngine: MissingProfileEngine,
   });
   await assert.rejects(
@@ -956,7 +956,7 @@ try {
     capture = false;
   }
   const missingCapture = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "block-sites-v5",
+    DROWSE_HOOK_ABI: "block-sites-v6",
     MLCEngine: MissingCaptureEngine,
   });
   await assert.rejects(
@@ -985,7 +985,7 @@ try {
     }
   }
   const loadingRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "block-sites-v5",
+    DROWSE_HOOK_ABI: "block-sites-v6",
     MLCEngine: InterruptibleLoadEngine,
   });
   const midLoadAbort = new AbortController();
@@ -1013,7 +1013,7 @@ try {
     }
   }
   const hookCheckRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "block-sites-v5",
+    DROWSE_HOOK_ABI: "block-sites-v6",
     MLCEngine: InterruptibleHookCheckEngine,
   });
   const hookCheckAbort = new AbortController();
@@ -1068,7 +1068,7 @@ try {
     readDrowseMeasurementBundle = undefined;
   }
   const missingBundleRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "block-sites-v5",
+    DROWSE_HOOK_ABI: "block-sites-v6",
     MLCEngine: MissingBundleEngine,
   });
   await assert.rejects(
@@ -1076,7 +1076,7 @@ try {
     (error) => error.code === "BUNDLED_MEASUREMENT_READBACK_UNAVAILABLE",
   );
   const missingStructuredPackRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "block-sites-v5",
+    DROWSE_HOOK_ABI: "block-sites-v6",
     MLCEngine: MissingStructuredPackEngine,
   });
   await assert.rejects(
@@ -1087,7 +1087,7 @@ try {
     (error) => error.code === "EXACT_SAE_READOUT_UNAVAILABLE",
   );
   const instrumentRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "block-sites-v5",
+    DROWSE_HOOK_ABI: "block-sites-v6",
     MLCEngine: StructuredFixtureEngine,
   });
   await instrumentRuntime.load(loadRequest({
@@ -1154,7 +1154,7 @@ try {
   const noFullSaeProgram = compileStructuredHookProgram(
     2,
     [{}, {}],
-    STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL,
+    STANDARD_STRUCTURED_HOOK_PROFILE_V5_RESIDUAL,
   );
   noFullSaeProgram.measurementSchema = {
     layerMap: [0, 1],
@@ -1169,7 +1169,7 @@ try {
   const fullSaeProgram = compileStructuredHookProgram(
     2,
     [{}, {}],
-    STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL,
+    STANDARD_STRUCTURED_HOOK_PROFILE_V5_RESIDUAL,
   );
   fullSaeProgram.measurementSchema = {
     ...noFullSaeProgram.measurementSchema,
@@ -1187,7 +1187,7 @@ try {
   assert.equal(instrumentEngine.saeDictionarySets, 1);
   await instrumentRuntime.installHookProgram(fullSaeProgram);
   assert.equal(instrumentEngine.saeDictionarySets, 2);
-  assert.equal(instrumentEngine.saeDictionary.hookAbi, "block-sites-v5");
+  assert.equal(instrumentEngine.saeDictionary.hookAbi, "block-sites-v6");
   await instrumentRuntime.installHookProgram(noFullSaeProgram);
   assert.equal(instrumentEngine.saeDictionaryClears, 0);
   assert.notEqual(instrumentEngine.saeDictionary, null);
@@ -1299,7 +1299,7 @@ try {
   const aggregateProgram = compileStructuredHookProgram(2, [
     { probes: [{ kind: "sae", direction: [1, 0], bias: 0 }] },
     {},
-  ], STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL);
+  ], STANDARD_STRUCTURED_HOOK_PROFILE_V5_RESIDUAL);
   aggregateProgram.measurementSchema = {
     layerMap: [0, 1],
     modelLayerCount: 2,
@@ -1406,7 +1406,7 @@ try {
     }
   }
   const productionJlensRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "block-sites-v5",
+    DROWSE_HOOK_ABI: "block-sites-v6",
     MLCEngine: ProductionJlensFixtureEngine,
   });
   await productionJlensRuntime.load(loadRequest({ variant: productionVariant }));
@@ -1429,7 +1429,7 @@ try {
         bias: 0,
       })),
     })),
-    STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL,
+    STANDARD_STRUCTURED_HOOK_PROFILE_V5_RESIDUAL,
     {
       bindingId: productionJlensBinding,
       layerIndices: Int32Array.from(productionLayerMap),
@@ -1448,7 +1448,7 @@ try {
   await productionJlensRuntime.unload();
 
   const warmSaeRuntime = new DrowseWebLlmRuntime({
-    DROWSE_HOOK_ABI: "block-sites-v5",
+    DROWSE_HOOK_ABI: "block-sites-v6",
     MLCEngine: StructuredFixtureEngine,
   });
   await warmSaeRuntime.load(loadRequest({

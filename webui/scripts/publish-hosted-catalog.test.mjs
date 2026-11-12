@@ -60,14 +60,14 @@ const lockedModels = lockedCatalogModels({
     librarySha256: "e".repeat(64),
     hiddenSize: 4,
     layerMap: [0, 1],
-    structuredHookProfile: "standard-v4",
+    structuredHookProfile: "standard-v5",
     thinkingProfile: null,
     convertedRepository: "fixture/converted",
     convertedRevision: "f".repeat(40),
     contextProfiles: [2048],
   }],
 });
-assert.equal(lockedModels[0].structuredHookProfile, "standard-v4");
+assert.equal(lockedModels[0].structuredHookProfile, "standard-v5");
 assert.equal(lockedModels[0].thinkingProfile, null);
 
 const repository = "stdlogits/drowse-web-catalog";

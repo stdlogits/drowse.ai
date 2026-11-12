@@ -81,8 +81,8 @@ const PREVIEW_DEFINES = {
   __DROWSE_SOURCE_URL__: "https://github.com/stdlogits/drowse.ai",
   __DROWSE_VERSION__: "6.0.0",
   __DROWSE_ARTIFACT_SOURCE_REVISION__: "0".repeat(40),
-  __DROWSE_RUNTIME_ABI__: "drowse-web-runtime-v2",
-  __DROWSE_HOOK_ABI__: "block-sites-v5",
+  __DROWSE_RUNTIME_ABI__: "drowse-web-runtime-v3",
+  __DROWSE_HOOK_ABI__: "block-sites-v6",
   __DROWSE_HOSTED_CHANNEL__: "preview",
   __DROWSE_FITTING_WASM__: { module: "/fitting.js", wasm: "/fitting.wasm" },
 };
@@ -216,7 +216,7 @@ try {
     type: "run", modelId, modelType, artifacts: modelFiles,
     baselinePrompts: ["Hi.", "Go on.", "Say it."], contexts: [contextTokens], rows: [],
     nativeNeutralRows: true, runtimeIdentity, quantization: options.quantization, requiredFeatures: [],
-    structuredHookProfile: "standard-v4", thinkingProfile: null, blockSpec, unitRefusal: null,
+    structuredHookProfile: "standard-v5", thinkingProfile: null, blockSpec, unitRefusal: null,
     prefillChunkSize,
     artifactProducer: { drowseVersion: "0.0.0-fixture", producerVersion: "browser-units-worker" },
     manifolds,
@@ -293,7 +293,7 @@ try {
     maxComputeWorkgroupStorageSize: 32_768, maxComputeWorkgroupSizeX: 256, maxComputeInvocationsPerWorkgroup: 256,
   };
   const variant = {
-    id: variantId, tier: "fastest", structuredHookProfile: "standard-v4", thinkingProfile: null,
+    id: variantId, tier: "fastest", structuredHookProfile: "standard-v5", thinkingProfile: null,
     contextProfiles: [{
       contextTokens, bindingSha256: binding, minimumCalibrationScore: null, minimumDeviceMemoryGiB: null,
       expectedPrefillTokensPerSecond: [1, 2], expectedDecodeTokensPerSecond: [1, 2], measuredDevices: 1,
@@ -327,7 +327,7 @@ try {
       limits: { manifoldFitMaxIntrinsicDim: 4 },
     },
     runtimeLockModels: [{
-      modelType, runtimeIdentity, structuredHookProfile: "standard-v4", thinkingProfile: null,
+      modelType, runtimeIdentity, structuredHookProfile: "standard-v5", thinkingProfile: null,
       convertedRepository: "drowse/units-tiny", convertedRevision: revision, contextProfiles: [contextTokens],
       prefillChunkSize, blockSpec, unitRefusal: null,
     }],

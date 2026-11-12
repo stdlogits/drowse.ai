@@ -107,5 +107,5 @@ for _name, _method in vars(Qwen3LMHeadModel).items():
     setattr(InstrumentedQwen35LMHeadModel, _name,
             _hybrid_forward(_method) if "paged_kv_cache" in inspect.signature(_method).parameters else _method)
 
-# Linear attention layers: no unit sites, the residual descriptor (`standard-v4-residual`).
+# Linear attention layers: no unit sites, the residual descriptor (`standard-v5-residual`).
 InstrumentedQwen35LMHeadModel._drowse_block_spec = lambda self: None

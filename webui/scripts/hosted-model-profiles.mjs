@@ -2,10 +2,10 @@ import { structuredHookProfileForArchitecture } from "./overlay-vm-functions.mjs
 
 // Hook ABI v5's two capacity profiles (HOOK_ABI.md §3): units on the dense gated architectures,
 // residual elsewhere. Which one an architecture attests is the overlay's own rule.
-const structuredHookProfiles = new Set(["standard-v4", "standard-v4-residual"]);
+const structuredHookProfiles = new Set(["standard-v5", "standard-v5-residual"]);
 
-export const HOOK_ABI = "block-sites-v5";
-export const RUNTIME_ABI = "drowse-web-runtime-v2";
+export const HOOK_ABI = "block-sites-v6";
+export const RUNTIME_ABI = "drowse-web-runtime-v3";
 export const EXACT_READOUT_ABI = "exact-readout-v2";
 
 export function structuredHookProfile(value) {
@@ -90,7 +90,7 @@ export function lockedModelExecutionProfiles(lock, manifest) {
     quantization,
     requiredFeatures: quantization === "q4f16_1" ? ["shader-f16"] : [],
     // What the runtime attests a v5 library's descriptor against (HOOK_ABI.md §6): the block
-    // spec of a standard-v4 library, the refusal text of a standard-v4-residual one, and the
+    // spec of a standard-v5 library, the refusal text of a standard-v5-residual one, and the
     // prefill chunk it was compiled with.
     blockSpec,
     unitRefusal,
@@ -101,8 +101,8 @@ export function lockedModelExecutionProfiles(lock, manifest) {
 function lockedBlockSites(lock, profile) {
   const blockSpec = lock?.blockSpec ?? null;
   const unitRefusal = lock?.unitRefusal ?? null;
-  const units = profile === "standard-v4";
-  const residual = profile === "standard-v4-residual";
+  const units = profile === "standard-v5";
+  const residual = profile === "standard-v5-residual";
   if (
     units !== (blockSpec !== null) || residual !== (unitRefusal !== null) ||
     (blockSpec !== null && (typeof blockSpec !== "object" || Array.isArray(blockSpec))) ||

@@ -509,7 +509,7 @@ function loadRequest() {
   return {
     model: { id: "fixture-model" },
     variant: {
-      structuredHookProfile: "standard-v4",
+      structuredHookProfile: "standard-v5",
       runtimeIdentitySha256: "a".repeat(64),
       runtimeIdentity: {
         sourceModel: "fixture/source",

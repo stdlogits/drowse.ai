@@ -171,7 +171,7 @@ function validateRepositoryPin(value, label) {
 }
 
 function validateRuntimeModel(value) {
-  const units = value?.structuredHookProfile === "standard-v4";
+  const units = value?.structuredHookProfile === "standard-v5";
   exactKeys(value, [
     "id",
     "architecture",

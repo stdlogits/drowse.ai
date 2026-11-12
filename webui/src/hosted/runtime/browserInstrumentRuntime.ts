@@ -254,7 +254,7 @@ export class BrowserInstrumentRuntime {
     if (method === "saeFeaturesMetadata") return this.saeFeaturesMetadata(args);
     if (isUnitsServiceMethod(method)) {
       if (this.units === null) {
-        return Promise.reject(new UnsupportedBlockError("the loaded model library predates hook ABI block-sites-v5"));
+        return Promise.reject(new UnsupportedBlockError("the loaded model library predates hook ABI block-sites-v6"));
       }
       return this.units.request(method, args, {
         lensProbes: this.compiler.listProbes().filter((probe) => probe.family === "lens"),

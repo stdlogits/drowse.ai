@@ -12,7 +12,7 @@
 // DIR holds build-units-fixtures.py's model directory `units-<arch>-<quantization>` and its
 // library `libs/units-<arch>-<quantization>-v5.wasm`. The bridge's schema-4 descriptor is attested
 // with the adapter's own function (C0's expected vector); then every block-sites, unit-ablation and
-// unit-probes case runs as a raw greedy completion under a drowse-structured-v4 program with eight
+// unit-probes case runs as a raw greedy completion under a drowse-structured-v5 program with eight
 // linear probes per layer (`out[layer, last, 0:8]`): per forward the greedy token, its logprob,
 // the probe readings and the live unit taps are checked against the files' library tolerance.
 // The replay suite drives `drowse_replay_batch_prefill` through the adapter's own block-sites
@@ -70,13 +70,13 @@ const blockSpec = profiles.validateBlockSpec({
 const L = config.num_hidden_layers;
 const d = config.hidden_size;
 const hd = config.head_dim;
-const profile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4;
+const profile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V5;
 const layout = programs.structuredUnitSectionLayout(profile, L, hd);
 const context = chatConfig.context_window_size;
 // The lock records the library's compiled prefill chunk; the fixture's chat config is the lock here.
 const prefillChunkSize = chatConfig.prefill_chunk_size;
 const variant = {
-  structuredHookProfile: "standard-v4",
+  structuredHookProfile: "standard-v5",
   contextProfiles: [{ contextTokens: context }],
   runtimeIdentity: { layerMap: Array.from({ length: L }, (_, i) => i), hiddenSize: d },
 };
@@ -547,7 +547,7 @@ try {
     return { profile: await engine.getDrowseStructuredHookProfile("units"), units: await engine.supportsDrowseUnitSites("units") };
   });
   // The adapter's own attestation: the library's descriptor against the lock-shaped model.
-  const attested = engineModule.attestCompiledStructuredHookProfile(profileValue.profile, { variant, blockSpec, prefillChunkSize }, "block-sites-v5");
+  const attested = engineModule.attestCompiledStructuredHookProfile(profileValue.profile, { variant, blockSpec, prefillChunkSize }, "block-sites-v6");
   descriptorRecord = { schema: 4, fields: attested.descriptor.length, unitSites: attested.unitSites, unitsPair: profileValue.units };
   log(`descriptor attested: ${attested.descriptor.length} fields, unit sites ${attested.unitSites}, units pair ${profileValue.units}`);
   if (options.suite === "units" || options.suite === "all") {

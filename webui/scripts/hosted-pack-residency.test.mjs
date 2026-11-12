@@ -91,7 +91,7 @@ try {
   const variant = {
     id: "fixture-q0f32",
     runtimeIdentitySha256: "e".repeat(64),
-    runtimeIdentity: { layerMap, hiddenSize: d, sourceRevision: "f".repeat(40), runtimeAbi: "drowse-web-runtime-v2" },
+    runtimeIdentity: { layerMap, hiddenSize: d, sourceRevision: "f".repeat(40), runtimeAbi: "drowse-web-runtime-v3" },
   };
   const manifest = {
     format_version: 7, kind: "R", sites: { out: site("out", [0, 1, 2, 3]), mid: site("mid", layerMap) },

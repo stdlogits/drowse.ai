@@ -250,7 +250,7 @@ export async function tokenAnatomy(
 }
 
 /** The pattern pass: one replay capturing keys at the chosen heads' layers, then their attention
- *  rows. The profile's `maxPatternLayers` (16 under standard-v4, attested by the descriptor)
+ *  rows. The profile's `maxPatternLayers` (16 under standard-v5, attested by the descriptor)
  *  holds native's bound of 16 patterns in one pass; a residual library captures none. */
 async function patternRows(
   backend: BrowserBlockSitesBackend,

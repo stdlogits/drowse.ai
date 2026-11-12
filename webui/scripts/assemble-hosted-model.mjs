@@ -183,7 +183,7 @@ async function runtimeArtifacts(root, wasm, config, tensorCache, hookProfile) {
     throw new Error("model library is not a WebAssembly module");
   }
   // Hook ABI v5's surface, from the overlay's own lists: every required function, and the unit
-  // functions exactly when the profile is standard-v4 (their absence attests the residual one).
+  // functions exactly when the profile is standard-v5 (their absence attests the residual one).
   requireLibraryVmFunctions(wasmBytes, hookProfile);
   result.push(await artifact(wasm, "model.wasm", "model_library"));
   return result;

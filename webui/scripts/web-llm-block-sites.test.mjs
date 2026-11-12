@@ -61,35 +61,35 @@ try {
   const request = (profile, extra = {}) => ({ variant: variant(profile), prefillChunkSize: 32, ...extra });
 
   // ------------------------------------------------ descriptor model and attestation ---
-  const model = engine.hookProfileDescriptorModel(request("standard-v4", { blockSpec: spec }));
+  const model = engine.hookProfileDescriptorModel(request("standard-v5", { blockSpec: spec }));
   assert.deepEqual(model, {
     layerCount: 4, hiddenSize: 64, contextTokens: 128, prefillChunkSize: 32, blockSpec: spec,
   });
   for (const prefillChunkSize of [null, undefined, 0, 65, 1.5]) {
     assert.throws(
-      () => engine.hookProfileDescriptorModel(request("standard-v4", { blockSpec: spec, prefillChunkSize })),
+      () => engine.hookProfileDescriptorModel(request("standard-v5", { blockSpec: spec, prefillChunkSize })),
       (error) => error.code === "HOOK_ABI_MISMATCH" && /prefill chunk/.test(error.message),
       String(prefillChunkSize),
     );
   }
-  const v4 = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4;
-  const residual = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL;
+  const v4 = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V5;
+  const residual = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V5_RESIDUAL;
   const descriptor = Array.from(profiles.expectedHookProfileDescriptor(v4, model));
   const bridgeProfile = (overrides = {}) => ({
     schemaVersion: 4,
-    id: "standard-v4",
+    id: "standard-v5",
     unitSites: 1,
     descriptor: [...descriptor],
-    hookAbi: "block-sites-v5",
-    format: "drowse-structured-v4",
+    hookAbi: "block-sites-v6",
+    format: "drowse-structured-v5",
     ...overrides,
   });
   const attest = (value, extra = { blockSpec: spec }) =>
-    engine.attestCompiledStructuredHookProfile(value, request("standard-v4", extra), "block-sites-v5");
+    engine.attestCompiledStructuredHookProfile(value, request("standard-v5", extra), "block-sites-v6");
   const attested = attest(bridgeProfile());
   assert.equal(attested.schemaVersion, 4);
   assert.equal(attested.unitSites, 1);
-  assert.equal(attested.format, "drowse-structured-v4");
+  assert.equal(attested.format, "drowse-structured-v5");
   assert.equal(attested.exactReadoutAbi, "exact-readout-v2");
   assert.deepEqual(Array.from(attested.descriptor), descriptor);
   const fieldIndex = (name) => profiles.HOOK_PROFILE_DESCRIPTOR_V4_FIELDS.indexOf(name);
@@ -108,7 +108,7 @@ try {
   );
   assert.throws(() => attest(bridgeProfile({ unitSites: 0 })), (error) => error.code === "HOOK_ABI_MISMATCH");
   assert.throws(
-    () => engine.attestCompiledStructuredHookProfile(bridgeProfile(), request("standard-v4", { blockSpec: spec }), "post-block-residual-v4"),
+    () => engine.attestCompiledStructuredHookProfile(bridgeProfile(), request("standard-v5", { blockSpec: spec }), "post-block-residual-v4"),
     (error) => error.code === "HOOK_ABI_MISMATCH",
   );
   // A library compiled with the smallest context as its prefill chunk does not attest under a
@@ -118,22 +118,22 @@ try {
     () => attest(bridgeProfile({ descriptor: contextPrefill })),
     (error) => error.code === "HOOK_ABI_MISMATCH" && /PREFILL_CHUNK_SIZE/.test(error.message),
   );
-  // A standard-v4 library cannot be attested without the lock's block spec.
+  // A standard-v5 library cannot be attested without the lock's block spec.
   assert.throws(() => attest(bridgeProfile(), {}), (error) =>
     error.code === "HOOK_ABI_MISMATCH" && /block spec/.test(error.message));
   // A residual library attests the residual descriptor with no block spec.
   const residualModel = { ...model, blockSpec: null };
   const residualDescriptor = Array.from(profiles.expectedHookProfileDescriptor(residual, residualModel));
   const residualProfile = engine.attestCompiledStructuredHookProfile(
-    bridgeProfile({ id: "standard-v4-residual", unitSites: 0, descriptor: residualDescriptor }),
-    request("standard-v4-residual"),
-    "block-sites-v5",
+    bridgeProfile({ id: "standard-v5-residual", unitSites: 0, descriptor: residualDescriptor }),
+    request("standard-v5-residual"),
+    "block-sites-v6",
   );
   assert.equal(residualProfile.unitSites, 0);
 
   // ---------------------------------------------------------------- capabilities ---
-  const capabilities = engine.blockSitesCapabilitiesFor(attested, request("standard-v4", { blockSpec: spec }), 259);
-  assert.equal(capabilities.profile.id, "standard-v4");
+  const capabilities = engine.blockSitesCapabilitiesFor(attested, request("standard-v5", { blockSpec: spec }), 259);
+  assert.equal(capabilities.profile.id, "standard-v5");
   assert.equal(capabilities.vocabSize, 259);
   assert.equal(capabilities.contextTokens, 128);
   assert.equal(capabilities.prefillChunkSize, 32);
@@ -142,17 +142,17 @@ try {
   const refusal = "drowse units need a dense gated MLP block; gpt2 fuses q/k/v";
   const residualCapabilities = engine.blockSitesCapabilitiesFor(
     residualProfile,
-    request("standard-v4-residual", { unitRefusal: refusal }),
+    request("standard-v5-residual", { unitRefusal: refusal }),
     259,
   );
   assert.equal(residualCapabilities.unitRefusal, refusal);
-  assert.equal(engine.blockSitesCapabilitiesFor(residualProfile, request("standard-v4-residual"), 259), null);
-  assert.equal(engine.blockSitesCapabilitiesFor(null, request("standard-v4"), 259), null);
+  assert.equal(engine.blockSitesCapabilitiesFor(residualProfile, request("standard-v5-residual"), 259), null);
+  assert.equal(engine.blockSitesCapabilitiesFor(null, request("standard-v5"), 259), null);
 
   // --------------------------------------------------------------- bridge surface ---
   const surface = backendModule.webLlmBlockSitesBackend(capabilities);
   assert.equal(surface.capabilities(), capabilities);
-  const plain = { format: "drowse-structured-v4", hookAbi: "block-sites-v5", affineActive: new Uint32Array(16) };
+  const plain = { format: "drowse-structured-v5", hookAbi: "block-sites-v6", affineActive: new Uint32Array(16) };
   assert.equal(await surface.bindStructuredProgram(plain), plain);
   const layout = programs.structuredUnitSectionLayout(v4, 4, spec.headDim);
   const unitProgram = () => ({

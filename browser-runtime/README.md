@@ -4,12 +4,12 @@ The hosted application must not infer with stock WebLLM. Production loading is
 enabled only when `runtime-lock.json` has `status: "verified"` and the exact
 package, overlay, toolchain, model, and compiled-library closure is pinned.
 
-The runtime lock is hook ABI v5 (`runtime-lock.json` schema 2): `drowse-web-runtime-v2`,
-`block-sites-v5`, `exact-readout-v2`, each model's capacity profile by architecture
-(`standard-v4` for Gemma 3 and Qwen3, with the `blockSpec` its library's schema-4 descriptor
-attests; `standard-v4-residual` for GPT-2, Pythia and Qwen3.5 base, with the `unitRefusal` its
-unit calls answer), the WebLLM archive `0.2.84-drowse.49`, the fork manifest, compiler recipe
-and LLVM identities. It stays `feasibility-required` until every v5 library's converted revision,
+The runtime lock is hook ABI v6 (`runtime-lock.json` schema 2): `drowse-web-runtime-v3`,
+`block-sites-v6`, `exact-readout-v2`, each model's capacity profile by architecture
+(`standard-v5` for Gemma 3 and Qwen3, with the `blockSpec` its library's schema-4 descriptor
+attests; `standard-v5-residual` for GPT-2, Pythia and Qwen3.5 base, with the `unitRefusal` its
+unit calls answer), the WebLLM archive `0.2.84-drowse.50`, the fork manifest, compiler recipe
+and LLVM identities. It stays `feasibility-required` until every v6 library's converted revision,
 converted-manifest digest and library digest are filled (`prepare-hosted-candidate-lock.mjs`,
 below); `check-runtime-lock.mjs` lists what is still pending. Exact converted-model
 revisions, compiled libraries, package archive, overlay closure, runtime ABI, hook ABI,
@@ -18,7 +18,7 @@ contains only immutable packages that match those identities.
 
 The browser core-pack compiler produces the required neutral whitener and seed
 manifold pack for each release model. Every steering expression lowers to one
-drowse-structured-v4 program (native's `synthesize_subspace` lowering, which
+drowse-structured-v5 program (native's `synthesize_subspace` lowering, which
 needs the neutral whitener); it shares Python goldens for Mahalanobis
 normalization, mean-normalized per-layer share, and uncapped affine gain, and
 lowers independent push/ablation groups, prior-step gates, response phases,
@@ -34,15 +34,15 @@ response/prompt/count/thinking phases, prior-step scalar gates, and up to four
 curved terms per layer. Curves may use bounded, unbounded, periodic, or spherical
 domains and may have up to four intrinsic dimensions. Curved steering can itself
 be phase-gated or controlled by a prior SAE, R-lens probability, scalar affine
-probe, or exact geometry channel from the preceding token. Every hook ABI v5 library
-(`HOOK_ABI.md` is the contract) runs `drowse-structured-v4`: four independently gated affine
+probe, or exact geometry channel from the preceding token. Every hook ABI v6 library
+(`HOOK_ABI.md` is the contract) runs `drowse-structured-v5`: four independently gated affine
 groups, rank eight, eight scalar probes, four curves, thirty-two nodes per curve, four intrinsic
 dimensions and eight embedded dimensions, eight geometry probes, whitener rank 96,
 thirty-three candidates per probe, a 41-float output record per layer and geometry probe, and
 `exact-readout-v2` (lens reads at both sites, top-k ≤ 256, the S footprint, unit static-read
-primitives). A `standard-v4` library adds the in-block unit sites (neuron and head mean-ablation,
+primitives). A `standard-v5` library adds the in-block unit sites (neuron and head mean-ablation,
 unit taps, the replay for token anatomy, unit activity and attention patterns, static unit
-reads); a `standard-v4-residual` library attests their absence and answers unit calls with the
+reads); a `standard-v5-residual` library attests their absence and answers unit calls with the
 lock's refusal.
 
 The v3 geometry path produces domain coordinates, subspace fraction,
@@ -195,7 +195,7 @@ npm run publish:hosted:pack -- MODEL_ID core|sae|jlens|slens|units PACK_DIR
 
 The production-q4 comparator checks the unsteered residuals of every layer and
 position against the dequantized Transformers model, then the steered read on
-hook ABI v5 (capture schema 4): one drowse-structured-v4 program with linear
+hook ABI v6 (capture schema 4): one drowse-structured-v5 program with linear
 probes on a fixed orthonormal sketch at every layer (the first direction the
 push of a rank-1 affine group at the middle layer), measured at every captured
 position with and without the group (`measurePreparedPositions`). Probe error
@@ -212,7 +212,7 @@ injection-arithmetic oracle on B4's tiny v5 fixture libraries:
 `node scripts/browser-core-build.mjs --webllm WEB_LLM.js --fixtures DIR
 --arch qwen3|gemma3 --quantization q0f32|q4f32_1 --work SCRATCH`.
 
-Capture schema 5 adds B1 §4.3's production measures for a units (`standard-v4`) library and
+Capture schema 5 adds B1 §4.3's production measures for a units (`standard-v5`) library and
 refuses them for a residual one (`q4_unit_parity.py`). Its `capture.json` carries
 `units: {block: {d_ff, n_heads, head_dim}, sites_sha256, static_reads}`:
 
@@ -230,7 +230,7 @@ refuses them for a residual one (`q4_unit_parity.py`). Its `capture.json` carrie
   scales come from the units pack and divide both sides alike).
 
 The repository lock carries every value a compile does not produce; each library-bound field
-stays null until a hook ABI v5 library fills it. `prepare-hosted-candidate-lock.mjs` fills one
+stays null until a hook ABI v6 library fills it. `prepare-hosted-candidate-lock.mjs` fills one
 model from its assembled publish directory and chains models into one candidate lock:
 
 ```bash
@@ -459,8 +459,8 @@ npm run test:browser-runtime:full -- \
   --output /tmp/drowse-real-browser-e2e.json
 ```
 
-The packs follow the library's profile, as the catalog admits them: a `standard-v4` model
-runs with its R (`--jlens-directory`), S and units packs, a `standard-v4-residual` one with no
+The packs follow the library's profile, as the catalog admits them: a `standard-v5` model
+runs with its R (`--jlens-directory`), S and units packs, a `standard-v5-residual` one with no
 S or units pack (an R pack is optional); SAE is optional on both. The harness stages every
 pack file and hands the runtime what the app's worker does: the install files, and each
 on-demand lens or units layer through `fetchFile` on its first read. `--runtime-lock CANDIDATE`
@@ -475,11 +475,11 @@ post-block capture, exact forced-token replay and compact cross-token scoring,
 an alternate-token fork, flat steering gated independently by geometry and, with their packs,
 R-lens probability and SAE activation signals, R-lens and SAE steering/readout,
 a small spectral fit backed by the OPFS activation spool, nearest-node role
-selection and named-role generation, curved steering, then on `standard-v4` the units
+selection and named-role generation, curved steering, then on `standard-v5` the units
 check (a token-anatomy replay of the first generated token; a mean-ablation of its largest
 contributor that moves that token's logprob by at least 1e-4; a static read of a contributing
 neuron; a generation with a unit tap and an `slens/` S readout, both finite) or on
-`standard-v4-residual` the refusal check (six unit members answer 422 with the lock's
+`standard-v5-residual` the refusal check (six unit members answer 422 with the lock's
 `unitRefusal`, the unit catalog answers unbound, a unit ablation and a unit probe refuse, and
 the bridge's unit surface answers `UNIT_SITES_UNAVAILABLE`), streamed stop, unload/reload,
 and a final reload from reopened OPFS files while all HTTP(S) fetches are blocked. It fails

@@ -1,4 +1,4 @@
-// Hook ABI v5's device surface over the WebLLM bridge (B1 §2-§4, browser-runtime/HOOK_ABI.md
+// Hook ABI v6's device surface over the WebLLM bridge (B1 §2-§4, browser-runtime/HOOK_ABI.md
 // §7-§9): the units programs, the residents (head grams, unit scales, lens layers, embedding
 // statistics, pattern captures), the replay, the attention rows and the static reads
 // (`webLlmStaticReads.ts`). The bridge takes one request per call (`drowseBlockSites`), so the
@@ -60,7 +60,7 @@ interface BridgeReplayCaptures {
 /** The loaded model's bridge, as the adapter drives it. */
 export interface WebLlmBlockSitesDevice {
   call(request: WebLlmBlockSitesRequest): Promise<unknown>;
-  /** Install a drowse-structured-v4 program with a unit section (the replay's steering). */
+  /** Install a drowse-structured-v5 program with a unit section (the replay's steering). */
   installProgram(program: StructuredHookProgramBuffers): Promise<void>;
 }
 
@@ -70,7 +70,7 @@ export const BLOCK_SITES_MEMBER_UNAVAILABLE = "BLOCK_SITES_MEMBER_UNAVAILABLE";
 
 export function blockSitesMemberUnavailable(member: string): Error {
   return Object.assign(
-    new Error(`The browser runtime does not provide ${member} for hook ABI block-sites-v5 yet`),
+    new Error(`The browser runtime does not provide ${member} for hook ABI block-sites-v6 yet`),
     { code: BLOCK_SITES_MEMBER_UNAVAILABLE },
   );
 }
@@ -91,9 +91,9 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
 }
 
-/** The WebLLM bridge's hook ABI v5 surface (B1 §2.2-§2.3, §3.4, §3.5, §6). A residual library
+/** The WebLLM bridge's hook ABI v6 surface (B1 §2.2-§2.3, §3.4, §3.5, §6). A residual library
  *  answers every unit member with its lock refusal (422, as native); a units library binds
- *  drowse-structured-v4 programs, replays nodes and keeps the residents the reads need. */
+ *  drowse-structured-v5 programs, replays nodes and keeps the residents the reads need. */
 export function webLlmBlockSitesBackend(
   capabilities: BlockSitesCapabilities,
   device: WebLlmBlockSitesDevice | null = null,

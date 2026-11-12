@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "status": "feasibility-overlay",
-  "hookAbi": "block-sites-v5",
-  "structuredHookProfile": "standard-v4",
+  "hookAbi": "block-sites-v6",
+  "structuredHookProfile": "standard-v5",
   "exactReadoutAbi": "exact-readout-v2",
   "tvmRepository": "https://github.com/apache/tvm.git",
   "tvmCommit": "68ba2b31c2a6d202fcd44e5780ef10ce08721dd5",
@@ -58,17 +58,17 @@
       "baseCommit": "9fa644f54b04983adea4d0168f49fc6af4a893ba",
       "baseTree": "3ecd325c3ab1f631e4c1390917ae48bbf07bf965",
       "patch": "mlc-llm-drowse.patch",
-      "patchBytes": 449691,
-      "patchSha256": "835ec7626b9e929fb0b4aca54b09d8b2ec45489dc8a6467f1ac60341791db0c3",
+      "patchBytes": 452632,
+      "patchSha256": "6a9a9409427d634d763f7402db400bd0635d7e748662dc93d0e2f2bb1f998f29",
       "resultFiles": {
         "python/mlc_llm/interface/compile.py": "435876d96e9ba6fbc3f02dd6f5ed858df559ebded169ce91c5cdd8151e610d32",
         "python/mlc_llm/interface/convert_weight.py": "dffc4af8487f54087bc27f9a35f959df318a70c4c33326b65d4a6d9f6479a1b5",
-        "python/mlc_llm/model/drowse_hooks.py": "dd2d9779692360bdddd214553804e90c82942f47011fa947f830321bd3c67cd6",
+        "python/mlc_llm/model/drowse_hooks.py": "649787ef8db81cca6502a1c27c3c1a6d6ccf9ef65900f3d5a9e106d57bad9417",
         "python/mlc_llm/model/drowse_reads.py": "f6ef0f42e2b49d0e6c8729cdc8aa93dd6cdbd4d614045173e28deba4d129d4b2",
-        "python/mlc_llm/model/drowse_units.py": "70c890ea5362763dac19b6c6eeae03a10aef3fcfc48879eadbda20f68db1afe2",
+        "python/mlc_llm/model/drowse_units.py": "101c80257d844bcf7ea4ce905b3856a1de7f6cffbc48e8fb7f7174fce66b43e2",
         "python/mlc_llm/model/gemma3/gemma3_model.py": "8a8f423b8ef28c43bbca065857b8a344118f30319c80550c58ee50bf7b777867",
-        "python/mlc_llm/model/llama/llama_model.py": "43898289270c720e1a255ca458ce85ea7e3ab4e3798c234caa422e419ae80825",
-        "python/mlc_llm/model/qwen3/qwen3_model.py": "98312ccb7ecd9452b0cc77a7a5ddfb71a7fcda6e4a4c33815b9e05eeec8c8574",
+        "python/mlc_llm/model/llama/llama_model.py": "441c3f5f99f6dc261249dd357d882beb39e75c1cd573010ed8fffdb144f453a9",
+        "python/mlc_llm/model/qwen3/qwen3_model.py": "42b5b4a694e42cdba78b72ee52d7586757088479bae028ca2d3ff202dead8e20",
         "python/mlc_llm/op/moe_misc.py": "4141be404d6d31b1ee152ef495fd5bdfc75b16af968ad01e07c3d1d26637ef92"
       }
     },
@@ -79,32 +79,32 @@
       "baseCommit": "90f67096b68d3b77509c938f2221e4cef03b7d76",
       "baseTree": "ac223f95dc7ea27acaba299fe6b780ccb5d67b6f",
       "patch": "web-llm-drowse.patch",
-      "patchBytes": 529085,
-      "patchSha256": "84e6efdde332516132cf46926c212c7168b0bec5e9d4c492cd0a8f0427686827",
+      "patchBytes": 530342,
+      "patchSha256": "b5ae425313a84366238c67a74bccdf11a7670d8be7595f17a2898b3c5a8276e9",
       "resultFiles": {
-        "package-lock.json": "158f6ef9f096ad78bedc5afff5a9a36fd4693a69eb81dac210ccf1a588513340",
-        "package.json": "c393c1981c58fd6461580876256d501c5572da9f93281d6f8eefba051a128538",
+        "package-lock.json": "a91180a119ccf654a16af346f1d91cd83416de8832c88c802763846364d0b3c9",
+        "package.json": "120118f9c122c3ef7a9314d5d1f3995795873546f561ef0baebaaeb982d8c6fc",
         "rollup.config.js": "509d7ae65c5f1d3a9844f317854c191c2e4ea0978880b1e9cb4abb9216209273",
         "src/cache_util.ts": "22068a3108e0df16d9bd6c1397283cdb0f33aafa5f22eb2c26678cc30342ec08",
         "src/config.ts": "ee61e5876d51038eb7d6235fd1de1ea066e5f1f103242ffb7e69dba7f6ac86bd",
         "src/conversation.ts": "f76b93d1306a8eef8735236f7e7b37fdc0c6df0bc85448e5ed4b73eaf8f768c1",
-        "src/drowse.ts": "e17e329c5af01bf3cf75725c8a2988ec6e8a51e215c8ac6faa3f7f02f809ffc3",
+        "src/drowse.ts": "53f9dbcaa930d5d6263254bf8fbe60630a0655ca3e8ed12b13f8fb578eb88de8",
         "src/drowse_gpu_controls.ts": "31415bce2481fa0df2ef59d0c5d937001f688ef84ab30ee43dc098df03e34c08",
         "src/drowse_gpu_topk.ts": "b6267e699827327913e6513eb46868a769de5535fe8e042608821509cc93850b",
-        "src/engine.ts": "edbdb0df747b32c90c2b83f7b7c83c300b28e57fe1e001c2fa7efed67a93540d",
+        "src/engine.ts": "8e805030c20d957a421c04728657c914d70a139802f2391cc28e13e1e95dfc15",
         "src/gpu.ts": "7680a9f6742b36174b0175085fd5148da70ea599a70b5daf246f35c678a4a2d5",
         "src/index.ts": "bf7caa4dae80f8c15ee2f11dbadc1d82adf4ed041c24c182b6e92aa02c02bf17",
-        "src/llm_chat.ts": "d4417c658bc20bcb4b5c7ad3f313c74119d2562391ef20fd566e5427403cddf0",
+        "src/llm_chat.ts": "74e3b5441c17ce27e9fd7ab57f4b14b85d6eb1852f67fa04f1388360e5e76fb3",
         "src/message.ts": "9425730f4136fc688c100a3761465b7bd972e3daf265e79b82b30ddd70f572c5",
         "src/openai_api_protocols/chat_completion.ts": "c58e06d58841e18b6e6a9a0e08fa789663999224f308846fad835f25bc42ade7",
         "src/openai_api_protocols/completion.ts": "4dd7e554b4467630f1f53882b2c2d196b35df7c0f392d0a8d253e09a9741e0b4",
         "src/openai_api_protocols/index.ts": "13b993b69d41bdfc8d7118dd2dbc5dd45021b87853cf7fe396000ba9e3c85cbe",
-        "src/types.ts": "726726eacd2ff3768d5fad22a05bf11cd452977d2807aeab55b7a41d8cbcdbad",
+        "src/types.ts": "5ddc3a3e82f1e5b96461a913a86fdd47a3c353e306bc399abe64eb80ebfe7bd5",
         "src/utils.ts": "d462c6a68a159c863ce382dd3ea367da649f5801b877265d3080d9436ae8fef4",
         "src/web_worker.ts": "a9ffcabfdbfe44df51f13743ea50f22bb2ef6c06563a54f6d987e28d95e3acc9",
         "tests/cache_util.test.ts": "7ea1dd54414e9a9b8cff3c82bf3bedcf5d7d4e44bc7f1aae57d54ef2cebf2a94",
         "tests/conversation.test.ts": "a71ec20e05dc616cefab552bb16dc51efd6cb47e56ec8553b917240d2a8e65fa",
-        "tests/drowse.test.ts": "dc3f490542af4af9f9c1f50e8a817187d673d1d58273d2c7dd66ecc1aae39c1e",
+        "tests/drowse.test.ts": "7999e18c3bfdc07f3499ff37622a7e30f6005045f4a6dbf2a6bd5f634e6a8e86",
         "tests/drowse_pipeline.test.ts": "7d2576a9f6684f9c438fcd4768574bacf5b86cc1f894f3eff3c3335a3c5342cb",
         "tests/drowse_positions.test.ts": "5c44a8c5d73dcfabc19b9ecefbfefebcdcace1de20a16185bf4e1e9fc0f20823",
         "tests/engine_integration.test.ts": "7e10bc6daaf25f3d09e6a30d3cc8a61cc699154c65efc39d14dddac61c2b9227",
@@ -120,7 +120,7 @@
   "baseModels": {
     "gpt2": {
       "modelAdapterFiles": {
-        "base_model_adapters.py": "92606e6406f81221e76a30f41f3aa0a08e4acb830fdcdd4b5ec5b4034b974c1c"
+        "base_model_adapters.py": "c7d72ca6fb9fadb5ad38a5f0d34dadba4e718d0c44d55cb53622879e2e779d0a"
       },
       "modelSourceFiles": {
         "python/mlc_llm/model/gpt2/gpt2_loader.py": "d9e91af06a275b8b4e6b2419e51c9670702fddfb3ad9e3fecdf63901310e4c36",
@@ -129,7 +129,7 @@
     },
     "gpt_neox": {
       "modelAdapterFiles": {
-        "base_model_adapters.py": "92606e6406f81221e76a30f41f3aa0a08e4acb830fdcdd4b5ec5b4034b974c1c"
+        "base_model_adapters.py": "c7d72ca6fb9fadb5ad38a5f0d34dadba4e718d0c44d55cb53622879e2e779d0a"
       },
       "modelSourceFiles": {
         "python/mlc_llm/model/gpt_neox/gpt_neox_loader.py": "0440155050e86cba299b8b6ce18cc016dfcc25e790e3cfdc3b209f86b99cd3c9",
@@ -138,8 +138,8 @@
     },
     "qwen3_5": {
       "modelAdapterFiles": {
-        "base_model_adapters.py": "92606e6406f81221e76a30f41f3aa0a08e4acb830fdcdd4b5ec5b4034b974c1c",
-        "qwen35_adapter.py": "77865be561dfebca0a888d5f0cb8a060206a28ef0c18ff8300bf759d8df73514",
+        "base_model_adapters.py": "c7d72ca6fb9fadb5ad38a5f0d34dadba4e718d0c44d55cb53622879e2e779d0a",
+        "qwen35_adapter.py": "be3e54d32d7cf48902ab0222d847fc397b9a8808f1bdb935e8602d697d7009dd",
         "hybrid_state_kernels.py": "7075a4b80b11093503ca5048074095eb41c39cade72edf4fa6a0f69b2fdfb8a3"
       },
       "modelSourceFiles": {

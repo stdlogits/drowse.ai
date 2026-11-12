@@ -43,11 +43,11 @@ TOKENIZER_SOURCE_FILES = [
 ]
 OPTIONAL_SOURCE_FILES = ["generation_config.json", "LICENSE", "README.md"]
 #: Hook ABI v5 (HOOK_ABI.md §1, §7): dense gated-MLP blocks compile the unit sites
-#: (`standard-v4`); every other architecture attests the residual descriptor.
+#: (`standard-v5`); every other architecture attests the residual descriptor.
 UNIT_ARCHITECTURES = frozenset({"qwen3", "gemma3_text", "gemma3"})
-STRUCTURED_HOOK_PROFILES = ("standard-v4", "standard-v4-residual")
-RUNTIME_ABI = "drowse-web-runtime-v2"
-HOOK_ABI = "block-sites-v5"
+STRUCTURED_HOOK_PROFILES = ("standard-v5", "standard-v5-residual")
+RUNTIME_ABI = "drowse-web-runtime-v3"
+HOOK_ABI = "block-sites-v6"
 #: The bridge's conversation rules each MLC template takes, so a chat prompt prefills what the
 #: model's own chat template (and drowse's scene grammar) renders: Qwen3 renders no system block
 #: without a system message (MLC's template defaults one); Gemma 3 folds the system message into
@@ -59,16 +59,16 @@ DROWSE_CONVERSATION_RULES = {
 
 
 def structured_hook_profile_for(architecture: str) -> str:
-    return "standard-v4" if architecture in UNIT_ARCHITECTURES else "standard-v4-residual"
+    return "standard-v5" if architecture in UNIT_ARCHITECTURES else "standard-v5-residual"
 THINKING_DELIMITERS = ("<think>", "</think>")
 PRODUCTION_QUANTIZATIONS = ("q4f16_1", "q4f32_1", "q0f32")
 PRODUCTION_ARCHITECTURES = ("qwen3", "llama", "gemma3_text", "gpt2", "gpt_neox", "qwen3_5")
 BASE_ADAPTER_DIGESTS = {
-    "base_model_adapters.py": "92606e6406f81221e76a30f41f3aa0a08e4acb830fdcdd4b5ec5b4034b974c1c",
+    "base_model_adapters.py": "c7d72ca6fb9fadb5ad38a5f0d34dadba4e718d0c44d55cb53622879e2e779d0a",
 }
 HYBRID_ADAPTER_DIGESTS = {
     **BASE_ADAPTER_DIGESTS,
-    "qwen35_adapter.py": "77865be561dfebca0a888d5f0cb8a060206a28ef0c18ff8300bf759d8df73514",
+    "qwen35_adapter.py": "be3e54d32d7cf48902ab0222d847fc397b9a8808f1bdb935e8602d697d7009dd",
     "hybrid_state_kernels.py": "7075a4b80b11093503ca5048074095eb41c39cade72edf4fa6a0f69b2fdfb8a3",
 }
 BASE_MODEL_SOURCE_DIGESTS = {

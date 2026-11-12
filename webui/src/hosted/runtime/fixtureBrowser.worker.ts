@@ -8,6 +8,7 @@ import { DeterministicBrowserModelBackend } from "./fakeModelBackend";
 import { BrowserContentStore } from "./contentStore";
 import { VerifiedArtifactDownloader } from "./downloader";
 import { HostedRuntimeWorker } from "./worker";
+import { sharedProfileId } from "./structuredHookProfile";
 
 const revision = "b".repeat(40);
 const runtimeIdentitySha256 = "a".repeat(64);
@@ -64,7 +65,7 @@ const document: CatalogDocument = {
     variants: [{
       id: "qwen3-1.7b-fixture",
       tier: "fastest",
-      structuredHookProfile: "standard-v4",
+      structuredHookProfile: sharedProfileId("standard-v5"),
       thinkingProfile: null,
       contextProfiles: [{
         contextTokens: 2048,

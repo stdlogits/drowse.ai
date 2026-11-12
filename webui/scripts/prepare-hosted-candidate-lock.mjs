@@ -146,7 +146,7 @@ export function deriveCandidateRuntimeLock(runtimeLock, modelId, {
   // statistics bind the tokenizer digest, so a drift here is a conversion error, not a refill.
   if (model.tokenizerSha256 !== null) differs("tokenizer digest", tokenizer, model.tokenizerSha256);
   if (model.chatTemplateSha256 !== null) differs("chat template digest", chatTemplate, model.chatTemplateSha256);
-  if (model.structuredHookProfile === "standard-v4") {
+  if (model.structuredHookProfile === "standard-v5") {
     const compiled = blockSpecFromMlcConfig(model.architecture, chatConfig);
     if (!sameBlockSpec(compiled, model.blockSpec)) {
       throw new Error(

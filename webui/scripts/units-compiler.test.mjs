@@ -61,7 +61,7 @@ try {
     const tol = push.tolerance.library;
     for (const entry of push.cases) {
       const program = await compile(entry.expression);
-      assert.equal(program.format, "drowse-structured-v4");
+      assert.equal(program.format, "drowse-structured-v5");
       assert.equal(program.steeringExpression, entry.canonical, `${arch} ${entry.expression} canonical`);
       const G = program.profile.maxAffineGroups;
       const R = program.profile.maxRank;

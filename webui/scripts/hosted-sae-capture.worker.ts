@@ -21,7 +21,7 @@ interface CaptureRequest {
   artifacts: ArtifactEntry[];
   runtimeIdentity: RuntimeIdentity;
   structuredHookProfile: ModelVariant["structuredHookProfile"];
-  /** The runtime lock's block spec (standard-v4) and unit refusal (standard-v4-residual). */
+  /** The runtime lock's block spec (standard-v5) and unit refusal (standard-v5-residual). */
   blockSpec: BlockSpec | null;
   unitRefusal: string | null;
   prefillChunkSize: number;

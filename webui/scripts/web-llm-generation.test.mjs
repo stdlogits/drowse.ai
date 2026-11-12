@@ -90,15 +90,15 @@ try {
     "/../drowse/webui/src/lib/runtime/samplingCapabilities.ts",
   );
   const {
-    STANDARD_STRUCTURED_HOOK_PROFILE_V4,
+    STANDARD_STRUCTURED_HOOK_PROFILE_V5,
   } = await server.ssrLoadModule(
     "/src/hosted/runtime/structuredHookProfile.ts",
   );
 
   // A pure push: one affine group, no probes, no controls (nothing to read per token).
   const hookProgram = compileStructuredHookProgram(1, [{
-    affineGroups: [{ active: true, basis: [[1]], neutral: [0], target: [1], along: 0.5, kappa: [1] }],
-  }], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
+    affineGroups: [{ active: true, basis: [[1]], read: [[1]], neutral: [0], target: [1], along: 0.5, kappa: [1] }],
+  }], STANDARD_STRUCTURED_HOOK_PROFILE_V5);
   assert.equal(tokenAlternativeLimit("http"), HTTP_RETURN_TOP_K_MAX);
   assert.equal(tokenAlternativeLimit("browser"), BROWSER_RETURN_TOP_K_MAX);
   assert.equal(tokenAlternativeLimit("fake"), 0);
@@ -974,13 +974,14 @@ try {
     affineGroups: [{
       active: true,
       basis: [[1]],
+      read: [[1]],
       neutral: [0],
       target: [1],
       along: 0.5,
       kappa: [0],
     }],
     probes: [{ kind: "linear", direction: [1], bias: 0 }],
-  }], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
+  }], STANDARD_STRUCTURED_HOOK_PROFILE_V5);
   gatedProgram.controls = {
     affine: [{
       enabled: true,
@@ -1048,7 +1049,7 @@ try {
   // turns off at the first decode step, a response-only one turns on there, and the caller's
   // `unitActive` is never written (a later run of the same program starts from it).
   const unitOnlyProgram = withStructuredUnitSection(
-    compileStructuredHookProgram(1, [{}], STANDARD_STRUCTURED_HOOK_PROFILE_V4),
+    compileStructuredHookProgram(1, [{}], STANDARD_STRUCTURED_HOOK_PROFILE_V5),
     { dFF: 4, nHeads: 1, headDim: 1 },
     {
       ablations: [
@@ -1087,11 +1088,11 @@ try {
   // attached unit probe and the attached slens/ probes read out (token envelopes while their
   // family is live, the aggregate always); a unit tapped for a gate feeds gates only; a gate reads
   // an attached slens/ probe by name; slens/ reads run over the bridge's [L, d] capture.
-  const liveBase = compileStructuredHookProgram(2, [{}], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
+  const liveBase = compileStructuredHookProgram(2, [{}], STANDARD_STRUCTURED_HOOK_PROFILE_V5);
   liveBase.measurementSchema = {
     layerMap: [0],
     modelLayerCount: 4,
-    probes: Array.from({ length: STANDARD_STRUCTURED_HOOK_PROFILE_V4.maxProbes }, () => null),
+    probes: Array.from({ length: STANDARD_STRUCTURED_HOOK_PROFILE_V5.maxProbes }, () => null),
     lensSource: null,
     saeSource: null,
   };
@@ -1578,11 +1579,11 @@ try {
       { kind: "sae", direction: [1], bias: 0 },
       { kind: "jlens", direction: [0], bias: 0 },
     ],
-  }], STANDARD_STRUCTURED_HOOK_PROFILE_V4, {
+  }], STANDARD_STRUCTURED_HOOK_PROFILE_V5, {
     bindingId: "a".repeat(64),
     layerIndices: Int32Array.of(0),
     tokenIds: Int32Array.from(
-      { length: STANDARD_STRUCTURED_HOOK_PROFILE_V4.maxProbes },
+      { length: STANDARD_STRUCTURED_HOOK_PROFILE_V5.maxProbes },
       (_, index) => index === 1 ? 17 : 0,
     ),
   });
@@ -1598,8 +1599,8 @@ try {
     saeSource: "fixture-sae",
   };
   scopedProgram.controls = {
-    affine: new Array(STANDARD_STRUCTURED_HOOK_PROFILE_V4.maxAffineGroups).fill(null),
-    curve: new Array(STANDARD_STRUCTURED_HOOK_PROFILE_V4.maxCurves).fill(null),
+    affine: new Array(STANDARD_STRUCTURED_HOOK_PROFILE_V5.maxAffineGroups).fill(null),
+    curve: new Array(STANDARD_STRUCTURED_HOOK_PROFILE_V5.maxCurves).fill(null),
   };
   const scopedReads = [];
   const scopedTokens = [];
@@ -1681,12 +1682,13 @@ try {
     affineGroups: [{
       active: true,
       basis: [[1]],
+      read: [[1]],
       neutral: [0],
       target: [1],
       along: 0.5,
       kappa: [0],
     }],
-  }], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
+  }], STANDARD_STRUCTURED_HOOK_PROFILE_V5);
   staticProgram.controls = {
     affine: [{
       enabled: true,
@@ -1721,7 +1723,7 @@ try {
   assert.equal(staticControlUpdates, 0);
 
   const oriented = measurementEnvelope({
-    format: "drowse-structured-v4",
+    format: "drowse-structured-v5",
     layerCount: 2,
     probeKind: Uint32Array.of(1, 3, 2, 1, 3, 2),
     measurementSchema: {
@@ -1774,7 +1776,7 @@ try {
     ],
   };
   const tokenView = (live) => tokenMeasurementEnvelope(oriented, {
-    format: "drowse-structured-v4", layerCount: 2, measurementSchema: { ...orientedSchema, ...live },
+    format: "drowse-structured-v5", layerCount: 2, measurementSchema: { ...orientedSchema, ...live },
   });
   const familiesOff = tokenView({});
   assert.equal(familiesOff.instruments.lens, undefined);
@@ -1789,7 +1791,7 @@ try {
   assert.equal(tokenMeasurementEnvelope(undefined, null), undefined);
 
   const preciseProgram = {
-    format: "drowse-structured-v4", layerCount: 2,
+    format: "drowse-structured-v5", layerCount: 2,
     probeKind: Uint32Array.of(3, 2, 3, 2),
     measurementSchema: {
       layerMap: [0, 1], modelLayerCount: 2,
@@ -1854,7 +1856,7 @@ try {
   const exactReadoutProgram = compileStructuredHookProgram(
     1,
     [{}, {}, {}],
-    STANDARD_STRUCTURED_HOOK_PROFILE_V4,
+    STANDARD_STRUCTURED_HOOK_PROFILE_V5,
     {
       bindingId: "a".repeat(64),
       layerIndices: Int32Array.of(0, 2),
@@ -2206,7 +2208,7 @@ try {
           coordinateBias: [0, 0],
         }],
       })),
-      STANDARD_STRUCTURED_HOOK_PROFILE_V4,
+      STANDARD_STRUCTURED_HOOK_PROFILE_V5,
     );
     program.measurementSchema = {
       layerMap,
@@ -2323,7 +2325,7 @@ try {
         coordinateBias: [0],
       }],
     })),
-    STANDARD_STRUCTURED_HOOK_PROFILE_V4,
+    STANDARD_STRUCTURED_HOOK_PROFILE_V5,
   );
   const sharedProbeCount = sharedProgram.profile.maxProbes;
   for (let layer = 0; layer < sharedProgram.layerCount; layer += 1) {
@@ -2661,9 +2663,9 @@ try {
   geometryValues.set([1, 0.25, 0.2, 0.8, 0.2, 0.4, 0, 0, 1, 3], 0);
   geometryValues.set([1, 0.75, 0.4, 0.6, 0.8, 0.6, 0, 0, 3, 1], 8 * 41);
   const geometryEnvelope = measurementEnvelope({
-    format: "drowse-structured-v4",
+    format: "drowse-structured-v5",
     layerCount: 2,
-    profile: STANDARD_STRUCTURED_HOOK_PROFILE_V4,
+    profile: STANDARD_STRUCTURED_HOOK_PROFILE_V5,
     probeKind: new Uint32Array(16),
     measurementSchema: {
       layerMap: [4, 9],
@@ -2716,12 +2718,13 @@ try {
     affineGroups: [{
       active: true,
       basis: [[1]],
+      read: [[1]],
       neutral: [0],
       target: [1],
       along: 0.5,
       kappa: [0],
     }],
-  }], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
+  }], STANDARD_STRUCTURED_HOOK_PROFILE_V5);
   thinkingProgram.controls = {
     affine: [{
       enabled: true,

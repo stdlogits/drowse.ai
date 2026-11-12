@@ -2,11 +2,11 @@
   "$schema": "./runtime-lock.schema.json",
   "schemaVersion": 2,
   "status": "verified",
-  "runtimeAbi": "drowse-web-runtime-v2",
-  "hookAbi": "block-sites-v5",
+  "runtimeAbi": "drowse-web-runtime-v3",
+  "hookAbi": "block-sites-v6",
   "exactReadoutAbi": "exact-readout-v2",
   "toolchain": {
-    "forkManifestSha256": "22ae995379f92fa84962e78c0c22574952cef0f9099c90285f1298f3e5bc1fd7",
+    "forkManifestSha256": "10c5901567a2258954de79b1ec157a7cb4d8128570e8c017a88109be7f12f80c",
     "mlcLlmFork": {
       "repository": "https://github.com/a9lim/mlc-llm-polythetic",
       "commit": null
@@ -16,10 +16,10 @@
       "commit": null
     },
     "webLlmPackage": {
-      "path": "browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.49.tgz",
-      "sha256": "81dbc5f7116b89bd6531bf32809530367a7e3149590bf285bc79a8aba17c249f",
+      "path": "browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.50.tgz",
+      "sha256": "da5818f8ee9d65db4373408ff89d3c0392db10752f49de98e26caa1c5868b1dd",
       "name": "@drowse/web-llm",
-      "version": "0.2.84-drowse.49",
+      "version": "0.2.84-drowse.50",
       "repository": "https://github.com/a9lim/web-llm-polythetic",
       "sourceCommit": null
     },
@@ -61,7 +61,7 @@
     {
       "id": "gemma3-270m-instruct",
       "architecture": "gemma3_text",
-      "structuredHookProfile": "standard-v4",
+      "structuredHookProfile": "standard-v5",
       "blockSpec": {
         "dFF": 2048,
         "nHeads": 4,
@@ -123,7 +123,7 @@
     {
       "id": "gemma3-1b-instruct",
       "architecture": "gemma3_text",
-      "structuredHookProfile": "standard-v4",
+      "structuredHookProfile": "standard-v5",
       "blockSpec": {
         "dFF": 6912,
         "nHeads": 4,
@@ -193,7 +193,7 @@
     {
       "id": "gemma3-4b-instruct",
       "architecture": "gemma3_text",
-      "structuredHookProfile": "standard-v4",
+      "structuredHookProfile": "standard-v5",
       "blockSpec": {
         "dFF": 10240,
         "nHeads": 8,
@@ -271,7 +271,7 @@
     {
       "id": "qwen3-4b",
       "architecture": "qwen3",
-      "structuredHookProfile": "standard-v4",
+      "structuredHookProfile": "standard-v5",
       "blockSpec": {
         "dFF": 9728,
         "nHeads": 32,
@@ -361,7 +361,7 @@
     {
       "id": "qwen3-1.7b",
       "architecture": "qwen3",
-      "structuredHookProfile": "standard-v4",
+      "structuredHookProfile": "standard-v5",
       "blockSpec": {
         "dFF": 6144,
         "nHeads": 16,
@@ -444,7 +444,7 @@
       "id": "gpt2-base",
       "modelType": "base",
       "architecture": "gpt2",
-      "structuredHookProfile": "standard-v4-residual",
+      "structuredHookProfile": "standard-v5-residual",
       "unitRefusal": "no rotary embedding beside the block list ('rotary_emb'); a dense block here is RoPE attention",
       "thinkingProfile": null,
       "sourceRepository": "openai-community/gpt2",
@@ -480,7 +480,7 @@
       "id": "pythia-70m-base",
       "modelType": "base",
       "architecture": "gpt_neox",
-      "structuredHookProfile": "standard-v4-residual",
+      "structuredHookProfile": "standard-v5-residual",
       "unitRefusal": "layer 0: block has no softmax self-attention ('self_attn'; found attention, input_layernorm, mlp, post_attention_dropout, post_attention_layernorm, post_mlp_dropout)",
       "thinkingProfile": null,
       "sourceRepository": "EleutherAI/pythia-70m-deduped",
@@ -510,7 +510,7 @@
       "id": "gemma3-1b-pt",
       "modelType": "base",
       "architecture": "gemma3_text",
-      "structuredHookProfile": "standard-v4",
+      "structuredHookProfile": "standard-v5",
       "blockSpec": {
         "dFF": 6912,
         "nHeads": 4,
@@ -580,7 +580,7 @@
       "id": "qwen35-2b-base",
       "modelType": "base",
       "architecture": "qwen3_5",
-      "structuredHookProfile": "standard-v4-residual",
+      "structuredHookProfile": "standard-v5-residual",
       "unitRefusal": "layer 0: linear-attention layer ('linear_attn') in a hybrid stack; only softmax self-attention blocks are described",
       "thinkingProfile": null,
       "sourceRepository": "Qwen/Qwen3.5-2B-Base",

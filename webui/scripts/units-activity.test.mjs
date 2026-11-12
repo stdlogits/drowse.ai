@@ -46,7 +46,7 @@ try {
     const scales = scalesModule.readingScales(statistics, fx.model.spec, 4);
     const chat = Int32Array.from(fx.record.chat_prompt.ids);
     const shape = { dFF: 96, nHeads: 4, headDim: 16 };
-    const emptyProgram = () => hooks.compileStructuredHookProgram(64, [{}, {}, {}, {}], profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4);
+    const emptyProgram = () => hooks.compileStructuredHookProgram(64, [{}, {}, {}, {}], profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V5);
     const unitProgram = (ablation, phase) => hooks.withStructuredUnitSection(emptyProgram(), shape, {
       ablations: [ablation], taps: [], controls: [phase === "both" ? null : { enabled: true, phase: { kind: phase }, gate: null }],
     });
@@ -150,7 +150,7 @@ try {
       spans: [{ firstRow: 0, stopRow: rows.length, at: chat.length - 1 }],
     };
     const ablate = () => hooks.withStructuredUnitSection(
-      hooks.compileStructuredHookProgram(64, [{}, {}, {}, {}], profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4),
+      hooks.compileStructuredHookProgram(64, [{}, {}, {}, {}], profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V5),
       { dFF: 96, nHeads: 4, headDim: 16 },
       { ablations: [hooks.structuredUnitAblationTerm("neuron", 1, 5, 1, statistics.neuronMean[96 + 5], 0)], taps: [], controls: [null] },
     );
@@ -181,7 +181,7 @@ try {
   // a key it does not produce, a slot the backend could not read) refuses with native's 422
   // instead of staying shut.
   {
-    const v4 = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4;
+    const v4 = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V5;
     const gated = (gate) => {
       const base = hooks.compileStructuredHookProgram(64, [{}, {}, {}, {}], v4);
       return hooks.withStructuredUnitSection(base, { dFF: 96, nHeads: 4, headDim: 16 }, {

@@ -66,10 +66,10 @@ index c5f33250..5f8096e5 100644
      allowed_lora_source_formats = {"huggingface-safetensor", "huggingface-torch"}
 diff --git a/python/mlc_llm/model/drowse_hooks.py b/python/mlc_llm/model/drowse_hooks.py
 new file mode 100644
-index 00000000..e1462573
+index 00000000..33f25e63
 --- /dev/null
 +++ b/python/mlc_llm/model/drowse_hooks.py
-@@ -0,0 +1,4474 @@
+@@ -0,0 +1,4518 @@
 +"""Drowse post-block residual hooks for browser model libraries."""
 +
 +from tvm import te
@@ -103,9 +103,9 @@ index 00000000..e1462573
 +STRUCTURED_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE = 8
 +STRUCTURED_HOOK_PROFILE_MAGIC = 0x53414B4C
 +STRUCTURED_HOOK_PROFILE_SCHEMA_VERSION = 4
-+STRUCTURED_HOOK_PROFILE_ID = 4
-+STRUCTURED_HOOK_ABI_VERSION = 5
-+STRUCTURED_HOOK_FORMAT_VERSION = 4
++STRUCTURED_HOOK_PROFILE_ID = 5
++STRUCTURED_HOOK_ABI_VERSION = 6
++STRUCTURED_HOOK_FORMAT_VERSION = 5
 +STRUCTURED_MIN_COMPUTE_WORKGROUP_STORAGE_SIZE = 32 * 1024
 +EXACT_READOUT_ABI_VERSION = 2
 +READOUT_TOP_K = 8
@@ -439,9 +439,9 @@ index 00000000..e1462573
 +    context_tokens: int,
 +    prefill_chunk_size: int,
 +) -> Tensor:
-+    """Descriptor schema 4 (hook ABI `block-sites-v5`): v3's 31 fields, then the block spec and
++    """Descriptor schema 4 (hook ABI `block-sites-v6`): v3's 31 fields, then the block spec and
 +    the unit capacities (`drowse_units.hook_profile_values`). `block` is None for a residual
-+    (`standard-v4-residual`) library."""
++    (`standard-v5-residual`) library."""
 +    base = (
 +        STRUCTURED_HOOK_PROFILE_MAGIC,
 +        STRUCTURED_HOOK_PROFILE_SCHEMA_VERSION,
@@ -500,6 +500,15 @@ index 00000000..e1462573
 +            ],
 +            "float32",
 +        ),
++        "affine_read": nn.spec.Tensor(
++            [
++                num_layers,
++                STRUCTURED_MAX_AFFINE_GROUPS,
++                STRUCTURED_MAX_RANK,
++                hidden_size,
++            ],
++            "float32",
++        ),
 +        "affine_neutral": nn.spec.Tensor(
 +            [num_layers, STRUCTURED_MAX_AFFINE_GROUPS, hidden_size], "float32"
 +        ),
@@ -550,6 +559,15 @@ index 00000000..e1462573
 +            [num_layers, STRUCTURED_MAX_CURVES], "uint32"
 +        ),
 +        "curve_basis": nn.spec.Tensor(
++            [
++                num_layers,
++                STRUCTURED_MAX_CURVES,
++                STRUCTURED_MAX_RANK,
++                hidden_size,
++            ],
++            "float32",
++        ),
++        "curve_read": nn.spec.Tensor(
 +            [
 +                num_layers,
 +                STRUCTURED_MAX_CURVES,
@@ -656,6 +674,15 @@ index 00000000..e1462573
 +    return {
 +        **structured_affine_program_spec(num_layers, hidden_size),
 +        "curve_basis": nn.spec.Tensor(
++            [
++                num_layers,
++                STRUCTURED_MAX_CURVES,
++                STRUCTURED_MAX_RANK,
++                hidden_size,
++            ],
++            "float32",
++        ),
++        "curve_read": nn.spec.Tensor(
 +            [
 +                num_layers,
 +                STRUCTURED_MAX_CURVES,
@@ -923,6 +950,7 @@ index 00000000..e1462573
 +    layer_id: int,
 +    affine_active: Tensor,
 +    affine_basis: Tensor,
++    affine_read: Tensor,
 +    affine_neutral: Tensor,
 +    affine_target: Tensor,
 +    affine_along: Tensor,
@@ -941,12 +969,14 @@ index 00000000..e1462573
 +        var_residual: T.handle,
 +        var_active: T.handle,
 +        var_basis: T.handle,
++        var_read: T.handle,
 +        var_neutral: T.handle,
 +        var_target: T.handle,
 +        var_along: T.handle,
 +        var_kappa: T.handle,
-+        var_output: T.handle,
 +    ):
++        # In place on the residual: with the read rows the kernel binds 8 storage buffers, the
++        # most a drowse kernel may (HOOK_ABI.md §10). Each workgroup reads and writes one row.
 +        T.func_attr({"op_pattern": 8, "tirx.is_scheduled": 1, "tirx.noalias": True})
 +        residual = T.match_buffer(
 +            var_residual,
@@ -960,6 +990,16 @@ index 00000000..e1462573
 +        )
 +        basis = T.match_buffer(
 +            var_basis,
++            (
++                num_layers,
++                STRUCTURED_MAX_AFFINE_GROUPS,
++                STRUCTURED_MAX_RANK,
++                hidden_size,
++            ),
++            "float32",
++        )
++        read_rows = T.match_buffer(
++            var_read,
 +            (
 +                num_layers,
 +                STRUCTURED_MAX_AFFINE_GROUPS,
@@ -996,11 +1036,6 @@ index 00000000..e1462573
 +            ),
 +            "float32",
 +        )
-+        output = T.match_buffer(
-+            var_output,
-+            (batch_size, sequence_length, hidden_size),
-+            residual_dtype,
-+        )
 +        current = T.sblock_alloc_buffer((T.ceildiv(hidden_size, 64),), "float32", scope="local")
 +        partial = T.sblock_alloc_buffer((64,), "float32", scope="shared")
 +        delta = T.sblock_alloc_buffer((STRUCTURED_MAX_RANK,), "float32", scope="shared")
@@ -1025,7 +1060,7 @@ index 00000000..e1462573
 +                                        if hidden < hidden_size:
 +                                            partial[lane] = partial[lane] + (
 +                                                current[chunk] - neutral[layer_id, group, hidden]
-+                                            ) * basis[layer_id, group, row, hidden]
++                                            ) * read_rows[layer_id, group, row, hidden]
 +                                    T.tvm_storage_sync("shared")
 +                                    for stage in T.unroll(6):
 +                                        offset = T.meta_var(32 >> stage)
@@ -1050,20 +1085,22 @@ index 00000000..e1462573
 +                    for chunk in T.serial(T.ceildiv(hidden_size, 64)):
 +                        hidden = T.meta_var(chunk * 64 + lane)
 +                        if hidden < hidden_size:
-+                            output[batch, sequence, hidden] = T.cast(current[chunk], residual_dtype)
++                            residual[batch, sequence, hidden] = T.cast(current[chunk], residual_dtype)
 +
-+    steered = op.tensor_ir_op(
++    steered = op.tensor_ir_inplace_op(
 +        _affine,
 +        f"drowse_structured_affine_{layer_id}",
 +        args=[
 +            hidden_states,
 +            affine_active,
 +            affine_basis,
++            affine_read,
 +            affine_neutral,
 +            affine_target,
 +            affine_along,
 +            affine_kappa,
 +        ],
++        inplace_indices=[0],
 +        out=Tensor.placeholder(hidden_states.shape, residual_dtype),
 +    )
 +    measurements = measure_structured_probes(
@@ -1083,6 +1120,7 @@ index 00000000..e1462573
 +    decode: bool,
 +    affine_active: Tensor,
 +    affine_basis: Tensor,
++    affine_read: Tensor,
 +    affine_neutral: Tensor,
 +    affine_target: Tensor,
 +    affine_along: Tensor,
@@ -1092,6 +1130,7 @@ index 00000000..e1462573
 +    probe_bias: Tensor,
 +    probe_threshold: Tensor,
 +    curve_basis: Tensor,
++    curve_read: Tensor,
 +    curve_neutral: Tensor,
 +    curve_domain_kind: Tensor,
 +    curve_parameters: Tensor,
@@ -1102,6 +1141,7 @@ index 00000000..e1462573
 +        layer_id,
 +        affine_active,
 +        affine_basis,
++        affine_read,
 +        affine_neutral,
 +        affine_target,
 +        affine_along,
@@ -1121,6 +1161,7 @@ index 00000000..e1462573
 +            curve_id,
 +            decode,
 +            curve_basis,
++            curve_read,
 +            curve_neutral,
 +            curve_domain_kind,
 +            curve_parameters,
@@ -2413,15 +2454,18 @@ index 00000000..e1462573
 +    curve_id: int,
 +    decode: bool,
 +    curve_basis: Tensor,
++    curve_read: Tensor,
 +    curve_neutral: Tensor,
 +    curve_domain_kind: Tensor,
 +    curve_parameters: Tensor,
 +    curve_feet: Tensor,
 +):
-+    basis = _layer_group_matrix(curve_basis, layer_id, curve_id, "drowse_curve_basis")
++    # Typed frame (hook ABI v6): coordinates through the read rows, the write along the basis rows
++    # (`_reconstruct_curve_tir`), so a full `onto` ablation is LEACE against the neutral.
++    read = _layer_group_matrix(curve_read, layer_id, curve_id, "drowse_curve_read")
 +    neutral = _layer_group_vector(curve_neutral, layer_id, curve_id, "drowse_curve_neutral")
 +    centered = residual - neutral
-+    q = _project_onto_rows(centered, basis)
++    q = _project_onto_rows(centered, read)
 +    coordinates, feet = _curve_coordinates_tir(
 +        q,
 +        curve_parameters,
@@ -5892,11 +5936,11 @@ index 00000000..29d20f3b
 +        setattr(cls, name, _method(function, with_model))
 diff --git a/python/mlc_llm/model/drowse_units.py b/python/mlc_llm/model/drowse_units.py
 new file mode 100644
-index 00000000..523e7baf
+index 00000000..31278720
 --- /dev/null
 +++ b/python/mlc_llm/model/drowse_units.py
 @@ -0,0 +1,1342 @@
-+"""Drowse hook ABI v5 (`block-sites-v5`): in-block unit sites for dense blocks.
++"""Drowse hook ABI v6 (`block-sites-v6`): in-block unit sites for dense blocks.
 +
 +Every eligible model's decoder layer runs `drowse_block(hidden, cache, layer_id, sites)`. With
 +`NO_SITES` the block is op for op the upstream layer (the v4 graph); `UnitSites` inserts, per
@@ -5930,9 +5974,9 @@ index 00000000..523e7baf
 +DROWSE_KERNEL_STORAGE_BINDINGS = 8
 +
 +HOOK_PROFILE_SCHEMA_VERSION = 4
-+HOOK_PROFILE_ID = 4
-+BLOCK_SITES_HOOK_ABI_VERSION = 5
-+STRUCTURED_HOOK_FORMAT_VERSION = 4
++HOOK_PROFILE_ID = 5
++BLOCK_SITES_HOOK_ABI_VERSION = 6
++STRUCTURED_HOOK_FORMAT_VERSION = 5
 +BLOCK_SITES_EXACT_READOUT_ABI_VERSION = 2
 +
 +ACTIVATION_SILU = 1
@@ -5995,7 +6039,7 @@ index 00000000..523e7baf
 +
 +def hook_profile_values(base: tuple, block: dict | None, context_tokens: int,
 +                        prefill_chunk_size: int, hidden_size: int) -> tuple:
-+    """Descriptor schema 4: v3's 31 fields (ABI 5, format 4, readout 2 in `base`), then the block
++    """Descriptor schema 4: v3's 31 fields (ABI 6, format 5, readout 2 in `base`), then the block
 +    and unit fields. A residual library (`block is None`) reports 0 in every block field, unit
 +    capacity, `ANATOMY_STRIDE`, `UNIT_POSITIONS_FROM` and `MAX_ANATOMY_UNITS`."""
 +    units = block is not None
@@ -7527,7 +7571,7 @@ index b022bab9..95fd8a20 100644
 +
 +_install_drowse_reads()
 diff --git a/python/mlc_llm/model/llama/llama_model.py b/python/mlc_llm/model/llama/llama_model.py
-index 4659a249..e52174c2 100644
+index 4659a249..cdbe42ed 100644
 --- a/python/mlc_llm/model/llama/llama_model.py
 +++ b/python/mlc_llm/model/llama/llama_model.py
 @@ -11,6 +11,31 @@ from tvm.relax.frontend.nn import Tensor, op
@@ -7571,7 +7615,7 @@ index 4659a249..e52174c2 100644
          self.layers = nn.ModuleList(
              [LlamaDecoderLayer(config) for _ in range(config.num_hidden_layers)]
          )
-@@ -244,16 +269,137 @@ class LlamaModel(nn.Module):
+@@ -244,16 +269,143 @@ class LlamaModel(nn.Module):
          return hidden_states
  
  
@@ -7601,6 +7645,7 @@ index 4659a249..e52174c2 100644
 +        paged_kv_cache: PagedKVCache,
 +        affine_active: Tensor,
 +        affine_basis: Tensor,
++        affine_read: Tensor,
 +        affine_neutral: Tensor,
 +        affine_target: Tensor,
 +        affine_along: Tensor,
@@ -7622,6 +7667,7 @@ index 4659a249..e52174c2 100644
 +                layer_id,
 +                affine_active,
 +                affine_basis,
++                affine_read,
 +                affine_neutral,
 +                affine_target,
 +                affine_along,
@@ -7644,6 +7690,7 @@ index 4659a249..e52174c2 100644
 +        decode: bool,
 +        affine_active: Tensor,
 +        affine_basis: Tensor,
++        affine_read: Tensor,
 +        affine_neutral: Tensor,
 +        affine_target: Tensor,
 +        affine_along: Tensor,
@@ -7653,6 +7700,7 @@ index 4659a249..e52174c2 100644
 +        probe_bias: Tensor,
 +        probe_threshold: Tensor,
 +        curve_basis: Tensor,
++        curve_read: Tensor,
 +        curve_neutral: Tensor,
 +        curve_domain_kind: Tensor,
 +        curve_parameters: Tensor,
@@ -7672,6 +7720,7 @@ index 4659a249..e52174c2 100644
 +                decode,
 +                affine_active,
 +                affine_basis,
++                affine_read,
 +                affine_neutral,
 +                affine_target,
 +                affine_along,
@@ -7681,6 +7730,7 @@ index 4659a249..e52174c2 100644
 +                probe_bias,
 +                probe_threshold,
 +                curve_basis,
++                curve_read,
 +                curve_neutral,
 +                curve_domain_kind,
 +                curve_parameters,
@@ -7710,7 +7760,7 @@ index 4659a249..e52174c2 100644
          self.hidden_size = config.hidden_size
          self.vocab_size = config.vocab_size
          self.rope_scaling = config.rope_scaling
-@@ -346,6 +492,429 @@ class LlamaForCausalLM(nn.Module):
+@@ -346,6 +498,441 @@ class LlamaForCausalLM(nn.Module):
          logits = self.get_logits(hidden_states)
          return logits, paged_kv_cache
  
@@ -7770,6 +7820,7 @@ index 4659a249..e52174c2 100644
 +        paged_kv_cache: PagedKVCache,
 +        affine_active: Tensor,
 +        affine_basis: Tensor,
++        affine_read: Tensor,
 +        affine_neutral: Tensor,
 +        affine_target: Tensor,
 +        affine_along: Tensor,
@@ -7784,6 +7835,7 @@ index 4659a249..e52174c2 100644
 +            paged_kv_cache,
 +            affine_active,
 +            affine_basis,
++            affine_read,
 +            affine_neutral,
 +            affine_target,
 +            affine_along,
@@ -7802,6 +7854,7 @@ index 4659a249..e52174c2 100644
 +        paged_kv_cache: PagedKVCache,
 +        affine_active: Tensor,
 +        affine_basis: Tensor,
++        affine_read: Tensor,
 +        affine_neutral: Tensor,
 +        affine_target: Tensor,
 +        affine_along: Tensor,
@@ -7816,6 +7869,7 @@ index 4659a249..e52174c2 100644
 +            paged_kv_cache,
 +            affine_active,
 +            affine_basis,
++            affine_read,
 +            affine_neutral,
 +            affine_target,
 +            affine_along,
@@ -7880,6 +7934,7 @@ index 4659a249..e52174c2 100644
 +        paged_kv_cache: PagedKVCache,
 +        affine_active: Tensor,
 +        affine_basis: Tensor,
++        affine_read: Tensor,
 +        affine_neutral: Tensor,
 +        affine_target: Tensor,
 +        affine_along: Tensor,
@@ -7889,6 +7944,7 @@ index 4659a249..e52174c2 100644
 +        probe_bias: Tensor,
 +        probe_threshold: Tensor,
 +        curve_basis: Tensor,
++        curve_read: Tensor,
 +        curve_neutral: Tensor,
 +        curve_domain_kind: Tensor,
 +        curve_parameters: Tensor,
@@ -7900,6 +7956,7 @@ index 4659a249..e52174c2 100644
 +            False,
 +            affine_active,
 +            affine_basis,
++            affine_read,
 +            affine_neutral,
 +            affine_target,
 +            affine_along,
@@ -7909,6 +7966,7 @@ index 4659a249..e52174c2 100644
 +            probe_bias,
 +            probe_threshold,
 +            curve_basis,
++            curve_read,
 +            curve_neutral,
 +            curve_domain_kind,
 +            curve_parameters,
@@ -7923,6 +7981,7 @@ index 4659a249..e52174c2 100644
 +        paged_kv_cache: PagedKVCache,
 +        affine_active: Tensor,
 +        affine_basis: Tensor,
++        affine_read: Tensor,
 +        affine_neutral: Tensor,
 +        affine_target: Tensor,
 +        affine_along: Tensor,
@@ -7932,6 +7991,7 @@ index 4659a249..e52174c2 100644
 +        probe_bias: Tensor,
 +        probe_threshold: Tensor,
 +        curve_basis: Tensor,
++        curve_read: Tensor,
 +        curve_neutral: Tensor,
 +        curve_domain_kind: Tensor,
 +        curve_parameters: Tensor,
@@ -7943,6 +8003,7 @@ index 4659a249..e52174c2 100644
 +            True,
 +            affine_active,
 +            affine_basis,
++            affine_read,
 +            affine_neutral,
 +            affine_target,
 +            affine_along,
@@ -7952,6 +8013,7 @@ index 4659a249..e52174c2 100644
 +            probe_bias,
 +            probe_threshold,
 +            curve_basis,
++            curve_read,
 +            curve_neutral,
 +            curve_domain_kind,
 +            curve_parameters,
@@ -8140,12 +8202,12 @@ index 4659a249..e52174c2 100644
      def prefill_to_last_hidden_states(self, input_embed: Tensor, paged_kv_cache: PagedKVCache):
          op_ext.configure()
  
-@@ -422,8 +991,127 @@ class LlamaForCausalLM(nn.Module):
+@@ -422,8 +1009,127 @@ class LlamaForCausalLM(nn.Module):
              dtype=self.dtype,
          )
  
 +    def _drowse_block_spec(self):
-+        """Llama has no unit sites in hook ABI v5: the residual profile."""
++        """Llama has no unit sites in hook ABI v6: the residual profile."""
 +        return None
 +
 +    def drowse_hook_profile(self):
@@ -8268,7 +8330,7 @@ index 4659a249..e52174c2 100644
              "embed": {
                  "input_ids": nn.spec.Tensor(["seq_len"], "int32"),
                  "$": {
-@@ -462,6 +1150,24 @@ class LlamaForCausalLM(nn.Module):
+@@ -462,6 +1168,24 @@ class LlamaForCausalLM(nn.Module):
                      "effect_mode": "none",
                  },
              },
@@ -8293,7 +8355,7 @@ index 4659a249..e52174c2 100644
              "prefill_to_last_hidden_states": {
                  "input_embed": nn.spec.Tensor([1, "seq_len", self.hidden_size], self.dtype),
                  "paged_kv_cache": nn.spec.Object(object_type=PagedKVCache),
-@@ -495,6 +1201,83 @@ class LlamaForCausalLM(nn.Module):
+@@ -495,6 +1219,83 @@ class LlamaForCausalLM(nn.Module):
                      "effect_mode": "none",
                  },
              },
@@ -8377,7 +8439,7 @@ index 4659a249..e52174c2 100644
              "batch_verify": {
                  "input_embeds": nn.spec.Tensor([1, "seq_len", self.hidden_size], self.dtype),
                  "paged_kv_cache": nn.spec.Object(object_type=PagedKVCache),
-@@ -539,4 +1322,8 @@ class LlamaForCausalLM(nn.Module):
+@@ -539,4 +1340,8 @@ class LlamaForCausalLM(nn.Module):
                  },
              },
          }
@@ -8387,7 +8449,7 @@ index 4659a249..e52174c2 100644
 +
 +drowse_reads.install(LlamaForCausalLM)
 diff --git a/python/mlc_llm/model/qwen3/qwen3_model.py b/python/mlc_llm/model/qwen3/qwen3_model.py
-index f3bdfec1..7fd6a4ed 100644
+index f3bdfec1..36bba279 100644
 --- a/python/mlc_llm/model/qwen3/qwen3_model.py
 +++ b/python/mlc_llm/model/qwen3/qwen3_model.py
 @@ -12,6 +12,42 @@ from tvm.relax.frontend.nn import Tensor, op
@@ -8503,7 +8565,7 @@ index f3bdfec1..7fd6a4ed 100644
          hidden_states = self._apply_residual(out, residual=hidden_states)
          return hidden_states
  
-@@ -255,6 +311,181 @@ class Qwen3Model(nn.Module):
+@@ -255,6 +311,191 @@ class Qwen3Model(nn.Module):
          hidden_states = self.norm(hidden_states)
          return hidden_states
  
@@ -8535,6 +8597,7 @@ index f3bdfec1..7fd6a4ed 100644
 +        paged_kv_cache: PagedKVCache,
 +        affine_active: Tensor,
 +        affine_basis: Tensor,
++        affine_read: Tensor,
 +        affine_neutral: Tensor,
 +        affine_target: Tensor,
 +        affine_along: Tensor,
@@ -8554,6 +8617,7 @@ index f3bdfec1..7fd6a4ed 100644
 +                layer_id,
 +                affine_active,
 +                affine_basis,
++                affine_read,
 +                affine_neutral,
 +                affine_target,
 +                affine_along,
@@ -8576,6 +8640,7 @@ index f3bdfec1..7fd6a4ed 100644
 +        decode: bool,
 +        affine_active: Tensor,
 +        affine_basis: Tensor,
++        affine_read: Tensor,
 +        affine_neutral: Tensor,
 +        affine_target: Tensor,
 +        affine_along: Tensor,
@@ -8585,6 +8650,7 @@ index f3bdfec1..7fd6a4ed 100644
 +        probe_bias: Tensor,
 +        probe_threshold: Tensor,
 +        curve_basis: Tensor,
++        curve_read: Tensor,
 +        curve_neutral: Tensor,
 +        curve_domain_kind: Tensor,
 +        curve_parameters: Tensor,
@@ -8602,6 +8668,7 @@ index f3bdfec1..7fd6a4ed 100644
 +                decode,
 +                affine_active,
 +                affine_basis,
++                affine_read,
 +                affine_neutral,
 +                affine_target,
 +                affine_along,
@@ -8611,6 +8678,7 @@ index f3bdfec1..7fd6a4ed 100644
 +                probe_bias,
 +                probe_threshold,
 +                curve_basis,
++                curve_read,
 +                curve_neutral,
 +                curve_domain_kind,
 +                curve_parameters,
@@ -8631,6 +8699,7 @@ index f3bdfec1..7fd6a4ed 100644
 +        sites,
 +        affine_active: Tensor,
 +        affine_basis: Tensor,
++        affine_read: Tensor,
 +        affine_neutral: Tensor,
 +        affine_target: Tensor,
 +        affine_along: Tensor,
@@ -8640,6 +8709,7 @@ index f3bdfec1..7fd6a4ed 100644
 +        probe_bias: Tensor,
 +        probe_threshold: Tensor,
 +        curve_basis: Tensor,
++        curve_read: Tensor,
 +        curve_neutral: Tensor,
 +        curve_domain_kind: Tensor,
 +        curve_parameters: Tensor,
@@ -8660,6 +8730,7 @@ index f3bdfec1..7fd6a4ed 100644
 +                decode,
 +                affine_active,
 +                affine_basis,
++                affine_read,
 +                affine_neutral,
 +                affine_target,
 +                affine_along,
@@ -8669,6 +8740,7 @@ index f3bdfec1..7fd6a4ed 100644
 +                probe_bias,
 +                probe_threshold,
 +                curve_basis,
++                curve_read,
 +                curve_neutral,
 +                curve_domain_kind,
 +                curve_parameters,
@@ -8685,7 +8757,7 @@ index f3bdfec1..7fd6a4ed 100644
  
  class Qwen3LMHeadModel(nn.Module):
      def __init__(self, config: Qwen3Config):
-@@ -274,6 +505,8 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -274,6 +515,8 @@ class Qwen3LMHeadModel(nn.Module):
          self.tensor_parallel_shards = config.tensor_parallel_shards
          self.head_dim = config.head_dim
          self.weight_block_size = config.weight_block_size
@@ -8694,7 +8766,7 @@ index f3bdfec1..7fd6a4ed 100644
  
      def to(self, dtype: Optional[str] = None):
          super().to(dtype=dtype)
-@@ -330,6 +563,680 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -330,6 +573,704 @@ class Qwen3LMHeadModel(nn.Module):
              logits = logits.astype("float32")
          return logits, paged_kv_cache
  
@@ -8752,6 +8824,7 @@ index f3bdfec1..7fd6a4ed 100644
 +        paged_kv_cache: PagedKVCache,
 +        affine_active: Tensor,
 +        affine_basis: Tensor,
++        affine_read: Tensor,
 +        affine_neutral: Tensor,
 +        affine_target: Tensor,
 +        affine_along: Tensor,
@@ -8766,6 +8839,7 @@ index f3bdfec1..7fd6a4ed 100644
 +            paged_kv_cache,
 +            affine_active,
 +            affine_basis,
++            affine_read,
 +            affine_neutral,
 +            affine_target,
 +            affine_along,
@@ -8784,6 +8858,7 @@ index f3bdfec1..7fd6a4ed 100644
 +        paged_kv_cache: PagedKVCache,
 +        affine_active: Tensor,
 +        affine_basis: Tensor,
++        affine_read: Tensor,
 +        affine_neutral: Tensor,
 +        affine_target: Tensor,
 +        affine_along: Tensor,
@@ -8798,6 +8873,7 @@ index f3bdfec1..7fd6a4ed 100644
 +            paged_kv_cache,
 +            affine_active,
 +            affine_basis,
++            affine_read,
 +            affine_neutral,
 +            affine_target,
 +            affine_along,
@@ -8862,6 +8938,7 @@ index f3bdfec1..7fd6a4ed 100644
 +        paged_kv_cache: PagedKVCache,
 +        affine_active: Tensor,
 +        affine_basis: Tensor,
++        affine_read: Tensor,
 +        affine_neutral: Tensor,
 +        affine_target: Tensor,
 +        affine_along: Tensor,
@@ -8871,6 +8948,7 @@ index f3bdfec1..7fd6a4ed 100644
 +        probe_bias: Tensor,
 +        probe_threshold: Tensor,
 +        curve_basis: Tensor,
++        curve_read: Tensor,
 +        curve_neutral: Tensor,
 +        curve_domain_kind: Tensor,
 +        curve_parameters: Tensor,
@@ -8882,6 +8960,7 @@ index f3bdfec1..7fd6a4ed 100644
 +            False,
 +            affine_active,
 +            affine_basis,
++            affine_read,
 +            affine_neutral,
 +            affine_target,
 +            affine_along,
@@ -8891,6 +8970,7 @@ index f3bdfec1..7fd6a4ed 100644
 +            probe_bias,
 +            probe_threshold,
 +            curve_basis,
++            curve_read,
 +            curve_neutral,
 +            curve_domain_kind,
 +            curve_parameters,
@@ -8905,6 +8985,7 @@ index f3bdfec1..7fd6a4ed 100644
 +        paged_kv_cache: PagedKVCache,
 +        affine_active: Tensor,
 +        affine_basis: Tensor,
++        affine_read: Tensor,
 +        affine_neutral: Tensor,
 +        affine_target: Tensor,
 +        affine_along: Tensor,
@@ -8914,6 +8995,7 @@ index f3bdfec1..7fd6a4ed 100644
 +        probe_bias: Tensor,
 +        probe_threshold: Tensor,
 +        curve_basis: Tensor,
++        curve_read: Tensor,
 +        curve_neutral: Tensor,
 +        curve_domain_kind: Tensor,
 +        curve_parameters: Tensor,
@@ -8925,6 +9007,7 @@ index f3bdfec1..7fd6a4ed 100644
 +            True,
 +            affine_active,
 +            affine_basis,
++            affine_read,
 +            affine_neutral,
 +            affine_target,
 +            affine_along,
@@ -8934,6 +9017,7 @@ index f3bdfec1..7fd6a4ed 100644
 +            probe_bias,
 +            probe_threshold,
 +            curve_basis,
++            curve_read,
 +            curve_neutral,
 +            curve_domain_kind,
 +            curve_parameters,
@@ -8971,6 +9055,7 @@ index f3bdfec1..7fd6a4ed 100644
 +        paged_kv_cache: PagedKVCache,
 +        affine_active: Tensor,
 +        affine_basis: Tensor,
++        affine_read: Tensor,
 +        affine_neutral: Tensor,
 +        affine_target: Tensor,
 +        affine_along: Tensor,
@@ -8980,6 +9065,7 @@ index f3bdfec1..7fd6a4ed 100644
 +        probe_bias: Tensor,
 +        probe_threshold: Tensor,
 +        curve_basis: Tensor,
++        curve_read: Tensor,
 +        curve_neutral: Tensor,
 +        curve_domain_kind: Tensor,
 +        curve_parameters: Tensor,
@@ -9000,6 +9086,7 @@ index f3bdfec1..7fd6a4ed 100644
 +                sites,
 +                affine_active,
 +                affine_basis,
++                affine_read,
 +                affine_neutral,
 +                affine_target,
 +                affine_along,
@@ -9009,6 +9096,7 @@ index f3bdfec1..7fd6a4ed 100644
 +                probe_bias,
 +                probe_threshold,
 +                curve_basis,
++                curve_read,
 +                curve_neutral,
 +                curve_domain_kind,
 +                curve_parameters,
@@ -9031,6 +9119,7 @@ index f3bdfec1..7fd6a4ed 100644
 +        paged_kv_cache: PagedKVCache,
 +        affine_active: Tensor,
 +        affine_basis: Tensor,
++        affine_read: Tensor,
 +        affine_neutral: Tensor,
 +        affine_target: Tensor,
 +        affine_along: Tensor,
@@ -9040,6 +9129,7 @@ index f3bdfec1..7fd6a4ed 100644
 +        probe_bias: Tensor,
 +        probe_threshold: Tensor,
 +        curve_basis: Tensor,
++        curve_read: Tensor,
 +        curve_neutral: Tensor,
 +        curve_domain_kind: Tensor,
 +        curve_parameters: Tensor,
@@ -9060,6 +9150,7 @@ index f3bdfec1..7fd6a4ed 100644
 +                sites,
 +                affine_active,
 +                affine_basis,
++                affine_read,
 +                affine_neutral,
 +                affine_target,
 +                affine_along,
@@ -9069,6 +9160,7 @@ index f3bdfec1..7fd6a4ed 100644
 +                probe_bias,
 +                probe_threshold,
 +                curve_basis,
++                curve_read,
 +                curve_neutral,
 +                curve_domain_kind,
 +                curve_parameters,
@@ -9091,6 +9183,7 @@ index f3bdfec1..7fd6a4ed 100644
 +        paged_kv_cache: PagedKVCache,
 +        affine_active: Tensor,
 +        affine_basis: Tensor,
++        affine_read: Tensor,
 +        affine_neutral: Tensor,
 +        affine_target: Tensor,
 +        affine_along: Tensor,
@@ -9100,6 +9193,7 @@ index f3bdfec1..7fd6a4ed 100644
 +        probe_bias: Tensor,
 +        probe_threshold: Tensor,
 +        curve_basis: Tensor,
++        curve_read: Tensor,
 +        curve_neutral: Tensor,
 +        curve_domain_kind: Tensor,
 +        curve_parameters: Tensor,
@@ -9146,6 +9240,7 @@ index f3bdfec1..7fd6a4ed 100644
 +                sites,
 +                affine_active,
 +                affine_basis,
++                affine_read,
 +                affine_neutral,
 +                affine_target,
 +                affine_along,
@@ -9155,6 +9250,7 @@ index f3bdfec1..7fd6a4ed 100644
 +                probe_bias,
 +                probe_threshold,
 +                curve_basis,
++                curve_read,
 +                curve_neutral,
 +                curve_domain_kind,
 +                curve_parameters,
@@ -9375,7 +9471,7 @@ index f3bdfec1..7fd6a4ed 100644
      def batch_prefill(
          self,
          input_embeds: Tensor,
-@@ -375,8 +1282,147 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -375,8 +1316,147 @@ class Qwen3LMHeadModel(nn.Module):
              dtype=self.dtype,
          )
  
@@ -9523,7 +9619,7 @@ index f3bdfec1..7fd6a4ed 100644
              "embed": {
                  "input_ids": nn.spec.Tensor(["seq_len"], "int32"),
                  "$": {
-@@ -400,6 +1446,24 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -400,6 +1480,24 @@ class Qwen3LMHeadModel(nn.Module):
                      "effect_mode": "none",
                  },
              },
@@ -9548,7 +9644,7 @@ index f3bdfec1..7fd6a4ed 100644
              "batch_prefill": {
                  "input_embeds": nn.spec.Tensor([1, "seq_len", self.hidden_size], self.dtype),
                  "logit_positions": nn.spec.Tensor(["batch_size"], "int32"),
-@@ -417,6 +1481,83 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -417,6 +1515,83 @@ class Qwen3LMHeadModel(nn.Module):
                      "effect_mode": "none",
                  },
              },
@@ -9632,7 +9728,7 @@ index f3bdfec1..7fd6a4ed 100644
              "batch_verify": {
                  "input_embeds": nn.spec.Tensor([1, "seq_len", self.hidden_size], self.dtype),
                  "paged_kv_cache": nn.spec.Object(object_type=PagedKVCache),
-@@ -437,8 +1578,71 @@ class Qwen3LMHeadModel(nn.Module):
+@@ -437,8 +1612,71 @@ class Qwen3LMHeadModel(nn.Module):
                  },
              },
          }

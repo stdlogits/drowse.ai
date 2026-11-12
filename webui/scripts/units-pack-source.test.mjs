@@ -195,7 +195,7 @@ try {
     }
 
     // ---------------- the units service over the source: unit-reads as drowse ---
-    const backend = cpu.cpuBlockSitesBackend(fx.model, { profile: profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4, contextTokens: CONTEXT });
+    const backend = cpu.cpuBlockSitesBackend(fx.model, { profile: profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V5, contextTokens: CONTEXT });
     const units = new service.BrowserUnitsService({
       modelId: "units-tiny",
       blockSites: () => backend,

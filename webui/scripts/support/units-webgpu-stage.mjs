@@ -87,8 +87,8 @@ export async function stageUnitsFixture({ fixtures, arch, quantization, work, ch
     tokenizerSha256: artifactSha("tokenizer.json"),
     chatTemplateSha256: artifactSha("tokenizer_config.json"),
     modelLibrarySha256: artifactSha("model.wasm"),
-    runtimeAbi: "drowse-web-runtime-v2",
-    hookAbi: "block-sites-v5",
+    runtimeAbi: "drowse-web-runtime-v3",
+    hookAbi: "block-sites-v6",
     hiddenSize,
     layerMap: Array.from({ length: layerCount }, (_, layer) => layer),
   };

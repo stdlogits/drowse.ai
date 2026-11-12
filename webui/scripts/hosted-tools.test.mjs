@@ -61,11 +61,11 @@ const dir = await mkdtemp(join(tmpdir(), "drowse-catalog-test-"));
   assert.throws(() => validateRuntimeLock({ ...lock, hookAbi: "post-block-residual-v4" }), /unsupported schema or ABI/);
   assert.throws(
     () => validateRuntimeLock(withModel("qwen3-1.7b", (model) => {
-      model.structuredHookProfile = "standard-v4-residual";
+      model.structuredHookProfile = "standard-v5-residual";
       delete model.blockSpec;
       model.unitRefusal = "refused";
     })),
-    /qwen3 libraries attest standard-v4, not standard-v4-residual/,
+    /qwen3 libraries attest standard-v5, not standard-v5-residual/,
   );
   assert.throws(
     () => validateRuntimeLock(withModel("pythia-70m-base", (model) => { model.unitRefusal = ""; })),

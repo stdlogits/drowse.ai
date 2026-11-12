@@ -51,9 +51,9 @@ export interface BrowserInstrumentPackArtifacts {
 export interface BrowserModelLoadRequest {
   model: CatalogModel;
   variant: ModelVariant;
-  /** The runtime lock's `blockSpec` for this variant (B1 §8.2), which a `standard-v4` library's
+  /** The runtime lock's `blockSpec` for this variant (B1 §8.2), which a `standard-v5` library's
    *  descriptor is attested against; null or absent for a residual library (and until W4
-   *  records it, when a `standard-v4` load fails closed with `HOOK_ABI_MISMATCH`). */
+   *  records it, when a `standard-v5` load fails closed with `HOOK_ABI_MISMATCH`). */
   blockSpec?: BlockSpec | null;
   /** The runtime lock's `unitRefusal` for a residual variant (native `UnsupportedBlockError`'s
    *  text, B1 §7): what its unit members answer (422). */
@@ -105,7 +105,7 @@ export interface BrowserModelBackend {
   /** The loaded compiler's installed manifolds, read without waiting on anything, for the
    *  steering checks drowse makes before its session lock; `null` when there is none to ask. */
   steeringManifolds?(): readonly SteeringManifoldEntry[] | null;
-  /** The loaded library's hook ABI v5 device surface (`block-sites-v5`), read without waiting.
+  /** The loaded library's hook ABI v6 device surface (`block-sites-v6`), read without waiting.
    *  Before a v5 library is loaded its `capabilities()` is null and every member rejects. */
   blockSites(): BrowserBlockSitesBackend;
 }
@@ -154,7 +154,7 @@ function backendUnavailable(): Error & {
 }
 
 // =================================================================================
-// Hook ABI v5 (`block-sites-v5`): the device surface the worker (B5) calls and the
+// Hook ABI v6 (`block-sites-v6`): the device surface the worker (B5) calls and the
 // WebLLM bridge (B4) implements. Section numbers are B1-hook-abi-v5.md's; the contract is
 // browser-runtime/HOOK_ABI.md. Every tensor crossing the seam is a typed array with explicit
 // dims and dtype, row-major; every value is fp32 over the resident (dequantized q4) weights.
@@ -295,7 +295,7 @@ export function validateBlockSitesCapabilities(value: BlockSitesCapabilities): B
   const units = profile.unitSites === 1;
   if (units !== (value.blockSpec !== null) || units === (typeof value.unitRefusal === "string")) {
     throw new TypeError(
-      "A standard-v4 library carries a block spec and no refusal; a residual one the reverse",
+      "A standard-v5 library carries a block spec and no refusal; a residual one the reverse",
     );
   }
   if (!units && value.unitRefusal!.length === 0) {
@@ -306,7 +306,7 @@ export function validateBlockSitesCapabilities(value: BlockSitesCapabilities): B
 
 // ------------------------------------------------------------------ generation ---
 
-/** What one forward of a generation under a bound drowse-structured-v4 program reads back in
+/** What one forward of a generation under a bound drowse-structured-v5 program reads back in
  *  its single measurement-bundle sync (B1 §2.2). The worker divides each tap by its schema
  *  entry's reading scale; gates read the prior step's scaled value through `priorScores`. */
 export interface BlockSitesForwardReadback {
@@ -424,7 +424,7 @@ export interface BrowserBlockSitesBackend {
   capabilities(): BlockSitesCapabilities | null;
 
   // ---- generation (§2.2, §3.4) ----
-  /** §2.2/§3.4: check a drowse-structured-v4 program against the attested profile (a unit section
+  /** §2.2/§3.4: check a drowse-structured-v5 program against the attested profile (a unit section
    *  on a residual library is the refusal), fill `tapGrams` with `G_h = Bᵀ B` of each tapped head
    *  (`drowse_head_write_grams`) and return the program to put in the generation plan. A program
    *  with a unit section runs `drowse_units_batch_*`; each forward reads back

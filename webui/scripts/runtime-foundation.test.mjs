@@ -75,7 +75,7 @@ function catalogDocument(overrides = {}) {
           {
             id: "smollm2-360m-q4f16",
             tier: "fastest",
-            structuredHookProfile: "standard-v4",
+            structuredHookProfile: "standard-v5",
             thinkingProfile: null,
             contextProfiles: [
               {
@@ -2920,11 +2920,11 @@ try {
     );
     assert.equal(verifiedAlternateOwner.document.models[0].variants[0].files[0].url.includes("/stdlogits/"), true);
 
-    // A v5 variant's lock entry records what its library attests: a standard-v4 one its block
+    // A v5 variant's lock entry records what its library attests: a standard-v5 one its block
     // spec (the load request's), a residual one its unit refusal, both their prefill chunk;
     // without the spec or refusal the catalog fails.
     const lockedVariant = verified.document.models[0].variants[0];
-    assert.equal(lockedVariant.structuredHookProfile, "standard-v4");
+    assert.equal(lockedVariant.structuredHookProfile, "standard-v5");
     assert.deepEqual(
       catalog.lockedLibraryContract(policy.runtimeLockModels, lockedVariant),
       fixtureLibraryContract(lockedVariant),
@@ -3097,7 +3097,7 @@ try {
 
     const exactReadout = catalogDocument();
     const exactReadoutVariant = exactReadout.models[0].variants[0];
-    exactReadoutVariant.structuredHookProfile = "standard-v4-residual";
+    exactReadoutVariant.structuredHookProfile = "standard-v5-residual";
     Object.assign(exactReadoutVariant.requirements.limits, {
       maxBufferSize: 134_217_728,
       maxStorageBufferBindingSize: 134_217_728,

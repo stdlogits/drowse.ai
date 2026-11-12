@@ -18,7 +18,7 @@ import {
   type BrowserModelLoadResult,
 } from "./modelBackend";
 
-/** The fixture model has no block description: every hook ABI v5 member answers as drowse 6.0
+/** The fixture model has no block description: every hook ABI v6 member answers as drowse 6.0
  *  answers a unit or anatomy call on such a model (`UnsupportedBlockError`, 422). */
 export const FIXTURE_UNIT_REFUSAL =
   "the deterministic fixture model has no transformer blocks to describe";

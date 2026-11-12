@@ -32,7 +32,7 @@ try {
     for (const name of golden.probes) compiler.attachProbe({ selector: name });
     for (const entry of golden.cases) {
       const compiled = await compile(entry.steering ?? "");
-      assert.equal(compiled.format, "drowse-structured-v4", `${arch} ${entry.name}`);
+      assert.equal(compiled.format, "drowse-structured-v5", `${arch} ${entry.name}`);
       const bound = await fx.backend.bindStructuredProgram(compiled);
       const evaluate = hooks.createStructuredHookControlEvaluator(bound);
       const replay = await fx.backend.openReplay({ program: bound, anatomyPosition: null, activity: null, patternLayers: null });

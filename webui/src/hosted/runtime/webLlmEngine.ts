@@ -7,10 +7,7 @@ import type {
   BrowserModelLoadRequest,
   BrowserModelLoadResult,
 } from "./modelBackend";
-import type {
-  ModelVariantRequirements,
-  StructuredHookProfileId,
-} from "../../../../drowse/webui/src/lib/runtime/contracts";
+import type { ModelVariantRequirements } from "../../../../drowse/webui/src/lib/runtime/contracts";
 import {
   MAX_OUTPUT_TOKEN_COUNT,
   outputTokenLimitForRuntime,
@@ -29,6 +26,7 @@ import {
   EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
   expectedHookProfileDescriptor,
   hookProfileDescriptorMismatches,
+  type BlockSitesProfileId,
   type BlockSpec,
   type HookProfileDescriptorModel,
   resolveStructuredHookProfile,
@@ -101,7 +99,7 @@ interface DrowseSaeTopFeatureReadout {
 interface DrowseMeasurementBundle {
   scalar?: Float32Array;
   geometry?: Float32Array;
-  /** Hook ABI v5's live unit tap (`[maxUnitTaps]`), when the program has a unit section. */
+  /** Hook ABI v6's live unit tap (`[maxUnitTaps]`), when the program has a unit section. */
   unitTaps?: Float32Array;
   /** The forward's `[L, d]` capture, when the program asks for it (`hiddenCapture`). */
   hidden?: Float32Array;
@@ -141,9 +139,9 @@ export interface DrowseWebLlmEngineInstance extends WebLlmGenerationEngine {
     modelId?: string,
     unitActive?: Float32Array,
   ): Promise<void>;
-  /** Hook ABI v5: the library compiles unit sites and the units pair (`standard-v4`). */
+  /** Hook ABI v6: the library compiles unit sites and the units pair (`standard-v5`). */
   supportsDrowseUnitSites?(modelId?: string): Promise<boolean>;
-  /** Hook ABI v5's block-sites device surface (replay, residents, attention rows). */
+  /** Hook ABI v6's block-sites device surface (replay, residents, attention rows). */
   drowseBlockSites?(request: WebLlmBlockSitesRequest, modelId?: string): Promise<unknown>;
   /** Remove the installed hook program (the model runs unsteered). */
   clearDrowseProgram(modelId?: string): Promise<void>;
@@ -260,7 +258,7 @@ export interface DrowseWebLlmModule {
 
 export interface CompiledDrowseStructuredHookProfile {
   schemaVersion: 2 | 3 | 4;
-  id: StructuredHookProfileId;
+  id: BlockSitesProfileId;
   hookAbi: string;
   format:
 typeof STRUCTURED_HOOK_FORMAT;
@@ -291,9 +289,9 @@ typeof STRUCTURED_HOOK_FORMAT;
   exactReadoutAbi?: typeof DROWSE_EXACT_READOUT_ABI | typeof BLOCK_SITES_EXACT_READOUT_ABI;
   readoutTopK?: typeof DROWSE_READOUT_TOP_K;
   maxSaeFeaturesPerChunk?: typeof DROWSE_EXACT_READOUT_MAX_SAE_FEATURES_PER_CHUNK;
-  /** Hook ABI v5 (schema 4): whether the library compiles unit sites. */
+  /** Hook ABI v6 (schema 4): whether the library compiles unit sites. */
   unitSites?: 0 | 1;
-  /** Hook ABI v5: the whole attested descriptor (C0's `HOOK_PROFILE_DESCRIPTOR_V4_FIELDS`). */
+  /** Hook ABI v6: the whole attested descriptor (C0's `HOOK_PROFILE_DESCRIPTOR_V4_FIELDS`). */
   descriptor?: Int32Array;
 }
 
@@ -769,7 +767,7 @@ export class DrowseWebLlmRuntime {
 
   hookCapabilities(): DrowseHookCapabilities {
     this.requireEngine();
-    // `units` and `slens` follow the library's v5 profile (a standard-v4 library has unit sites).
+    // `units` and `slens` follow the library's v5 profile (a standard-v5 library has unit sites).
     return blockSitesHookCapabilities({
       ...AFFINE_FEASIBILITY_CAPABILITIES,
       curved_manifold: this.curvedHooks,
@@ -832,7 +830,7 @@ export class DrowseWebLlmRuntime {
     await this.requireEngine().setDrowseStructuredProgram(program);
   }
 
-  /** Hook ABI v5's attested surface (B1 §3.5), or null when the library predates it. */
+  /** Hook ABI v6's attested surface (B1 §3.5), or null when the library predates it. */
   blockSitesCapabilities(): BlockSitesCapabilities | null {
     return this.blockSites;
   }
@@ -1166,7 +1164,7 @@ export class DrowseWebLlmRuntime {
   /** The structured program's probe slots at each position (`[positions, L, maxProbes]`): the
    *  program's last-row measurement of a fresh prefill of the row's tokens through that
    *  position, so a probe reads the residual after the hook at every layer. The release
-   *  tools' steered capture on hook ABI v5 (a block-sites library has no other steered read
+   *  tools' steered capture on hook ABI v6 (a block-sites library has no other steered read
    *  of a position on every profile). */
   async measurePreparedPositions(
     row: DrowsePreparedCaptureRow,
@@ -1469,7 +1467,7 @@ function lockedLibraryBindingBytes(
   } catch {
     throw runtimeError(
       "STRUCTURED_HOOK_PROFILE_MISMATCH",
-      `Hook ABI block-sites-v5 libraries attest standard-v4 or standard-v4-residual, not ${String(request.variant.structuredHookProfile)}`,
+      `Hook ABI block-sites-v6 libraries attest standard-v5 or standard-v5-residual, not ${String(request.variant.structuredHookProfile)}`,
     );
   }
   const model = hookProfileDescriptorModel(request);
@@ -1490,7 +1488,7 @@ function lockedLibraryBindingBytes(
   });
 }
 
-/** Hook ABI v5: the library's schema-4 descriptor, element by element, against the lock (B1
+/** Hook ABI v6: the library's schema-4 descriptor, element by element, against the lock (B1
  *  §3.5 attestation); every mismatch fails the load with `HOOK_ABI_MISMATCH`. */
 function attestBlockSitesHookProfile(
   record: Record<string, unknown>,
@@ -1518,7 +1516,7 @@ function attestBlockSitesHookProfile(
   ) {
     throw runtimeError(
       "HOOK_ABI_MISMATCH",
-      "The loaded model library does not attest hook ABI block-sites-v5 under the lock's profile",
+      "The loaded model library does not attest hook ABI block-sites-v6 under the lock's profile",
     );
   }
   const mismatches = hookProfileDescriptorMismatches(descriptor as number[], expectedDescriptor);
@@ -1615,7 +1613,7 @@ export function attestCompiledStructuredHookProfile(
   } catch {
     throw runtimeError(
       "STRUCTURED_HOOK_PROFILE_MISMATCH",
-      `Hook ABI block-sites-v5 libraries attest standard-v4 or standard-v4-residual, not ${String(request.variant.structuredHookProfile)}`,
+      `Hook ABI block-sites-v6 libraries attest standard-v5 or standard-v5-residual, not ${String(request.variant.structuredHookProfile)}`,
     );
   }
   return attestBlockSitesHookProfile(record, request, moduleHookAbi);
@@ -1625,7 +1623,7 @@ function assertExactReadoutProfile(
   profile: CompiledDrowseStructuredHookProfile,
 ): void {
   const v5 = profile.schemaVersion === 4 &&
-    (profile.id === "standard-v4" || profile.id === "standard-v4-residual") &&
+    (profile.id === "standard-v5" || profile.id === "standard-v5-residual") &&
     profile.exactReadoutAbiVersion === BLOCK_SITES_EXACT_READOUT_ABI_VERSION &&
     profile.exactReadoutAbi === BLOCK_SITES_EXACT_READOUT_ABI;
   if (
@@ -1642,12 +1640,12 @@ function assertExactReadoutProfile(
 }
 
 function assertExactReadoutWebGpuRequirements(
-  structuredHookProfile: StructuredHookProfileId,
+  structuredHookProfile: string,
   requirements: ModelVariantRequirements,
 ): void {
   if (
-    structuredHookProfile !== "standard-v4" &&
-    structuredHookProfile !== "standard-v4-residual"
+    structuredHookProfile !== "standard-v5" &&
+    structuredHookProfile !== "standard-v5-residual"
   ) return;
   for (const [name, minimum] of Object.entries(
     EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,

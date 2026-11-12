@@ -29,7 +29,7 @@ const f32 = (shape, values) => ({ shape, data: Float32Array.from(values) });
 
 /**
  * `spec`:
- * - `hiddenSize`, `layerCount`, `structuredHookProfile` (default `standard-v4`), `modelId`;
+ * - `hiddenSize`, `layerCount`, `structuredHookProfile` (default `standard-v5`), `modelId`;
  * - `whiteners`: `[{layer, mean, basis: [[d]…], eigenvalues, ridge}]`;
  * - `manifolds`: `[{name, labels, layers: [{layer, mean?, basis: [[d]…], nodeCoordinates: [[r]…]}],
  *   nodeCoordinates?, shares?}]` (flat), or `{name, labels, curved: true, layers: [{layer,
@@ -162,7 +162,7 @@ export async function corePackRequest(server, spec) {
   return {
     model: { id: spec.modelId ?? "fixture-model" },
     variant: {
-      structuredHookProfile: spec.structuredHookProfile ?? "standard-v4",
+      structuredHookProfile: spec.structuredHookProfile ?? "standard-v5",
       runtimeIdentity,
       runtimeIdentitySha256: fingerprint,
       contextProfiles: [{ contextTokens: 2048, bindingSha256: binding }],

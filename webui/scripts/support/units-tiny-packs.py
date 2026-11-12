@@ -34,8 +34,8 @@ def main() -> None:
             "tokenizerSha256": "1" * 64,
             "chatTemplateSha256": "2" * 64,
             "modelLibrarySha256": "3" * 64,
-            "runtimeAbi": "drowse-web-runtime-v2",
-            "hookAbi": "block-sites-v5",
+            "runtimeAbi": "drowse-web-runtime-v3",
+            "hookAbi": "block-sites-v6",
             "hiddenSize": model.d_model,
             "layerMap": list(range(model.n_layers)),
         }

@@ -2,14 +2,14 @@ export const BROWSER_FULL_RUNTIME_TOOL_VERSION = "drowse-real-browser-e2e-v5";
 
 /** The physical harness's checks for a hook ABI v5 library, in order. `load` attests the
  *  library's schema-4 descriptor against the lock (profile, block spec, capacities); a
- *  `standard-v4` library then runs `units` (a unit ablation that moves the next-token
+ *  `standard-v5` library then runs `units` (a unit ablation that moves the next-token
  *  distribution, finite unit taps, one token-anatomy replay, one static unit read and the S
- *  readout), a `standard-v4-residual` one `unit_refusal` (each unit call answers the lock's
+ *  readout), a `standard-v5-residual` one `unit_refusal` (each unit call answers the lock's
  *  `unitRefusal`, and the library exports no unit function). */
 export function requiredBrowserFullRuntimeChecks(structuredHookProfile) {
   const unitCheck = {
-    "standard-v4": "units",
-    "standard-v4-residual": "unit_refusal",
+    "standard-v5": "units",
+    "standard-v5-residual": "unit_refusal",
   }[structuredHookProfile];
   if (unitCheck === undefined) {
     throw new Error(`structured hook profile ${JSON.stringify(structuredHookProfile)} predates hook ABI v5`);
@@ -179,22 +179,22 @@ export function parseBrowserFullRuntimeArguments(args) {
 }
 
 /** The instrument packs a hook ABI v5 library runs with, as the catalog admits them
- *  (`build-hosted-catalog.mjs`): a `standard-v4` library carries its R, S and units packs, a
- *  `standard-v4-residual` one no S or units pack (an R pack is optional: a provider lens). An SAE
+ *  (`build-hosted-catalog.mjs`): a `standard-v5` library carries its R, S and units packs, a
+ *  `standard-v5-residual` one no S or units pack (an R pack is optional: a provider lens). An SAE
  *  pack is optional on both. Returns the pack kinds present, in staging order. */
 export function validateBrowserFullRuntimePackSets(structuredHookProfile, directories) {
   requiredBrowserFullRuntimeChecks(structuredHookProfile);
   const present = (kind) => directories[kind] !== null && directories[kind] !== undefined;
-  if (structuredHookProfile === "standard-v4") {
+  if (structuredHookProfile === "standard-v5") {
     for (const [kind, flag] of [["jlens", "--jlens-directory"], ["slens", "--slens-directory"], ["units", "--units-directory"]]) {
       if (!present(kind)) {
-        throw new Error(`${flag} is required: a standard-v4 library ships its R, S and units packs`);
+        throw new Error(`${flag} is required: a standard-v5 library ships its R, S and units packs`);
       }
     }
   } else {
     for (const [kind, flag] of [["slens", "--slens-directory"], ["units", "--units-directory"]]) {
       if (present(kind)) {
-        throw new Error(`${flag} is refused: a standard-v4-residual library has no S lens or units`);
+        throw new Error(`${flag} is refused: a standard-v5-residual library has no S lens or units`);
       }
     }
   }
