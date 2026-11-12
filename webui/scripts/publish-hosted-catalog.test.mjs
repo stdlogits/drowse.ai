@@ -76,16 +76,17 @@ const distribution = {
   minimumAcceptedSequence: 7,
   publicKeys: [],
 };
-// Runtime v2 publishes at its own directory, which the distribution lock names; the root keeps
-// what deployed v1 builds read.
-assert.deepEqual(CATALOG_DIRECTORIES, ["", "v2/"]);
+// Each runtime generation publishes at its own directory, which the distribution lock names (v3:
+// hook ABI v6); earlier directories keep what deployed builds of their runtime read.
+assert.deepEqual(CATALOG_DIRECTORIES, ["", "v2/", "v3/"]);
 const lockFile = JSON.parse(await readFile(new URL("../../browser-runtime/distribution-lock.json", import.meta.url), "utf8"));
 assert.equal(lockFile.catalogUrl, CURRENT_CATALOG_URLS.catalogUrl);
 assert.equal(lockFile.signatureUrl, CURRENT_CATALOG_URLS.signatureUrl);
-assert.equal(CURRENT_CATALOG_URLS.catalogUrl, `https://huggingface.co/${repository}/resolve/main/v2/catalog.json`);
+assert.equal(CURRENT_CATALOG_URLS.catalogUrl, `https://huggingface.co/${repository}/resolve/main/v3/catalog.json`);
 assert.deepEqual(catalogLocation(distribution), { repository, directory: "v2/" });
 assert.deepEqual(catalogLocation(catalogUrls("")), { repository, directory: "" });
 assert.equal(previousCatalogDirectory("v2/"), "");
+assert.equal(previousCatalogDirectory("v3/"), "v2/");
 assert.equal(previousCatalogDirectory(""), null);
 assert.throws(
   () => catalogLocation({
@@ -98,7 +99,7 @@ assert.throws(
   () => catalogLocation({ ...distribution, signatureUrl: catalogUrls("").signatureUrl }),
   /one directory of one repository/,
 );
-assert.throws(() => catalogLocation(catalogUrls("v3/")), /not a published catalog path/);
+assert.throws(() => catalogLocation(catalogUrls("v4/")), /not a published catalog path/);
 assert.throws(
   () => catalogLocation({ ...distribution, catalogUrl: `https://huggingface.co/${repository}/resolve/dev/v2/catalog.json` }),
   /main-branch URL/,
@@ -234,7 +235,7 @@ try {
     /first catalog at v2\/ must advance a published catalog at the root/,
   );
   await assert.rejects(
-    () => validatePublishedAdvance(1, "v3/", fetchPair, distribution.publicKeys),
+    () => validatePublishedAdvance(1, "v4/", fetchPair, distribution.publicKeys),
     /not a published catalog path/,
   );
 

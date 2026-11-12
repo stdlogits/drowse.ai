@@ -565,8 +565,8 @@ authorizes catalog downloads.
 Each browser runtime generation reads its catalog at its own path of
 `stdlogits/drowse-web-catalog` (`webui/scripts/hosted-catalog-location.mjs`): runtime v1
 builds read the root `catalog.json` (sequences up to 10), runtime v2 builds (hook ABI v5)
-`v2/catalog.json` and `v2/catalog.sig.json` (from 11), which the lock names and
-`check-runtime-lock.mjs` requires. Publishing a catalog for the new runtime therefore never
+`v2/catalog.json` (11), runtime v3 builds (hook ABI v6) `v3/catalog.json` and
+`v3/catalog.sig.json` (from 12), which the lock names and `check-runtime-lock.mjs` requires. Publishing a catalog for the new runtime therefore never
 changes what the deployed site reads, and builds of the previous runtime keep working until
 the new one is deployed.
 
@@ -604,8 +604,8 @@ accepts an Ed25519 PKCS#8 PEM key path and signs the exact `catalog.json` bytes.
 The publisher writes to the directory the lock's URLs name and verifies the catalog published
 there against the lock's keys before it advances the sequence. The first catalog at a new
 directory has nothing there to advance, so the publisher verifies the previous directory's
-catalog instead (the one deployed builds still read) and requires a greater sequence: catalog 11
-at `v2/` must verify the root's catalog 10 and exceed it. A new directory whose predecessor has
+catalog instead (the one deployed builds still read) and requires a greater sequence: catalog 12
+at `v3/` must verify `v2/`'s catalog 11 and exceed it. A new directory whose predecessor has
 nothing published is refused; only the root may start without one. `./deploy.sh`
 checks the signed catalog at the lock's URL before every upload (`preflight-hosted-distribution.mjs`),
 so a build never ships pointing at an unpublished path. A rotation that cannot sign with the outgoing
