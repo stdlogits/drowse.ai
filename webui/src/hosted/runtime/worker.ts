@@ -751,7 +751,7 @@ export class HostedRuntimeWorker {
         this.contentStore.listLoadRecords(),
         this.contentStore.selectedModelVariantId(),
       ]);
-      const installedModelVariantIds = modelInstallIds(installs);
+      const installedModelVariantIds = modelInstallIds(installs, this.acceptedCatalog);
       const selectedModelVariantId =
         storedSelection !== null && installedModelVariantIds.includes(storedSelection)
           ? storedSelection
@@ -972,7 +972,7 @@ export class HostedRuntimeWorker {
       const currentInstalls = await this.contentStore.listInstalls();
       const installedPackIds = packInstallIds(currentInstalls, this.acceptedCatalog);
       this.patchSnapshot({
-        installedModelVariantIds: modelInstallIds(currentInstalls),
+        installedModelVariantIds: modelInstallIds(currentInstalls, this.acceptedCatalog),
         installedPackIds,
         download: operationState(this.snapshot.download, "complete", null),
       }, requestId);
@@ -1092,7 +1092,7 @@ export class HostedRuntimeWorker {
     }
     await this.ensureContentStore();
     let installs = await this.contentStore.listInstalls();
-    const installedModelIds = modelInstallIds(installs);
+    const installedModelIds = modelInstallIds(installs, this.acceptedCatalog);
     const modelInstall = installs.find((install) =>
       install.id === modelVariantId && install.kind === "model"
     );
@@ -2382,10 +2382,16 @@ export class HostedRuntimeWorker {
     );
     this.sessionCoordinator = sessionCoordinator;
     this.sessionIdentity = sessionIdentity;
-    const restore = await sessionCoordinator.restore(
+    let restore = await sessionCoordinator.restore(
       sessionIdentity,
       resetSession ? "reset" : "replace",
     );
+    if (restore.status === "incompatible" && restore.reason === "runtime_identity") {
+      // A later catalog rebuilt this variant's runtime (a library or core). The working session it
+      // left is bound to the old one; the conversation itself lives in the saved-chat library, so
+      // the model opens on a fresh session instead of refusing.
+      restore = await sessionCoordinator.restore(sessionIdentity, "reset");
+    }
     this.snapshot = { ...this.snapshot, modelDefaults: sessionCoordinator.modelDefaults };
     if (restore.status === "incompatible") {
       throw runtimeFailure(
@@ -2782,7 +2788,7 @@ export class HostedRuntimeWorker {
       this.contentStore.listLoadRecords(),
       this.contentStore.selectedModelVariantId(),
     ]);
-    const installedModelVariantIds = modelInstallIds(installs);
+    const installedModelVariantIds = modelInstallIds(installs, this.acceptedCatalog);
     const selectedModelVariantId =
       storedSelection !== null && installedModelVariantIds.includes(storedSelection)
         ? storedSelection
@@ -3334,13 +3340,37 @@ function operationState(
   };
 }
 
+/** The model installs the accepted catalog still describes. A later catalog that rebuilds a
+ *  variant's library or core (a hook ABI bump does both) leaves the old install stale: it is not
+ *  listed, so the shell downloads the variant again (stored objects are reused) rather than adding
+ *  packs bound to the new runtime onto it. Without a catalog, or for a variant the catalog no
+ *  longer lists, the install stands, as a pack's does. */
 function modelInstallIds(
   installs: import("./contentStore").InstalledContentRecord[],
+  catalog: VerifiedCatalog | null,
 ): string[] {
   return installs
-    .filter((install) => install.kind === "model")
+    .filter((install) => install.kind === "model" && modelInstallCurrent(install, catalog))
     .map((install) => install.id)
     .sort();
+}
+
+function modelInstallCurrent(
+  install: import("./contentStore").InstalledContentRecord,
+  catalog: VerifiedCatalog | null,
+): boolean {
+  if (catalog === null) return true;
+  const listed = catalog.document.models.some((model) =>
+    model.variants.some((variant) => variant.id === install.id)
+  );
+  if (!listed) return true;
+  let files: readonly { sha256: string }[];
+  try {
+    files = selectDownloadManifest(catalog, install.id, { requireDownloadAuthorization: false }).files;
+  } catch {
+    return true; // a malformed variant refuses its download with its own error
+  }
+  return sameObjectHashes(install.objectHashes, files.map((file) => file.sha256));
 }
 
 function packInstallIds(
