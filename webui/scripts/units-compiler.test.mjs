@@ -70,11 +70,20 @@ try {
         for (let g = 0; g < G; g += 1) {
           if (program.affineActive[layer * G + g] !== 1) continue;
           const at = layer * G + g;
+          // drowse records the push as its world displacement `target · basis` (the golden's
+          // basis is its direction and its target the length): the frame's own scale is
+          // Mahalanobis, so compare the world vector.
+          const world = new Array(d).fill(0);
+          for (let axis = 0; axis < R; axis += 1) {
+            const row = program.affineBasis.subarray((at * R + axis) * d, (at * R + axis + 1) * d);
+            row.forEach((value, j) => { world[j] += program.affineTarget[at * R + axis] * value; });
+          }
+          const length = Math.hypot(...world);
           groups.push({
             layer,
-            basis: Array.from(program.affineBasis.subarray(at * R * d, at * R * d + d)),
+            basis: world.map((value) => value / length),
             neutral: Array.from(program.affineNeutral.subarray(at * d, (at + 1) * d)),
-            target: program.affineTarget[at * R],
+            target: length,
             along: program.affineAlong[at],
             control: program.controls.affine[at],
           });
@@ -83,12 +92,7 @@ try {
       assert.equal(groups.length, entry.layers.length, `${arch} ${entry.expression} groups`);
       entry.layers.forEach((want, i) => {
         const where = `${arch} ${entry.expression} layer ${want.layer}`;
-        // A group acts through `target − ⟨h, basis⟩` along `basis`, so (basis, target) and
-        // (−basis, −target) are one push: drowse lowers a negative push with the basis flipped,
-        // the browser with the target negated. Compare in drowse's orientation.
-        const raw = groups[i];
-        const flip = raw.basis.reduce((sum, value, j) => sum + value * want.basis[j], 0) < 0 ? -1 : 1;
-        const got = { ...raw, basis: raw.basis.map((value) => flip * value), target: flip * raw.target };
+        const got = groups[i];
         assert.equal(got.layer, want.layer, where);
         near(got.basis, want.basis, tol, `${where} basis`);
         near(got.neutral, want.neutral, tol, `${where} neutral`);

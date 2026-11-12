@@ -1020,7 +1020,7 @@ function validateTensorDescription(
   }
   shapes.delete("node_coords");
   const allowed = new Set([
-    "mean", "basis", "node_coords", "affine_map", "node_params", "rbf_weights",
+    "mean", "basis", "read", "node_coords", "affine_map", "node_params", "rbf_weights",
     "poly_coeffs", "coord_offset", "coord_scale", "sigma_rbf_weights", "sigma_poly_coeffs",
   ]);
   const byLayer = new Map<number, Map<string, readonly number[]>>();
@@ -1046,6 +1046,9 @@ function validateTensorDescription(
       tensorError(path, `layer ${layer} has invalid mean/basis shapes`);
     }
     const [rank, dimension] = basis;
+    // Typed frames (drowse 6.1): the read rows sit beside the write rows, shaped like them.
+    const read = fields.get("read");
+    if (read !== undefined && !sameShape(read, basis)) tensorError(path, `layer ${layer} has invalid read shape`);
     if (hiddenDim === null) hiddenDim = dimension;
     else if (hiddenDim !== dimension) tensorError(path, "has inconsistent hidden dimensions");
     const isCurved = fields.has("node_params");
@@ -1055,7 +1058,7 @@ function validateTensorDescription(
       curvedLayers.add(String(layer));
       const required = ["mean", "basis", "node_params", "rbf_weights", "poly_coeffs", "coord_offset", "coord_scale"];
       const sigma = ["sigma_rbf_weights", "sigma_poly_coeffs"];
-      if (!required.every((field) => fields.has(field)) || [...fields.keys()].some((field) => !required.includes(field) && !sigma.includes(field))) {
+      if (!required.every((field) => fields.has(field)) || [...fields.keys()].some((field) => !required.includes(field) && !sigma.includes(field) && field !== "read")) {
         tensorError(path, `layer ${layer} has invalid curved tensor keys`);
       }
       if (fields.has(sigma[0]) !== fields.has(sigma[1])) tensorError(path, `layer ${layer} has incomplete sigma fields`);
@@ -1072,7 +1075,7 @@ function validateTensorDescription(
         || !sameShape(fields.get("sigma_poly_coeffs"), [domain.embedDim + 1, 1])
       )) tensorError(path, `layer ${layer} has invalid sigma shapes`);
     } else {
-      const allowedAffine = new Set(["mean", "basis", "node_coords", "affine_map"]);
+      const allowedAffine = new Set(["mean", "basis", "read", "node_coords", "affine_map"]);
       if ([...fields.keys()].some((field) => !allowedAffine.has(field)) || !sameShape(fields.get("node_coords"), [nodeCount, rank])) {
         tensorError(path, `layer ${layer} has invalid affine tensor keys or shapes`);
       }

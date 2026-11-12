@@ -16,6 +16,13 @@ const server = await createServer({
 const tests = [];
 const test = (name, run) => tests.push({ name, run });
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+// A fitted frame's read rows beside its write rows. These hand-built bases are orthonormal, so
+// each frame reads with its own rows (the Euclidean case of a typed frame).
+const withReads = (tensors) => Object.fromEntries(Object.entries(tensors).flatMap(([key, value]) =>
+  /^layer_\d+\.basis$/u.test(key)
+    ? [[key, value], [key.replace(/\.basis$/u, ".read"), { shape: value.shape, data: value.data.slice() }]]
+    : [[key, value]]
+));
 const loweringGolden = JSON.parse(readFileSync(
   new URL("../../drowse/tests/fixtures/browser/affine-rank-one-lowering-v1.json", import.meta.url),
   "utf8",
@@ -25,7 +32,7 @@ const composedGolden = JSON.parse(readFileSync(
   "utf8",
 ));
 const ablationGolden = JSON.parse(readFileSync(
-  new URL("../../drowse/tests/fixtures/browser/affine-ablation-lowering-v1.json", import.meta.url),
+  new URL("../../drowse/tests/fixtures/browser/affine-ablation-lowering-v2.json", import.meta.url),
   "utf8",
 ));
 
@@ -77,7 +84,7 @@ try {
       `manifolds/local/demo/nodes/${String(index).padStart(2, "0")}_${label}.json`,
       jsonBytes([label]),
     ]));
-    const tensors = encodeFp32Safetensors(curved ? {
+    const tensors = encodeFp32Safetensors(withReads(curved ? {
       node_coords: sphere
         ? { shape: [2, 2], data: new Float32Array([Math.PI / 2, 0, Math.PI / 2, Math.PI / 2]) }
         : { shape: [2, 1], data: new Float32Array([0, 1]) },
@@ -184,7 +191,7 @@ try {
       "layer_1.mean": { shape: [2], data: new Float32Array([0.3, 0.4]) },
       "layer_1.basis": { shape: [1, 2], data: new Float32Array([0, 1]) },
       "layer_1.node_coords": { shape: [2, 1], data: new Float32Array([-2, 2]) },
-    });
+    }));
     const sidecar = jsonBytes({
       format_version: 10,
       name: "demo",
@@ -329,7 +336,7 @@ try {
         "manifolds/local/focus/nodes/00_soft.json": jsonBytes(["soft"]),
         "manifolds/local/focus/nodes/01_sharp.json": jsonBytes(["sharp"]),
       };
-      const focusTensors = encodeFp32Safetensors({
+      const focusTensors = encodeFp32Safetensors(withReads({
         node_coords: { shape: [2, 1], data: new Float32Array([-1, 1]) },
         "layer_0.mean": { shape: [2], data: new Float32Array([0.2, 0.1]) },
         "layer_0.basis": { shape: [1, 2], data: new Float32Array([0.6, 0.8]) },
@@ -337,7 +344,7 @@ try {
         "layer_1.mean": { shape: [2], data: new Float32Array([0.4, 0.3]) },
         "layer_1.basis": { shape: [1, 2], data: new Float32Array([0.8, 0.6]) },
         "layer_1.node_coords": { shape: [2, 1], data: new Float32Array([-0.5, 0.5]) },
-      });
+      }));
       const focusSidecar = jsonBytes({
         format_version: 10,
         name: "focus",
@@ -1197,7 +1204,9 @@ try {
     assert.deepEqual(axis.active, [1, 1]);
     assert.deepEqual(axis.target, [0, 0]);
     assertFloatArray(axis.collapse, [ablationGolden.coefficient, ablationGolden.coefficient]);
-    assert.deepEqual(axis.basis, ablationGolden.layers.flatMap((layer) => layer.basis));
+    // The axis writes along the direction and reads with its Σ⁻¹ covector (LEACE).
+    assertFloatArray(axis.basis, ablationGolden.layers.flatMap((layer) => layer.basis), 1e-6);
+    assertFloatArray(axis.read, ablationGolden.layers.flatMap((layer) => layer.read), 1e-6);
     assert.deepEqual(axis.neutral, ablationGolden.layers.flatMap((layer) => layer.neutral));
     for (const layer of ablationGolden.layers) {
       assertFloatArray(
@@ -1568,14 +1577,14 @@ try {
       const slot = layer * program.profile.maxCurves;
       return [program.curveActive[slot], program.curveAlong[slot], program.curveOnto[slot]];
     });
-    // Shares sqrt(2) and 2 sqrt(2): mean-1 over both layers is 2/3 and 4/3.
+    // Shares sqrt(2) and 2 sqrt(2): mean-1 over both layers is 2/3 and 4/3 (along gain 2).
     const full = gains(compiler.compile("0.3,0.5 demo%alert"));
-    assertFloatArray(full.map((row) => row[1]), [0.8, 1.6]);
+    assertFloatArray(full.map((row) => row[1]), [0.4, 0.8]);
     assertFloatArray(full.map((row) => row[2]), [1 / 6, 1 / 3]);
     // drowse's _manifold_layer_shares normalizes over the clause's layers only.
     const scoped = gains(compiler.compile("0.3,0.5 demo%alert{0}"));
     assert.equal(scoped[1][0], 0);
-    assertFloatArray([scoped[0][1], scoped[0][2]], [1.2, 0.25]);
+    assertFloatArray([scoped[0][1], scoped[0][2]], [0.6, 0.25]);
   });
 
   test("rejects overlapping curved terms before generation", async () => {
@@ -2006,10 +2015,13 @@ try {
     const program = compiler.compile("0.5 jlens/hello");
     assert.equal(program.format, "drowse-structured-v4");
     assert.deepEqual([...program.affineActive.filter(Boolean)], [1, 1]);
-    const layer0 = program.affineBasis.slice(0, 2);
-    const layer1 = program.affineBasis.slice(4 * 8 * 2, 4 * 8 * 2 + 2);
-    assertFloatArray(layer0, [2 / Math.sqrt(13), 3 / Math.sqrt(13)], 2e-6);
-    assertFloatArray(layer1, [2 / Math.sqrt(53), 7 / Math.sqrt(53)], 2e-6);
+    // A lens atom is a read u: it steers along its raised vector Σu (Σ = diag(2.25, 0.25) and
+    // diag(0.5, 3.5) here), Mahalanobis-unit, and reads with u again (‖Σu‖_M² = u·Σu).
+    const slot1 = 4 * 8 * 2;
+    assertFloatArray(program.affineBasis.slice(0, 2), [4.5 / Math.sqrt(11.25), 0.75 / Math.sqrt(11.25)], 2e-6);
+    assertFloatArray(program.affineRead.slice(0, 2), [2 / Math.sqrt(11.25), 3 / Math.sqrt(11.25)], 2e-6);
+    assertFloatArray(program.affineBasis.slice(slot1, slot1 + 2), [1 / Math.sqrt(173.5), 24.5 / Math.sqrt(173.5)], 2e-6);
+    assertFloatArray(program.affineRead.slice(slot1, slot1 + 2), [2 / Math.sqrt(173.5), 7 / Math.sqrt(173.5)], 2e-6);
     assert.throws(
       () => compiler.compile("0.5 jlens/missing"),
       (error) => error.code === "JLENS_TOKEN_UNAVAILABLE",
@@ -2094,10 +2106,11 @@ try {
     );
     compiler.attachProbe({ selector: "jlens/novel" });
     const program = compiler.compile("0.5 jlens/novel@when:jlens/novel>0.01");
-    assertFloatArray(program.affineBasis.slice(0, 2), [7 / Math.sqrt(113), 8 / Math.sqrt(113)]);
+    // The raised atom reads with its own token row u, Mahalanobis-normalized (u·Σu).
+    assertFloatArray(program.affineRead.slice(0, 2), [7 / Math.sqrt(126.25), 8 / Math.sqrt(126.25)]);
     assertFloatArray(
-      program.affineBasis.slice(4 * 8 * 2, 4 * 8 * 2 + 2),
-      [7 / Math.sqrt(533), 22 / Math.sqrt(533)],
+      program.affineRead.slice(4 * 8 * 2, 4 * 8 * 2 + 2),
+      [7 / Math.sqrt(1718.5), 22 / Math.sqrt(1718.5)],
     );
     assert.equal(program.jLensTokenIds[0], 7);
     assert.deepEqual(batches, [[7]]);
@@ -2108,7 +2121,7 @@ try {
     compiler.attachProbe({ selector: "jlens/#7" });
     const exact = compiler.compile("0.5 jlens/#7@when:jlens/#7>0.01");
     assert.equal(exact.jLensTokenIds[0], 7);
-    assertFloatArray(exact.affineBasis.slice(0, 2), [7 / Math.sqrt(113), 8 / Math.sqrt(113)]);
+    assertFloatArray(exact.affineRead.slice(0, 2), [7 / Math.sqrt(126.25), 8 / Math.sqrt(126.25)]);
     assert.deepEqual(batches, [[7]], "the exact id reuses the resolved directions");
     // An id past the vocabulary fails as drowse's InvalidTokenIdError does,
     // before any direction lookup reaches the runtime.
@@ -2222,8 +2235,8 @@ try {
     assert.equal(program.probeKind[0], 0);
     assert.equal(program.probeKind[8], 3);
     assertFloatArray(
-      program.affineBasis.slice(4 * 8 * 2, 4 * 8 * 2 + 2),
-      [7 / Math.sqrt(533), 22 / Math.sqrt(533)],
+      program.affineRead.slice(4 * 8 * 2, 4 * 8 * 2 + 2),
+      [7 / Math.sqrt(1718.5), 22 / Math.sqrt(1718.5)],
     );
   });
 
@@ -2583,7 +2596,7 @@ try {
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const axis = affineAxis(compiler.compile("0.25 local/demo"));
     assertFloatArray(axis.push, [-0.25, 0, 0, -0.25]);
-    assertFloatArray(axis.along, [32 / 3, 64 / 3], 1e-5);
+    assertFloatArray(axis.along, [16 / 3, 32 / 3], 1e-5);
   });
 
   test("canonicalizes steering deltas through installed manifold identities", async () => {
@@ -2926,8 +2939,9 @@ try {
     });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     compiler.attachProbe({ selector: "local/demo", name: "curved identity" });
+    // sha256 over each layer's fp32 mean, basis and read rows (drowse 6.1 `_record_digest`).
     assert.deepEqual(compiler.probeHashes(), {
-      "curved identity": "cd50e11ceaaef63c1603be13a7a31c99f3ed3c50cc06bcd1a45ed0905e3c91ca",
+      "curved identity": "ec688cf469fcef744d9219d0f05c72de26ed1371d8b5b3ef924a652c562076ab",
     });
   });
 
@@ -3221,6 +3235,7 @@ function affineAxis(program, group = 0) {
   return {
     active: slots.map((slot) => program.affineActive[slot]),
     basis: slots.flatMap((slot) => [...program.affineBasis.slice(slot * maxRank * d, slot * maxRank * d + d)]),
+    read: slots.flatMap((slot) => [...program.affineRead.slice(slot * maxRank * d, slot * maxRank * d + d)]),
     neutral: slots.flatMap((slot) => [...program.affineNeutral.slice(slot * d, (slot + 1) * d)]),
     target: slots.map((slot) => program.affineTarget[slot * maxRank]),
     along: slots.map((slot) => program.affineAlong[slot]),

@@ -12,9 +12,10 @@ const only = process.env.UNIT_READS_ONLY ?? null;
 
 const server = await viteServer();
 try {
-  const [readerModule, scalesModule] = await Promise.all([
+  const [readerModule, scalesModule, corePackModule] = await Promise.all([
     server.ssrLoadModule("/src/hosted/runtime/units/unitReader.ts"),
     server.ssrLoadModule("/src/hosted/runtime/units/scales.ts"),
+    server.ssrLoadModule("/src/hosted/runtime/browserCorePack.ts"),
   ]);
   for (const arch of ARCHES) {
     const fx = await unitsFixture(server, arch, { modelId: "units-tiny" });
@@ -27,6 +28,14 @@ try {
       neuronScale: Float32Array.from(decode(stats.neuron_scale)),
       headMean: Float32Array.from(decode(stats.head_mean)),
       headScale: Float32Array.from(decode(stats.head_scale)),
+    };
+    const whitenerAt = (layer) => {
+      const entry = whiteners.arches[arch].find((row) => row.layer === layer);
+      return entry ? {
+        columns: 64, rank: entry.eigenvalues.length, ridge: entry.ridge,
+        mean: Float64Array.from(entry.mean), basis: Float64Array.from(entry.basis.flat()),
+        eigenvalues: Float64Array.from(entry.eigenvalues), inverseScales: new Float64Array(entry.eigenvalues.length),
+      } : null;
     };
     const tables = new Map(artifacts.layers.map((entry) => [
       entry.layer,
@@ -42,23 +51,18 @@ try {
         layer: async (layer) => tables.get(layer),
         nullProjection: projectorEnergy(Float32Array.from(decode(artifacts.null.projector)), 64),
         headKeptIds: async () => Int32Array.from(artifacts.head_kept_ids),
-        whitener: async (layer) => {
-          const entry = whiteners.arches[arch].find((row) => row.layer === layer);
-          return entry ? {
-            columns: 64, rank: entry.eigenvalues.length, ridge: entry.ridge,
-            mean: Float64Array.from(entry.mean), basis: Float64Array.from(entry.basis.flat()),
-            eigenvalues: Float64Array.from(entry.eigenvalues), inverseScales: new Float64Array(entry.eigenvalues.length),
-          } : null;
-        },
+        whitener: async (layer) => whitenerAt(layer),
       },
       resolveToken: async (word) => (word.startsWith("#") ? Number(word.slice(1)) : fx.tokenizer.encode(word)[0]),
       resolveSelector: async (selector) => {
-        // jlens/#<id>: native `token_direction`, `W_U[v] @ J_L` per R:out layer (raw W_U).
+        // jlens/#<id>: native `token_direction`, `W_U[v] @ J_L` per R:out layer (raw W_U), a read
+        // the compiler raises to its steering write Σu (`raiseLensRead`).
         const id = Number(selector.slice("jlens/#".length));
         const out = new Map();
         for (const [layer, matrix] of fx.lenses.get("R:out")) {
           const row = fx.model.embed.subarray(id * 64, (id + 1) * 64);
-          out.set(layer, Float32Array.from({ length: 64 }, (_, j) => row.reduce((s, x, i) => s + x * matrix[i * 64 + j], 0)));
+          const read = Float32Array.from({ length: 64 }, (_, j) => row.reduce((s, x, i) => s + x * matrix[i * 64 + j], 0));
+          out.set(layer, Float32Array.from(corePackModule.raiseLensRead(whitenerAt(layer), read)));
         }
         return out;
       },
