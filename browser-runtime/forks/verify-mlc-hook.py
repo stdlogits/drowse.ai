@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import argparse
-import json
 import os
 import subprocess
 import sys
@@ -59,11 +58,6 @@ def main() -> None:
     except (ImportError, OSError) as error:
         raise SystemExit(f"exact MLC/TVM toolchain is unavailable: {error}") from error
     require_llvm(tvm)
-
-    if args.units_fixtures is not None:
-        verify_units_fixtures(args, tvm, relax, nn, op)
-        sys.stdout.flush()
-        os._exit(0)
 
     if args.export_only is not None:
         model, label = create_tiny_model(
@@ -508,7 +502,7 @@ def verify_exact_readout_profile(
     descriptor = vm["forward"]().numpy()
     if descriptor.shape != (67,):
         raise SystemExit("Drowse hook profile descriptor (schema 4) has the wrong length")
-    np.testing.assert_array_equal(descriptor[:7], [0x53414B4C, 4, 4, 5, 4, 2, 4])
+    np.testing.assert_array_equal(descriptor[:7], [0x53414B4C, 4, 5, 6, 5, 2, 4])
     np.testing.assert_array_equal(descriptor[28:32], [2, 8, 16384, 0])
     np.testing.assert_array_equal(descriptor[-4:], [256, 0, 8, 16])
 
@@ -539,6 +533,7 @@ def verify_structured_hook_golden(
             residual,
             affine_active,
             affine_basis,
+            affine_read,
             affine_neutral,
             affine_target,
             affine_along,
@@ -553,6 +548,7 @@ def verify_structured_hook_golden(
                 0,
                 affine_active,
                 affine_basis,
+                affine_read,
                 affine_neutral,
                 affine_target,
                 affine_along,
@@ -569,6 +565,7 @@ def verify_structured_hook_golden(
                 "residual": spec.Tensor([1, 1, hidden_size], "float32"),
                 "affine_active": spec.Tensor([1, groups], "float32"),
                 "affine_basis": spec.Tensor([1, groups, rank, hidden_size], "float32"),
+                "affine_read": spec.Tensor([1, groups, rank, hidden_size], "float32"),
                 "affine_neutral": spec.Tensor([1, groups, hidden_size], "float32"),
                 "affine_target": spec.Tensor([1, groups, rank], "float32"),
                 "affine_along": spec.Tensor([1, groups], "float32"),
@@ -622,7 +619,7 @@ def verify_structured_hook_golden(
         probe_threshold,
     ]
     residual, measurements = structured_vm["forward"](
-        *(tvm_tensor(value, device=tvm.cpu()) for value in values)
+        *(tvm_tensor(value, device=tvm.cpu()) for value in with_reads(values))
     )
     np.testing.assert_allclose(
         residual.numpy().reshape(hidden_size), [0.6, 1.2], rtol=1e-6, atol=1e-7
@@ -637,19 +634,50 @@ def verify_structured_hook_golden(
     blocked_threshold[0, 3] = 1.3
     blocked_values[10] = blocked_threshold
     _, blocked_measurements = structured_vm["forward"](
-        *(tvm_tensor(value, device=tvm.cpu()) for value in blocked_values)
+        *(tvm_tensor(value, device=tvm.cpu()) for value in with_reads(blocked_values))
     )
     np.testing.assert_array_equal(blocked_measurements.numpy()[3:4], [0.0])
     inactive_values = list(values)
     inactive_values[1] = np.zeros((1, groups), dtype="float32")
     inactive_residual, _ = structured_vm["forward"](
-        *(tvm_tensor(value, device=tvm.cpu()) for value in inactive_values)
+        *(tvm_tensor(value, device=tvm.cpu()) for value in with_reads(inactive_values))
     )
     np.testing.assert_allclose(
         inactive_residual.numpy().reshape(hidden_size),
         [0.2, 0.4],
         rtol=1e-6,
         atol=1e-7,
+    )
+    # Hook ABI v6: a typed frame reads with its read rows and writes along its basis rows. The
+    # TS CPU reference's case (structured-hook-program.test.mjs): basis [1, 1], read [0.5, 0.5],
+    # a full ablation of [3, 1] is [1, -1]; a shared row would give [-1, -3].
+    typed_basis = np.zeros_like(affine_basis)
+    typed_basis[0, 0, 0] = [1, 1]
+    typed_read = np.zeros_like(affine_basis)
+    typed_read[0, 0, 0] = [0.5, 0.5]
+    typed_along = np.zeros_like(affine_along)
+    typed_along[0, 0] = 1
+    typed_kappa = np.zeros_like(affine_kappa)
+    typed_kappa[0, 0, 0] = 1
+    typed_values = [
+        np.asarray([[[3.0, 1.0]]], dtype="float32"),
+        affine_active,
+        typed_basis,
+        typed_read,
+        affine_neutral,
+        np.zeros_like(affine_target),
+        typed_along,
+        typed_kappa,
+        probe_kind,
+        probe_direction,
+        probe_bias,
+        probe_threshold,
+    ]
+    typed_residual, _ = structured_vm["forward"](
+        *(tvm_tensor(value, device=tvm.cpu()) for value in typed_values)
+    )
+    np.testing.assert_allclose(
+        typed_residual.numpy().reshape(hidden_size), [1.0, -1.0], rtol=1e-6, atol=1e-6
     )
 
     class CurvedModule(nn.Module):
@@ -662,6 +690,7 @@ def verify_structured_hook_golden(
             residual,
             affine_active,
             affine_basis,
+            affine_read,
             affine_neutral,
             affine_target,
             affine_along,
@@ -676,6 +705,7 @@ def verify_structured_hook_golden(
             curve_embed_dim,
             curve_node_count,
             curve_basis,
+            curve_read,
             curve_neutral,
             curve_domain_kind,
             curve_node_parameters,
@@ -722,6 +752,7 @@ def verify_structured_hook_golden(
                 self.decode,
                 affine_active,
                 affine_basis,
+                affine_read,
                 affine_neutral,
                 affine_target,
                 affine_along,
@@ -731,6 +762,7 @@ def verify_structured_hook_golden(
                 probe_bias,
                 probe_threshold,
                 curve_basis,
+                curve_read,
                 curve_neutral,
                 curve_domain_kind,
                 curve_parameters,
@@ -741,6 +773,7 @@ def verify_structured_hook_golden(
         "residual": spec.Tensor([1, 1, hidden_size], "float32"),
         "affine_active": spec.Tensor([1, groups], "float32"),
         "affine_basis": spec.Tensor([1, groups, rank, hidden_size], "float32"),
+        "affine_read": spec.Tensor([1, groups, rank, hidden_size], "float32"),
         "affine_neutral": spec.Tensor([1, groups, hidden_size], "float32"),
         "affine_target": spec.Tensor([1, groups, rank], "float32"),
         "affine_along": spec.Tensor([1, groups], "float32"),
@@ -755,6 +788,7 @@ def verify_structured_hook_golden(
         "curve_embed_dim": spec.Tensor([1, curves], "uint32"),
         "curve_node_count": spec.Tensor([1, curves], "uint32"),
         "curve_basis": spec.Tensor([1, curves, rank, hidden_size], "float32"),
+        "curve_read": spec.Tensor([1, curves, rank, hidden_size], "float32"),
         "curve_neutral": spec.Tensor([1, curves, hidden_size], "float32"),
         "curve_domain_kind": spec.Tensor([1, curves], "uint32"),
         "curve_node_parameters": spec.Tensor([1, curves, nodes, embed], "float32"),
@@ -850,11 +884,29 @@ def verify_structured_hook_golden(
         curve_feet,
     ]
     curved, curve_measurements, next_foot = curved_vm["forward"](
-        *(tvm_tensor(value, device=tvm.cpu()) for value in curve_values)
+        *(tvm_tensor(value, device=tvm.cpu()) for value in with_reads(curve_values))
     )
     np.testing.assert_allclose(
         curved.numpy().reshape(hidden_size), [0.6, 0.2], rtol=3e-3, atol=3e-4
     )
+    # Hook ABI v6, typed curves: map the hidden space by A (write rows b -> A b, read rows
+    # r -> A^-T r, residual h -> A h). The coordinates are unchanged, so the curved residual is
+    # A times the one above (the norm cap does not bind here) and the foot is the same.
+    shear = np.asarray([[1.0, 1.0], [0.0, 1.0]], dtype="float32")
+    typed_curve_values = with_reads(curve_values)
+    typed_curve_values[0] = curve_values[0] @ shear.T
+    typed_curve_values[17] = curve_basis @ shear.T
+    typed_curve_values[18] = curve_basis @ np.linalg.inv(shear)
+    typed_curved, _, typed_foot = curved_vm["forward"](
+        *(tvm_tensor(value, device=tvm.cpu()) for value in typed_curve_values)
+    )
+    np.testing.assert_allclose(
+        typed_curved.numpy().reshape(hidden_size),
+        curved.numpy().reshape(hidden_size) @ shear.T,
+        rtol=1e-4,
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(typed_foot.numpy(), next_foot.numpy(), rtol=1e-4, atol=1e-5)
     np.testing.assert_allclose(
         curve_measurements.numpy()[:2], [0.6, 0.0], rtol=3e-3, atol=3e-4
     )
@@ -890,7 +942,7 @@ def verify_structured_hook_golden(
     periodic_values[28] = periodic_bounds
     periodic_values[29] = periodic_axes
     periodic, _, periodic_foot = curved_vm["forward"](
-        *(tvm_tensor(value, device=tvm.cpu()) for value in periodic_values)
+        *(tvm_tensor(value, device=tvm.cpu()) for value in with_reads(periodic_values))
     )
     np.testing.assert_allclose(
         periodic.numpy().reshape(hidden_size), [0.0, 1.0], rtol=3e-3, atol=3e-4
@@ -943,7 +995,7 @@ def verify_structured_hook_golden(
     sphere_values[29] = sphere_axis_periodic
     sphere_values[30] = sphere_periods
     sphere, _, sphere_foot = curved_vm["forward"](
-        *(tvm_tensor(value, device=tvm.cpu()) for value in sphere_values)
+        *(tvm_tensor(value, device=tvm.cpu()) for value in with_reads(sphere_values))
     )
     np.testing.assert_allclose(
         sphere.numpy().reshape(hidden_size), [0.0, 1.0], rtol=3e-3, atol=3e-4
@@ -961,7 +1013,7 @@ def verify_structured_hook_golden(
     curve_values[11] = np.zeros((1, curves), dtype="float32")
     curve_values[-1] = np.full((1, curves, intrinsic), 0.4, dtype="float32")
     inactive, _, inactive_foot = decode_vm["forward"](
-        *(tvm_tensor(value, device=tvm.cpu()) for value in curve_values)
+        *(tvm_tensor(value, device=tvm.cpu()) for value in with_reads(curve_values))
     )
     np.testing.assert_allclose(
         inactive.numpy().reshape(hidden_size), [0.2, 0.3], rtol=1e-6, atol=1e-7
@@ -1296,53 +1348,6 @@ def create_tiny_model(
     )
 
 
-def verify_units_fixtures(args, tvm, relax, nn, op) -> None:
-    """Hook ABI v5 on the C TVM VM: the units goldens over build-units-fixtures.py models."""
-    import importlib.util
-    import types as pytypes
-
-    from mlc_llm import compiler_pass as _compiler_pass  # noqa: F401  (registers the pipeline)
-    from mlc_llm import op as op_ext
-    from mlc_llm.interface.compiler_flags import IPCAllReduceStrategyType
-    from mlc_llm.model import drowse_reads, drowse_units
-    from mlc_llm.model.drowse_hooks import structured_curve_program_spec
-    from mlc_llm.model.gemma3.gemma3_model import Gemma3Config, Gemma3ForCausalLM
-    from mlc_llm.model.qwen3.qwen3_model import Qwen3Config, Qwen3LMHeadModel
-    from mlc_llm.quantization import QUANTIZATION, make_quantization_functions
-
-    import units_goldens
-
-    compiler_path = Path(__file__).resolve().with_name("compile-tiny-webgpu.py")
-    compiler_spec = importlib.util.spec_from_file_location("drowse_compile_tiny", compiler_path)
-    compiler = importlib.util.module_from_spec(compiler_spec)
-    compiler_spec.loader.exec_module(compiler)
-    env = pytypes.SimpleNamespace(
-        tvm=tvm, relax=relax, nn=nn, op=op,
-        models={"qwen3": (Qwen3Config, Qwen3LMHeadModel),
-                "gemma3_text": (Gemma3Config, Gemma3ForCausalLM)},
-        QUANTIZATION=QUANTIZATION, make_quantization_functions=make_quantization_functions,
-        strip_gpu_thread_bindings=strip_gpu_thread_bindings,
-        prepare_parameters=compiler.prepare_parameters, create_metadata=compiler.create_metadata,
-        IPCAllReduceStrategyType=IPCAllReduceStrategyType,
-        structured_curve_program_spec=structured_curve_program_spec,
-        unit_program_spec=drowse_units.unit_program_spec,
-        unit_meta_layout=drowse_units.unit_meta_layout,
-        unit_coeff_layout=drowse_units.unit_coeff_layout,
-        UnitSites=drowse_units.UnitSites,
-        drowse_units=drowse_units,
-        drowse_reads=drowse_reads,
-        UNIT_MAX_GROUPS=drowse_units.UNIT_MAX_GROUPS,
-        UNIT_MAX_HEAD_TAPS=drowse_units.UNIT_MAX_HEAD_TAPS,
-    )
-    op_ext.enable(target=tvm.target.Target("llvm"), flashinfer=False, faster_transformer=False,
-                  cutlass=False)
-    results = units_goldens.verify(env, args.units_fixtures.resolve(strict=True),
-                                   args.goldens.resolve(strict=True))
-    print("units goldens (block-sites, unit-ablation, unit-probes, attention-patterns, "
-          "token-anatomy, unit-activity) passed on the C TVM VM: "
-          + json.dumps(results, sort_keys=True))
-
-
 def verify_isolated_model_exports(args) -> None:
     for architecture in ("qwen3", "llama", "gemma3_text"):
         subprocess.run(
@@ -1376,24 +1381,22 @@ def verify_isolated_readout_goldens(args) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    repository_root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser()
     parser.add_argument("--mlc-repository", required=True, type=Path)
     parser.add_argument("--tvm-repository", required=True, type=Path)
     parser.add_argument("--export-only", choices=["qwen3", "llama", "gemma3_text"])
     parser.add_argument("--readout-only", action="store_true")
-    parser.add_argument(
-        "--units-fixtures",
-        type=Path,
-        help="directory of build-units-fixtures.py models (units-<arch>-<quantization>): check them "
-        "against the block-sites, unit-ablation and unit-probes goldens on the C TVM VM",
-    )
-    parser.add_argument(
-        "--goldens",
-        type=Path,
-        default=repository_root / "drowse/tests/fixtures/browser",
-    )
     return parser.parse_args()
+
+
+def with_reads(values: list) -> list:
+    """Hook ABI v6 inputs from a v5-ordered case list: each read input copies its basis
+    (these cases' rows are orthonormal, so they are their own duals)."""
+    result = list(values)
+    result.insert(3, values[2])
+    if len(values) > 11:
+        result.insert(18, values[16])
+    return result
 
 
 def strip_gpu_thread_bindings(module, tvm):

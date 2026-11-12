@@ -16,7 +16,7 @@ clang, configured like the archive (Release, its 19 targets, assertions/RTTI/EH 
 archive's libraries were compiled against GCC 7's libstdc++, whose `std::optional` ABI no C++20
 libstdc++ shares, so a TVM linked against them segfaults on import. The lock binds the tag and
 commit (`toolchain.llvmSourceBuild`) and `check-runtime-lock.mjs` requires the Dockerfile's
-`LLVM_SOURCE_*_AMD64` arguments to match. The jobe toolchain the hook ABI v5 libraries were
+`LLVM_SOURCE_*_AMD64` arguments to match. The jobe toolchain the hook ABI v5 and v6 libraries were
 compiled with is the same build (parity handoff `B40-toolchain.md` §3, §8); the image itself has
 not been rebuilt since.
 Emscripten 3.1.56 does not publish Linux ARM64 binaries, so the ARM64 image runs only
@@ -30,10 +30,8 @@ colima start --vm-type vz --vz-rosetta
 
 The build pins the Ubuntu base digest, LLVM archives and source, Emscripten SDK commit,
 TVM/TVM-FFI sources, MLC source, and both Drowse overlays. Its final build gate runs the C VM
-structured, geometry and readout goldens, then compiles fp32 and q4 Qwen3, Llama and Gemma 3
-WebGPU fixture libraries under the v5 export check. The units goldens need the fixture models
-`forks/build-units-fixtures.py` makes from drowse's checkpoints; they run outside the image
-(`browser-runtime/record-cvm-goldens.py`, README "Release").
+structured, geometry and readout cases, then compiles fp32 and q4 Qwen3, Llama and Gemma 3
+WebGPU fixture libraries under the v5 export check.
 
 The local image ID is feasibility evidence only. A production runtime lock must
 name an immutable registry reference and manifest digest for the published
@@ -57,10 +55,10 @@ runtime lock until either the compiler output is canonicalized reproducibly or
 the release process records and physically validates one immutable emitted
 library per model variant.
 
-Every hook ABI v5 library is converted from its pinned source snapshot and compiled with this
-overlay (no upstream MLC closure is adopted): `convert` records `drowse-web-runtime-v2`,
-`block-sites-v5` and the architecture's profile (`standard-v4` for Gemma 3 and Qwen3,
-`standard-v4-residual` otherwise) in `drowse-build.json`, and `compile` refuses a manifest from
+Every hook ABI v6 library is converted from its pinned source snapshot and compiled with this
+overlay (no upstream MLC closure is adopted): `convert` records `drowse-web-runtime-v3`,
+`block-sites-v6` and the architecture's profile (`standard-v5` for Gemma 3 and Qwen3,
+`standard-v5-residual` otherwise) in `drowse-build.json`, and `compile` refuses a manifest from
 another ABI:
 
 ```bash

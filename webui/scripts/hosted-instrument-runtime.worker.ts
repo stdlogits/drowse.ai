@@ -31,7 +31,7 @@ interface Request {
   modelId: string;
   runtimeIdentity: RuntimeIdentity;
   structuredHookProfile: ModelVariant["structuredHookProfile"];
-  /** The runtime lock's block spec (standard-v4) and unit refusal (standard-v4-residual). */
+  /** The runtime lock's block spec (standard-v5) and unit refusal (standard-v5-residual). */
   blockSpec: BlockSpec | null;
   unitRefusal: string | null;
   prefillChunkSize: number;
@@ -62,11 +62,11 @@ self.onmessage = async (event: MessageEvent<Request>) => {
   let runtime: DrowseWebLlmRuntime | null = null;
   try {
     if (
-      event.data.structuredHookProfile !== "standard-v4" &&
-      event.data.structuredHookProfile !== "standard-v4-residual"
+      event.data.structuredHookProfile !== "standard-v5" &&
+      event.data.structuredHookProfile !== "standard-v5-residual"
     ) {
       throw new Error(
-        `physical precomputed instruments require a v5 library (standard-v4 or standard-v4-residual, ${BLOCK_SITES_EXACT_READOUT_ABI})`,
+        `physical precomputed instruments require a v5 library (standard-v5 or standard-v5-residual, ${BLOCK_SITES_EXACT_READOUT_ABI})`,
       );
     }
     if (

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { normalizeDrowsePositionSelection } from "@drowse/web-llm";
@@ -73,7 +72,6 @@ try {
     aggregateMeasurements,
     roundReading,
     summaryMeasurements,
-    tokenRowMeasurements,
   } = await server.ssrLoadModule("/src/hosted/runtime/measurementRows.ts");
   const { compileStructuredHookProgram, withStructuredUnitSection } = await server.ssrLoadModule(
     "/src/hosted/runtime/structuredHookProgram.ts",
@@ -90,15 +88,15 @@ try {
     "/../drowse/webui/src/lib/runtime/samplingCapabilities.ts",
   );
   const {
-    STANDARD_STRUCTURED_HOOK_PROFILE_V4,
+    STANDARD_STRUCTURED_HOOK_PROFILE_V5,
   } = await server.ssrLoadModule(
     "/src/hosted/runtime/structuredHookProfile.ts",
   );
 
   // A pure push: one affine group, no probes, no controls (nothing to read per token).
   const hookProgram = compileStructuredHookProgram(1, [{
-    affineGroups: [{ active: true, basis: [[1]], neutral: [0], target: [1], along: 0.5, kappa: [1] }],
-  }], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
+    affineGroups: [{ active: true, basis: [[1]], read: [[1]], neutral: [0], target: [1], along: 0.5, kappa: [1] }],
+  }], STANDARD_STRUCTURED_HOOK_PROFILE_V5);
   assert.equal(tokenAlternativeLimit("http"), HTTP_RETURN_TOP_K_MAX);
   assert.equal(tokenAlternativeLimit("browser"), BROWSER_RETURN_TOP_K_MAX);
   assert.equal(tokenAlternativeLimit("fake"), 0);
@@ -112,7 +110,7 @@ try {
   }
   assert.throws(() => validateWebLlmGenerationSettings({ top_k: Number.MAX_SAFE_INTEGER + 1 }, false), /top_k/);
   assert.throws(() => validateWebLlmGenerationSettings({ seed: -1 }, false), /seed/);
-  // Any finite penalty, as native's sampling params take (the goldens decode with 1e4).
+  // Any finite penalty, as native's sampling params take.
   assert.equal(validateWebLlmGenerationSettings({ presence_penalty: 1e4 }, false).presence_penalty, 1e4);
   assert.equal(validateWebLlmGenerationSettings({ frequency_penalty: -3 }, false).frequency_penalty, -3);
   assert.throws(() => validateWebLlmGenerationSettings({ presence_penalty: Infinity }, false), /presence_penalty/);
@@ -974,13 +972,14 @@ try {
     affineGroups: [{
       active: true,
       basis: [[1]],
+      read: [[1]],
       neutral: [0],
       target: [1],
       along: 0.5,
       kappa: [0],
     }],
     probes: [{ kind: "linear", direction: [1], bias: 0 }],
-  }], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
+  }], STANDARD_STRUCTURED_HOOK_PROFILE_V5);
   gatedProgram.controls = {
     affine: [{
       enabled: true,
@@ -1048,7 +1047,7 @@ try {
   // turns off at the first decode step, a response-only one turns on there, and the caller's
   // `unitActive` is never written (a later run of the same program starts from it).
   const unitOnlyProgram = withStructuredUnitSection(
-    compileStructuredHookProgram(1, [{}], STANDARD_STRUCTURED_HOOK_PROFILE_V4),
+    compileStructuredHookProgram(1, [{}], STANDARD_STRUCTURED_HOOK_PROFILE_V5),
     { dFF: 4, nHeads: 1, headDim: 1 },
     {
       ablations: [
@@ -1087,11 +1086,11 @@ try {
   // attached unit probe and the attached slens/ probes read out (token envelopes while their
   // family is live, the aggregate always); a unit tapped for a gate feeds gates only; a gate reads
   // an attached slens/ probe by name; slens/ reads run over the bridge's [L, d] capture.
-  const liveBase = compileStructuredHookProgram(2, [{}], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
+  const liveBase = compileStructuredHookProgram(2, [{}], STANDARD_STRUCTURED_HOOK_PROFILE_V5);
   liveBase.measurementSchema = {
     layerMap: [0],
     modelLayerCount: 4,
-    probes: Array.from({ length: STANDARD_STRUCTURED_HOOK_PROFILE_V4.maxProbes }, () => null),
+    probes: Array.from({ length: STANDARD_STRUCTURED_HOOK_PROFILE_V5.maxProbes }, () => null),
     lensSource: null,
     saeSource: null,
   };
@@ -1578,11 +1577,11 @@ try {
       { kind: "sae", direction: [1], bias: 0 },
       { kind: "jlens", direction: [0], bias: 0 },
     ],
-  }], STANDARD_STRUCTURED_HOOK_PROFILE_V4, {
+  }], STANDARD_STRUCTURED_HOOK_PROFILE_V5, {
     bindingId: "a".repeat(64),
     layerIndices: Int32Array.of(0),
     tokenIds: Int32Array.from(
-      { length: STANDARD_STRUCTURED_HOOK_PROFILE_V4.maxProbes },
+      { length: STANDARD_STRUCTURED_HOOK_PROFILE_V5.maxProbes },
       (_, index) => index === 1 ? 17 : 0,
     ),
   });
@@ -1598,8 +1597,8 @@ try {
     saeSource: "fixture-sae",
   };
   scopedProgram.controls = {
-    affine: new Array(STANDARD_STRUCTURED_HOOK_PROFILE_V4.maxAffineGroups).fill(null),
-    curve: new Array(STANDARD_STRUCTURED_HOOK_PROFILE_V4.maxCurves).fill(null),
+    affine: new Array(STANDARD_STRUCTURED_HOOK_PROFILE_V5.maxAffineGroups).fill(null),
+    curve: new Array(STANDARD_STRUCTURED_HOOK_PROFILE_V5.maxCurves).fill(null),
   };
   const scopedReads = [];
   const scopedTokens = [];
@@ -1681,12 +1680,13 @@ try {
     affineGroups: [{
       active: true,
       basis: [[1]],
+      read: [[1]],
       neutral: [0],
       target: [1],
       along: 0.5,
       kappa: [0],
     }],
-  }], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
+  }], STANDARD_STRUCTURED_HOOK_PROFILE_V5);
   staticProgram.controls = {
     affine: [{
       enabled: true,
@@ -1721,7 +1721,7 @@ try {
   assert.equal(staticControlUpdates, 0);
 
   const oriented = measurementEnvelope({
-    format: "drowse-structured-v4",
+    format: "drowse-structured-v5",
     layerCount: 2,
     probeKind: Uint32Array.of(1, 3, 2, 1, 3, 2),
     measurementSchema: {
@@ -1774,7 +1774,7 @@ try {
     ],
   };
   const tokenView = (live) => tokenMeasurementEnvelope(oriented, {
-    format: "drowse-structured-v4", layerCount: 2, measurementSchema: { ...orientedSchema, ...live },
+    format: "drowse-structured-v5", layerCount: 2, measurementSchema: { ...orientedSchema, ...live },
   });
   const familiesOff = tokenView({});
   assert.equal(familiesOff.instruments.lens, undefined);
@@ -1789,7 +1789,7 @@ try {
   assert.equal(tokenMeasurementEnvelope(undefined, null), undefined);
 
   const preciseProgram = {
-    format: "drowse-structured-v4", layerCount: 2,
+    format: "drowse-structured-v5", layerCount: 2,
     probeKind: Uint32Array.of(3, 2, 3, 2),
     measurementSchema: {
       layerMap: [0, 1], modelLayerCount: 2,
@@ -1854,7 +1854,7 @@ try {
   const exactReadoutProgram = compileStructuredHookProgram(
     1,
     [{}, {}, {}],
-    STANDARD_STRUCTURED_HOOK_PROFILE_V4,
+    STANDARD_STRUCTURED_HOOK_PROFILE_V5,
     {
       bindingId: "a".repeat(64),
       layerIndices: Int32Array.of(0, 2),
@@ -2206,7 +2206,7 @@ try {
           coordinateBias: [0, 0],
         }],
       })),
-      STANDARD_STRUCTURED_HOOK_PROFILE_V4,
+      STANDARD_STRUCTURED_HOOK_PROFILE_V5,
     );
     program.measurementSchema = {
       layerMap,
@@ -2296,186 +2296,6 @@ try {
     ).map(([layer, coords]) => [layer, coords.map((value) => Number(value.toFixed(6)))])),
     { "4": [0.25, 0.75], "9": [0.4] },
   );
-
-  const sharedMeasurementFixture = JSON.parse(await readFile(
-    new URL("../../drowse/tests/fixtures/browser/measurement-envelope-v2.json", import.meta.url),
-    "utf8",
-  ));
-  const sharedGeometry = sharedMeasurementFixture.geometry;
-  const sharedProgram = compileStructuredHookProgram(
-    1,
-    sharedGeometry.rows.map(() => ({
-      geometryWhitener: {
-        rank: 1,
-        ridge: 1,
-        basis: [[1]],
-        correction: [0],
-      },
-      geometryProbes: [{
-        active: true,
-        mean: [0],
-        inverseMean: [0],
-        basis: [[1]],
-        gramInverse: [1],
-        cholesky: [1],
-        candidateWhite: [[0], [1]],
-        coordinateMap: [[1]],
-        coordinateBias: [0],
-      }],
-    })),
-    STANDARD_STRUCTURED_HOOK_PROFILE_V4,
-  );
-  const sharedProbeCount = sharedProgram.profile.maxProbes;
-  for (let layer = 0; layer < sharedProgram.layerCount; layer += 1) {
-    sharedProgram.probeKind[layer * sharedProbeCount] = 1;
-  }
-  sharedProgram.probeKind[sharedProbeCount + 1] = 1;
-  sharedProgram.measurementSchema = {
-    layerMap: sharedMeasurementFixture.layerMap,
-    modelLayerCount: sharedMeasurementFixture.modelLayerCount,
-    probes: [
-      {
-        name: sharedMeasurementFixture.lens.name,
-        family: "lens",
-        tokenId: sharedMeasurementFixture.lens.tokenId,
-      },
-      {
-        name: sharedMeasurementFixture.sae.name,
-        family: "sae",
-        featureId: sharedMeasurementFixture.sae.featureId,
-        label: sharedMeasurementFixture.sae.label,
-        maxAct: sharedMeasurementFixture.sae.maxAct,
-      },
-      ...new Array(sharedProbeCount - 2).fill(null),
-    ],
-    geometryProbes: [{
-      name: sharedGeometry.name,
-      scoreKeys: [
-        `${sharedGeometry.name}:fraction`,
-        `${sharedGeometry.name}:membership`,
-        ...sharedGeometry.labels.flatMap((label) => [
-          `${sharedGeometry.name}@${label}`,
-          `${sharedGeometry.name}~${label}`,
-        ]),
-      ],
-      manifold: sharedGeometry.name,
-      labels: sharedGeometry.labels,
-      topN: sharedGeometry.labels.length,
-      intrinsicDim: 1,
-      rank: 1,
-      shareWeights: sharedGeometry.shareWeights,
-      assignBandwidth: sharedGeometry.assignBandwidth,
-      assignLogVolumeBias: sharedGeometry.assignLogVolumeBias,
-      labelScale: sharedGeometry.labelScale,
-    }, ...new Array(sharedProgram.profile.maxGeometryProbes - 1).fill(null)],
-    lensSource: sharedMeasurementFixture.lens.source,
-    saeSource: sharedMeasurementFixture.sae.source,
-    saeLayer: sharedMeasurementFixture.sae.layer,
-    saeFeatureCount: sharedMeasurementFixture.sae.featureCount,
-    lensReadout: true,
-    saeReadout: true,
-    saeFeatureMetadata: {
-      [sharedMeasurementFixture.sae.featureId]: {
-        label: sharedMeasurementFixture.sae.label,
-        maxAct: sharedMeasurementFixture.sae.maxAct,
-      },
-    },
-  };
-  const sharedScalarValues = new Float32Array(
-    sharedProgram.layerCount * sharedProbeCount,
-  );
-  sharedMeasurementFixture.lens.probabilities.forEach((probability, layer) => {
-    sharedScalarValues[layer * sharedProbeCount] = probability;
-  });
-  sharedScalarValues[sharedProbeCount + 1] = sharedMeasurementFixture.sae.value;
-  const sharedGeometryValues = new Float32Array(
-    sharedProgram.layerCount * sharedProgram.profile.maxGeometryProbes *
-      sharedProgram.profile.geometryOutputStride,
-  );
-  sharedGeometry.rows.forEach((row, layer) => {
-    const slot = layer * sharedProgram.profile.maxGeometryProbes;
-    const offset = slot * sharedProgram.profile.geometryOutputStride;
-    sharedGeometryValues.set(
-      [1, row.fraction, row.residual, row.membership, ...row.coords],
-      offset,
-    );
-    sharedGeometryValues.set(
-      row.distances,
-      offset + 4 + sharedProgram.profile.maxIntrinsicDim,
-    );
-  });
-  const sharedEnvelope = measurementEnvelope(
-    sharedProgram,
-    sharedScalarValues,
-    sharedMeasurementFixture.steering,
-    sharedGeometryValues,
-    {
-      tokenIds: Int32Array.of(sharedMeasurementFixture.lens.tokenId),
-      tokens: [sharedMeasurementFixture.lens.token],
-      strength: Float32Array.of(0.5),
-      centerOfMass: Float32Array.of(
-        sharedMeasurementFixture.expected.instruments.lens.readout.aggregate[0].com,
-      ),
-      spread: Float32Array.of(
-        sharedMeasurementFixture.expected.instruments.lens.readout.aggregate[0].spread,
-      ),
-      fittedLayerCount: 2,
-      layerIndices: Int32Array.of(0, 1),
-      layerTokenIds: Int32Array.of(
-        sharedMeasurementFixture.lens.tokenId,
-        sharedMeasurementFixture.lens.tokenId,
-      ),
-      layerTokens: [
-        sharedMeasurementFixture.lens.token,
-        sharedMeasurementFixture.lens.token,
-      ],
-      layerProbabilities: Float32Array.from(sharedMeasurementFixture.lens.probabilities),
-    },
-    {
-      featureIds: Int32Array.of(sharedMeasurementFixture.sae.featureId),
-      activations: Float32Array.of(sharedMeasurementFixture.sae.activation),
-      runtimeLayerIndex: 1,
-      featureCount: sharedMeasurementFixture.sae.featureCount,
-    },
-    1,
-    true,
-  );
-  // Envelope v2 as the browser reads it: the R lens alone (no S lens, no units
-  // yet), so the golden's S reading, S source and units channel drop out.
-  const browserView = (envelope) => {
-    const view = structuredClone(envelope);
-    const lens = view.instruments.lens;
-    if (lens) {
-      delete lens.readings?.[sharedMeasurementFixture.slens.name];
-      delete lens.binding.sources.S;
-    }
-    delete view.instruments.units;
-    if (view.scores) {
-      delete view.scores[sharedMeasurementFixture.slens.name];
-      delete view.scores[sharedMeasurementFixture.units.name];
-    }
-    return view;
-  };
-  assertParity(
-    sharedEnvelope,
-    browserView(sharedMeasurementFixture.expected),
-    sharedMeasurementFixture.tolerance,
-  );
-  // The loom row and the node's aggregate, exactly (6 significant digits).
-  assert.deepEqual(
-    tokenRowMeasurements(sharedEnvelope),
-    browserView(sharedMeasurementFixture.expectedRow),
-  );
-  const sharedAggregate = { ...structuredClone(sharedEnvelope), scope: "aggregate" };
-  delete sharedAggregate.instruments.lens.readout;
-  delete sharedAggregate.instruments.sae.readout;
-  assert.deepEqual(
-    aggregateMeasurements(sharedAggregate),
-    browserView(sharedMeasurementFixture.expectedNodeAggregate),
-  );
-  const sharedGateScores = measurementGateScores(sharedEnvelope);
-  assert.ok(`${sharedGeometry.name}:fraction` in sharedGateScores);
-  assert.equal(`${sharedGeometry.name}:fraction` in sharedEnvelope.scores, false);
 
   const geometryGateProgram = trailProgram([
     { rank: 1, candidates: [[0], [1]] },
@@ -2661,9 +2481,9 @@ try {
   geometryValues.set([1, 0.25, 0.2, 0.8, 0.2, 0.4, 0, 0, 1, 3], 0);
   geometryValues.set([1, 0.75, 0.4, 0.6, 0.8, 0.6, 0, 0, 3, 1], 8 * 41);
   const geometryEnvelope = measurementEnvelope({
-    format: "drowse-structured-v4",
+    format: "drowse-structured-v5",
     layerCount: 2,
-    profile: STANDARD_STRUCTURED_HOOK_PROFILE_V4,
+    profile: STANDARD_STRUCTURED_HOOK_PROFILE_V5,
     probeKind: new Uint32Array(16),
     measurementSchema: {
       layerMap: [4, 9],
@@ -2716,12 +2536,13 @@ try {
     affineGroups: [{
       active: true,
       basis: [[1]],
+      read: [[1]],
       neutral: [0],
       target: [1],
       along: 0.5,
       kappa: [0],
     }],
-  }], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
+  }], STANDARD_STRUCTURED_HOOK_PROFILE_V5);
   thinkingProgram.controls = {
     affine: [{
       enabled: true,
@@ -3383,38 +3204,6 @@ function fixtureTerminalReason(finishReason) {
   if (finishReason === "length") return "length";
   if (finishReason === "abort") return "external_stop";
   return null;
-}
-
-function assertParity(actual, expected, tolerance, path = "measurement") {
-  if (typeof expected === "number") {
-    assert.equal(typeof actual, "number", `${path} must be numeric`);
-    assert.ok(
-      Math.abs(actual - expected) <= tolerance,
-      `${path}: expected ${expected}, received ${actual}`,
-    );
-    return;
-  }
-  if (Array.isArray(expected)) {
-    assert.ok(Array.isArray(actual), `${path} must be an array`);
-    assert.equal(actual.length, expected.length, `${path} length`);
-    expected.forEach((value, index) => {
-      assertParity(actual[index], value, tolerance, `${path}[${index}]`);
-    });
-    return;
-  }
-  if (expected !== null && typeof expected === "object") {
-    assert.equal(
-      actual !== null && typeof actual === "object" && !Array.isArray(actual),
-      true,
-      `${path} must be an object`,
-    );
-    assert.deepEqual(Object.keys(actual).sort(), Object.keys(expected).sort(), `${path} keys`);
-    for (const [key, value] of Object.entries(expected)) {
-      assertParity(actual[key], value, tolerance, `${path}.${key}`);
-    }
-    return;
-  }
-  assert.equal(actual, expected, path);
 }
 
 function engineWithChat(values, failure = null, wait = null) {

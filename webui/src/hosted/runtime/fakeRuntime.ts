@@ -32,7 +32,7 @@ import type {
   WSServerMessage,
   WSSubmitRequest,
 } from "../../../../drowse/webui/src/lib/types";
-import { STANDARD_STRUCTURED_HOOK_PROFILE_V4 } from "./structuredHookProfile";
+import { STANDARD_STRUCTURED_HOOK_PROFILE_V5 } from "./structuredHookProfile";
 import {
   compileStructuredHookProgram,
   type StructuredHookProgramBuffers,
@@ -1324,9 +1324,9 @@ function idlePreparation(): PreparationStatusJSON {
   };
 }
 
-/** An empty one-layer drowse-structured-v4 program: the fake engine never runs it. */
+/** An empty one-layer drowse-structured-v5 program: the fake engine never runs it. */
 function fixtureHookProgram(): StructuredHookProgramBuffers {
-  return compileStructuredHookProgram(1, [{}], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
+  return compileStructuredHookProgram(1, [{}], STANDARD_STRUCTURED_HOOK_PROFILE_V5);
 }
 
 function generationPromptTokens(plan: WebLlmGenerationPlan): number {

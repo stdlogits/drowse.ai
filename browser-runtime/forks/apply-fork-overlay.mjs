@@ -38,10 +38,10 @@ export function validateManifest(manifest) {
   if (manifest?.schemaVersion !== 1 || manifest.status !== "feasibility-overlay") {
     throw new Error("unsupported fork overlay manifest");
   }
-  if (manifest.hookAbi !== "block-sites-v5") {
+  if (manifest.hookAbi !== "block-sites-v6") {
     throw new Error("unexpected fork overlay hook ABI");
   }
-  if (manifest.structuredHookProfile !== "standard-v4") {
+  if (manifest.structuredHookProfile !== "standard-v5") {
     throw new Error("unexpected fork overlay structured-hook profile");
   }
   if (manifest.exactReadoutAbi !== "exact-readout-v2") {

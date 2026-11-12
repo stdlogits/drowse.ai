@@ -1,7 +1,8 @@
-// The units-tiny-models-v1 fixture models (drowse `tests/support/browser_units.py`, B1-goldens
-// §1): the portable generator, bit for bit in 32-bit integer arithmetic, the byte-level
-// tokenizer and the hand-built lenses. Test-only: the CPU reference backend and the fixture
-// runtimes build their weights from the model file's integers; nothing here reaches the GPU.
+// The units-tiny-models-v1 fixture models (`../fixtures/units-tiny-models-v1.json`, from
+// drowse's former browser-units generator): the portable generator, bit for bit in 32-bit
+// integer arithmetic, the byte-level tokenizer and the hand-built lenses. Test-only: the CPU
+// reference backend and the fixture runtimes build their weights from the model file's integers;
+// nothing here reaches the GPU.
 import type { BlockSpec } from "../structuredHookProfile";
 import type { DenseBlockWeights, DenseModelWeights } from "./denseModel";
 

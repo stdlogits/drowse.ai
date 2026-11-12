@@ -5,13 +5,12 @@ import { SafetensorsValidator, type SafetensorsDescription } from "./safetensors
 import {
   DROWSE_ARCHIVE_FORMAT_VERSION,
   DROWSE_ARCHIVE_MANIFEST_MAX_BYTES,
-  DROWSE_ARCHIVE_MAX_FILE_BYTES,
   DrowseArchiveError,
   type InspectedDrowseArchive,
   type DrowseArchiveArchiveEntry,
   type DrowseArchiveFileRecord,
   type DrowseArchiveFittedArtifact,
-  type DrowseArchiveManifest,
+  type DrowseArchivePackManifest,
   type DrowseArchiveSource,
   type VerifiedDrowseArchive,
   type VerifyDrowseArchiveOptions,
@@ -26,7 +25,6 @@ const METADATA_MAX_BYTES = 4 * 1024 * 1024;
 const NODE_MAX_BYTES = 64 * 1024 * 1024;
 const MANIFOLD_FORMAT_VERSION = 10;
 const TEMPLATE_FORMAT_VERSION = 2;
-const MERGE_BAKE_POLICY = "additive_union_v1";
 
 type FitMode = "authored" | "baked" | "pca" | "spectral" | "auto";
 
@@ -39,23 +37,11 @@ const HYPERPARAMS_BY_MODE: Readonly<Record<"pca" | "spectral" | "auto", Readonly
   ]),
 };
 
-/** drowse/store/manifold_schema.py `METHOD_FIT_MODES`, mirrored exactly. */
-export const METHOD_FIT_MODES: Readonly<Record<string, ReadonlySet<FitMode>>> = {
-  manifold_pca: new Set(["authored"]),
-  manifold_sae: new Set(["authored"]),
-  manifold_monopolar: new Set(["pca"]),
-  manifold_monopolar_sae: new Set(["pca"]),
-  manifold_discover_auto: new Set(["auto"]),
-  manifold_discover_pca: new Set(["pca"]),
-  manifold_discover_spectral: new Set(["spectral"]),
-  manifold_discover_sae: new Set(["pca", "spectral", "auto"]),
-  manifold_procrustes_transfer: new Set(["authored", "baked", "pca", "spectral", "auto"]),
-  merge: new Set(["baked"]),
-};
-
 interface InternalInspection {
   archive: ZipArchive;
-  manifest: DrowseArchiveManifest;
+  manifest: DrowseArchivePackManifest;
+  /** The primary manifold's entries and the declared template's `template.json`. */
+  closure: ReadonlyMap<string, ZipEntry>;
   publicPack: InspectedDrowseArchive;
 }
 
@@ -70,7 +56,6 @@ interface ManifoldClosure {
   domain: DomainShape | null;
   hyperparams: Record<string, unknown>;
   templateRef: string | null;
-  expectedPaths: Set<string>;
   tensorPaths: string[];
 }
 
@@ -106,7 +91,8 @@ export async function inspectDrowseArchive(source: DrowseArchiveSource): Promise
   }
   const exactManifestBytes = await readZipEntry(archive, packEntry);
   if (exactManifestBytes === null) manifestError("pack.json could not be read");
-  const manifest = validateManifest(parseExactJson(exactManifestBytes, "pack.json"), archive);
+  const manifest = validateManifest(parseExactJson(exactManifestBytes, "pack.json"));
+  const closure = closureEntries(archive, manifest);
   const primaryIdentity = identity(manifest.primary, "manifolds");
   const templateIdentity = manifest.template === null
     ? null
@@ -126,8 +112,32 @@ export async function inspectDrowseArchive(source: DrowseArchiveSource): Promise
     primaryIdentity: Object.freeze(primaryIdentity),
     templateIdentity: templateIdentity === null ? null : Object.freeze(templateIdentity),
   });
-  internals.set(publicPack, { archive, manifest, publicPack });
+  internals.set(publicPack, { archive, manifest, closure, publicPack });
   return publicPack;
+}
+
+/**
+ * The entries an install reads: everything under the primary manifold's directory and the
+ * declared template's `template.json`. Any other entry is ignored, as drowse's extraction does.
+ */
+function closureEntries(
+  archive: ZipArchive,
+  manifest: DrowseArchivePackManifest,
+): ReadonlyMap<string, ZipEntry> {
+  const templateFile = manifest.template === null ? null : `${manifest.template}/template.json`;
+  const closure = new Map<string, ZipEntry>();
+  for (const entry of archive.entries) {
+    if (entry.path.startsWith(`${manifest.primary}/`) || entry.path === templateFile) {
+      closure.set(entry.path, entry);
+    }
+  }
+  if (!closure.has(`${manifest.primary}/manifold.json`)) {
+    manifestMismatch("archive closure has no manifold.json");
+  }
+  if (templateFile !== null && !closure.has(templateFile)) {
+    manifestMismatch("archive template closure has no template.json");
+  }
+  return closure;
 }
 
 export async function verifyDrowseArchive(
@@ -141,12 +151,14 @@ export async function verifyDrowseArchive(
       "inspection handle was not created by inspectDrowseArchive in this Worker",
     );
   }
-  const { archive, manifest } = internal;
+  const { archive, manifest, closure } = internal;
   const stage = options.stage;
   let began = false;
   let verifiedBytes = 0;
+  const totalBytes = [...closure.values()].reduce((total, entry) => total + entry.size, 0);
+  const files: Record<string, DrowseArchiveFileRecord> = Object.create(null) as Record<string, DrowseArchiveFileRecord>;
   const report = (phase: "verifying" | "validating" | "committing", path: string | null) => {
-    options.onProgress?.({ phase, path, verifiedBytes, totalBytes: totalPayloadBytes(manifest) });
+    options.onProgress?.({ phase, path, verifiedBytes, totalBytes });
   };
   try {
     options.signal?.throwIfAborted();
@@ -166,7 +178,7 @@ export async function verifyDrowseArchive(
       const templateBytes = await verifyEntry(templatePath, capture(METADATA_MAX_BYTES));
       template = validateTemplate(parseExactJson(templateBytes, templatePath), internal);
     }
-    validateExactClosure(manifold, template, internal);
+    validateTemplateBinding(manifold, template, internal);
 
     const nodeContents = new Map<string, string[]>();
     const nodeBytes: Uint8Array[] = [];
@@ -198,7 +210,6 @@ export async function verifyDrowseArchive(
         parseExactJson(sidecarBytes, sidecarPath),
         sidecarPath,
         manifold,
-        expectedNodesSha256,
         tensorIdentity,
       );
       const tensorEntry = requiredEntry(archive, tensorPath);
@@ -207,6 +218,10 @@ export async function verifyDrowseArchive(
         push: (chunk) => validator.push(chunk),
         finish: () => validateTensorDescription(validator.finish(), tensorPath, sidecar),
       });
+      // A fit of an older corpus travels with the closure but is a miss: it refits in place.
+      if (typeof sidecar.nodes_sha256 !== "string" || !expectedNodesSha256.has(sidecar.nodes_sha256)) {
+        continue;
+      }
       if (typeof sidecar.model_fingerprint === "string" && sidecar.model_fingerprint) {
         runtimeFingerprints.add(sidecar.model_fingerprint);
       }
@@ -224,13 +239,14 @@ export async function verifyDrowseArchive(
 
     report("validating", null);
     options.signal?.throwIfAborted();
-    const files = Object.freeze(
-      Object.fromEntries(Object.entries(manifest.files).map(([path, record]) => [path, Object.freeze({ ...record })])),
-    );
+    const verifiedFiles = deepFreeze(Object.fromEntries(
+      Object.keys(files).sort().map((path) => [path, { ...files[path] }]),
+    ) as Record<string, DrowseArchiveFileRecord>);
     const verified: VerifiedDrowseArchive = Object.freeze({
       ...inspected,
+      manifest: deepFreeze({ ...structuredClone(manifest), files: structuredClone(verifiedFiles) }),
       verifiedAt: Date.now(),
-      files,
+      files: verifiedFiles,
       manifold: deepFreeze(manifold.value),
       template: template === null ? null : deepFreeze(template.value),
       fittedArtifacts: Object.freeze(fittedArtifacts),
@@ -248,9 +264,9 @@ export async function verifyDrowseArchive(
       validator?: ByteValidator,
     ): Promise<Uint8Array> {
       options.signal?.throwIfAborted();
-      const entry = requiredEntry(archive, path);
-      const expected = manifest.files[path];
-      if (expected === undefined) manifestMismatch(`pack.json has no record for ${JSON.stringify(path)}`, path);
+      const entry = closure.get(path);
+      if (entry === undefined) closureError(`archive closure has no entry ${JSON.stringify(path)}`, path);
+      if (files[path] !== undefined) closureError(`archive entry ${JSON.stringify(path)} is read twice`, path);
       const hasher = sha256.create();
       const captured: Uint8Array[] = [];
       report("verifying", path);
@@ -266,17 +282,11 @@ export async function verifyDrowseArchive(
         },
       }, options.signal);
       validator?.finish?.();
-      const actual = bytesToHex(hasher.digest());
-      if (actual !== expected.sha256) {
-        throw new DrowseArchiveError(
-          "CHECKSUM_MISMATCH",
-          `archive entry ${JSON.stringify(path)} failed SHA-256 verification`,
-          path,
-        );
-      }
+      // The ZIP CRC covers transport; this digest is the browser's own record of what it staged.
+      files[path] = { size: entry.size, sha256: bytesToHex(hasher.digest()) };
       if (stage !== undefined) await stage.finish(path);
       if (validator?.capture !== true) return new Uint8Array();
-      const output = new Uint8Array(expected.size);
+      const output = new Uint8Array(entry.size);
       let offset = 0;
       for (const chunk of captured) {
         output.set(chunk, offset);
@@ -313,7 +323,7 @@ export async function readVerifiedDrowseArchiveFile(
   }
   signal?.throwIfAborted();
   const expected = verified.files[path];
-  if (expected === undefined) manifestMismatch(`pack.json has no record for ${JSON.stringify(path)}`, path);
+  if (expected === undefined) manifestMismatch(`the verified closure has no entry ${JSON.stringify(path)}`, path);
   const bytes = await readZipEntry(internal.archive, requiredEntry(internal.archive, path), undefined, signal);
   if (bytes === null || bytes.length !== expected.size) {
     manifestMismatch(`archive entry ${JSON.stringify(path)} has an unexpected size`, path);
@@ -322,7 +332,7 @@ export async function readVerifiedDrowseArchiveFile(
   if (actual !== expected.sha256) {
     throw new DrowseArchiveError(
       "CHECKSUM_MISMATCH",
-      `archive entry ${JSON.stringify(path)} does not match pack.json`,
+      `archive entry ${JSON.stringify(path)} changed since it was verified`,
       path,
     );
   }
@@ -361,114 +371,69 @@ function capture(maximum: number): ByteValidator {
   };
 }
 
-function validateManifest(value: unknown, archive: ZipArchive): DrowseArchiveManifest {
-  if (!isRecord(value) || !exactKeys(value, [
-    "files", "format_version", "kind", "primary", "producer", "source", "template",
-  ])) {
-    manifestError("pack.json does not match the exact v1 schema");
-  }
+/**
+ * `pack.json`, read as drowse 6.1 reads it: `format_version` 1, a manifold `kind` and the
+ * `primary` path are required, `template` is optional, and `producer` / `source` are provenance
+ * (defaulted when absent). The per-entry `files` map older writers carried goes unread.
+ */
+function validateManifest(value: unknown): DrowseArchivePackManifest {
+  if (!isRecord(value)) manifestError("pack.json must be a JSON object");
   if (value.format_version !== DROWSE_ARCHIVE_FORMAT_VERSION) {
     manifestError(`pack.json format_version must be ${DROWSE_ARCHIVE_FORMAT_VERSION}`);
   }
-  const producerName = ["drowse", "polythetic", "saklas"].find((name) => value.kind === `${name}-manifold`);
-  if (producerName === undefined) {
+  if (!["drowse", "polythetic", "saklas"].some((name) => value.kind === `${name}-manifold`)) {
     manifestError("pack.json kind must identify a Drowse manifold");
   }
-  if (
-    !isRecord(value.producer)
-    || !exactKeys(value.producer, ["name", "version"])
-    || value.producer.name !== producerName
-    || !shortString(value.producer.version, 1_024)
-  ) {
-    manifestError("pack.json producer must name a drowse version");
-  }
+  const producer = isRecord(value.producer) && shortString(value.producer.version, 1_024)
+    ? value.producer.version
+    : "unknown";
   const primary = archivePath(value.primary, "manifolds");
-  const template = value.template === null ? null : archivePath(value.template, "templates");
-  const source = validateSource(value.source);
-  if (!isRecord(value.files) || Object.keys(value.files).length === 0) {
-    manifestError("pack.json files must be a non-empty object");
-  }
-  const files: Record<string, DrowseArchiveFileRecord> = Object.create(null) as Record<string, DrowseArchiveFileRecord>;
-  for (const [path, raw] of Object.entries(value.files)) {
-    validateManifestPath(path);
-    if (!isRecord(raw) || !exactKeys(raw, ["sha256", "size"])) {
-      manifestError(`pack.json file record for ${JSON.stringify(path)} is invalid`);
-    }
-    if (
-      typeof raw.size !== "number"
-      || !Number.isSafeInteger(raw.size)
-      || raw.size < 0
-      || raw.size > DROWSE_ARCHIVE_MAX_FILE_BYTES
-    ) {
-      manifestError(`pack.json size for ${JSON.stringify(path)} is invalid`);
-    }
-    if (typeof raw.sha256 !== "string" || !SHA256.test(raw.sha256)) {
-      manifestError(`pack.json sha256 for ${JSON.stringify(path)} is invalid`);
-    }
-    const entry = archive.byPath.get(path);
-    if (entry === undefined || entry.size !== raw.size) {
-      manifestMismatch(`pack.json size for ${JSON.stringify(path)} does not match ZIP`, path);
-    }
-    const templateFile = template === null ? null : `${template}/template.json`;
-    if (!path.startsWith(`${primary}/`) && path !== templateFile) {
-      manifestMismatch(`archive entry ${JSON.stringify(path)} is outside its declared closure`, path);
-    }
-    files[path] = { size: raw.size, sha256: raw.sha256 };
-  }
-  const archivePaths = new Set(archive.entries.map((entry) => entry.path));
-  archivePaths.delete("pack.json");
-  if (!sameSet(new Set(Object.keys(files)), archivePaths)) {
-    manifestMismatch("pack.json files must describe every non-manifest archive entry exactly");
-  }
-  if (files[`${primary}/manifold.json`] === undefined) {
-    manifestMismatch("archive closure has no manifold.json");
-  }
-  if (template !== null && files[`${template}/template.json`] === undefined) {
-    manifestMismatch("archive template closure has no template.json");
-  }
+  const template = value.template == null ? null : archivePath(value.template, "templates");
+  const source = value.source == null
+    ? { uri: "local", repository: null, revision: null }
+    : validateSource(value.source);
   return {
     format_version: 1,
     kind: "drowse-manifold",
-    producer: { name: "drowse", version: value.producer.version as string },
+    producer: { name: "drowse", version: producer },
     primary,
     template,
     source,
-    files,
   };
 }
 
-function validateManifold(value: unknown, internal: InternalInspection): ManifoldClosure {
-  const path = `${internal.manifest.primary}/manifold.json`;
+/**
+ * `manifold.json` read as drowse 6.1's `parse_manifest` reads it: `format_version`, `name`,
+ * `fit_mode`, `nodes` (and `domain` for an authored or baked manifold) are required; the optional
+ * keys take their defaults; keys no reader uses (the retired `files` map, local fit state) are
+ * dropped. Returns the normalized manifest with the fields it read.
+ */
+export function readManifoldManifest(value: unknown, path = "manifold.json"): {
+  value: Record<string, unknown>;
+  fitMode: FitMode;
+  labels: string[];
+  roles: Array<string | null>;
+  kinds: Array<string | null>;
+  coords: number[][];
+  domain: DomainShape | null;
+  hyperparams: Record<string, unknown>;
+  templateRef: string | null;
+} {
   if (!isRecord(value)) closureError("manifold.json must be a JSON object", path);
+  if (value.format_version !== MANIFOLD_FORMAT_VERSION) closureError("manifold.json must use format_version 10", path);
+  if (typeof value.name !== "string" || !NAME.test(value.name)) closureError("manifold.json name is invalid", path);
   const fitMode = value.fit_mode;
   if (fitMode !== "authored" && fitMode !== "baked" && fitMode !== "pca" && fitMode !== "spectral" && fitMode !== "auto") {
     closureError("manifold.json has an invalid fit_mode", path);
   }
-  const common = [
-    "artifact_id", "description", "files", "fit_epochs", "fit_mode", "format_version",
-    "name", "nodes", "source", "tags", "template_ref",
-  ];
-  const allowed = new Set([...common, fitMode === "authored" || fitMode === "baked" ? "domain" : "hyperparams"]);
-  if (Object.keys(value).some((key) => !allowed.has(key))) closureError("manifold.json has unknown fields", path);
-  for (const required of ["description", "files", "fit_mode", "format_version", "name", "nodes", "source", "tags", "template_ref"]) {
-    if (!(required in value)) closureError(`manifold.json is missing ${required}`, path);
-  }
-  if (value.format_version !== MANIFOLD_FORMAT_VERSION) closureError("manifold.json must use format_version 10", path);
-  const [, expectedName] = internal.publicPack.primaryIdentity;
-  if (typeof value.name !== "string" || value.name !== expectedName || !NAME.test(value.name)) {
-    closureError("manifold.json identity does not match pack.json primary", path);
-  }
-  if (typeof value.description !== "string" || !shortString(value.source, 4_096)) {
+  const description = value.description ?? "";
+  const source = value.source || "local";
+  const tags = value.tags ?? [];
+  if (typeof description !== "string" || !shortString(source, 4_096)) {
     closureError("manifold.json description/source is invalid", path);
   }
-  if (!Array.isArray(value.tags) || !value.tags.every((tag) => typeof tag === "string")) {
+  if (!Array.isArray(tags) || !tags.every((tag) => typeof tag === "string")) {
     closureError("manifold.json tags must be strings", path);
-  }
-  if (value.artifact_id !== undefined && !shortString(value.artifact_id, 4_096)) {
-    closureError("manifold.json artifact_id is invalid", path);
-  }
-  if (value.fit_epochs !== undefined && !isRecord(value.fit_epochs)) {
-    closureError("manifold.json fit_epochs is invalid", path);
   }
   if (!Array.isArray(value.nodes) || value.nodes.length === 0) closureError("manifold.json needs nodes", path);
   const labels: string[] = [];
@@ -478,71 +443,56 @@ function validateManifold(value: unknown, internal: InternalInspection): Manifol
   let domain: DomainShape | null = null;
   let hyperparams: Record<string, unknown> = {};
   if (fitMode === "authored" || fitMode === "baked") domain = validateDomain(value.domain, path);
-  else {
-    if (!isRecord(value.hyperparams)) closureError("discover manifold hyperparams must be an object", path);
-    hyperparams = validateHyperparams(fitMode, value.hyperparams, path);
-  }
+  else hyperparams = validateHyperparams(fitMode, value.hyperparams ?? {}, path);
   if (fitMode === "authored" && value.nodes.length < 2 * domain!.intrinsicDim + 1) {
     closureError(`authored manifold needs at least ${2 * domain!.intrinsicDim + 1} nodes`, path);
   }
+  const nodes: Array<Record<string, unknown>> = [];
   for (const rawNode of value.nodes) {
-    const expected = fitMode === "authored" ? ["coords", "kind", "label", "role"] : ["kind", "label", "role"];
-    if (!isRecord(rawNode) || !exactKeys(rawNode, expected)) closureError("manifold.json node has an invalid schema", path);
-    if (typeof rawNode.label !== "string" || !LABEL.test(rawNode.label)) closureError("manifold.json node label is invalid", path);
-    if (rawNode.role !== null && (typeof rawNode.role !== "string" || !/^[a-z0-9._-]+$/.test(rawNode.role))) {
+    if (!isRecord(rawNode)) closureError("manifold.json node entries must be objects", path);
+    const label = rawNode.label;
+    const role = rawNode.role ?? null;
+    const kind = rawNode.kind ?? null;
+    if (typeof label !== "string" || !LABEL.test(label)) closureError("manifold.json node label is invalid", path);
+    if (role !== null && (typeof role !== "string" || !/^[a-z0-9._-]+$/.test(role))) {
       closureError("manifold.json node role is invalid", path);
     }
-    if (rawNode.kind !== null && rawNode.kind !== "abstract" && rawNode.kind !== "concrete" && rawNode.kind !== "custom") {
+    if (kind !== null && kind !== "abstract" && kind !== "concrete" && kind !== "custom") {
       closureError("manifold.json node kind is invalid", path);
     }
+    const node: Record<string, unknown> = { label, role, kind };
     if (fitMode === "authored") {
       if (!numericVector(rawNode.coords, domain!.intrinsicDim)) closureError("manifold.json node coordinates are invalid", path);
       coords.push([...(rawNode.coords as number[])]);
+      node.coords = [...(rawNode.coords as number[])];
     }
-    labels.push(rawNode.label);
-    roles.push(rawNode.role as string | null);
-    kinds.push(rawNode.kind as string | null);
+    labels.push(label);
+    roles.push(role as string | null);
+    kinds.push(kind as string | null);
+    nodes.push(node);
   }
   if (new Set(labels).size !== labels.length) closureError("manifold.json has duplicate node labels", path);
-  const templateRef = value.template_ref;
+  const templateRef = value.template_ref ?? null;
   if (templateRef !== null && (typeof templateRef !== "string" || !/^([a-z][a-z0-9._-]{0,63})\/([a-z][a-z0-9._-]{0,63})$/.test(templateRef))) {
     closureError("manifold.json template_ref must be namespace-qualified", path);
   }
   if (templateRef !== null && (fitMode === "authored" || fitMode === "baked")) {
     closureError("only discover manifolds may reference a template", path);
   }
-  if (!isRecord(value.files)) closureError("manifold.json files must be an object", path);
-  const tensorPaths: string[] = [];
-  const expectedPairs = new Set<string>();
-  for (const [name, digest] of Object.entries(value.files)) {
-    if (!/^[A-Za-z0-9%_-]+\.(?:json|safetensors)$/.test(name) || name.includes("/")) {
-      closureError(`manifold.json files entry ${JSON.stringify(name)} is not canonical`, path);
-    }
-    if (typeof digest !== "string" || !SHA256.test(digest)) closureError("manifold.json contains an invalid file digest", path);
-    const fullPath = `${internal.manifest.primary}/${name}`;
-    if (internal.manifest.files[fullPath]?.sha256 !== digest) {
-      closureError(`manifold.json digest for ${JSON.stringify(name)} does not match pack.json`, path);
-    }
-    const tensorName = name.replace(/\.json$/, ".safetensors");
-    if (!isCanonicalTensorFilename(tensorName)) closureError(`manifold.json file ${JSON.stringify(name)} is not a fitted tensor pair`, path);
-    expectedPairs.add(tensorName);
-    expectedPairs.add(tensorName.replace(/\.safetensors$/, ".json"));
-    if (name.endsWith(".safetensors")) tensorPaths.push(fullPath);
-  }
-  if (!sameSet(new Set(Object.keys(value.files)), expectedPairs)) {
-    closureError("manifold.json files must contain complete tensor/sidecar pairs", path);
-  }
-  if (fitMode === "baked" && tensorPaths.length === 0) closureError("baked manifold has no fitted tensor", path);
-  const expectedPaths = new Set<string>([path]);
-  if (fitMode !== "baked") {
-    labels.forEach((label, index) => expectedPaths.add(`${internal.manifest.primary}/nodes/${nodeFilename(index, label)}`));
-  }
-  for (const name of Object.keys(value.files)) expectedPaths.add(`${internal.manifest.primary}/${name}`);
-  validatePackSourceMatchesManifold(internal.manifest.source, value.source as string);
-  return {
-    value,
-    fitMode,
+  const normalized: Record<string, unknown> = {
+    format_version: MANIFOLD_FORMAT_VERSION,
     name: value.name,
+    description,
+    fit_mode: fitMode,
+    ...(fitMode === "authored" || fitMode === "baked" ? { domain: value.domain } : { hyperparams }),
+    nodes,
+    source,
+    tags: [...tags],
+    template_ref: templateRef,
+  };
+  return {
+    value: normalized,
+    fitMode,
     labels,
     roles,
     kinds,
@@ -550,16 +500,37 @@ function validateManifold(value: unknown, internal: InternalInspection): Manifol
     domain,
     hyperparams,
     templateRef: templateRef as string | null,
-    expectedPaths,
-    tensorPaths: tensorPaths.sort(),
   };
+}
+
+/** The canonical fitted-tensor filenames among a closure's top-level paths, with their sidecars. */
+export function drowseFittedTensorNames(paths: Iterable<string>, primary: string): string[] {
+  const prefix = `${primary}/`;
+  const names = new Set<string>();
+  for (const path of paths) {
+    if (path.startsWith(prefix) && !path.slice(prefix.length).includes("/")) names.add(path.slice(prefix.length));
+  }
+  return [...names]
+    .filter((name) => isCanonicalTensorFilename(name) && names.has(name.replace(/\.safetensors$/, ".json")))
+    .sort();
+}
+
+function validateManifold(value: unknown, internal: InternalInspection): ManifoldClosure {
+  const path = `${internal.manifest.primary}/manifold.json`;
+  const read = readManifoldManifest(value, path);
+  const [, expectedName] = internal.publicPack.primaryIdentity;
+  if (read.value.name !== expectedName) closureError("manifold.json identity does not match pack.json primary", path);
+  // Fitted pairs are found the way drowse's folder scan finds them: a canonical tensor beside its
+  // sidecar. A half pair is ignored.
+  const tensorPaths = drowseFittedTensorNames(internal.closure.keys(), internal.manifest.primary)
+    .map((name) => `${internal.manifest.primary}/${name}`);
+  if (read.fitMode === "baked" && tensorPaths.length === 0) closureError("baked manifold has no fitted tensor", path);
+  return { ...read, name: expectedName, tensorPaths };
 }
 
 function validateTemplate(value: unknown, internal: InternalInspection): TemplateClosure {
   const path = `${internal.manifest.template}/template.json`;
-  if (!isRecord(value) || !exactKeys(value, [
-    "contexts", "description", "format_version", "name", "slot", "source", "tags", "values",
-  ])) closureError("template.json does not match the exact v2 schema", path);
+  if (!isRecord(value)) closureError("template.json must be a JSON object", path);
   const identity = internal.publicPack.templateIdentity!;
   if (value.format_version !== TEMPLATE_FORMAT_VERSION || value.name !== identity[1] || typeof value.name !== "string" || !NAME.test(value.name)) {
     closureError("template.json identity or format does not match its closure", path);
@@ -578,11 +549,11 @@ function validateTemplate(value: unknown, internal: InternalInspection): Templat
   if (!Array.isArray(value.contexts) || value.contexts.length === 0) closureError("template.json contexts must be non-empty", path);
   const contexts: Array<{ assistant: string }> = [];
   for (const rawContext of value.contexts) {
-    if (!isRecord(rawContext) || !exactKeys(rawContext, ["assistant", "turns"]) || !Array.isArray(rawContext.turns) || rawContext.turns.length === 0) {
+    if (!isRecord(rawContext) || !Array.isArray(rawContext.turns) || rawContext.turns.length === 0) {
       closureError("template.json context has an invalid schema", path);
     }
     for (const turn of rawContext.turns) {
-      if (!isRecord(turn) || !exactKeys(turn, ["content", "role"]) || !["system", "user", "assistant"].includes(String(turn.role)) || typeof turn.content !== "string" || !turn.content.trim()) {
+      if (!isRecord(turn) || !["system", "user", "assistant"].includes(String(turn.role)) || typeof turn.content !== "string" || !turn.content.trim()) {
         closureError("template.json context turn is invalid", path);
       }
       if (turn.content.includes(value.slot as string)) closureError("template slot appears in a history turn", path);
@@ -613,24 +584,19 @@ function validateTemplate(value: unknown, internal: InternalInspection): Templat
   };
 }
 
-function validateExactClosure(
+function validateTemplateBinding(
   manifold: ManifoldClosure,
   template: TemplateClosure | null,
   internal: InternalInspection,
 ): void {
-  const expected = new Set(manifold.expectedPaths);
   if (internal.manifest.template === null) {
     if (manifold.templateRef !== null) closureError("templated manifold is missing its template closure");
-  } else {
-    expected.add(`${internal.manifest.template}/template.json`);
-    const expectedRef = internal.publicPack.templateIdentity!.join("/");
-    if (manifold.templateRef !== expectedRef) closureError("manifold template_ref does not match its closure");
-    if (template === null || !sameStrings(manifold.labels, template.labels)) {
-      closureError("manifold node labels do not match its template closure");
-    }
+    return;
   }
-  if (!sameSet(expected, new Set(Object.keys(internal.manifest.files)))) {
-    closureError("archive manifold/template closure is not exact");
+  const expectedRef = internal.publicPack.templateIdentity!.join("/");
+  if (manifold.templateRef !== expectedRef) closureError("manifold template_ref does not match its closure");
+  if (template === null || !sameStrings(manifold.labels, template.labels)) {
+    closureError("manifold node labels do not match its template closure");
   }
 }
 
@@ -709,11 +675,18 @@ export function discoverManifoldNodesSha256(input: {
 export function templateClosureSha256(
   value: Readonly<Record<string, unknown>>,
 ): string {
+  // drowse's `TemplateFolder.sha256`: over the fields it reads, each context as {turns, assistant}.
   return hashParts([pythonCanonicalJsonBytes({
     format_version: value.format_version,
     slot: value.slot,
     values: value.values,
-    contexts: value.contexts,
+    contexts: (value.contexts as Array<Record<string, unknown>>).map((context) => ({
+      turns: (context.turns as Array<Record<string, unknown>>).map((turn) => ({
+        role: turn.role,
+        content: turn.content,
+      })),
+      assistant: context.assistant,
+    })),
   })]);
 }
 
@@ -723,51 +696,28 @@ function hashParts(parts: readonly Uint8Array[]): string {
   return bytesToHex(hasher.digest());
 }
 
+/** drowse's `sanitize_hyperparams(..., drop_unknown=True)`: a key the mode never reads is dropped. */
 function validateHyperparams(
-  fitMode: FitMode,
+  fitMode: "pca" | "spectral" | "auto",
   value: unknown,
   path: string,
 ): Record<string, unknown> {
   if (!isRecord(value)) closureError("manifold hyperparams must be an object", path);
-  if (fitMode === "authored" || fitMode === "baked") {
-    if (Object.keys(value).length !== 0) closureError(`${fitMode} fit cannot carry hyperparams`, path);
-    return value;
-  }
   const allowed = HYPERPARAMS_BY_MODE[fitMode];
   const intKeys = new Set(["max_dim", "min_dim", "k_nn", "max_subspace_dim"]);
   const floatKeys = new Set(["var_threshold", "bandwidth", "persistence_frac"]);
+  const kept: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
-    if (!allowed.has(key)) closureError(`fit_mode ${fitMode} does not accept hyperparameter ${JSON.stringify(key)}`, path);
+    if (!allowed.has(key)) continue;
     const valid = intKeys.has(key)
       ? positiveInteger(item)
       : floatKeys.has(key)
         ? finite(item)
         : key === "smoothing" && (item === "auto" || finite(item));
     if (!valid) closureError(`hyperparameter ${JSON.stringify(key)} has an invalid value`, path);
+    kept[key] = item;
   }
-  return value;
-}
-
-function validateDiagnostics(value: unknown, path: string): void {
-  if (!isRecord(value)) closureError("fitted sidecar diagnostics must be an object", path);
-  const allowed = new Set([
-    "per_component_variance", "cumulative_variance", "eigenvalues", "picked_k",
-    "gap_index", "k_nn", "component_count", "heuristic_k", "threshold",
-    "gap_magnitude", "bandwidth", "pinned", "min_dim",
-  ]);
-  const listKeys = new Set(["per_component_variance", "cumulative_variance", "eigenvalues"]);
-  const intKeys = new Set(["picked_k", "gap_index", "k_nn", "component_count", "heuristic_k", "min_dim"]);
-  for (const [key, item] of Object.entries(value)) {
-    if (!allowed.has(key)) closureError("fitted sidecar diagnostics has unknown fields", path);
-    const valid = listKeys.has(key)
-      ? Array.isArray(item) && item.length > 0 && item.every(finite)
-      : intKeys.has(key)
-        ? nonNegativeInteger(item)
-        : key === "pinned"
-          ? typeof item === "boolean"
-          : finite(item);
-    if (!valid) closureError(`fitted sidecar diagnostics field ${JSON.stringify(key)} is invalid`, path);
-  }
+  return kept;
 }
 
 function validateLayerMap(
@@ -786,108 +736,103 @@ function validateLayerMap(
   }
 }
 
-function validateTopologyCandidates(value: unknown, path: string): void {
-  if (!Array.isArray(value)) closureError("fitted sidecar topology_candidates must be an array", path);
-  for (const candidate of value) {
-    if (!isRecord(candidate) || !exactKeys(candidate, ["fit_mode", "intrinsic_dim", "name", "reason", "score", "viable"])) {
-      closureError("fitted sidecar has an invalid topology candidate schema", path);
-    }
-    if (
-      !shortString(candidate.name, 4_096)
-      || (candidate.fit_mode !== "pca" && candidate.fit_mode !== "spectral")
-      || !positiveInteger(candidate.intrinsic_dim)
-      || (candidate.score !== null && !finite(candidate.score))
-      || typeof candidate.viable !== "boolean"
-      || (candidate.reason !== null && typeof candidate.reason !== "string")
-    ) closureError("fitted sidecar has invalid topology candidate values", path);
-  }
-}
-
-function validateComponents(value: unknown, path: string): void {
-  if (value === null) return;
-  if (!isRecord(value) || Object.keys(value).length === 0) {
-    closureError("fitted sidecar components must be null or a non-empty object", path);
-  }
-  for (const [coordinate, item] of Object.entries(value)) {
-    if (
-      !coordinate
-      || !isRecord(item)
-      || !exactKeys(item, ["alpha", "selector", "tensor_sha256"])
-      || !shortString(item.selector, 4_096)
-      || !finite(item.alpha)
-      || typeof item.tensor_sha256 !== "string"
-      || !SHA256.test(item.tensor_sha256)
-    ) closureError("fitted sidecar has invalid component provenance", path);
-  }
-}
-
 interface ValidatedSidecar extends Record<string, unknown> {
   domain: Record<string, unknown>;
   fitted_layers: number[];
   mahalanobis_share_per_layer: Record<string, unknown>;
   origin_per_layer: Record<string, unknown>;
   feature_space: string;
+  nodes_sha256: string | null;
   model_fingerprint: string | null;
   context_binding_sha256: string | null;
   model_source_fingerprint: string | null;
 }
 
+/**
+ * drowse's `ManifoldSidecar` field list with its "not set" defaults. A reader keeps these keys,
+ * defaults the missing ones and drops the rest (6.0's `share_metric` / `subspace_metric` among
+ * them), so adding or retiring a provenance field never strands a fit.
+ */
+const SIDECAR_DEFAULTS: Readonly<Record<string, unknown>> = {
+  drowse_version: "unknown",
+  feature_space: "raw",
+  fit_mode: "authored",
+  hyperparams: {},
+  diagnostics: {},
+  node_spread_per_layer: {},
+  mahalanobis_share_per_layer: {},
+  origin_per_layer: {},
+  nodes_sha256: null,
+  sae_release: null,
+  sae_revision: null,
+  sae_fingerprint: null,
+  sae_ids_by_layer: {},
+  sae_full_coverage: false,
+  model_fingerprint: null,
+  model_source_fingerprint: null,
+  capture_sha256: null,
+  capture_version: null,
+  context_binding_sha256: null,
+  capture_render_sha256: null,
+  baseline_prompts_sha256: null,
+  fitted_layers: [],
+  fit_policy_version: null,
+  rbf_smoothing_per_layer: {},
+  sigma_field_per_layer: {},
+  resolved_fit_mode: null,
+  topology_winner: null,
+  topology_candidates: [],
+  components: null,
+  bake_policy: null,
+  source_model_id: null,
+  source_model_fingerprint: null,
+  transfer_quality_estimate: null,
+};
+const SIDECAR_REQUIRED = ["format_version", "name", "method", "domain", "node_labels"] as const;
+
+/**
+ * A fitted sidecar read as drowse 6.1's `validate_sidecar_payload` reads it: the identity the
+ * loader uses is required, the values the math or a cache comparison relies on are checked, and
+ * everything else is provenance that passes through as written.
+ */
 function validateSidecar(
   input: unknown,
   path: string,
   manifold: ManifoldClosure,
-  expectedNodesSha256: ReadonlySet<string>,
   tensorIdentity: ParsedDrowseTensorFilename,
 ): ValidatedSidecar {
   if (!isRecord(input)) closureError("fitted sidecar must be a JSON object", path);
-  const versionKey = Object.hasOwn(input, "drowse_version")
-    ? "drowse_version"
-    : Object.hasOwn(input, "polythetic_version") ? "polythetic_version" : "saklas_version";
-  if (!exactKeys(input, [
-    "bake_policy", "baseline_prompts_sha256", "capture_render_sha256",
-    "capture_sha256", "capture_version", "components", "context_binding_sha256",
-    "diagnostics", "domain",
-    "feature_space", "fit_mode", "fit_policy_version", "fitted_layers",
-    "format_version", "hyperparams", "mahalanobis_share_per_layer", "method",
-    "model_fingerprint", "model_source_fingerprint", "name", "node_count",
-    "node_kinds", "node_labels", "node_roles", "node_spread_per_layer",
-    "nodes_sha256", "origin_per_layer", "rbf_smoothing_per_layer",
-    "resolved_fit_mode", "sae_fingerprint", "sae_full_coverage", "sae_ids_by_layer",
-    "sae_release", "sae_revision", versionKey, "share_metric",
-    "sigma_field_per_layer", "source_model_fingerprint", "source_model_id",
-    "subspace_metric", "topology_candidates", "topology_winner",
-    "transfer_quality_estimate",
-  ])) closureError("fitted sidecar does not match the exact manifold v10 schema", path);
-  const value = versionKey !== "drowse_version"
-    ? { ...input, drowse_version: input[versionKey] }
+  const legacyVersion = input.polythetic_version ?? input.saklas_version;
+  const raw = input.drowse_version === undefined && legacyVersion !== undefined
+    ? { ...input, drowse_version: legacyVersion }
     : input;
-  if (versionKey !== "drowse_version") delete value[versionKey];
-  if (
-    value.format_version !== MANIFOLD_FORMAT_VERSION
-    || value.name !== manifold.name
-    || value.fit_mode !== manifold.fitMode
-    || value.node_count !== manifold.labels.length
-    || !sameStrings(value.node_labels, manifold.labels)
-    || !sameNullableStrings(value.node_roles, manifold.roles)
-    || !sameNullableStrings(value.node_kinds, manifold.kinds)
-  ) closureError("fitted sidecar identity does not match manifold.json", path);
-  const methodModes = typeof value.method === "string" ? METHOD_FIT_MODES[value.method] : undefined;
-  if (methodModes === undefined || !methodModes.has(manifold.fitMode)) {
-    closureError("fitted sidecar has an invalid method/fit_mode combination", path);
+  const missing = SIDECAR_REQUIRED.filter((key) => !Object.hasOwn(raw, key));
+  if (missing.length > 0) closureError(`fitted sidecar is missing ${missing.join(", ")}`, path);
+  const value: Record<string, unknown> = {};
+  for (const key of [...SIDECAR_REQUIRED, "node_roles", "node_kinds", ...Object.keys(SIDECAR_DEFAULTS)]) {
+    value[key] = Object.hasOwn(raw, key) ? raw[key] : structuredClone(SIDECAR_DEFAULTS[key]);
   }
+  if (value.format_version !== MANIFOLD_FORMAT_VERSION) closureError("fitted sidecar must use format_version 10", path);
+  for (const field of ["name", "method", "drowse_version", "feature_space", "fit_mode"]) {
+    if (!shortString(value[field], 4_096)) closureError(`fitted sidecar ${field} must be a non-empty string`, path);
+  }
+  const labels = value.node_labels;
+  value.node_count = Array.isArray(labels) ? labels.length : 0;
+  value.node_roles ??= manifold.labels.map(() => null);
+  value.node_kinds ??= manifold.labels.map(() => null);
   if (
-    !shortString(value.method, 1_024)
-    || !shortString(value.drowse_version, 1_024)
-    || !shortString(value.feature_space, 4_096)
-    || typeof value.sae_full_coverage !== "boolean"
-  ) closureError("fitted sidecar metadata types are invalid", path);
-  validateHyperparams(manifold.fitMode, value.hyperparams, path);
-  validateDiagnostics(value.diagnostics, path);
+    value.name !== manifold.name
+    || value.fit_mode !== manifold.fitMode
+    || !sameStrings(labels, manifold.labels)
+    || !Array.isArray(value.node_roles) || value.node_roles.length !== manifold.labels.length
+    || !Array.isArray(value.node_kinds) || value.node_kinds.length !== manifold.labels.length
+  ) closureError("fitted sidecar identity does not match manifold.json", path);
+  if (!isRecord(value.hyperparams) || !isRecord(value.diagnostics)) {
+    closureError("fitted sidecar hyperparams and diagnostics must be objects", path);
+  }
   for (const field of [
     "nodes_sha256", "sae_release", "sae_revision", "sae_fingerprint",
-    "model_fingerprint", "model_source_fingerprint", "capture_sha256", "share_metric",
-    "subspace_metric", "resolved_fit_mode", "topology_winner", "bake_policy",
-    "source_model_id", "source_model_fingerprint",
+    "model_fingerprint", "model_source_fingerprint", "capture_sha256", "source_model_id",
   ]) {
     const item = value[field];
     if (item !== null && (typeof item !== "string" || !item)) {
@@ -902,17 +847,10 @@ function validateSidecar(
       closureError(`fitted sidecar ${field} must be a SHA-256 digest or null`, path);
     }
   }
-  if (value.capture_version !== null && !nonNegativeInteger(value.capture_version)) {
-    closureError("fitted sidecar capture_version is invalid", path);
-  }
-  if (value.fit_policy_version !== null && !nonNegativeInteger(value.fit_policy_version)) {
-    closureError("fitted sidecar fit_policy_version is invalid", path);
-  }
-  if (value.transfer_quality_estimate !== null && !finite(value.transfer_quality_estimate)) {
-    closureError("fitted sidecar transfer quality is invalid", path);
-  }
-  if (typeof value.nodes_sha256 !== "string" || !expectedNodesSha256.has(value.nodes_sha256)) {
-    closureError("fitted sidecar node hash does not match its closure", path);
+  for (const field of ["capture_version", "fit_policy_version"]) {
+    if (value[field] !== null && !nonNegativeInteger(value[field])) {
+      closureError(`fitted sidecar ${field} is invalid`, path);
+    }
   }
   if (!isRecord(value.domain)) closureError("fitted sidecar domain is invalid", path);
   validateDomain(value.domain, path);
@@ -925,73 +863,14 @@ function validateSidecar(
   const layerKeys = new Set((value.fitted_layers as number[]).map(String));
   validateLayerMap(value.node_spread_per_layer, layerKeys, false, (item) => finite(item) && item >= 0, "node_spread_per_layer", path);
   validateLayerMap(value.mahalanobis_share_per_layer, layerKeys, true, positiveFinite, "mahalanobis_share_per_layer", path);
-  if (!isRecord(value.mahalanobis_share_per_layer) || !sameSet(new Set(Object.keys(value.mahalanobis_share_per_layer)), layerKeys)) {
+  if (!sameSet(new Set(Object.keys(value.mahalanobis_share_per_layer as Record<string, unknown>)), layerKeys)) {
     closureError("fitted sidecar Mahalanobis shares do not match its layer map", path);
   }
   validateLayerMap(value.origin_per_layer, layerKeys, true, (item) => Array.isArray(item) && item.length > 0 && item.every(finite), "origin_per_layer", path);
   validateLayerMap(value.sae_ids_by_layer, layerKeys, false, (item) => typeof item === "string" && item.length > 0, "sae_ids_by_layer", path);
-  validateLayerMap(value.rbf_smoothing_per_layer, layerKeys, true, (item) => (
-    isRecord(item)
-    && exactKeys(item, ["edf", "gcv", "lambda"])
-    && Object.values(item).every(finite)
-  ), "rbf_smoothing_per_layer", path);
-  validateLayerMap(value.sigma_field_per_layer, layerKeys, true, (item) => (
-    isRecord(item)
-    && exactKeys(item, ["lambda", "sigma_max", "sigma_mean", "sigma_min"])
-    && Object.values(item).every((entry) => finite(entry) && entry >= 0)
-  ), "sigma_field_per_layer", path);
-  validateTopologyCandidates(value.topology_candidates, path);
-  validateComponents(value.components, path);
 
-  const isAuto = manifold.fitMode === "auto";
-  const hasAutoProvenance = (
-    value.resolved_fit_mode !== null
-    && value.topology_winner !== null
-    && Array.isArray(value.topology_candidates)
-    && value.topology_candidates.length > 0
-  );
-  if (isAuto !== hasAutoProvenance) {
-    closureError("fitted sidecar has inconsistent auto-topology provenance", path);
-  }
-  if (!isAuto && (
-    value.resolved_fit_mode !== null
-    || value.topology_winner !== null
-    || (value.topology_candidates as unknown[]).length > 0
-  )) closureError("fitted sidecar non-auto fit carries topology provenance", path);
-
-  const isMerge = value.method === "merge";
-  if (isMerge) {
-    if (manifold.fitMode !== "baked" || value.components === null || value.bake_policy !== MERGE_BAKE_POLICY) {
-      closureError("fitted sidecar has incomplete merge provenance", path);
-    }
-  } else if (value.components !== null || value.bake_policy !== null) {
-    closureError("fitted sidecar non-merge fit carries merge provenance", path);
-  }
-
+  // The tensor filename names the fit's variant; a reader selects by it, so it must agree.
   const isTransfer = value.method === "manifold_procrustes_transfer";
-  const transferValues = [value.source_model_id, value.source_model_fingerprint, value.transfer_quality_estimate];
-  if (isTransfer) {
-    if (value.source_model_id === null || value.source_model_fingerprint === null) {
-      closureError("fitted sidecar has incomplete transfer provenance", path);
-    }
-  } else if (transferValues.some((item) => item !== null)) {
-    closureError("fitted sidecar non-transfer fit carries transfer provenance", path);
-  }
-
-  const saeValues = [value.sae_release, value.sae_revision, value.sae_fingerprint];
-  const saeIds = value.sae_ids_by_layer as Record<string, unknown>;
-  if (value.feature_space === "raw") {
-    if (saeValues.some((item) => item !== null) || Object.keys(saeIds).length > 0 || value.sae_full_coverage !== false) {
-      closureError("fitted sidecar raw fit carries SAE provenance", path);
-    }
-  } else if (
-    !(value.feature_space as string).startsWith("sae-")
-    || value.sae_release === null
-    || Object.keys(saeIds).length === 0
-  ) {
-    closureError("fitted sidecar has incomplete SAE provenance", path);
-  }
-
   const matchesVariant = tensorIdentity.variant === "raw"
     ? value.feature_space === "raw" && !isTransfer
     : tensorIdentity.variant === "sae"
@@ -1019,17 +898,13 @@ function validateTensorDescription(
     tensorError(path, "has invalid node_coords shape");
   }
   shapes.delete("node_coords");
-  const allowed = new Set([
-    "mean", "basis", "node_coords", "affine_map", "node_params", "rbf_weights",
-    "poly_coeffs", "coord_offset", "coord_scale", "sigma_rbf_weights", "sigma_poly_coeffs",
-  ]);
+  // `layer_<L>.<field>`; any other key is ignored, as is a field no reader uses.
   const byLayer = new Map<number, Map<string, readonly number[]>>();
   for (const [key, shape] of shapes) {
     const match = /^layer_(0|[1-9]\d{0,9})\.([a-z_]+)$/.exec(key);
-    if (match === null || !allowed.has(match[2])) tensorError(path, `has invalid tensor key ${JSON.stringify(key)}`);
+    if (match === null) continue;
     const layer = Number(match[1]);
     const fields = byLayer.get(layer) ?? new Map<string, readonly number[]>();
-    if (fields.has(match[2])) tensorError(path, `has duplicate tensor field ${JSON.stringify(key)}`);
     fields.set(match[2], shape);
     byLayer.set(layer, fields);
   }
@@ -1046,6 +921,12 @@ function validateTensorDescription(
       tensorError(path, `layer ${layer} has invalid mean/basis shapes`);
     }
     const [rank, dimension] = basis;
+    // The dual read rows (drowse 6.1, fit policy 2). A pre-6.1 fit has none; it is stale, and
+    // whoever loads its geometry refits it instead.
+    const read = fields.get("read");
+    if (read !== undefined && !sameShape(read, basis)) {
+      tensorError(path, `layer ${layer} read rows do not match its basis`);
+    }
     if (hiddenDim === null) hiddenDim = dimension;
     else if (hiddenDim !== dimension) tensorError(path, "has inconsistent hidden dimensions");
     const isCurved = fields.has("node_params");
@@ -1055,7 +936,7 @@ function validateTensorDescription(
       curvedLayers.add(String(layer));
       const required = ["mean", "basis", "node_params", "rbf_weights", "poly_coeffs", "coord_offset", "coord_scale"];
       const sigma = ["sigma_rbf_weights", "sigma_poly_coeffs"];
-      if (!required.every((field) => fields.has(field)) || [...fields.keys()].some((field) => !required.includes(field) && !sigma.includes(field))) {
+      if (!required.every((field) => fields.has(field))) {
         tensorError(path, `layer ${layer} has invalid curved tensor keys`);
       }
       if (fields.has(sigma[0]) !== fields.has(sigma[1])) tensorError(path, `layer ${layer} has incomplete sigma fields`);
@@ -1072,8 +953,7 @@ function validateTensorDescription(
         || !sameShape(fields.get("sigma_poly_coeffs"), [domain.embedDim + 1, 1])
       )) tensorError(path, `layer ${layer} has invalid sigma shapes`);
     } else {
-      const allowedAffine = new Set(["mean", "basis", "node_coords", "affine_map"]);
-      if ([...fields.keys()].some((field) => !allowedAffine.has(field)) || !sameShape(fields.get("node_coords"), [nodeCount, rank])) {
+      if (!sameShape(fields.get("node_coords"), [nodeCount, rank])) {
         tensorError(path, `layer ${layer} has invalid affine tensor keys or shapes`);
       }
       const affineMap = fields.get("affine_map");
@@ -1117,33 +997,27 @@ function validateDomain(value: unknown, path: string): DomainShape {
   closureError("manifold domain type is invalid", path);
 }
 
-function validateSource(value: unknown): DrowseArchiveManifest["source"] {
-  if (!isRecord(value) || !exactKeys(value, ["repository", "revision", "uri"]) || !shortString(value.uri, 4_096)) {
-    manifestError("pack.json source does not match the exact v1 schema");
-  }
-  for (const field of ["repository", "revision"] as const) {
-    if (value[field] !== null && !shortString(value[field], 1_024)) manifestError(`pack.json source.${field} is invalid`);
+/** `pack.json`'s source block; a Hugging Face source must pin an immutable revision. */
+function validateSource(value: unknown): DrowseArchivePackManifest["source"] {
+  if (!isRecord(value) || !shortString(value.uri, 4_096)) manifestError("pack.json source needs a uri");
+  const repository = value.repository ?? null;
+  const revision = value.revision ?? null;
+  for (const item of [repository, revision]) {
+    if (item !== null && !shortString(item, 1_024)) manifestError("pack.json source repository/revision is invalid");
   }
   if ((value.uri as string).startsWith("hf://")) {
     if (
-      typeof value.repository !== "string"
-      || typeof value.revision !== "string"
-      || !/^[0-9a-f]{40}$/.test(value.revision)
-      || value.uri !== `hf://${value.repository}@${value.revision}`
+      typeof repository !== "string"
+      || typeof revision !== "string"
+      || !/^[0-9a-f]{40}$/.test(revision)
+      || value.uri !== `hf://${repository}@${revision}`
     ) {
       manifestError("Hugging Face source provenance requires matching immutable fields");
     }
-  } else if (value.repository !== null || value.revision !== null) {
+  } else if (repository !== null || revision !== null) {
     manifestError("non-Hugging Face source provenance cannot name a repository or revision");
   }
-  return { uri: value.uri as string, repository: value.repository as string | null, revision: value.revision as string | null };
-}
-
-function validatePackSourceMatchesManifold(source: DrowseArchiveManifest["source"], manifoldSource: string): void {
-  if (source.uri !== manifoldSource) closureError("pack.json source provenance does not match manifold.json");
-  if (manifoldSource.startsWith("hf://") && source.uri !== `hf://${source.repository}@${source.revision}`) {
-    closureError("pack.json Hugging Face provenance does not match manifold.json");
-  }
+  return { uri: value.uri as string, repository: repository as string | null, revision: revision as string | null };
 }
 
 function archivePath(value: unknown, root: "manifolds" | "templates"): string {
@@ -1321,10 +1195,6 @@ function occurrences(value: string, needle: string): number {
   return count;
 }
 
-function totalPayloadBytes(manifest: DrowseArchiveManifest): number {
-  return Object.values(manifest.files).reduce((total, file) => total + file.size, 0);
-}
-
 function exactKeys(record: Record<string, unknown>, expected: readonly string[]): boolean {
   const keys = Object.keys(record).sort();
   const sortedExpected = [...expected].sort();
@@ -1337,10 +1207,6 @@ function sameSet<T>(left: Set<T>, right: Set<T>): boolean {
 
 function sameStrings(left: unknown, right: unknown): boolean {
   return Array.isArray(left) && Array.isArray(right) && left.length === right.length && left.every((value, index) => typeof value === "string" && value === right[index]);
-}
-
-function sameNullableStrings(left: unknown, right: unknown): boolean {
-  return Array.isArray(left) && Array.isArray(right) && left.length === right.length && left.every((value, index) => (value === null || typeof value === "string") && value === right[index]);
 }
 
 function sameShape(left: readonly number[] | undefined, right: readonly number[]): boolean {

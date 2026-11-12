@@ -54,9 +54,9 @@ def emit(module, label, metadata_fields):
 
 
 class Affine(nn.Module):
-    def forward(self, residual, active, basis, neutral, target, along, kappa, kind, direction, bias, threshold):
+    def forward(self, residual, active, basis, read, neutral, target, along, kappa, kind, direction, bias, threshold):
         return apply_structured_affine_hook(
-            residual, 0, active, basis, neutral, target, along, kappa, kind, direction, bias, threshold
+            residual, 0, active, basis, read, neutral, target, along, kappa, kind, direction, bias, threshold
         )
 
 
@@ -65,6 +65,7 @@ for h, b, t in [(2, 1, 1), (65, 1, 1), (512, 1, 1), (2560, 1, 1), (128, 1, 3)]:
         "residual": [b, t, h],
         "active": [1, 4],
         "basis": [1, 4, 8, h],
+        "read": [1, 4, 8, h],
         "neutral": [1, 4, h],
         "target": [1, 4, 8],
         "along": [1, 4],

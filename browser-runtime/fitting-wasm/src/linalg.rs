@@ -339,37 +339,26 @@ pub fn validate_orthonormal(basis: &[f64], components: usize, columns: usize) ->
     Ok(())
 }
 
-pub fn orthonormalize_rows(values: &[f64], rows: usize, columns: usize) -> KernelResult<Vec<f64>> {
-    checked_matrix("basis candidates", values, rows, columns)?;
-    let mut basis = vec![0.0; values.len()];
-    for row in 0..rows {
-        let start = row * columns;
-        basis[start..start + columns].copy_from_slice(&values[start..start + columns]);
-        for previous in 0..row {
-            let dot = (0..columns)
-                .map(|column| basis[start + column] * basis[previous * columns + column])
+/// `read` corrected to be exactly dual to `basis` (`read · basisᵀ = I`): one `(R, R)` solve,
+/// `(read · basisᵀ)⁻¹ read`, which keeps the reads in their own span and leaves the write rows
+/// untouched (drowse's `dual_read`).
+pub fn dual_read(
+    basis: &[f64],
+    read: &[f64],
+    rows: usize,
+    columns: usize,
+) -> KernelResult<Vec<f64>> {
+    checked_matrix("frame write rows", basis, rows, columns)?;
+    checked_matrix("frame read rows", read, rows, columns)?;
+    let mut gram = vec![0.0; rows * rows];
+    for left in 0..rows {
+        for right in 0..rows {
+            gram[left * rows + right] = (0..columns)
+                .map(|column| read[left * columns + column] * basis[right * columns + column])
                 .sum::<f64>();
-            for column in 0..columns {
-                basis[start + column] -= dot * basis[previous * columns + column];
-            }
-        }
-        let norm = basis[start..start + columns]
-            .iter()
-            .map(|value| value * value)
-            .sum::<f64>()
-            .sqrt();
-        if norm <= f64::EPSILON {
-            return Err(invalid(format!(
-                "basis candidate {row} is numerically dependent"
-            )));
-        }
-        for value in &mut basis[start..start + columns] {
-            *value /= norm;
         }
     }
-    checked_finite("orthonormal basis", &basis)?;
-    validate_orthonormal(&basis, rows, columns)?;
-    Ok(basis)
+    solve(gram, rows, read.to_vec(), columns)
 }
 
 pub fn solve(

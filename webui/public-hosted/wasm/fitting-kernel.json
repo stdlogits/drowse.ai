@@ -7,13 +7,13 @@
   "files": [
     {
       "name": "drowse_fitting_wasm.js",
-      "bytes": 110239,
-      "sha256": "61e5ab58781847659d133228d30fd86f02bea47d51ab02f53bf4bc1c914d02d6"
+      "bytes": 110817,
+      "sha256": "385035a4de2e132608a7c6b15247a3ff14f68c6cfc6622631ad7a88d7f15a612"
     },
     {
       "name": "drowse_fitting_wasm_bg.wasm",
-      "bytes": 311178,
-      "sha256": "035502c7cb01c4f4d1f951a56c35d1422c7b6ac40de9c4d3c0e6af12fdbf595c"
+      "bytes": 311138,
+      "sha256": "52dc3a57413a72868e72e0f4bb5272fe0a1fce73878e53f1ff0d316a70ca5c5d"
     }
   ]
 }

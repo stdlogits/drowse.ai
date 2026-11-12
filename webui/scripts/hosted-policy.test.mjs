@@ -91,7 +91,7 @@ function model(id, language = "en") {
     variants: [{
       id: `variant-${id}`,
       tier: "balanced",
-      structuredHookProfile: "standard-v4",
+      structuredHookProfile: "standard-v5",
       contextProfiles: [{
         contextTokens: 2048,
         bindingSha256: "b".repeat(64),
@@ -325,7 +325,7 @@ try {
     modelBackendIntegrated: false,
   }), false);
   assert.equal(
-    capabilityModule.structuredHookProfilesSupportSubspaceTrails(["standard-v4", "standard-v4-residual"]),
+    capabilityModule.structuredHookProfilesSupportSubspaceTrails(["standard-v5", "standard-v5-residual"]),
     true,
   );
   assert.equal(

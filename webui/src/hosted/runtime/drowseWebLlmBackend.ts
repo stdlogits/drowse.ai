@@ -49,7 +49,7 @@ interface DrowseWebLlmRuntimePort extends BrowserGenerationPort, WebLlmCaptureRu
     tokenIds: readonly number[],
   ): Promise<Float32Array>;
   generationPerformance(): BrowserGenerationPerformance;
-  /** Hook ABI v5's attested surface, or null when the loaded library predates it. */
+  /** Hook ABI v6's attested surface, or null when the loaded library predates it. */
   blockSitesCapabilities?(): BlockSitesCapabilities | null;
   /** The loaded model's block-sites bridge (replay, residents), or null without one. */
   blockSitesDevice?(): WebLlmBlockSitesDevice | null;
@@ -192,7 +192,7 @@ export class DrowseWebLlmBackend implements BrowserModelBackend {
   }
 
   private readonly v4BlockSites = rejectingBlockSitesBackend(
-    () => new UnsupportedBlockError("the loaded model library predates hook ABI block-sites-v5"),
+    () => new UnsupportedBlockError("the loaded model library predates hook ABI block-sites-v6"),
   );
   private blockSitesSurface: {
     capabilities: BlockSitesCapabilities;

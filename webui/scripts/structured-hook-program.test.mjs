@@ -20,14 +20,15 @@ try {
     server.ssrLoadModule("/src/hosted/runtime/structuredHookProgram.ts"),
     server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts"),
   ]);
-  const standardProfile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4;
-  const geometryProfile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4;
-  const exactReadoutProfile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4;
+  const standardProfile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V5;
+  const geometryProfile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V5;
+  const exactReadoutProfile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V5;
   const program = hooks.compileStructuredHookProgram(2, [
     {
       affineGroups: [{
         active: true,
         basis: [[1, 0], [0, 1]],
+        read: [[1, 0], [0, 1]],
         neutral: [0, 0],
         target: [1, 0],
         along: 0.5,
@@ -42,6 +43,7 @@ try {
       curves: [{
         active: true,
         basis: [[1, 0], [0, 1]],
+        read: [[1, 0], [0, 1]],
         neutral: [0, 0],
         nodeParameters: [[0], [1]],
         rbfWeights: [[0, 0], [0, 0]],
@@ -89,6 +91,7 @@ try {
       curves: [{
         active: true,
         basis: [[1, 0]],
+        read: [[1, 0]],
         neutral: [0, 0],
         nodeParameters: Array.from({ length: 33 }, (_, index) => [index]),
         rbfWeights: Array.from({ length: 33 }, () => [0]),
@@ -229,7 +232,7 @@ try {
     productionLayerCount,
   ));
   assert.doesNotThrow(() => validateDrowseJlensDictionary({
-    hookAbi: "block-sites-v5",
+    hookAbi: "block-sites-v6",
     bindingId: productionBindingId,
     hiddenSize: 2,
     layerIndices: productionLayerIndices,
@@ -283,6 +286,7 @@ try {
       {
         active: true,
         basis: [[1, 0, 0, 0], [0, 1, 0, 0]],
+        read: [[1, 0, 0, 0], [0, 1, 0, 0]],
         neutral: [0, 0, 0, 0],
         nodeParameters: [[0, 0], [1, 1]],
         rbfWeights: [[0, 0], [0, 0]],
@@ -301,6 +305,7 @@ try {
       {
         active: true,
         basis: [[0, 0, 1, 0], [0, 0, 0, 1]],
+        read: [[0, 0, 1, 0], [0, 0, 0, 1]],
         neutral: [0, 0, 0, 0],
         nodeParameters: [[1, 0], [-1, 0]],
         rbfWeights: [[0, 0], [0, 0]],
@@ -336,6 +341,7 @@ try {
     active: true,
     domainKind: "sphere",
     basis: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+    read: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
     neutral: [0, 0, 0],
     nodeParameters: [[0, 1, 0], [0, 0, 1]],
     rbfWeights: [[0, 0, 0], [0, 0, 0]],
@@ -357,6 +363,7 @@ try {
       rank: 1,
       ridge: 1,
       basis: [[1, 0, 0]],
+      read: [[1, 0, 0]],
       correction: [0],
     },
     geometryProbes: [{
@@ -364,6 +371,7 @@ try {
       mean: [0, 0, 0],
       inverseMean: [0, 0, 0],
       basis: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+      read: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
       gramInverse: [1, 0, 0, 0, 1, 0, 0, 0, 1],
       cholesky: [1, 0, 0, 0, 1, 0, 0, 0, 1],
       candidateWhite: [[0, 1, 0], [0, 0, 1]],
@@ -501,7 +509,7 @@ try {
     profiles.structuredHookMemoryRequirements(exactReadoutProfile, 2, 960),
     profiles.structuredHookMemoryRequirements(geometryProfile, 2, 960),
   );
-  assert.equal(profiles.resolveStructuredHookProfile("standard-v4"), exactReadoutProfile);
+  assert.equal(profiles.resolveStructuredHookProfile("standard-v5"), exactReadoutProfile);
   assert.throws(
     () => profiles.validateStructuredHookProfile({ ...standardProfile, maxRank: 9 }),
     /modified/,
@@ -511,7 +519,27 @@ try {
     /safe integer arithmetic/,
   );
   console.log("ok 7 - allow-listed profiles calculate checked host and WebGPU requirements");
-  console.log("1..7");
+
+  // A typed frame reads with its dual covector and writes along the direction: a full ablation
+  // zeroes the reading (LEACE), which a shared read/write row would not.
+  const typedGroup = {
+    active: true,
+    basis: [[1, 1]],
+    read: [[0.5, 0.5]],
+    neutral: [0, 0],
+    target: [0],
+    along: 1,
+    kappa: [1],
+  };
+  const typed = hooks.compileStructuredHookProgram(2, [{ affineGroups: [typedGroup] }], standardProfile);
+  const ablated = hooks.runStructuredHookLayer(typed, hooks.initialStructuredHookState(typed), 0, [3, 1]);
+  assert.deepEqual([...ablated.residual], [1, -1]);
+  assert.throws(
+    () => hooks.compileStructuredHookProgram(2, [{ affineGroups: [{ ...typedGroup, read: [[1, 1]] }] }], standardProfile),
+    /dual/,
+  );
+  console.log("ok 8 - a typed affine frame reads with its read rows and writes along its basis");
+  console.log("1..8");
 } finally {
   await server.close();
 }

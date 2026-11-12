@@ -1,9 +1,7 @@
 // What the browser loom persists of a measurement envelope: drowse's
 // `readout/measurements.py` projections (`token_row_measurements`,
-// `summary_measurements`, `aggregate_measurements`), checked against
-// `drowse/tests/fixtures/browser/measurement-envelope-v2.json` (`expectedRow`,
-// `expectedNodeAggregate`). The loom reader's rules for what they produce are
-// shared code (`lib/tokenRows.ts`: `tokenRowProblem`,
+// `summary_measurements`, `aggregate_measurements`). The loom reader's rules for
+// what they produce are shared code (`lib/tokenRows.ts`: `tokenRowProblem`,
 // `aggregateMeasurementsProblem`).
 import type {
   MeasurementsEnvelopeJSON,

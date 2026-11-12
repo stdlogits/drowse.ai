@@ -274,7 +274,7 @@ test("neurons and heads steer from the picker, the recipe and the rooms", async 
     : `${silenced} ${negative ? "-" : "+"} 3 ${unitName}`);
 });
 
-// The base layout fixture's model is Pythia, whose library is residual (standard-v4-residual): its
+// The base layout fixture's model is Pythia, whose library is residual (standard-v5-residual): its
 // units members answer through BrowserUnitsService with the lock's refusal (fixtureHostedRuntime.ts).
 const PYTHIA_REFUSAL = "layer 0: block has no softmax self-attention ('self_attn'; found attention, input_layernorm, mlp, post_attention_dropout, post_attention_layernorm, post_mlp_dropout)";
 

@@ -517,6 +517,7 @@ try {
       },
       async list() { return []; },
       async remove() { return false; },
+      async paths() { return [...files.keys()].sort(); },
       async file(_primary, path) { return files.get(path) ?? null; },
       async export() { throw new Error("unused"); },
       async clear() {},
@@ -699,6 +700,7 @@ function authoringHarness(validateDrowseArchive, BrowserDrowseArchiveService) {
       });
     },
     async remove(id) { return installs.delete(id); },
+    async paths(id) { return installs.has(id) ? [...installs.get(id).files.keys()].sort() : null; },
     async file(id, path) {
       const bytes = installs.get(id)?.files.get(path);
       return bytes ? new Blob([bytes]) : null;

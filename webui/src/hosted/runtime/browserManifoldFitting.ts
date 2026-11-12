@@ -30,6 +30,7 @@ import {
 } from "../artifacts/authoring";
 import {
   BrowserFittingCoordinator,
+  FIT_POLICY_VERSION,
   embedBrowserAuthoredCoordinates,
   type BrowserAuthoredFittingPlan,
   type BrowserCentroidTransform,
@@ -67,7 +68,6 @@ import type {
 import type { StructuredHookProgramBuffers } from "./structuredHookProgram";
 
 const CAPTURE_VERSION = 3;
-const FIT_POLICY_VERSION = 1;
 const LENGTH_DIRECTIVE = "Answer in one short paragraph.";
 const RESPONSE_MAX_TOKENS = 256;
 const DEFAULT_NAMESPACE = "local";
@@ -925,12 +925,12 @@ export class BrowserManifoldFitting {
     );
     const sidecar = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(sidecarBytes)) as {
       fitted_layers?: unknown;
-      share_metric?: unknown;
       sae_fingerprint?: unknown;
       sae_revision?: unknown;
       capture_version?: unknown;
       fit_policy_version?: unknown;
     };
+    // A fit of another capture or fit policy is stale: a miss that refits in place.
     if (
       sidecar.capture_version !== CAPTURE_VERSION ||
       sidecar.fit_policy_version !== FIT_POLICY_VERSION ||
@@ -940,8 +940,7 @@ export class BrowserManifoldFitting {
     ) return null;
     if (
       !Array.isArray(sidecar.fitted_layers) || sidecar.fitted_layers.length === 0 ||
-      sidecar.fitted_layers.some((layer) => !Number.isSafeInteger(layer) || layer < 0) ||
-      sidecar.share_metric !== "mahalanobis"
+      sidecar.fitted_layers.some((layer) => !Number.isSafeInteger(layer) || layer < 0)
     ) {
       throw fittingError("BROWSER_FIT_RESULT_INVALID", "The fitted browser profile sidecar is invalid", 500);
     }
@@ -951,7 +950,6 @@ export class BrowserManifoldFitting {
       metadata: {
         method: "manifold_pca",
         name: storedName,
-        share_metric: "mahalanobis",
       },
     };
   }

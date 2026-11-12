@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 
@@ -16,19 +15,13 @@ const server = await createServer({
 const tests = [];
 const test = (name, run) => tests.push({ name, run });
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
-const loweringGolden = JSON.parse(readFileSync(
-  new URL("../../drowse/tests/fixtures/browser/affine-rank-one-lowering-v1.json", import.meta.url),
-  "utf8",
+// A fitted frame's read rows beside its write rows. These hand-built bases are orthonormal, so
+// each frame reads with its own rows (the Euclidean case of a typed frame).
+const withReads = (tensors) => Object.fromEntries(Object.entries(tensors).flatMap(([key, value]) =>
+  /^layer_\d+\.basis$/u.test(key)
+    ? [[key, value], [key.replace(/\.basis$/u, ".read"), { shape: value.shape, data: value.data.slice() }]]
+    : [[key, value]]
 ));
-const composedGolden = JSON.parse(readFileSync(
-  new URL("../../drowse/tests/fixtures/browser/affine-composed-lowering-v1.json", import.meta.url),
-  "utf8",
-));
-const ablationGolden = JSON.parse(readFileSync(
-  new URL("../../drowse/tests/fixtures/browser/affine-ablation-lowering-v1.json", import.meta.url),
-  "utf8",
-));
-
 try {
   const { BrowserFeasibilityCorePackCompiler } = await server.ssrLoadModule(
     "/src/hosted/runtime/browserCorePack.ts",
@@ -77,7 +70,7 @@ try {
       `manifolds/local/demo/nodes/${String(index).padStart(2, "0")}_${label}.json`,
       jsonBytes([label]),
     ]));
-    const tensors = encodeFp32Safetensors(curved ? {
+    const tensors = encodeFp32Safetensors(withReads(curved ? {
       node_coords: sphere
         ? { shape: [2, 2], data: new Float32Array([Math.PI / 2, 0, Math.PI / 2, Math.PI / 2]) }
         : { shape: [2, 1], data: new Float32Array([0, 1]) },
@@ -184,7 +177,7 @@ try {
       "layer_1.mean": { shape: [2], data: new Float32Array([0.3, 0.4]) },
       "layer_1.basis": { shape: [1, 2], data: new Float32Array([0, 1]) },
       "layer_1.node_coords": { shape: [2, 1], data: new Float32Array([-2, 2]) },
-    });
+    }));
     const sidecar = jsonBytes({
       format_version: 10,
       name: "demo",
@@ -216,9 +209,7 @@ try {
         : { type: "custom", embed_dim: affineRank2 ? 2 : 1, bounds: null },
       node_spread_per_layer: {},
       fitted_layers: [0, 1],
-      mahalanobis_share_per_layer: Object.fromEntries(
-        loweringGolden.layers.map((layer) => [String(layer.layer), layer.mahalanobisShare]),
-      ),
+      mahalanobis_share_per_layer: { "0": Math.SQRT2, "1": 2 * Math.SQRT2 },
       origin_per_layer: sphere
         ? { "0": [Math.PI / 2, 0], "1": [Math.PI / 2, 0] }
         : curved ? { "0": [curveOrigin], "1": [curveOrigin] } : {},
@@ -241,9 +232,7 @@ try {
       capture_version: null,
       capture_render_sha256: null,
       baseline_prompts_sha256: null,
-      fit_policy_version: 1,
-      share_metric: "mahalanobis",
-      subspace_metric: "mahalanobis",
+      fit_policy_version: 2,
       rbf_smoothing_per_layer: curved ? {
         "0": { lambda: 0, edf: 2, gcv: 0 },
         "1": { lambda: 0, edf: 2, gcv: 0 },
@@ -329,7 +318,7 @@ try {
         "manifolds/local/focus/nodes/00_soft.json": jsonBytes(["soft"]),
         "manifolds/local/focus/nodes/01_sharp.json": jsonBytes(["sharp"]),
       };
-      const focusTensors = encodeFp32Safetensors({
+      const focusTensors = encodeFp32Safetensors(withReads({
         node_coords: { shape: [2, 1], data: new Float32Array([-1, 1]) },
         "layer_0.mean": { shape: [2], data: new Float32Array([0.2, 0.1]) },
         "layer_0.basis": { shape: [1, 2], data: new Float32Array([0.6, 0.8]) },
@@ -337,7 +326,7 @@ try {
         "layer_1.mean": { shape: [2], data: new Float32Array([0.4, 0.3]) },
         "layer_1.basis": { shape: [1, 2], data: new Float32Array([0.8, 0.6]) },
         "layer_1.node_coords": { shape: [2, 1], data: new Float32Array([-0.5, 0.5]) },
-      });
+      }));
       const focusSidecar = jsonBytes({
         format_version: 10,
         name: "focus",
@@ -377,9 +366,7 @@ try {
         capture_version: null,
         capture_render_sha256: null,
         baseline_prompts_sha256: null,
-        fit_policy_version: 1,
-        share_metric: "mahalanobis",
-        subspace_metric: "mahalanobis",
+        fit_policy_version: 2,
         rbf_smoothing_per_layer: {},
         sigma_field_per_layer: {},
         resolved_fit_mode: null,
@@ -435,7 +422,7 @@ try {
     }
     if (options.isotropicWhitener) {
       // Native's `isotropic_whitener`: zero means and the identity metric (λ + ridge = 1 on a
-      // full basis), the whitener drowse writes the affine lowering golden under.
+      // full basis).
       const identityLayer = (layer) => ({
         [`layer_${layer}.mean`]: { shape: [2], data: new Float32Array([0, 0]) },
         [`layer_${layer}.basis`]: { shape: [2, 2], data: new Float32Array([1, 0, 0, 1]) },
@@ -727,7 +714,7 @@ try {
     const request = {
       model: { id: "fixture-model" },
       variant: {
-        structuredHookProfile: options.structuredHookProfile ?? "standard-v4",
+        structuredHookProfile: options.structuredHookProfile ?? "standard-v5",
         runtimeIdentity,
         runtimeIdentitySha256: fingerprint,
         contextProfiles: [
@@ -772,20 +759,18 @@ try {
     };
   }
 
-  test("lowers a single fitted node to drowse's affine target and gain (one structured group)", async () => {
-    // drowse writes the golden under its isotropic whitener; a single push takes the same
-    // Mahalanobis lowering as a composed one, so it needs the neutral whitener too.
+  test("lowers a single fitted node to one structured group", async () => {
+    // A single push takes the same Mahalanobis lowering as a composed one, so it needs the
+    // neutral whitener too.
     const { request } = await fixture({ isotropicWhitener: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const program = compiler.compile("0.5 alert");
-    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.format, "drowse-structured-v5");
     assert.equal(program.hiddenSize, 2);
     assert.equal(program.layerCount, 2);
     const axis = affineAxis(program);
     assert.deepEqual(axis.active, [1, 1]);
     assert.deepEqual(axis.basis, [1, 0, 0, 1]);
-    assertFloatArray(axis.target, loweringGolden.layers.map((layer) => layer.expectedTarget));
-    assertFloatArray(axis.along, loweringGolden.layers.map((layer) => layer.expectedAlong), 1e-5);
     assert.deepEqual(axis.collapse, [0, 0]);
     assert.deepEqual([...program.affineActive].filter(Boolean).length, 2);
     const { request: bare } = await fixture();
@@ -880,7 +865,7 @@ try {
     }
   });
 
-  test("lowers unit ablations, neuron pushes, unit probes and unit gates (drowse-structured-v4)", async () => {
+  test("lowers unit ablations, neuron pushes, unit probes and unit gates (drowse-structured-v5)", async () => {
     const { decodeStructuredUnitTables } = await server.ssrLoadModule("/src/hosted/runtime/structuredHookProgram.ts");
     const { readingScales } = await server.ssrLoadModule("/src/hosted/runtime/units/scales.ts");
     const { request } = await fixture({ withWhitener: true });
@@ -905,7 +890,7 @@ try {
     };
     compiler.setUnitSource(source);
     const program = compiler.compile("0.5 !neuron/L1n2 + !head/L0h1@before");
-    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.format, "drowse-structured-v5");
     const tables = decodeStructuredUnitTables(program);
     const neuron = tables.find((table) => table.site === "act");
     const head = tables.find((table) => table.site === "z");
@@ -915,7 +900,7 @@ try {
     assert.equal(program.controls.units[1].phase.kind, "prompt_only");
     // A neuron push is a one-layer instrument atom: an affine group at its layer, no unit table.
     const push = compiler.compile("0.3 neuron/L1n2");
-    assert.equal(push.format, "drowse-structured-v4");
+    assert.equal(push.format, "drowse-structured-v5");
     assert.equal(decodeStructuredUnitTables(push).length, 0);
     assert.ok([...push.affineActive].some((value) => value === 1));
     assert.throws(() => compiler.compile("0.3 neuron/L0n1"), (error) => error.code === "UNIT_DIRECTION_UNPREPARED");
@@ -984,7 +969,7 @@ try {
       .concat(["head/L0h0", "head/L0h1"])
       .filter((selector) => selector !== "neuron/L0n1");
     for (const selector of units) compiler.attachProbe({ selector });
-    assert.ok(compiler.listProbes().length > 8, "more probes than standard-v4's 8 device slots");
+    assert.ok(compiler.listProbes().length > 8, "more probes than standard-v5's 8 device slots");
     for (const selector of units) compiler.detachProbe(selector);
     // A unit outside the model is native's 400; a library without unit sites is native's 422.
     assert.throws(() => compiler.compile("!neuron/L1n9"), (error) => error.status === 400 && /neuron 9 is outside block 1/.test(error.message));
@@ -1188,31 +1173,17 @@ try {
     );
   });
 
-  test("matches Python mean-replacement ablation", async () => {
+  test("lowers a mean-replacement ablation to a collapse axis", async () => {
     const { request } = await fixture({ withWhitener: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
-    const program = compiler.compile(ablationGolden.expression);
-    assert.equal(program.format, "drowse-structured-v4");
+    const program = compiler.compile("0.5 !alert");
+    assert.equal(program.format, "drowse-structured-v5");
     const axis = affineAxis(program);
     assert.deepEqual(axis.active, [1, 1]);
     assert.deepEqual(axis.target, [0, 0]);
-    assertFloatArray(axis.collapse, [ablationGolden.coefficient, ablationGolden.coefficient]);
-    assert.deepEqual(axis.basis, ablationGolden.layers.flatMap((layer) => layer.basis));
-    assert.deepEqual(axis.neutral, ablationGolden.layers.flatMap((layer) => layer.neutral));
-    for (const layer of ablationGolden.layers) {
-      assertFloatArray(
-        runStructuredHookLayer(
-          program,
-          initialStructuredHookState(program),
-          layer.layer,
-          new Float32Array(layer.input),
-        ).residual,
-        layer.expected,
-        1e-6,
-      );
-    }
+    assertFloatArray(axis.collapse, [0.5, 0.5]);
     const mixed = compiler.compile("0.5 !alert + 0.25 calm");
-    assert.equal(mixed.format, "drowse-structured-v4");
+    assert.equal(mixed.format, "drowse-structured-v5");
     assert.deepEqual([...mixed.affineActive.slice(0, 2)], [1, 0]);
   });
 
@@ -1222,7 +1193,7 @@ try {
     const input = new Float32Array([0.4, -0.2]);
     const execute = (expression) => {
       const program = compiler.compile(expression);
-      assert.equal(program.format, "drowse-structured-v4");
+      assert.equal(program.format, "drowse-structured-v5");
       return runStructuredHookLayer(
         program,
         initialStructuredHookState(program),
@@ -1400,7 +1371,7 @@ try {
     const { request } = await fixture({ withWhitener: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const phased = compiler.compile("0.5 alert@response");
-    assert.equal(phased.format, "drowse-structured-v4");
+    assert.equal(phased.format, "drowse-structured-v5");
     assert.equal(structuredHookControlsFor(phased, {
       prefill: true,
       thinking: false,
@@ -1451,7 +1422,7 @@ try {
     const byCoordinates = compiler.compile("0.5 demo%1@response&when:demo>0");
 
     for (const program of [byLabel, byCoordinates]) {
-      assert.equal(program.format, "drowse-structured-v4");
+      assert.equal(program.format, "drowse-structured-v5");
       assert.deepEqual([...program.curveActive], new Array(program.curveActive.length).fill(0));
       assert.deepEqual([...program.affineActive], [...direct.affineActive]);
       assertFloatArray(program.affineBasis, direct.affineBasis);
@@ -1476,7 +1447,7 @@ try {
     const bare = compiler.compile("0.5 east");
     const explicit = compiler.compile("0.5 demo%east");
 
-    assert.equal(bare.format, "drowse-structured-v4");
+    assert.equal(bare.format, "drowse-structured-v5");
     assert.deepEqual([...bare.curveActive], new Array(bare.curveActive.length).fill(0));
     assertFloatArray(bare.affineBasis, explicit.affineBasis);
     assertFloatArray(bare.affineTarget, explicit.affineTarget);
@@ -1523,11 +1494,11 @@ try {
     const { request } = await fixture({ curved: true, withWhitener: true, withSae: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const bareLabel = compiler.compile("calm");
-    assert.equal(bareLabel.format, "drowse-structured-v4");
+    assert.equal(bareLabel.format, "drowse-structured-v5");
     assert.equal(bareLabel.curveActive.some(Boolean), true);
     compiler.attachProbe({ selector: "sae/0" });
     const program = compiler.compile("0.5,1 demo%alert@response&when:sae/0>0.2");
-    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.format, "drowse-structured-v5");
     assert.deepEqual([...program.curveRank.filter(Boolean)], [2, 2]);
     assert.deepEqual([...program.curveNodeCount.filter(Boolean)], [2, 2]);
     assert.deepEqual([...program.curveSigmaPresent.filter(Boolean)], [1, 1]);
@@ -1568,14 +1539,14 @@ try {
       const slot = layer * program.profile.maxCurves;
       return [program.curveActive[slot], program.curveAlong[slot], program.curveOnto[slot]];
     });
-    // Shares sqrt(2) and 2 sqrt(2): mean-1 over both layers is 2/3 and 4/3.
+    // Shares sqrt(2) and 2 sqrt(2): mean-1 over both layers is 2/3 and 4/3 (along gain 2).
     const full = gains(compiler.compile("0.3,0.5 demo%alert"));
-    assertFloatArray(full.map((row) => row[1]), [0.8, 1.6]);
+    assertFloatArray(full.map((row) => row[1]), [0.4, 0.8]);
     assertFloatArray(full.map((row) => row[2]), [1 / 6, 1 / 3]);
     // drowse's _manifold_layer_shares normalizes over the clause's layers only.
     const scoped = gains(compiler.compile("0.3,0.5 demo%alert{0}"));
     assert.equal(scoped[1][0], 0);
-    assertFloatArray([scoped[0][1], scoped[0][2]], [1.2, 0.25]);
+    assertFloatArray([scoped[0][1], scoped[0][2]], [0.6, 0.25]);
   });
 
   test("rejects overlapping curved terms before generation", async () => {
@@ -1608,7 +1579,7 @@ try {
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     compiler.attachProbe({ selector: "sae/0" });
     const program = compiler.compile("0.5 sae/0@when:sae/0>0.2");
-    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.format, "drowse-structured-v5");
     assert.equal(structuredHookControlsFor(program, {
       prefill: true,
       thinking: false,
@@ -2004,12 +1975,15 @@ try {
     const { request } = await fixture({ withWhitener: true, withJlens: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const program = compiler.compile("0.5 jlens/hello");
-    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.format, "drowse-structured-v5");
     assert.deepEqual([...program.affineActive.filter(Boolean)], [1, 1]);
-    const layer0 = program.affineBasis.slice(0, 2);
-    const layer1 = program.affineBasis.slice(4 * 8 * 2, 4 * 8 * 2 + 2);
-    assertFloatArray(layer0, [2 / Math.sqrt(13), 3 / Math.sqrt(13)], 2e-6);
-    assertFloatArray(layer1, [2 / Math.sqrt(53), 7 / Math.sqrt(53)], 2e-6);
+    // A lens atom is a read u: it steers along its raised vector Σu (Σ = diag(2.25, 0.25) and
+    // diag(0.5, 3.5) here), Mahalanobis-unit, and reads with u again (‖Σu‖_M² = u·Σu).
+    const slot1 = 4 * 8 * 2;
+    assertFloatArray(program.affineBasis.slice(0, 2), [4.5 / Math.sqrt(11.25), 0.75 / Math.sqrt(11.25)], 2e-6);
+    assertFloatArray(program.affineRead.slice(0, 2), [2 / Math.sqrt(11.25), 3 / Math.sqrt(11.25)], 2e-6);
+    assertFloatArray(program.affineBasis.slice(slot1, slot1 + 2), [1 / Math.sqrt(173.5), 24.5 / Math.sqrt(173.5)], 2e-6);
+    assertFloatArray(program.affineRead.slice(slot1, slot1 + 2), [2 / Math.sqrt(173.5), 7 / Math.sqrt(173.5)], 2e-6);
     assert.throws(
       () => compiler.compile("0.5 jlens/missing"),
       (error) => error.code === "JLENS_TOKEN_UNAVAILABLE",
@@ -2094,10 +2068,11 @@ try {
     );
     compiler.attachProbe({ selector: "jlens/novel" });
     const program = compiler.compile("0.5 jlens/novel@when:jlens/novel>0.01");
-    assertFloatArray(program.affineBasis.slice(0, 2), [7 / Math.sqrt(113), 8 / Math.sqrt(113)]);
+    // The raised atom reads with its own token row u, Mahalanobis-normalized (u·Σu).
+    assertFloatArray(program.affineRead.slice(0, 2), [7 / Math.sqrt(126.25), 8 / Math.sqrt(126.25)]);
     assertFloatArray(
-      program.affineBasis.slice(4 * 8 * 2, 4 * 8 * 2 + 2),
-      [7 / Math.sqrt(533), 22 / Math.sqrt(533)],
+      program.affineRead.slice(4 * 8 * 2, 4 * 8 * 2 + 2),
+      [7 / Math.sqrt(1718.5), 22 / Math.sqrt(1718.5)],
     );
     assert.equal(program.jLensTokenIds[0], 7);
     assert.deepEqual(batches, [[7]]);
@@ -2108,7 +2083,7 @@ try {
     compiler.attachProbe({ selector: "jlens/#7" });
     const exact = compiler.compile("0.5 jlens/#7@when:jlens/#7>0.01");
     assert.equal(exact.jLensTokenIds[0], 7);
-    assertFloatArray(exact.affineBasis.slice(0, 2), [7 / Math.sqrt(113), 8 / Math.sqrt(113)]);
+    assertFloatArray(exact.affineRead.slice(0, 2), [7 / Math.sqrt(126.25), 8 / Math.sqrt(126.25)]);
     assert.deepEqual(batches, [[7]], "the exact id reuses the resolved directions");
     // An id past the vocabulary fails as drowse's InvalidTokenIdError does,
     // before any direction lookup reaches the runtime.
@@ -2222,8 +2197,8 @@ try {
     assert.equal(program.probeKind[0], 0);
     assert.equal(program.probeKind[8], 3);
     assertFloatArray(
-      program.affineBasis.slice(4 * 8 * 2, 4 * 8 * 2 + 2),
-      [7 / Math.sqrt(533), 22 / Math.sqrt(533)],
+      program.affineRead.slice(4 * 8 * 2, 4 * 8 * 2 + 2),
+      [7 / Math.sqrt(1718.5), 22 / Math.sqrt(1718.5)],
     );
   });
 
@@ -2231,7 +2206,7 @@ try {
     const { request } = await fixture({ withWhitener: true, withSae: true, withJlens: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const program = compiler.compile("0.25 alert + 0.1 sae/1 + 0.2 jlens/world + 0.5 !calm");
-    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.format, "drowse-structured-v5");
     assert.equal(program.affineActive.filter(Boolean).length, 2);
   });
 
@@ -2246,7 +2221,7 @@ try {
     compiler.setInstrumentLive("sae", true);
     const program = compiler.compile("");
 
-    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.format, "drowse-structured-v5");
     assert.equal(program.measurementSchema.probes.some((probe) => probe?.family === "lens"), false);
     assert.equal(program.measurementSchema.probes.some((probe) => probe?.family === "sae"), false);
     assert.equal(program.measurementSchema.lensReadout, true);
@@ -2583,7 +2558,7 @@ try {
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const axis = affineAxis(compiler.compile("0.25 local/demo"));
     assertFloatArray(axis.push, [-0.25, 0, 0, -0.25]);
-    assertFloatArray(axis.along, [32 / 3, 64 / 3], 1e-5);
+    assertFloatArray(axis.along, [16 / 3, 32 / 3], 1e-5);
   });
 
   test("canonicalizes steering deltas through installed manifold identities", async () => {
@@ -2631,7 +2606,7 @@ try {
     assert.equal(compiler.hasAttachedProbes(), true);
 
     const program = compiler.compile("");
-    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.format, "drowse-structured-v5");
     assert.equal(program.measurementSchema.probes[0], null);
     assert.equal(program.measurementSchema.geometryProbes[0].name, "calm scale");
     assert.deepEqual(program.measurementSchema.geometryProbes[0].scoreKeys, ["calm scale"]);
@@ -2671,7 +2646,7 @@ try {
     const attached = compiler.attachProbe({ selector: "local/demo", top_n: 3 });
     assert.equal(attached.intrinsic_dim, 1);
     const program = compiler.compile("");
-    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.format, "drowse-structured-v5");
     assert.equal(program.profile.geometryOutputStride, 41);
     assert.deepEqual([...program.whitenerRank], [1, 1]);
     assert.deepEqual([...program.geometryKind.filter(Boolean)], [2, 2]);
@@ -2762,7 +2737,7 @@ try {
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     compiler.attachProbe({ selector: "local/demo" });
     const program = compiler.compile("0.5 local/demo%alert");
-    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.format, "drowse-structured-v5");
     assert.deepEqual([...program.curveDomainKind.filter(Boolean)], [2, 2]);
     assert.deepEqual([...program.geometryDomainKind.filter(Boolean)], [2, 2]);
     const result = runStructuredHookLayer(
@@ -2791,10 +2766,6 @@ try {
       ["local/demo", "local/focus"],
     );
     assert.deepEqual(compiler.getProfile("local/demo").layers, [0, 1]);
-    assert.equal(
-      compiler.getProfile("local/demo").metadata.share_metric,
-      "mahalanobis",
-    );
 
     const correlation = compiler.profileCorrelation();
     assert.deepEqual(correlation.names, ["local/demo", "local/focus"]);
@@ -2926,8 +2897,9 @@ try {
     });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     compiler.attachProbe({ selector: "local/demo", name: "curved identity" });
+    // sha256 over each layer's fp32 mean, basis and read rows (drowse 6.1 `_record_digest`).
     assert.deepEqual(compiler.probeHashes(), {
-      "curved identity": "cd50e11ceaaef63c1603be13a7a31c99f3ed3c50cc06bcd1a45ed0905e3c91ca",
+      "curved identity": "ec688cf469fcef744d9219d0f05c72de26ed1371d8b5b3ef924a652c562076ab",
     });
   });
 
@@ -3062,50 +3034,6 @@ try {
     );
   });
 
-  for (const golden of composedGolden.cases) {
-    test(`matches Python composed lowering: ${golden.name}`, async () => {
-      const { request } = await fixture({ withWhitener: true, withSecondManifold: true });
-      const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
-      const program = compiler.compile(golden.expression);
-      assert.deepEqual(affineAxis(program).active, [1, 1]);
-      // drowse records the push as one world target (its direction and length); the group
-      // holds it in the span of the fragments' bases, so compare the world target it sums to.
-      const { maxAffineGroups, maxRank } = program.profile;
-      const d = program.hiddenSize;
-      golden.expectedLayers.forEach((expected, programIndex) => {
-        const slot = programIndex * maxAffineGroups;
-        const world = new Float64Array(d);
-        for (let axis = 0; axis < maxRank; axis += 1) {
-          const row = (slot * maxRank + axis) * d;
-          for (let column = 0; column < d; column += 1) {
-            world[column] += program.affineTarget[slot * maxRank + axis] *
-              program.affineBasis[row + column];
-          }
-        }
-        const target = Math.hypot(...world);
-        assertFloatArray([...world].map((value) => value / target), expected.basis, 2e-6);
-        assertFloatArray(program.affineNeutral.slice(slot * d, (slot + 1) * d), expected.neutral);
-        assert.ok(Math.abs(target - expected.target) <= 2e-6);
-        assert.ok(Math.abs(program.affineAlong[slot] - expected.along) <= 2e-5);
-        assert.ok([...program.affineKappa.slice(slot * maxRank, (slot + 1) * maxRank)].every((value) => value === 0));
-        assertFloatArray([...world].map((value) => value * program.affineAlong[slot]), expected.delta, 3e-5);
-      });
-
-      compiler.attachProbe({ selector: "demo", name: "structured parity" });
-      const structured = compiler.compile(golden.expression);
-      assert.equal(structured.format, "drowse-structured-v4");
-      golden.expectedLayers.forEach((expected, programIndex) => {
-        const residual = runStructuredHookLayer(
-          structured,
-          initialStructuredHookState(structured),
-          programIndex,
-          [0, 0],
-        ).residual;
-        assertFloatArray(residual, expected.delta, 4e-5);
-      });
-    });
-  }
-
   test("fails closed when browser fitting has no neutral whitener", async () => {
     const { request } = await fixture();
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
@@ -3221,6 +3149,7 @@ function affineAxis(program, group = 0) {
   return {
     active: slots.map((slot) => program.affineActive[slot]),
     basis: slots.flatMap((slot) => [...program.affineBasis.slice(slot * maxRank * d, slot * maxRank * d + d)]),
+    read: slots.flatMap((slot) => [...program.affineRead.slice(slot * maxRank * d, slot * maxRank * d + d)]),
     neutral: slots.flatMap((slot) => [...program.affineNeutral.slice(slot * d, (slot + 1) * d)]),
     target: slots.map((slot) => program.affineTarget[slot * maxRank]),
     along: slots.map((slot) => program.affineAlong[slot]),

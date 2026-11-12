@@ -1,7 +1,7 @@
 // The steering grammar: a TypeScript mirror of drowse/steering/grammar.py (lexer, parser, fold,
 // format, term parts), drowse/model/layers.py (the layer-selector language of a `{…}` clause)
-// and composer.select_term_layers. Python is the reference; the goldens
-// drowse/tests/fixtures/{steering_ir,recipe_chips,browser_steering_expression}.json pin both.
+// and composer.select_term_layers. Python is the reference; drowse's
+// tests/fixtures/recipe_chips.json pins the term parts.
 //
 // `parseSteeringExpression` is Python's `_Parser.parse`: the syntax tree, before any resolution.
 // `parseSteering` is `parse_expr`: the tree folded into the IR (`Steering.alphas`, in order),

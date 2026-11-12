@@ -77,8 +77,7 @@ export class UnitWhitenerError extends Error {
 /** One layer's offline artifacts, keyed as native `UnitReader.population_artifacts` keys them. */
 export type UnitLayerArtifacts = ReadonlyMap<string, Float32Array>;
 
-/** What the reader needs besides the device: B6's units and core packs (or, in tests, drowse's
- *  unit-stats / unit-artifacts goldens and the fixture whitener). */
+/** What the reader needs besides the device: B6's units and core packs. */
 export interface UnitsArtifacts {
   readonly statistics: UnitStatistics | null;
   /** Why `statistics` is null (native `UnitsUnavailableError`'s text). */
@@ -1071,6 +1070,10 @@ export class UnitReader {
     let coeffs: Float64Array = new Float64Array(0);
     let residual = Float32Array.from(t);
     for (let step = 0; step < k; step += 1) {
+      // Selection stops once the residual is negligible (an exact atom target).
+      let residualNormSq = 0;
+      for (const x of residual) residualNormSq += x * x;
+      if (residualNormSq <= 1e-12 * tNormSq) break;
       // (W w_n)·r = w_n·(W r): W is symmetric.
       const wr = whitenRows(whitener, residual, 1);
       const raw = (await this.context.backend.layerWriteScores(f32Tensor(wr, [1, 1, d]), Int32Array.of(layer))).data;
@@ -1088,15 +1091,20 @@ export class UnitReader {
       selected.push(best);
       const write = (await this.context.backend.unitWeightRows("neuron_write", [{ kind: "neuron", layer, index: best }])).data;
       atoms.push(whitenRows(whitener, write, 1));
+      // The k×k normal equations in fp64 with a ridge relative to the Gram's scale (native
+      // `_solve_tiny`): nearly collinear atoms mis-fit in fp32.
       const s = atoms.length;
       const gram = new Float64Array(s * s);
       const b = new Float64Array(s);
       for (let i = 0; i < s; i += 1) {
-        for (let j = 0; j < s; j += 1) gram[i * s + j] = Math.fround(dot(atoms[i], atoms[j]));
-        gram[i * s + i] += 1e-7;
-        b[i] = Math.fround(dot(atoms[i], t));
+        for (let j = 0; j < s; j += 1) gram[i * s + j] = dot(atoms[i], atoms[j]);
+        b[i] = dot(atoms[i], t);
       }
-      coeffs = solve(gram, b, s);
+      let diagonal = 0;
+      for (let i = 0; i < s; i += 1) diagonal = Math.max(diagonal, Math.abs(gram[i * s + i]));
+      const ridge = 1e-12 * Math.max(diagonal, 1e-30);
+      for (let i = 0; i < s; i += 1) gram[i * s + i] += ridge;
+      coeffs = Float64Array.from(solve(gram, b, s), Math.fround);
       residual = Float32Array.from(t);
       for (let i = 0; i < s; i += 1) for (let j = 0; j < d; j += 1) residual[j] -= coeffs[i] * atoms[i][j];
     }

@@ -226,7 +226,7 @@ function model(id, displayName, tier) {
     variants: [{
       id: variantId,
       tier,
-      structuredHookProfile: "standard-v4",
+      structuredHookProfile: "standard-v5",
       contextProfiles: [{
         contextTokens: 2048,
         bindingSha256: "b".repeat(64),

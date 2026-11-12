@@ -343,7 +343,7 @@ def load_capture_metadata(capture_directory: Path) -> dict[str, Any]:
         not isinstance(program, dict)
         or set(program)
         != {"format", "enabledLayer", "probeDirections", "target", "along", "kappa"}
-        or program["format"] != "drowse-structured-v4"
+        or program["format"] != "drowse-structured-v5"
         or program["enabledLayer"] not in layers
         or not isinstance(program["probeDirections"], list)
         or not 1 <= len(program["probeDirections"]) <= 8

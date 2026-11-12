@@ -1,14 +1,15 @@
 // Where the hosted catalog is published. Each browser runtime generation publishes its signed
 // catalog at its own directory of the catalog repository, so publishing a new catalog never
 // changes what an already deployed build reads: runtime v1 builds read the root `catalog.json`
-// (sequences up to 10), runtime v2 builds (hook ABI v5) read `v2/catalog.json` (from 11). The
+// (sequences up to 10), runtime v2 builds (hook ABI v5) read `v2/catalog.json` (11), runtime v3
+// builds (hook ABI v6, typed frames) read `v3/catalog.json` (from 12). The
 // distribution lock names the newest directory; the publisher's first catalog at a new directory
 // must advance the sequence the previous one published.
 
 export const CATALOG_REPOSITORY = "stdlogits/drowse-web-catalog";
 
 /** Every directory the catalog has been published at, oldest first. */
-export const CATALOG_DIRECTORIES = Object.freeze(["", "v2/"]);
+export const CATALOG_DIRECTORIES = Object.freeze(["", "v2/", "v3/"]);
 
 export function catalogUrls(directory, repository = CATALOG_REPOSITORY) {
   const base = `https://huggingface.co/${repository}/resolve/main/${directory}`;

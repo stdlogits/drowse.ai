@@ -190,6 +190,8 @@ try {
           active = data(4, (i) => (mode === "inactive" ? 0 : i === 2 ? 0 : 1)),
           along = data(4, (i) => (i - 1.5) * 0.1),
           basis = data(4 * 8 * h, (i) => Math.sin(i * 0.27) / Math.sqrt(h)),
+          // Hook ABI v6: coordinates through the read rows, distinct from the write rows.
+          read = data(4 * 8 * h, (i) => Math.cos(i * 0.31) / Math.sqrt(h)),
           neutral = data(4 * h, (i) => Math.cos(i * 0.19) * 0.1),
           target = data(4 * 8, (i) => Math.sin(i * 0.17)),
           kappa = data(4 * 8, (i) =>
@@ -212,7 +214,7 @@ try {
                   for (let j = 0; j < h; j++)
                     dot +=
                       (expected[tok * h + j] - neutral[g * h + j]) *
-                      basis[(g * 8 + r) * h + j];
+                      read[(g * 8 + r) * h + j];
                 delta[r] = target[g * 8 + r] - kappa[g * 8 + r] * dot;
               }
               for (let j = 0; j < h; j++) {
@@ -229,10 +231,10 @@ try {
             active_ptr: active,
             along_ptr: along,
             basis_ptr: basis,
+            read_rows_ptr: read,
             neutral_ptr: neutral,
             target_ptr: target,
             kappa_ptr: kappa,
-            output_ptr: new Float32Array(b * t * h),
           },
           b * t,
         );
@@ -242,7 +244,7 @@ try {
           t,
           mode,
           maxError: compare(
-            output.output_ptr,
+            output.residual_ptr,
             expected,
             entry.file + mode,
             mode === "inactive" ? 0 : 2e-5,

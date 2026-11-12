@@ -17,6 +17,12 @@ import type {
 import { applySerializedInverse } from "./mahalanobis";
 import type { ManifoldDomain } from "../../../../drowse/webui/src/lib/types";
 
+/**
+ * drowse's `MANIFOLD_FIT_POLICY_VERSION`, stamped on every browser fit and required of a cached
+ * one. 2: typed frames (write rows Mahalanobis-orthonormal, their dual read rows beside them).
+ */
+export const FIT_POLICY_VERSION = 2;
+
 export interface ActivationCaptureSink {
   appendRows(layer: number, startRow: number, values: Float32Array): Promise<void>;
 }
@@ -744,17 +750,17 @@ export async function fitBrowserAuthoredFields(
     if (options.fitSigma) {
       const offsets = groupOffsets.slice();
       const mean = fit.mean.slice();
-      const basis = fit.basis.slice();
+      const read = fit.read.slice();
       const covarianceResult = await worker.run({
         operation: "reduced_covariances",
         source: { kind: "activation_spool", identity, layer },
         offsets,
         mean,
-        basis,
+        read,
         components: fit.components,
       }, {
         signal,
-        transferOwnership: [offsets, mean, basis],
+        transferOwnership: [offsets, mean, read],
         onProgress: (workerStage) => options.onProgress?.(
           "covariance", layer, completed, layers.size, workerStage,
         ),
@@ -866,17 +872,17 @@ export async function fitBrowserCurvedSigmaFields(
     if (options.fitSigma !== false) {
       const offsets = groupOffsets.slice();
       const mean = fit.mean.slice();
-      const basis = fit.basis.slice();
+      const read = fit.read.slice();
       const covarianceResult = await worker.run({
         operation: "reduced_covariances",
         source: { kind: "activation_spool", identity, layer },
         offsets,
         mean,
-        basis,
+        read,
         components: fit.components,
       }, {
         signal,
-        transferOwnership: [offsets, mean, basis],
+        transferOwnership: [offsets, mean, read],
         onProgress: (workerStage) => options.onProgress?.(
           "covariance",
           layer,
@@ -1699,7 +1705,9 @@ export function finalizeBrowserAffineLayers(
       axes.every((axis, index) => axis === index)
       ? null
       : affineSelectionMap(intrinsicDimensions, axes);
+    // Kept rows of a typed frame stay Mahalanobis-orthonormal and dual: no re-orthonormalization.
     const basis = selectRows(fit.basis, fit.columns, axes);
+    const read = selectRows(fit.read, fit.columns, axes);
     const nodeCoordinates = selectColumns(
       fit.nodeCoordinates,
       fit.nodeCount,
@@ -1712,11 +1720,12 @@ export function finalizeBrowserAffineLayers(
       fit.components,
       axes,
     );
+    // mean = P_basis(neutral): the neutral mean read through the kept rows, written back.
     const mean = new Float64Array(fit.columns);
     for (let component = 0; component < components; component += 1) {
       let coordinate = 0;
       for (let column = 0; column < fit.columns; column += 1) {
-        coordinate += whitener.mean[column] * basis[component * fit.columns + column];
+        coordinate += whitener.mean[column] * read[component * fit.columns + column];
       }
       for (let column = 0; column < fit.columns; column += 1) {
         mean[column] += coordinate * basis[component * fit.columns + column];
@@ -1746,6 +1755,7 @@ export function finalizeBrowserAffineLayers(
       components,
       mean,
       basis,
+      read,
       nodeCoordinates,
       muCoordinates,
       mahalanobisShare,

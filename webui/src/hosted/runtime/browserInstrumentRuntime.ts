@@ -51,7 +51,7 @@ export class BrowserInstrumentRuntime {
     private readonly contextBindingSha256: string | null = null,
     enableLiveReadout = true,
     /** The S→R crossover band the units reads weigh by (native `session.lens.band`): the
-     *  default, unless a harness sets another the way drowse's goldens set theirs. */
+     *  default, unless a harness sets another. */
     private readonly lensBand: LensBand = DEFAULT_LENS_BAND,
   ) {
     const descriptor = this.compiler.instrumentDescriptor();
@@ -254,7 +254,7 @@ export class BrowserInstrumentRuntime {
     if (method === "saeFeaturesMetadata") return this.saeFeaturesMetadata(args);
     if (isUnitsServiceMethod(method)) {
       if (this.units === null) {
-        return Promise.reject(new UnsupportedBlockError("the loaded model library predates hook ABI block-sites-v5"));
+        return Promise.reject(new UnsupportedBlockError("the loaded model library predates hook ABI block-sites-v6"));
       }
       return this.units.request(method, args, {
         lensProbes: this.compiler.listProbes().filter((probe) => probe.family === "lens"),

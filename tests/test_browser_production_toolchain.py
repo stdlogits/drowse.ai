@@ -344,7 +344,7 @@ def test_verify_build_manifest_closes_and_hashes_every_artifact(tmp_path: Path):
         "schemaVersion": 1,
         "runtimeAbi": TOOL.RUNTIME_ABI,
         "hookAbi": TOOL.HOOK_ABI,
-        "structuredHookProfile": "standard-v4",
+        "structuredHookProfile": "standard-v5",
         "thinkingProfile": thinking_profile,
         "architecture": "qwen3",
         "quantization": "q4f16_1",
@@ -392,7 +392,7 @@ def test_gemma_unquantized_manifest_requires_precise_normalization_provenance(tm
     entry = lambda file: {"path": file.name, "bytes": file.stat().st_size, "sha256": TOOL.sha256(file)}  # noqa: E731
     manifest = {
         "schemaVersion": 1, "runtimeAbi": TOOL.RUNTIME_ABI,
-        "hookAbi": TOOL.HOOK_ABI, "structuredHookProfile": "standard-v4",
+        "hookAbi": TOOL.HOOK_ABI, "structuredHookProfile": "standard-v5",
         "thinkingProfile": None, "architecture": "gemma3_text", "quantization": "q0f32",
         "weightEncoding": "raw", "toolchain": TOOL.toolchain_manifest("gemma3_text"),
         "files": [entry(tensor_cache), entry(chat)],
@@ -574,7 +574,7 @@ def test_rebind_carries_a_published_conversion_to_the_current_abi_byte_for_byte(
              "manifestSha256": hashlib.sha256(b"{\"records\": []}").hexdigest()}
     lock.write_text(json.dumps({"models": [entry]}))
     args = SimpleNamespace(model=source, output=tmp_path / "rebound", architecture="gemma3_text",
-                           quantization="q4f32_1", structured_hook_profile="standard-v4",
+                           quantization="q4f32_1", structured_hook_profile="standard-v5",
                            model_id="gemma3-1b-instruct", runtime_lock=lock)
 
     TOOL.rebind(args)
@@ -585,7 +585,7 @@ def test_rebind_carries_a_published_conversion_to_the_current_abi_byte_for_byte(
     manifest = json.loads((rebound / "drowse-build.json").read_text())
     assert manifest["files"] == files and manifest["source"] == previous["source"]
     assert (manifest["runtimeAbi"], manifest["hookAbi"], manifest["structuredHookProfile"]) == (
-        TOOL.RUNTIME_ABI, TOOL.HOOK_ABI, "standard-v4")
+        TOOL.RUNTIME_ABI, TOOL.HOOK_ABI, "standard-v5")
     assert manifest["toolchain"] == TOOL.toolchain_manifest("gemma3_text")
     assert manifest["rebind"]["fromHookAbi"] == "post-block-residual-v4"
     assert manifest["rebind"]["fromToolchain"] == {"mlcLlmBaseCommit": "old"}
@@ -636,7 +636,7 @@ def test_rebind_gives_the_chat_config_the_bridges_conversation_rules(tmp_path: P
         "id": "gemma3-1b-instruct", "architecture": "gemma3_text", "quantization": "q4f32_1",
         "manifestSha256": hashlib.sha256(b"{\"records\": []}").hexdigest()}]}))
     TOOL.rebind(SimpleNamespace(model=source, output=tmp_path / "rebound", architecture="gemma3_text",
-                                quantization="q4f32_1", structured_hook_profile="standard-v4",
+                                quantization="q4f32_1", structured_hook_profile="standard-v5",
                                 model_id="gemma3-1b-instruct", runtime_lock=lock))
     rebound = tmp_path / "rebound"
     rules = {"drowse_system_fold_sep": "\n\n", "drowse_content_trim": True}
@@ -651,7 +651,7 @@ def test_rebind_gives_the_chat_config_the_bridges_conversation_rules(tmp_path: P
     # Rebinding a conversion that already carries them leaves its chat config byte for byte.
     again = tmp_path / "again"
     TOOL.rebind(SimpleNamespace(model=rebound, output=again, architecture="gemma3_text",
-                                quantization="q4f32_1", structured_hook_profile="standard-v4",
+                                quantization="q4f32_1", structured_hook_profile="standard-v5",
                                 model_id="gemma3-1b-instruct", runtime_lock=lock))
     assert (again / "mlc-chat-config.json").read_bytes() == (rebound / "mlc-chat-config.json").read_bytes()
     assert "conversationRules" not in json.loads((again / "drowse-build.json").read_text())["rebind"]

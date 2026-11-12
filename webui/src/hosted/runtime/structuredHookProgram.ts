@@ -11,14 +11,14 @@ import {
   type StructuredHookCapacityProfile,
 } from "./structuredHookProfile";
 
-/** The one program format hook ABI `block-sites-v5` runs: the affine, curve, probe and geometry
+/** The one program format hook ABI `block-sites-v6` runs: the affine, curve, probe and geometry
  *  buffers, plus the optional unit section (B1 §3.1, §3.4). */
-export const STRUCTURED_HOOK_FORMAT = "drowse-structured-v4" as const;
+export const STRUCTURED_HOOK_FORMAT = "drowse-structured-v5" as const;
 export type StructuredHookFormat = typeof STRUCTURED_HOOK_FORMAT;
 export type StructuredHookAbi = typeof BLOCK_SITES_HOOK_ABI;
 
-/** The hook ABI and format of a program compiled under `profile` (`standard-v4` or
- *  `standard-v4-residual`, the only profiles that resolve). */
+/** The hook ABI and format of a program compiled under `profile` (`standard-v5` or
+ *  `standard-v5-residual`, the only profiles that resolve). */
 export function structuredHookIdentity(
   profile: StructuredHookCapacityProfile,
 ): { hookAbi: StructuredHookAbi; format: StructuredHookFormat } {
@@ -35,7 +35,12 @@ export type StructuredProbeKind =
 
 export interface StructuredAffineGroup {
   active: boolean;
+  /** Write rows: the group writes its reduced displacement along these. */
   basis: readonly ArrayLike<number>[];
+  /** Read rows, dual to `basis` (`read · basisᵀ = I`): the group reads coordinates with these. A
+   *  typed (Mahalanobis-orthonormal) frame reads with `Σ⁻¹` of each row; a Euclidean one with
+   *  the rows themselves. */
+  read: readonly ArrayLike<number>[];
   neutral: ArrayLike<number>;
   target: ArrayLike<number>;
   along: number;
@@ -52,7 +57,10 @@ export interface StructuredProbe {
 export interface StructuredCurve {
   active: boolean;
   domainKind?: "box" | "custom" | "sphere";
+  /** Write rows (see `StructuredAffineGroup.basis`). */
   basis: readonly ArrayLike<number>[];
+  /** Read rows, dual to `basis`. */
+  read: readonly ArrayLike<number>[];
   neutral: ArrayLike<number>;
   nodeParameters: readonly ArrayLike<number>[];
   rbfWeights: readonly ArrayLike<number>[];
@@ -148,7 +156,7 @@ export interface StructuredMeasurementSchema {
   lensReadout?: boolean;
   saeReadout?: boolean;
   saeFeatureMetadata?: Record<string, { label: string | null; maxAct: number | null }>;
-  /** drowse-structured-v4: one entry per unit tap slot (`maxUnitTaps`), null when unused. */
+  /** drowse-structured-v5: one entry per unit tap slot (`maxUnitTaps`), null when unused. */
   unitTaps?: Array<StructuredUnitTap | null>;
   /** The attached `slens/` probes, which the host reads post-forward over the `[L, d]` capture
    *  (`hiddenCapture`, HOOK_ABI §5); a gate reads one by name. */
@@ -173,6 +181,7 @@ export interface StructuredHookProgramBuffers {
   layerCount: number;
   affineActive: Uint32Array;
   affineBasis: Float32Array;
+  affineRead: Float32Array;
   affineNeutral: Float32Array;
   affineTarget: Float32Array;
   affineAlong: Float32Array;
@@ -187,6 +196,7 @@ export interface StructuredHookProgramBuffers {
   curveEmbedDim: Uint32Array;
   curveNodeCount: Uint32Array;
   curveBasis: Float32Array;
+  curveRead: Float32Array;
   curveNeutral: Float32Array;
   curveNodeParameters: Float32Array;
   curveRbfWeights: Float32Array;
@@ -236,7 +246,7 @@ export interface StructuredHookProgramBuffers {
   /** The bridge keeps each forward's `[L, d]` capture and returns it with the measurement
    *  bundle (`hidden`): set exactly when the schema lists `slensProbes`. */
   hiddenCapture?: boolean;
-  /** drowse-structured-v4 unit section (B1 §3.1, §3.4), present together or not at all: a v4
+  /** drowse-structured-v5 unit section (B1 §3.1, §3.4), present together or not at all: a v4
    *  program without it is v3's buffers exactly and runs the v4-identical structured or curved
    *  functions; with it, the units pair (`drowse_units_batch_{prefill,decode}`). */
   unitShape?: StructuredUnitShape;
@@ -274,7 +284,7 @@ export interface StructuredHookControl {
 export interface StructuredHookControls {
   affine: readonly (StructuredHookControl | null)[];
   curve: readonly (StructuredHookControl | null)[];
-  /** drowse-structured-v4: one per unit trigger group (length `maxUnitGroups`). */
+  /** drowse-structured-v5: one per unit trigger group (length `maxUnitGroups`). */
   units?: readonly (StructuredHookControl | null)[];
 }
 
@@ -313,9 +323,11 @@ export function additiveDirectionGroup(
   const values = copyFiniteVector(direction, direction.length, "additive direction");
   const norm = vectorNorm(values);
   if (!(norm > 1e-9)) throw new TypeError("Additive direction must be nonzero");
+  const unit = Float32Array.from(values, (value) => value / norm);
   return {
     active,
-    basis: [Float32Array.from(values, (value) => value / norm)],
+    basis: [unit],
+    read: [unit],
     neutral: new Float32Array(values.length),
     target: [norm],
     along: finiteFloat(coefficient, "additive coefficient"),
@@ -423,6 +435,7 @@ export function compileStructuredHookProgram(
     layerCount,
     affineActive: new Uint32Array(affineSlots),
     affineBasis: new Float32Array(checkedStructuredHookProduct("affine basis", affineAxes, hiddenSize)),
+    affineRead: new Float32Array(checkedStructuredHookProduct("affine read", affineAxes, hiddenSize)),
     affineNeutral: new Float32Array(checkedStructuredHookProduct("affine neutral", affineSlots, hiddenSize)),
     affineTarget: new Float32Array(affineAxes),
     affineAlong: new Float32Array(affineSlots),
@@ -437,6 +450,7 @@ export function compileStructuredHookProgram(
     curveEmbedDim: new Uint32Array(curveSlots),
     curveNodeCount: new Uint32Array(curveSlots),
     curveBasis: new Float32Array(checkedStructuredHookProduct("curve basis", curveAxes, hiddenSize)),
+    curveRead: new Float32Array(checkedStructuredHookProduct("curve read", curveAxes, hiddenSize)),
     curveNeutral: new Float32Array(checkedStructuredHookProduct("curve neutral", curveSlots, hiddenSize)),
     curveNodeParameters: new Float32Array(checkedStructuredHookProduct("curve node parameters", curveNodes, profile.maxEmbedDim)),
     curveRbfWeights: new Float32Array(checkedStructuredHookProduct("curve RBF weights", curveNodes, profile.maxRank)),
@@ -774,6 +788,7 @@ export function validateStructuredHookProgram(program: StructuredHookProgramBuff
   const expected: Array<[ArrayLike<number>, number, string]> = [
     [program.affineActive, size("affine active", l, g), "affine active"],
     [program.affineBasis, size("affine basis", l, g, r, d), "affine basis"],
+    [program.affineRead, size("affine read", l, g, r, d), "affine read"],
     [program.affineNeutral, size("affine neutral", l, g, d), "affine neutral"],
     [program.affineTarget, size("affine target", l, g, r), "affine target"],
     [program.affineAlong, size("affine along", l, g), "affine along"],
@@ -788,6 +803,7 @@ export function validateStructuredHookProgram(program: StructuredHookProgramBuff
     [program.curveEmbedDim, curveSlots, "curve embedding dimension"],
     [program.curveNodeCount, curveSlots, "curve node count"],
     [program.curveBasis, size("curve basis", curveSlots, r, d), "curve basis"],
+    [program.curveRead, size("curve read", curveSlots, r, d), "curve read"],
     [program.curveNeutral, size("curve neutral", curveSlots, d), "curve neutral"],
     [program.curveNodeParameters, size("curve node parameters", curveSlots, n, m), "curve node parameters"],
     [program.curveRbfWeights, size("curve RBF weights", curveSlots, n, r), "curve RBF weights"],
@@ -1267,7 +1283,7 @@ function compileLayer(
     geometryProbes.length > 0
   ) {
     if (program.format !== STRUCTURED_HOOK_FORMAT) {
-      throw new TypeError("Geometry probes require a drowse-structured-v4 program");
+      throw new TypeError("Geometry probes require a drowse-structured-v5 program");
     }
     if (input.geometryWhitener === undefined || input.geometryWhitener === null) {
       throw new TypeError("Geometry probes require one exact layer whitener");
@@ -1677,8 +1693,8 @@ function compileAffineGroup(
   if (rank === 0 || rank > program.profile.maxRank) {
     throw new TypeError(`Affine group rank must be between 1 and ${program.profile.maxRank}`);
   }
-  if (input.target.length !== rank || input.kappa.length !== rank) {
-    throw new TypeError("Affine target and kappa must match the group rank");
+  if (input.target.length !== rank || input.kappa.length !== rank || input.read.length !== rank) {
+    throw new TypeError("Affine read, target and kappa must match the group rank");
   }
   const slot = layer * program.profile.maxAffineGroups + group;
   program.affineActive[slot] = input.active ? 1 : 0;
@@ -1687,22 +1703,18 @@ function compileAffineGroup(
   for (let axis = 0; axis < rank; axis += 1) {
     const axisSlot = slot * program.profile.maxRank + axis;
     copyVector(input.basis[axis], program.affineBasis, axisSlot * program.hiddenSize, program.hiddenSize, "affine basis");
-    requireUnitVector(program.affineBasis, axisSlot * program.hiddenSize, program.hiddenSize, "affine basis");
+    copyVector(input.read[axis], program.affineRead, axisSlot * program.hiddenSize, program.hiddenSize, "affine read");
     program.affineTarget[axisSlot] = finiteFloat(input.target[axis], "affine target");
     program.affineKappa[axisSlot] = finiteFloat(input.kappa[axis], "affine kappa");
-    for (let previous = 0; previous < axis; previous += 1) {
-      const previousSlot = slot * program.profile.maxRank + previous;
-      const overlap = dotProductSlices(
-        program.affineBasis,
-        previousSlot * program.hiddenSize,
-        axisSlot * program.hiddenSize,
-        program.hiddenSize,
-      );
-      if (Math.abs(overlap) > 1e-4) {
-        throw new TypeError("Affine group basis rows must be orthonormal");
-      }
-    }
   }
+  requireDualFrame(
+    program.affineBasis,
+    program.affineRead,
+    slot * program.profile.maxRank * program.hiddenSize,
+    rank,
+    program.hiddenSize,
+    "Affine group",
+  );
 }
 
 function compileProbe(
@@ -1737,6 +1749,7 @@ function compileCurve(
   input: StructuredCurve,
 ): void {
   const rank = input.basis.length;
+  if (input.read.length !== rank) throw new TypeError("Curve read rows must match the curve rank");
   const nodes = input.nodeParameters.length;
   const intrinsicDim = input.axes.length;
   const sourceEmbedDim = input.coordinateOffset.length;
@@ -1789,19 +1802,16 @@ function compileCurve(
   for (let axis = 0; axis < rank; axis += 1) {
     const axisOffset = (slot * program.profile.maxRank + axis) * program.hiddenSize;
     copyVector(input.basis[axis], program.curveBasis, axisOffset, program.hiddenSize, "curve basis");
-    requireUnitVector(program.curveBasis, axisOffset, program.hiddenSize, "curve basis");
-    for (let previous = 0; previous < axis; previous += 1) {
-      const previousOffset = (slot * program.profile.maxRank + previous) * program.hiddenSize;
-      if (Math.abs(dotProductSlices(
-        program.curveBasis,
-        previousOffset,
-        axisOffset,
-        program.hiddenSize,
-      )) > 1e-4) {
-        throw new TypeError("Curve basis rows must be orthonormal");
-      }
-    }
+    copyVector(input.read[axis], program.curveRead, axisOffset, program.hiddenSize, "curve read");
   }
+  requireDualFrame(
+    program.curveBasis,
+    program.curveRead,
+    slot * program.profile.maxRank * program.hiddenSize,
+    rank,
+    program.hiddenSize,
+    "Curve",
+  );
   for (let node = 0; node < nodes; node += 1) {
     if (input.rbfWeights[node].length !== rank) throw new TypeError("Curve RBF weight rank is inconsistent");
     for (let axis = 0; axis < rank; axis += 1) {
@@ -1908,7 +1918,7 @@ function runAffineGroups(
       let coordinate = 0;
       for (let hidden = 0; hidden < d; hidden += 1) {
         coordinate = Math.fround(coordinate + Math.fround(
-          Math.fround(values[hidden] - program.affineNeutral[slot * d + hidden]) * program.affineBasis[vector + hidden],
+          Math.fround(values[hidden] - program.affineNeutral[slot * d + hidden]) * program.affineRead[vector + hidden],
         ));
       }
       deltas[axis] = Math.fround(program.affineAlong[slot] * Math.fround(
@@ -2380,7 +2390,7 @@ function runCurve(
   for (let axis = 0; axis < rank; axis += 1) {
     for (let hidden = 0; hidden < d; hidden += 1) {
       q[axis] = Math.fround(q[axis] + Math.fround(
-        centered[hidden] * program.curveBasis[(slot * program.profile.maxRank + axis) * d + hidden],
+        centered[hidden] * program.curveRead[(slot * program.profile.maxRank + axis) * d + hidden],
       ));
     }
   }
@@ -2927,18 +2937,6 @@ function dotProduct(left: ArrayLike<number>, right: ArrayLike<number>): number {
   return value;
 }
 
-function dotProductSlices(
-  values: Float32Array,
-  leftOffset: number,
-  rightOffset: number,
-  size: number,
-): number {
-  let result = 0;
-  for (let index = 0; index < size; index += 1) {
-    result += values[leftOffset + index] * values[rightOffset + index];
-  }
-  return result;
-}
 
 function vectorNorm(values: ArrayLike<number>): number {
   return Math.sqrt(dotProduct(values, values));
@@ -2964,22 +2962,36 @@ function finiteFloat(value: number, label: string, allowInfinity = false): numbe
   return narrowed;
 }
 
-function requireUnitVector(
-  values: Float32Array,
+/** Native's synthesized-frame invariant (`read @ basisᵀ = I`, atol and rtol 1e-3): the read rows
+ *  recover the coordinates the write rows write. */
+function requireDualFrame(
+  basis: Float32Array,
+  read: Float32Array,
   offset: number,
+  rank: number,
   size: number,
   label: string,
 ): void {
-  let squaredNorm = 0;
-  for (let index = 0; index < size; index += 1) squaredNorm += values[offset + index] ** 2;
-  if (Math.abs(squaredNorm - 1) > 1e-4) throw new TypeError(`${label} must be unit length`);
+  for (let row = 0; row < rank; row += 1) {
+    for (let column = 0; column < rank; column += 1) {
+      let value = 0;
+      for (let index = 0; index < size; index += 1) {
+        value += read[offset + row * size + index] * basis[offset + column * size + index];
+      }
+      const expected = row === column ? 1 : 0;
+      if (!(Math.abs(value - expected) <= 1e-3 + 1e-3 * expected)) {
+        throw new TypeError(`${label} read rows must be dual to its basis rows`);
+      }
+    }
+  }
 }
+
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
-// ------------------------------------------------- drowse-structured-v4 units ---
+// ------------------------------------------------- drowse-structured-v5 units ---
 // B1-hook-abi-v5.md §2.2 (the live unit tap), §3.1 (mean-ablation and the table layout) and
 // §3.4 (the host program). browser-runtime/HOOK_ABI.md is the contract.
 
@@ -3443,7 +3455,7 @@ export function assertStructuredTapGramsBound(
   });
 }
 
-/** Native's unit tables (`UnitOp` per module and trigger), as the B3 goldens record them:
+/** Native's unit tables (`UnitOp` per module and trigger):
  *  coordinate entries of a site of width `width`, one keep and bias per coordinate. */
 export interface StructuredNativeUnitTable {
   readonly layer: number;

@@ -50,10 +50,10 @@ syntax, including projections, ablations, manifold positions, phase windows,
 probe gates, SAE selectors, and J-lens selectors. Python and TypeScript consume
 the same accept/reject fixture. Parsing does not imply execution support: each
 expression is reduced to an explicit hook-feature requirement set before GPU
-program compilation. The hook ABI v5 library profiles (`standard-v4` with unit
-sites, `standard-v4-residual` without) implement structured affine and curved
+program compilation. The hook ABI v6 library profiles (`standard-v5` with unit
+sites, `standard-v5-residual` without) implement structured affine and curved
 programs, exact geometry reads, precomputed SAE steering/readout, and exact
-full-vocabulary J-lens steering/readout; `standard-v4` adds the neuron and head
+full-vocabulary J-lens steering/readout; `standard-v5` adds the neuron and head
 unit sites (`browser-runtime/HOOK_ABI.md`). The worker
 still validates the library feature manifest, runtime identity, model profile,
 and required instrument packs before every program is installed; unsupported

@@ -24,7 +24,7 @@ interface CaptureRequest {
   artifacts: Array<{ path: string; role: string; bytes: number; sha256: string }>;
   runtimeIdentity: RuntimeIdentity;
   structuredHookProfile: ModelVariant["structuredHookProfile"];
-  /** The runtime lock's block spec (standard-v4) and unit refusal (standard-v4-residual). */
+  /** The runtime lock's block spec (standard-v5) and unit refusal (standard-v5-residual). */
   blockSpec: BlockSpec | null;
   unitRefusal: string | null;
   prefillChunkSize: number;
@@ -167,7 +167,7 @@ self.onmessage = async (event: MessageEvent<CaptureRequest>) => {
       : (await runtime.prepareCaptureRows([event.data.namedRoleCheck.row]))[0];
     // B1 §4.3 item 2 on a units library: the block sites at every captured layer and position,
     // and neuron-write static reads; a residual library has neither.
-    const units = event.data.structuredHookProfile === "standard-v4"
+    const units = event.data.structuredHookProfile === "standard-v5"
       ? await captureUnits(runtime, event.data.inputIds, event.data.positions, event.data.runtimeIdentity.layerMap)
       : null;
     const bytes = new Uint8Array(
@@ -257,7 +257,7 @@ async function captureUnits(
 ) {
   const capabilities = runtime.blockSitesCapabilities();
   if (capabilities === null || capabilities.blockSpec === null) {
-    throw new Error("a standard-v4 capture needs the library's attested unit sites");
+    throw new Error("a standard-v5 capture needs the library's attested unit sites");
   }
   const backend = webLlmBlockSitesBackend(capabilities, runtime.blockSitesDevice());
   const spec = capabilities.blockSpec;

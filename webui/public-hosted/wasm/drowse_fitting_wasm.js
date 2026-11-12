@@ -151,6 +151,22 @@ export class AffineFisherFit {
     /**
      * @returns {Float64Array}
      */
+    read() {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.affinefisherfit_read(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var v1 = getArrayF64FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export(r0, r1 * 8, 8);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * @returns {Float64Array}
+     */
     whitenedGram() {
         try {
             const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);

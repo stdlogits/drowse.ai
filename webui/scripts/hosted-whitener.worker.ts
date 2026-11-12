@@ -10,6 +10,7 @@ import {
 import { BrowserActivationSpool } from "../src/hosted/fitting/activationSpool";
 import {
   BrowserFittingCoordinator,
+  FIT_POLICY_VERSION,
   type BrowserFittingCoordinatorProgress,
 } from "../src/hosted/fitting/coordinator";
 import { monopolarFoundation } from "../src/hosted/fitting/monopolar";
@@ -55,7 +56,7 @@ interface BuildRequest {
   quantization: "q4f16_1" | "q4f32_1" | "q0f32";
   requiredFeatures: GPUFeatureName[];
   structuredHookProfile: ModelVariant["structuredHookProfile"];
-  /** The runtime lock's block spec (standard-v4) and unit refusal (standard-v4-residual). */
+  /** The runtime lock's block spec (standard-v5) and unit refusal (standard-v5-residual). */
   blockSpec: BlockSpec | null;
   unitRefusal: string | null;
   prefillChunkSize: number;
@@ -335,7 +336,7 @@ async function fitCoreManifold(
       captureVersion: 3,
       captureRenderSha256: rendered.captureRenderSha256,
       baselinePromptsSha256: digest(baselinePrompts),
-      fitPolicyVersion: 1,
+      fitPolicyVersion: FIT_POLICY_VERSION,
     },
     topology: foundation.topology,
     consensusGram: foundation.consensusGram,

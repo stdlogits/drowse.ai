@@ -11,8 +11,8 @@ import { parseSteeringExpression, UNIT_NAMESPACES } from "./steeringExpression";
  *  chooses which layers a term's entries fill. `units` covers `neuron/` and `head/` atoms (a
  *  neuron push, a unit ablation `!neuron/…`/`!head/…`); a unit ablation is a mean-ablation
  *  inside the block, not the residual `ablation`. `slens` covers `slens/` atoms. Both follow the
- *  loaded library's hook ABI v5 profile (`blockSitesHookCapabilities`): `standard-v4` offers
- *  them, `standard-v4-residual` (GPT-2, Pythia, Qwen3.5 base) and a pre-v5 library do not, and
+ *  loaded library's hook ABI v6 profile (`blockSitesHookCapabilities`): `standard-v5` offers
+ *  them, `standard-v5-residual` (GPT-2, Pythia, Qwen3.5 base) and a pre-v5 library do not, and
  *  the refusal is the compiler's (`instrumentAtomUnavailable`, or native's 422 on a residual
  *  library).
  *
@@ -49,8 +49,8 @@ export const AFFINE_FEASIBILITY_CAPABILITIES: DrowseHookCapabilities = Object.fr
 });
 
 /** `units` and `slens` as the loaded library's block-sites surface attests them: both on a
- *  `standard-v4` library (unit sites, the static reads and the S readout), neither on a
- *  `standard-v4-residual` one or before a v5 library is loaded (`capabilities` null). */
+ *  `standard-v5` library (unit sites, the static reads and the S readout), neither on a
+ *  `standard-v5-residual` one or before a v5 library is loaded (`capabilities` null). */
 export function blockSitesHookCapabilities(
   base: DrowseHookCapabilities,
   capabilities: { readonly profile: { readonly unitSites: number } } | null,

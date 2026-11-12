@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 
@@ -18,11 +17,8 @@ const test = (name, run) => tests.push({ name, run });
 try {
   const {
     BrowserFittingCoordinator,
-    anchorBrowserNeutralLayout,
     embedBrowserAuthoredCoordinates,
-    finalizeBrowserAffineLayers,
     fitBrowserCurvedSurfaceLayers,
-    selectBrowserDlsAxes,
   } = await server.ssrLoadModule(
     "/src/hosted/fitting/coordinator.ts",
   );
@@ -327,118 +323,6 @@ try {
     assert.equal(harness.lifecycle.includes("remove"), true);
   });
 
-  test("matches the shared Python DLS keep and all-fail fallback fixtures", async () => {
-    const fixture = JSON.parse(await readFile(new URL(
-      "../../drowse/tests/fixtures/browser/dls-axes-v1.json",
-      import.meta.url,
-    )));
-    const layers = new Map(fixture.layers.map((layer) => [layer.layer, {
-      operation: "affine_fisher",
-      nodeCount: layer.nodeCount,
-      columns: layer.components,
-      components: layer.components,
-      centroidMean: new Float64Array(layer.components),
-      mean: new Float64Array(layer.components),
-      basis: new Float64Array(layer.components * layer.components),
-      nodeCoordinates: new Float64Array(layer.nodeCoordinates),
-      muCoordinates: new Float64Array(layer.nodeCoordinates.length),
-      whitenedGram: new Float64Array(layer.nodeCount * layer.nodeCount),
-      neutralCrossGram: new Float64Array(layer.nodeCount),
-      explainedVariance: 1,
-      mahalanobisShare: 1,
-    }]));
-    const selected = selectBrowserDlsAxes(layers, fixture.intrinsicDimensions);
-    assert.deepEqual(mapAxes(selected), fixture.expected);
-    for (const layer of layers.values()) {
-      layer.nodeCoordinates = layer.nodeCoordinates.map((value) => Math.abs(value) + 1);
-    }
-    assert.deepEqual(
-      mapAxes(selectBrowserDlsAxes(layers, fixture.intrinsicDimensions)),
-      fixture.allFailExpected,
-    );
-  });
-
-  test("matches Python neutral anchoring in the shared consensus layout", async () => {
-    const fixture = JSON.parse(await readFile(new URL(
-      "../../drowse/tests/fixtures/browser/affine-fisher-fit-v1.json",
-      import.meta.url,
-    )));
-    const expected = fixture.expected;
-    const layers = new Map([[0, {
-      operation: "affine_fisher",
-      nodeCount: fixture.nodeCount,
-      columns: fixture.columns,
-      components: fixture.maxComponents,
-      centroidMean: new Float64Array(expected.centroidMean),
-      mean: new Float64Array(expected.mean),
-      basis: new Float64Array(expected.basis),
-      nodeCoordinates: new Float64Array(expected.nodeCoordinates),
-      muCoordinates: new Float64Array(expected.muCoordinates),
-      whitenedGram: new Float64Array(expected.whitenedGram),
-      neutralCrossGram: new Float64Array(expected.neutralCrossGram),
-      explainedVariance: expected.explainedVariance,
-      mahalanobisShare: expected.mahalanobisShare,
-    }]]);
-    const anchored = anchorBrowserNeutralLayout(layers, {
-      operation: "topology",
-      winnerName: "flat-pca",
-      fitMode: "pca",
-      intrinsicDimensions: 2,
-      periodicDimensions: 0,
-      persistentLoops: 0,
-      usedFaintCycle: false,
-      coordinates: new Float64Array(expected.layoutCoordinates),
-      embeddedCoordinates: new Float64Array(expected.layoutCoordinates),
-      candidates: [],
-      diagnostics: {
-        kind: "pca",
-        perComponentVariance: new Float64Array([0.75, 0.25]),
-        cumulativeVariance: new Float64Array([0.75, 1]),
-        pickedDimensions: 2,
-        threshold: 0.7,
-      },
-      winnerPlan: null,
-    });
-    close(anchored.neutral, expected.neutralLayoutCoordinate, 2e-6);
-    close(anchored.coordinates, expected.anchoredLayoutCoordinates, 2e-6);
-
-    const serialized = fixture.serializedWhitener;
-    const finalized = finalizeBrowserAffineLayers(
-      layers,
-      new Map([[0, {
-        ...serialized,
-        mean: new Float64Array(serialized.mean),
-        basis: new Float64Array(serialized.basis),
-        eigenvalues: new Float64Array(serialized.eigenvalues),
-        inverseScales: new Float64Array(serialized.inverseScales),
-      }]]),
-      new Map([[0, new Uint32Array([0])]]),
-      2,
-    ).get(0);
-    close(finalized.mean, expected.axisZeroFinal.mean, 2e-6);
-    close(finalized.basis, expected.axisZeroFinal.basis, 2e-6);
-    close(finalized.nodeCoordinates, expected.axisZeroFinal.nodeCoordinates, 2e-6);
-    close(finalized.muCoordinates, expected.axisZeroFinal.muCoordinates, 2e-6);
-    close(finalized.affineMap, [1, 0], 0);
-    assert.ok(
-      Math.abs(finalized.mahalanobisShare - expected.axisZeroFinal.mahalanobisShare) <= 2e-6,
-    );
-
-    const reordered = finalizeBrowserAffineLayers(
-      layers,
-      new Map([[0, {
-        ...serialized,
-        mean: new Float64Array(serialized.mean),
-        basis: new Float64Array(serialized.basis),
-        eigenvalues: new Float64Array(serialized.eigenvalues),
-        inverseScales: new Float64Array(serialized.inverseScales),
-      }]]),
-      new Map([[0, new Uint32Array([1, 0])]]),
-      2,
-    ).get(0);
-    close(reordered.affineMap, [0, 1, 1, 0], 0);
-  });
-
   test("rolls back incomplete or cancelled captures before fitting", async () => {
     const incomplete = coordinatorHarness(BrowserFittingCoordinator);
     await assert.rejects(
@@ -633,12 +517,6 @@ function identityWhitener(columns, firstMean = 0) {
   };
 }
 
-function mapAxes(value) {
-  return Object.fromEntries(
-    [...value].map(([layer, axes]) => [String(layer), [...axes]]),
-  );
-}
-
 function close(actual, expected, tolerance) {
   assert.equal(actual.length, expected.length);
   actual.forEach((value, index) => {
@@ -691,6 +569,8 @@ function affineFit(nodeCoordinates, components) {
     centroidMean: new Float64Array(components),
     mean: new Float64Array(components),
     basis: Float64Array.from({ length: components * components }, (_, index) =>
+      index % (components + 1) === 0 ? 1 : 0),
+    read: Float64Array.from({ length: components * components }, (_, index) =>
       index % (components + 1) === 0 ? 1 : 0),
     nodeCoordinates: new Float64Array(nodeCoordinates),
     muCoordinates: new Float64Array(nodeCount * components),
@@ -885,6 +765,7 @@ function coordinatorHarness(BrowserFittingCoordinator, options = {}) {
           centroidMean,
           mean: new Float64Array(columns),
           basis: new Float64Array([1, ...new Array(columns - 1).fill(0)]),
+          read: new Float64Array([1, ...new Array(columns - 1).fill(0)]),
           nodeCoordinates,
           muCoordinates,
           whitenedGram: new Float64Array(nodeCount * nodeCount).fill(

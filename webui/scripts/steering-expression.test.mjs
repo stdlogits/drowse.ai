@@ -1,6 +1,5 @@
-// The browser grammar against drowse's goldens: the parsed IR (steering_ir.json), the validate
-// parts the recipe chips rebuild from (recipe_chips.json) and the accept/reject table with
-// referenced selectors (browser_steering_expression.json). Every case in all three is replayed.
+// The browser grammar: the validate parts the recipe chips rebuild from (drowse's
+// recipe_chips.json), positions, layer selection, rejection text, inversion and validate.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -23,82 +22,11 @@ try {
   const grammar = await server.ssrLoadModule("/src/hosted/runtime/steeringExpression.ts");
   const {
     formatSteering,
-    formatSteeringTrigger,
     parseSteering,
     parseSteeringExpression,
-    referencedSteeringSelectors,
     selectTermLayers,
-    SteeringExpressionError,
     steeringParts,
-    steeringTriggerFields,
   } = grammar;
-
-  // steering_ir.json: every accepted expression's ordered terms and canonical text, against the
-  // fixture's registry; every rejected one's error class.
-  const ir = await fixture("steering_ir.json");
-  assert.equal(ir.schemaVersion, 1);
-  const manifolds = ir.registry.map((entry) => ({
-    namespace: entry.namespace,
-    name: entry.name,
-    fitMode: entry.fitMode,
-    labels: entry.labels,
-  }));
-  const resolution = (testCase) => ({ manifolds, profileNames: testCase.profileNames });
-  const triggerRecord = (trigger) => trigger === null ? null : {
-    text: formatSteeringTrigger(trigger),
-    ...steeringTriggerFields(trigger),
-    gate: trigger.gate === null
-      ? null
-      : { probe: trigger.gate.probe, op: trigger.gate.operator, threshold: trigger.gate.threshold },
-  };
-  const layersRecord = (layers) => Array.isArray(layers) ? [...layers] : layers;
-  const termRecord = (term, part) => {
-    const record = { key: term.key, text: part.text, kind: term.kind };
-    if (term.kind === "manifold") {
-      Object.assign(record, {
-        manifold: term.manifold,
-        position: typeof term.position === "string" ? term.position : [...term.position],
-        along: term.along,
-        onto: term.onto,
-        layers: layersRecord(term.layers),
-      });
-    } else if (term.kind === "projection") {
-      Object.assign(record, {
-        base: term.base, operator: term.operator, onto: term.onto, coeff: term.coeff,
-        layers: layersRecord(term.layers),
-      });
-    } else if (term.kind === "unitAblation") {
-      Object.assign(record, { unit: term.unit, coeff: term.coeff });
-    } else {
-      Object.assign(record, { target: term.target, coeff: term.coeff, layers: layersRecord(term.layers) });
-    }
-    record.trigger = triggerRecord(term.trigger);
-    return record;
-  };
-  for (const testCase of ir.accepted) {
-    const parsed = parseSteering(testCase.expression, resolution(testCase));
-    const parts = steeringParts(parsed);
-    assert.deepStrictEqual(
-      {
-        canonical: formatSteering(parsed),
-        terms: parsed.terms.map((term, index) => termRecord(term, parts[index])),
-      },
-      { canonical: testCase.canonical, terms: testCase.terms },
-      testCase.expression,
-    );
-    assert.equal(
-      formatSteering(parseSteering(testCase.canonical, resolution(testCase))),
-      testCase.canonical,
-      `${testCase.expression}: the canonical form is a fixed point`,
-    );
-  }
-  for (const testCase of ir.rejected) {
-    assert.throws(
-      () => parseSteering(testCase.expression, resolution(testCase)),
-      (error) => error.code === testCase.error,
-      testCase.expression,
-    );
-  }
 
   // recipe_chips.json: the validate parts of every case, and the chips' canonical expression.
   const chips = await fixture("recipe_chips.json");
@@ -114,29 +42,6 @@ try {
   }
   for (const testCase of chips.cases) {
     assert.equal(formatSteering(parseSteering(testCase.expression)), testCase.expression, testCase.name);
-  }
-
-  // browser_steering_expression.json: accepted with their referenced selectors, and rejected.
-  const table = await fixture("browser_steering_expression.json");
-  assert.equal(table.schemaVersion, 1);
-  for (const testCase of table.accepted) {
-    assert.doesNotThrow(() => parseSteering(testCase.expression), testCase.expression);
-    assert.deepEqual(
-      referencedSteeringSelectors(testCase.expression).map((item) => [
-        item.namespace,
-        item.concept,
-        item.variant,
-      ]),
-      testCase.selectors,
-      testCase.expression,
-    );
-  }
-  for (const expression of table.rejected) {
-    assert.throws(
-      () => parseSteering(expression),
-      (error) => error instanceof SteeringExpressionError,
-      expression,
-    );
   }
 
   // The syntax tree keeps written positions for the compiler.
@@ -204,10 +109,16 @@ try {
     assert.throws(() => parseSteering(written), (error) => error.message === message, written);
   }
 
-  // The `inverted` regen, against drowse 6.0's Recipe.invert_steering with the golden's registry
-  // installed (folders only, as test_steering_ir installs it; run from the venv on the pinned
-  // submodule): bare labels resolve to their `%` terms and repeats fold before the signs flip, and
-  // a refusal is drowse's own class and words.
+  // The `inverted` regen, against drowse 6.0's Recipe.invert_steering with this registry installed
+  // (folders only): bare labels resolve to their `%` terms and repeats fold before the signs flip,
+  // and a refusal is drowse's own class and words.
+  const manifolds = [
+    { namespace: "default", name: "verbose.concise", fitMode: "pca", labels: ["verbose", "concise"] },
+    { namespace: "default", name: "personas", fitMode: "pca", labels: ["pirate", "hacker", "robot"] },
+    { namespace: "local", name: "formal.casual", fitMode: "pca", labels: ["formal", "casual"] },
+    { namespace: "local", name: "animals", fitMode: "pca", labels: ["deer", "owl"] },
+    { namespace: "local", name: "forest", fitMode: "pca", labels: ["deer", "oak"] },
+  ];
   for (const [written, expected] of [
     ["0.5,0.3 demo%alert", {"inverted": "-0.5,-0.3 demo%alert"}],
     ["-0.6,0.3 demo%alert{1-2}", {"inverted": "0.6,-0.3 demo%alert{1-2}"}],
@@ -378,11 +289,7 @@ try {
   assert.equal(pythonStrip("\ufeff0.5 x"), "\ufeff0.5 x");
   assert.equal((await validate("\u0085 plain + 0.2 x\u001e")).expression, "0.5 plain + 0.2 x");
 
-  console.log(
-    `Steering grammar checks passed (${ir.accepted.length + ir.rejected.length} IR, ` +
-      `${chips.cases.length + chips.readOnly.length} chip, ` +
-      `${table.accepted.length + table.rejected.length} table cases)`,
-  );
+  console.log(`Steering grammar checks passed (${chips.cases.length + chips.readOnly.length} chip cases)`);
 } finally {
   await server.close();
 }

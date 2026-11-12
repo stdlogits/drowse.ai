@@ -1,7 +1,7 @@
-// The CPU fp32 reference of hook ABI v5's device surface (`BrowserBlockSitesBackend`, B1 §2-§6)
+// The CPU fp32 reference of hook ABI v6's device surface (`BrowserBlockSitesBackend`, B1 §2-§6)
 // over dense weights: plain loops, B1 §4.1's formulas. Test-only. It lets the host ports run
-// end to end against drowse's goldens without a GPU, and is the reference B4's kernels answer
-// to. Nothing in the hosted app imports it.
+// end to end without a GPU (the fixture runtime), and is the reference B4's kernels answer to.
+// Nothing in the hosted app imports it.
 import {
   activityStateLayout,
   anatomyTapLayout,
@@ -91,7 +91,7 @@ const sum = (n: number, f: (i: number) => number): number => {
   return s;
 };
 
-/** The CPU reference backend over `model` under a `standard-v4` (or residual) profile. */
+/** The CPU reference backend over `model` under a `standard-v5` (or residual) profile. */
 export function cpuBlockSitesBackend(
   model: DenseModelWeights,
   options: CpuBlockSitesOptions,

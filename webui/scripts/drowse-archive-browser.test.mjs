@@ -48,6 +48,7 @@ try {
       centroidMean: new Float64Array([0, 0]),
       mean: new Float64Array([0, 0]),
       basis: new Float64Array([1, 0]),
+      read: new Float64Array([0.5, 0]),
       nodeCoordinates: new Float64Array([-1, 0, 1]),
       muCoordinates: new Float64Array([-1, 0, 1]),
       whitenedGram: new Float64Array([
@@ -151,6 +152,11 @@ try {
       tensorPath,
     );
     assert.deepEqual(tensor.tensor("layer_0.affine_map", [2, 1]).data, new Float32Array([1, 0]));
+    // drowse 6.1's typed frame and sidecar: the read rows travel beside the basis, and the
+    // retired metric labels are gone.
+    assert.deepEqual(tensor.tensor("layer_0.read", [1, 2]).data, new Float32Array([0.5, 0]));
+    assert.equal("share_metric" in sidecar || "subspace_metric" in sidecar, false);
+    assert.equal("files" in verified.manifold, false);
   });
 
   test("publishes a self-validated browser curved fit with sigma and origin geometry", async () => {
@@ -175,6 +181,7 @@ try {
       centroidMean: new Float64Array([0, 0]),
       mean: new Float64Array([0, 0]),
       basis: new Float64Array([1, 0, 0, 1]),
+      read: new Float64Array([1, 0, 0, 1]),
       nodeCoordinates: new Float64Array([-1, 0, 0, 0, 1, 0]),
       muCoordinates: new Float64Array([-1, 0, 0, 0, 1, 0]),
       whitenedGram: new Float64Array([
@@ -322,6 +329,7 @@ try {
       centroidMean: new Float64Array(2),
       mean: new Float64Array(2),
       basis: new Float64Array([1, 0]),
+      read: new Float64Array([1, 0]),
       nodeCoordinates: new Float64Array([-1, 1]),
       muCoordinates: new Float64Array([-1, 1]),
       whitenedGram: new Float64Array([1, -1, -1, 1]),
@@ -414,7 +422,7 @@ try {
 
     await assert.rejects(
       buildDrowseArchive({ ...input, primary: "manifolds/local/wrong" }),
-      (error) => error.code === "MANIFEST_MISMATCH" && /outside/.test(error.message),
+      (error) => error.code === "MANIFEST_MISMATCH" && /no manifold\.json/.test(error.message),
     );
   });
 
@@ -469,7 +477,6 @@ try {
           fit_mode: fixture.fitMode,
           hyperparams: fixture.hyperparams,
           nodes: fixture.nodes.map(({ label, role, kind }) => ({ label, role, kind })),
-          files: {},
           source: fixture.source.uri,
           tags: fixture.expected.tags,
           template_ref: fixture.expected.template_ref,
@@ -602,7 +609,7 @@ try {
     );
   });
 
-  test("rejects duplicate JSON keys and any manifest schema drift", async () => {
+  test("rejects duplicate JSON keys and ignores pack.json fields no reader uses", async () => {
     const fixture = manifoldFixture();
     const raw = new TextDecoder().decode(fixture.entries[0].data);
     const duplicate = raw.replace(
@@ -617,13 +624,12 @@ try {
       inspectDrowseArchive(duplicateArchive),
       (error) => error.code === "JSON_DUPLICATE_KEY",
     );
+    // drowse 6.1's pack.json carries no files map, and a field nobody reads is ignored.
     const manifest = JSON.parse(raw);
     manifest.extra = true;
-    const drift = rebuildWithManifest(fixture, manifest);
-    await assert.rejects(
-      inspectDrowseArchive(drift),
-      (error) => error.code === "MANIFEST_INVALID",
-    );
+    delete manifest.files;
+    const verified = await validateDrowseArchive(rebuildWithManifest(fixture, manifest));
+    assert.deepEqual(Object.keys(verified.files), Object.keys(fixture.payloads).sort());
   });
 
   test("rejects traversal, absolute, drive, backslash, NUL, and alternate path names", async () => {
@@ -643,7 +649,7 @@ try {
     );
   });
 
-  test("rejects duplicates, case-fold collisions, unknown roots, and non-exact closures", async () => {
+  test("rejects duplicates and case-fold collisions, and ignores entries outside the closure", async () => {
     await assert.rejects(
       inspectDrowseArchive(makeZip([
         { name: "pack.json", data: text("{}") },
@@ -658,6 +664,7 @@ try {
       ])),
       (error) => error.code === "ARCHIVE_PATH_COLLISION",
     );
+    // As drowse's extraction does, an install reads the closure and ignores everything else.
     const fixture = manifoldFixture();
     const payloads = { ...fixture.payloads, "models/local/demo.bin": text("bad root") };
     const manifest = makeManifest(payloads);
@@ -665,15 +672,11 @@ try {
       { name: "pack.json", data: json(manifest) },
       ...Object.entries(payloads).map(([name, data]) => ({ name, data })),
     ]);
-    await assert.rejects(
-      inspectDrowseArchive(archive),
-      (error) => error.code === "MANIFEST_MISMATCH" && /outside/.test(error.message),
-    );
+    const outside = await validateDrowseArchive(archive);
+    assert.equal("models/local/demo.bin" in outside.files, false);
     const extraInner = manifoldFixture({ extraPayload: ["manifolds/local/demo/notes.txt", text("no") ] });
-    await assert.rejects(
-      validateDrowseArchive(extraInner.archive),
-      (error) => error.code === "CLOSURE_INVALID" && /not exact/.test(error.message),
-    );
+    const inner = await validateDrowseArchive(extraInner.archive);
+    assert.equal("manifolds/local/demo/notes.txt" in inner.files, false);
   });
 
   test("rejects encrypted, linked, special, directory, and unsupported entries", async () => {
@@ -718,28 +721,17 @@ try {
     );
   });
 
-  test("checks exact payload sizes and SHA-256 before committing staged data", async () => {
-    const fixture = manifoldFixture();
-    const manifest = JSON.parse(new TextDecoder().decode(fixture.entries[0].data));
+  test("installs a fit of an edited corpus as a miss that refits, and records what it staged", async () => {
+    // drowse 6.1: a stale fit is a registry miss, never a failed load. The pair still travels.
+    const fixture = fittedFixture();
     const path = "manifolds/local/demo/nodes/00_calm.json";
-    const changed = text('["evil"]\n');
+    const changed = text('["edited"]\n');
     const entries = fixture.entries.map((entry) => entry.name === path ? { ...entry, data: changed } : entry);
-    const events = [];
-    await assert.rejects(
-      validateDrowseArchive(makeZip(entries), {
-        stage: {
-          begin: () => events.push("begin"),
-          write: () => {},
-          finish: (name) => events.push(`finish:${name}`),
-          commit: () => events.push("commit"),
-          rollback: () => events.push("rollback"),
-        },
-      }),
-      (error) => error.code === "CHECKSUM_MISMATCH",
-    );
-    assert.equal(manifest.files[path].sha256, digest(fixture.payloads[path]));
-    assert.equal(events.includes("commit"), false);
-    assert.equal(events.at(-1), "rollback");
+    const verified = await validateDrowseArchive(makeZip(entries));
+    assert.deepEqual(verified.fittedArtifacts, []);
+    assert.ok("manifolds/local/demo/_zdGVzdC9tb2RlbA.safetensors" in verified.files);
+    assert.equal(verified.files[path].sha256, digest(changed));
+    assert.deepEqual(verified.manifest.files, verified.files);
   });
 
   test("rolls staging back when begin, semantic validation, or cancellation fails", async () => {
@@ -926,17 +918,15 @@ try {
     );
   });
 
-  test("binds fitted tensors to node bytes, fit semantics, and filename variants", async () => {
+  test("reads 6.1 sidecars tolerantly and binds fitted tensors to their filename variants", async () => {
     const stale = fittedFixture({ sidecar: { nodes_sha256: "0".repeat(64) } });
-    await assert.rejects(
-      validateDrowseArchive(stale.archive),
-      (error) => error.code === "CLOSURE_INVALID" && /node hash/.test(error.message),
-    );
-    const wrongMethod = fittedFixture({ sidecar: { method: "manifold_discover_spectral" } });
-    await assert.rejects(
-      validateDrowseArchive(wrongMethod.archive),
-      (error) => error.code === "CLOSURE_INVALID" && /method\/fit_mode/.test(error.message),
-    );
+    assert.deepEqual((await validateDrowseArchive(stale.archive)).fittedArtifacts, []);
+    // A retired field is dropped and a missing provenance field defaults.
+    const tolerant = fittedFixture({
+      sidecar: { share_metric: "mahalanobis", subspace_metric: "euclidean", future_field: 1 },
+      omit: ["topology_candidates", "rbf_smoothing_per_layer", "bake_policy"],
+    });
+    assert.equal((await validateDrowseArchive(tolerant.archive)).fittedArtifacts.length, 1);
     const rawNamedSae = fittedFixture({ sidecar: {
       method: "manifold_discover_sae",
       feature_space: "sae-release-a",
@@ -987,18 +977,6 @@ try {
     const verified = await validateDrowseArchive(fixture.archive);
     assert.equal(verified.fittedArtifacts[0].variant, "from");
     assert.equal(verified.fittedArtifacts[0].variantIdentity, "source/model");
-
-    const incomplete = fittedFixture({
-      tensorName,
-      sidecar: {
-        method: "manifold_procrustes_transfer",
-        source_model_id: "source/model",
-      },
-    });
-    await assert.rejects(
-      validateDrowseArchive(incomplete.archive),
-      (error) => error.code === "CLOSURE_INVALID" && /incomplete transfer/.test(error.message),
-    );
   });
 
   test("requires immutable HF provenance and non-reserved manifold namespaces", async () => {
@@ -1028,8 +1006,7 @@ try {
     }
   });
 
-  test("mirrors drowse's method/fit_mode table and reserved namespaces", async () => {
-    const { METHOD_FIT_MODES } = await server.ssrLoadModule("/src/hosted/artifacts/drowseArchive.ts");
+  test("mirrors drowse's reserved namespaces", async () => {
     const { RESERVED_NAMESPACES } = await server.ssrLoadModule("/src/hosted/runtime/steeringExpression.ts");
     const drowseRoot = fileURLToPath(new URL("../../drowse", import.meta.url));
     const result = spawnSync(
@@ -1037,18 +1014,12 @@ try {
       ["-c", [
         "import json",
         "from drowse.naming import RESERVED_NAMESPACES",
-        "from drowse.store.manifold_schema import METHOD_FIT_MODES",
-        "print(json.dumps({'methods': {k: sorted(v) for k, v in METHOD_FIT_MODES.items()}, 'reserved': sorted(RESERVED_NAMESPACES)}))",
+        "print(json.dumps({'reserved': sorted(RESERVED_NAMESPACES)}))",
       ].join("; ")],
       { cwd: drowseRoot, encoding: "utf8", env: { ...process.env, PYTHONPATH: drowseRoot, PYTHONDONTWRITEBYTECODE: "1" } },
     );
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    const python = JSON.parse(result.stdout);
-    assert.deepEqual(
-      Object.fromEntries(Object.entries(METHOD_FIT_MODES).map(([method, modes]) => [method, [...modes].sort()])),
-      python.methods,
-    );
-    assert.deepEqual([...RESERVED_NAMESPACES].sort(), python.reserved);
+    assert.deepEqual([...RESERVED_NAMESPACES].sort(), JSON.parse(result.stdout).reserved);
   });
 
   test("enforces authored node floors and discover hyperparameter contracts", async () => {
@@ -1056,10 +1027,9 @@ try {
       validateDrowseArchive(authoredFixture().archive),
       (error) => error.code === "CLOSURE_INVALID" && /at least 3 nodes/.test(error.message),
     );
-    await assert.rejects(
-      validateDrowseArchive(manifoldFixture({ hyperparams: { k_nn: 3 } }).archive),
-      (error) => error.code === "CLOSURE_INVALID" && /does not accept/.test(error.message),
-    );
+    // A hyperparameter the mode never reads is dropped, as drowse's reader drops it.
+    const unread = await validateDrowseArchive(manifoldFixture({ hyperparams: { k_nn: 3 } }).archive);
+    assert.deepEqual(unread.manifold.hyperparams, {});
     await assert.rejects(
       validateDrowseArchive(manifoldFixture({ hyperparams: { max_dim: true } }).archive),
       (error) => error.code === "CLOSURE_INVALID" && /invalid value/.test(error.message),
@@ -1212,9 +1182,7 @@ function fittedFixture(options = {}) {
     capture_version: null,
     capture_render_sha256: null,
     baseline_prompts_sha256: null,
-    fit_policy_version: 1,
-    share_metric: "mahalanobis",
-    subspace_metric: "mahalanobis",
+    fit_policy_version: 2,
     rbf_smoothing_per_layer: {},
     sigma_field_per_layer: {},
     resolved_fit_mode: null,
@@ -1227,7 +1195,9 @@ function fittedFixture(options = {}) {
     transfer_quality_estimate: null,
     ...options.sidecar,
   };
+  for (const key of options.omit ?? []) delete sidecar[key];
   const sidecarBytes = json(sidecar);
+  // drowse 6.1's manifold.json: no files map; fitted pairs are found beside it.
   const manifold = {
     format_version: 10,
     name: "demo",
@@ -1235,10 +1205,6 @@ function fittedFixture(options = {}) {
     fit_mode: "pca",
     hyperparams: {},
     nodes: ["calm", "alert"].map((label) => ({ label, role: null, kind: "abstract" })),
-    files: {
-      [tensorName]: digest(tensor),
-      [sidecarName]: digest(sidecarBytes),
-    },
     source: "local",
     tags: [],
     template_ref: null,
@@ -1310,6 +1276,7 @@ function makeTensor(extraShapes = {}, options = {}) {
     node_coords: [2, 1],
     "layer_0.mean": [2],
     "layer_0.basis": [1, 2],
+    "layer_0.read": [1, 2],
     "layer_0.node_coords": [2, 1],
     ...extraShapes,
   };

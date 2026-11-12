@@ -16,6 +16,7 @@ import { blockSitesBindingBytes } from "../../hosted/runtime/modelBackend";
 import {
   EXACT_READOUT_REQUIRED_WEBGPU_LIMITS,
   resolveStructuredHookProfile,
+  sharedProfileId,
   structuredHookMemoryRequirements,
   WEB_LLM_RUNTIME_MIN_STORAGE_BUFFERS_PER_SHADER_STAGE,
   type BlockSpec,
@@ -71,9 +72,9 @@ export interface CatalogRuntimeLockModel {
   contextProfiles: readonly number[];
   /** The library's compiled prefill chunk, which its descriptor attests (HOOK_ABI.md §6). */
   prefillChunkSize: number;
-  /** The block spec a `standard-v4` library's descriptor is attested against (B1 §8.2). */
+  /** The block spec a `standard-v5` library's descriptor is attested against (B1 §8.2). */
   blockSpec: BlockSpec | null;
-  /** What a `standard-v4-residual` library's unit members answer (native's 422 text). */
+  /** What a `standard-v5-residual` library's unit members answer (native's 422 text). */
   unitRefusal: string | null;
 }
 
@@ -488,8 +489,8 @@ function validateVariant(value: unknown, index: number): ModelVariant {
   if (item.tier !== "fastest" && item.tier !== "balanced" && item.tier !== "quality") {
     throw invalid(`${path}.tier is invalid`);
   }
-  // This runtime loads hook ABI block-sites-v5 libraries only: standard-v4 (unit sites) or
-  // standard-v4-residual.
+  // This runtime loads hook ABI block-sites-v6 libraries only: standard-v5 (unit sites) or
+  // standard-v5-residual.
   let structuredHookProfile;
   try {
     structuredHookProfile = resolveStructuredHookProfile(item.structuredHookProfile);
@@ -737,7 +738,7 @@ function validateVariant(value: unknown, index: number): ModelVariant {
   return {
     id: item.id as string,
     tier: item.tier,
-    structuredHookProfile: structuredHookProfile.id,
+    structuredHookProfile: sharedProfileId(structuredHookProfile.id),
     thinkingProfile,
     contextProfiles,
     downloadBytes: item.downloadBytes as number,

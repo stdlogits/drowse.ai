@@ -1,6 +1,6 @@
 """Production q4 parity of a units library's sites, static reads and activity (hook ABI v5).
 
-B1 §4.3 item 2: the browser against Python on the dequantized MLC tensors. A `standard-v4`
+B1 §4.3 item 2: the browser against Python on the dequantized MLC tensors. A `standard-v5`
 library's capture carries, beside its residuals, the block sites `act`, `z` and `mid` at the same
 layers and positions (through the replay), and a set of static reads. Python recomputes each from
 the Transformers model `mlc_q4_torch` builds over the same tensors:
@@ -15,7 +15,7 @@ the Transformers model `mlc_q4_torch` builds over the same tensors:
   the same way from each side's sites, have Jaccard index at least 0.9. The rank is unscaled: the
   reading scales come from a units pack and divide both sides alike.
 
-A `standard-v4-residual` library has none of these sites; its capture carries no `units` member.
+A `standard-v5-residual` library has none of these sites; its capture carries no `units` member.
 """
 
 from __future__ import annotations

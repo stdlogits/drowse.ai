@@ -1046,6 +1046,34 @@ try {
     );
   });
 
+  test("worker hides a model install a newer catalog rebuilt until it is downloaded again", async () => {
+    // A hook ABI bump rebuilds every library and core: the old install's objects no longer match
+    // the variant, so the shell must download it again instead of adding new-runtime packs onto it.
+    const stale = [
+      ...variant.files,
+      ...variant.packs.find((pack) => pack.kind === "core").files,
+    ].map((file, index) => (index === 0 ? "e".repeat(64) : file.sha256));
+    const scope = harness({
+      async download() { throw new Error("no download expected"); },
+      async downloadPack() { throw new Error("no download expected"); },
+      cancel() { return false; },
+    }, {
+      selectedModelVariantId: variant.id,
+      installs: [{ id: variant.id, kind: "model", objectHashes: stale, installedAt: 1 }],
+    });
+    const status = () => scope.messages.findLast(
+      (message) => message.kind === "event" && message.event === "status",
+    ).payload;
+    scope.send(request("stale-model-storage", "storage"));
+    assert.equal((await response(scope, "stale-model-storage")).ok, true);
+    assert.deepEqual(status().installedModelVariantIds, [variant.id], "without a catalog the install stands");
+    await prepareCapabilities(scope);
+    scope.send(request("stale-model-catalog", "catalog", {}));
+    assert.equal((await response(scope, "stale-model-catalog")).ok, true);
+    assert.deepEqual(status().installedModelVariantIds, []);
+    assert.equal(status().selectedModelVariantId, null);
+  });
+
   test("worker cancellation during optional-pack preflight never starts a download", async () => {
     const optionalPack = {
       id: "smollm2-jlens-cancel",
@@ -1453,7 +1481,10 @@ try {
         scope.installs.push({
           id: variant.id,
           kind: "model",
-          objectHashes: variant.files.map((file) => file.sha256),
+          objectHashes: [
+            ...variant.files,
+            ...variant.packs.find((pack) => pack.kind === "core").files,
+          ].map((file) => file.sha256),
           installedAt: 2,
         });
         return result;
@@ -1487,7 +1518,10 @@ try {
         scope.installs.push({
           id: variant.id,
           kind: "model",
-          objectHashes: variant.files.map((file) => file.sha256),
+          objectHashes: [
+            ...variant.files,
+            ...variant.packs.find((pack) => pack.kind === "core").files,
+          ].map((file) => file.sha256),
           installedAt: 2,
         });
         return result;
@@ -5246,7 +5280,7 @@ try {
           if (mode === "reset") return { status: "not_found" };
           return {
             status: "incompatible",
-            reason: "runtime_identity",
+            reason: "context_tokens",
             preserved: true,
           };
         },
@@ -5274,6 +5308,37 @@ try {
     assert.equal((await response(scope, "unload-reset")).ok, true);
     assert.equal(unloads, 2);
     assert.equal(closes, 2);
+  });
+
+  test("worker opens a model on a fresh session when its working session is from an older runtime", async () => {
+    // A later catalog rebuilt the variant's library: the old working session is reset (the saved-chat
+    // library keeps the conversation) rather than blocking the model.
+    const restoreModes = [];
+    const scope = harness({
+      async download() { return result; },
+      cancel() { return false; },
+    }, {
+      modelBackend: {
+        async load() { return { prefillTokensPerSecond: 10, decodeTokensPerSecond: 5 }; },
+        async request() { throw new Error("not reached"); },
+        async generate() { throw new Error("not reached"); },
+        async stop() {},
+        async unload() {},
+      },
+      sessionCoordinatorFactory: () => ({
+        async restore(_identity, mode) {
+          restoreModes.push(mode);
+          if (mode === "reset") return { status: "not_found" };
+          return { status: "incompatible", reason: "runtime_identity", preserved: true };
+        },
+        async persist() {},
+        async close() {},
+      }),
+    });
+    await prepareDownload(scope);
+    scope.send(request("load-older-runtime", "load", downloadPayload()));
+    assert.equal((await response(scope, "load-older-runtime")).ok, true);
+    assert.deepEqual(restoreModes, ["replace", "reset"]);
   });
 
   test("worker cleanly reloads once after a ready-time non-OOM device loss", async () => {

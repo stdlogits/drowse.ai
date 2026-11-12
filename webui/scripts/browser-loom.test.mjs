@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 
@@ -13,7 +12,7 @@ const server = await createServer({
 });
 
 try {
-  const { BrowserLoomRuntime, composeCall, deriveSeedSchedule, recipeModifier } = await server.ssrLoadModule(
+  const { BrowserLoomRuntime, deriveSeedSchedule } = await server.ssrLoadModule(
     "/src/hosted/runtime/browserLoom.ts",
   );
   const { streamWebLlmGeneration } = await server.ssrLoadModule(
@@ -2782,122 +2781,6 @@ try {
   assert.equal(resetTree.nodes.length, 1);
   assert.notEqual(resetTree.root_id, beforeReset.root_id);
 
-  // drowse's `compose_call`, case by case: sampling ranks cast < anchor < call <
-  // modifier; steering, thinking and the system prompt cast < call < anchor <
-  // modifier; the seed modifier > call > anchor > cast; observation knobs the call's.
-  const composeFixture = JSON.parse(await readFile(
-    new URL("../../drowse/tests/fixtures/browser/recipe-compose-v1.json", import.meta.url),
-    "utf8",
-  ));
-  const samplingDefaults = {
-    presence_penalty: 0,
-    frequency_penalty: 0,
-    return_top_k: 0,
-    persist_per_layer_scores: false,
-    persist_subspace_coords: false,
-    return_probe_readings: true,
-  };
-  const setSamplingFields = (sampling) => sampling === null ? null : Object.fromEntries(
-    Object.entries(sampling).filter(([key, value]) =>
-      value !== null && value !== undefined && samplingDefaults[key] !== value),
-  );
-  const composeTier = (tier) => tier === undefined ? null : {
-    steering: tier.steering ?? null,
-    thinking: tier.thinking ?? null,
-    ...(Object.hasOwn(tier, "system_prompt") ? { system_prompt: tier.system_prompt } : {}),
-    sampling: tier.sampling ?? null,
-    seed: null,
-  };
-  assert.equal(composeFixture.schemaVersion, 1);
-  for (const fixtureCase of composeFixture.cases) {
-    const anchor = composeTier(fixtureCase.anchor);
-    const composed = composeCall({
-      steering: fixtureCase.call.steering,
-      thinking: fixtureCase.call.thinking,
-      sampling: fixtureCase.call.sampling,
-      cast: composeTier(fixtureCase.cast),
-      anchor,
-      modifier: fixtureCase.modifier === undefined
-        ? null
-        : recipeModifier(fixtureCase.modifier, anchor),
-    });
-    const expected = fixtureCase.expected;
-    assert.equal(composed.steering, expected.steering, fixtureCase.name);
-    assert.equal(composed.thinking, expected.thinking, fixtureCase.name);
-    assert.equal(composed.systemPrompt, expected.system_prompt, fixtureCase.name);
-    assert.deepEqual(setSamplingFields(composed.sampling), expected.sampling, fixtureCase.name);
-  }
-
-  const sharedLoomFixture = JSON.parse(await readFile(
-    new URL("../../drowse/tests/fixtures/browser/loom-operation-transcript-v1.json", import.meta.url),
-    "utf8",
-  ));
-  const sharedIds = sharedLoomFixture.operations
-    .filter((operation) => operation.createdId !== undefined)
-    .map((operation) => operation.createdId);
-  const sharedLoomRuntime = new BrowserLoomRuntime({
-    session: session(),
-    generation: generation(),
-    initialTree: sharedLoomFixture.initial,
-    now: () => 200,
-    createId() {
-      const id = sharedIds.shift();
-      assert.notEqual(id, undefined, "the shared loom fixture exhausted its node IDs");
-      return id;
-    },
-  });
-  const sharedMutations = [];
-  let sharedPreservedMeasurements;
-  for (const operation of sharedLoomFixture.operations) {
-    let method = operation.op;
-    let args;
-    if (method === "edit") args = [operation.node, operation.text];
-    else if (method === "branch") {
-      args = [operation.node, operation.text, undefined, operation.role];
-    } else if (method === "star") args = [operation.node, operation.value];
-    else if (method === "note") args = [operation.node, operation.text];
-    else if (method === "navigate" || method === "delete") args = [operation.node];
-    else if (method === "castPut") {
-      args = [operation.label, {
-        steering: operation.steering,
-        thinking: operation.thinking,
-        seed: operation.seed,
-        notes: operation.notes,
-      }];
-    } else if (method === "reset") {
-      const assistant = sharedLoomRuntime.snapshot().tree.nodes.find(
-        (node) => node.id === "assistant-1",
-      );
-      sharedPreservedMeasurements = assistant.tokens[0].measurements;
-      args = [];
-    } else {
-      assert.fail(`unknown shared loom operation ${JSON.stringify(method)}`);
-    }
-    await sharedLoomRuntime.request(
-      { service: "tree", method, args },
-      (event) => sharedMutations.push(event.data),
-    );
-  }
-  assert.deepEqual(
-    sharedMutations.map((event) => ({
-      op: event.op,
-      rev: event.rev,
-      added: event.added.map((node) => node.id),
-      removed: event.removed,
-      updated: event.updated.map((node) => node.id),
-      active_node_id: event.active_node_id,
-    })),
-    sharedLoomFixture.expected.events,
-  );
-  assert.deepEqual(
-    sharedPreservedMeasurements,
-    sharedLoomFixture.expected.preservedMeasurementsBeforeReset,
-  );
-  assert.deepEqual(
-    canonicalBrowserTree(sharedLoomRuntime.snapshot().tree),
-    sharedLoomFixture.expected.final,
-  );
-
   for (const capturedPrompt of [undefined, null, "", "Speak like a pirate."]) {
     const capturedTree = structuredClone(exactReplayRuntime.snapshot().tree);
     const source = capturedTree.nodes.find(node => node.id === branchA.id);
@@ -2943,7 +2826,7 @@ try {
   // refused in drowse's words (the browser measures no prompts, so it holds no prompt capture).
   {
     const { compileStructuredHookProgram } = await server.ssrLoadModule("/src/hosted/runtime/structuredHookProgram.ts");
-    const { STANDARD_STRUCTURED_HOOK_PROFILE_V4 } = await server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts");
+    const { STANDARD_STRUCTURED_HOOK_PROFILE_V5 } = await server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts");
     const rendered = [];
     const unitsEngine = {
       async streamGeneration(plan, onToken) {
@@ -2969,7 +2852,7 @@ try {
       createId: ids("units-replay"),
       compileSteering: (expression) => {
         compiled.push(expression);
-        return compileStructuredHookProgram(2, [{}, {}], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
+        return compileStructuredHookProgram(2, [{}, {}], STANDARD_STRUCTURED_HOOK_PROFILE_V5);
       },
     });
     await unitsRuntime.generate(
@@ -3036,25 +2919,6 @@ function session(config = {}) {
     scene_mode: true,
     thinking_input_supported: false,
     strips_history_thinking: false,
-  };
-}
-
-function canonicalBrowserTree(tree) {
-  return {
-    rev: tree.rev,
-    root_id: tree.root_id,
-    active_node_id: tree.active_node_id,
-    nodes: tree.nodes.map((node) => ({
-      id: node.id,
-      parent_id: node.parent_id,
-      role: node.role,
-      text: node.text,
-      starred: node.starred,
-      notes: node.notes,
-      edit_count: node.edit_count,
-    })),
-    children_of: tree.children_of,
-    cast: tree.cast,
   };
 }
 

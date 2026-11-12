@@ -82,12 +82,36 @@ fn gram(points: &[Vec<f64>]) -> Vec<f64> {
         .collect()
 }
 
+// Adversarial shapes and the number of periodic axes the chart must find: tori that fit (a
+// circle, a product of circles) and shapes that must not chart (embedded donuts, Mobius strips,
+// cylinders, spheres, arcs, grids, lines).
+const SHAPES: &str = "\
+shape,around,across,width,noise,expected_axes
+circle,48,1,1,0,1
+ellipse,80,1,6,0,1
+circle,64,1,1,0.015,1
+product,8,8,1,0,2
+product,16,8,0.3,0,2
+product,17,7,0.35,0,2
+product,16,8,0.3,0.002,2
+product,16,8,0.1,0,0
+donut,12,8,0.4,0,0
+donut,16,8,0.3,0,0
+mobius,24,5,0.5,0,0
+mobius,24,5,0.1,0,0
+cylinder,24,5,0.5,0,0
+sphere,40,1,1,0,0
+sphere,80,1,1,0,0
+sphere,100,1,1,0.005,0
+sphere,127,1,1,0,0
+arc,64,1,1,0,0
+grid,8,8,1,0,0
+line,64,1,1,0,0
+";
+
 #[test]
-fn shared_adversarial_shapes_and_coordinate_fidelity() {
-    for line in include_str!("../../../drowse/tests/fixtures/browser/topology-adversarial-v1.csv")
-        .lines()
-        .skip(1)
-    {
+fn adversarial_shapes_and_coordinate_fidelity() {
+    for line in SHAPES.lines().skip(1) {
         let fields: Vec<&str> = line.split(',').collect();
         let expected: usize = fields[5].parse().unwrap();
         for variant in 0..3 {

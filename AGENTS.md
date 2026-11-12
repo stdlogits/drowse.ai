@@ -56,13 +56,14 @@ alias for them.
 A change that only touches shared code belongs in drowse, with its tests there.
 Site tests that read shared files exist to check how the hosted shell uses them.
 
-## Parity goldens
+## Parity
 
-`drowse/tests/fixtures/browser/*` are the Python reference outputs the browser
-runtime replays (`browser-core-pack`, `structured-hook-parity`, the Rust
-topology tests, `verify-mlc-hook.py`). drowse's own tests pin them against the
-engine; regenerate them there, then bump the pin and update the runtime here.
-Browser-only fixtures stay in `browser-runtime/fixtures/`.
+There are no parity goldens. The browser runtime matches the engine by reading
+the pinned drowse source; when a change moves numerics, check it once against the
+pinned Python engine on a tiny model, in scratch, and commit nothing from that
+comparison. Tests here check invariants and quiet-regression risks. Small input
+data a test needs may live in `browser-runtime/fixtures/` or beside the code that
+imports it; recorded engine outputs may not.
 
 ## Release
 

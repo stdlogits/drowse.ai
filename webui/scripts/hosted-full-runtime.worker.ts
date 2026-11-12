@@ -54,7 +54,7 @@ interface RunRequest {
   modelId: string;
   runtimeIdentity: RuntimeIdentity;
   structuredHookProfile: ModelVariant["structuredHookProfile"];
-  /** The runtime lock's block spec (standard-v4) and unit refusal (standard-v4-residual). */
+  /** The runtime lock's block spec (standard-v5) and unit refusal (standard-v5-residual). */
   blockSpec: BlockSpec | null;
   unitRefusal: string | null;
   prefillChunkSize: number;
@@ -65,7 +65,7 @@ interface RunRequest {
   contextProfiles: number[];
   modelFiles: FileEntry[];
   coreFiles: FileEntry[];
-  /** Each optional pack's closure; empty when the run has no such pack. A standard-v4 library
+  /** Each optional pack's closure; empty when the run has no such pack. A standard-v5 library
    *  runs with its R (`jlens`), S (`slens`) and units packs, a residual one with no S or units
    *  pack; SAE is optional on both. */
   jlensFiles: FileEntry[];
@@ -151,11 +151,11 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
   } as const;
   try {
     if (
-      event.data.structuredHookProfile !== "standard-v4" &&
-      event.data.structuredHookProfile !== "standard-v4-residual"
+      event.data.structuredHookProfile !== "standard-v5" &&
+      event.data.structuredHookProfile !== "standard-v5-residual"
     ) {
       throw new Error(
-        `real-browser instruments require a v5 library (standard-v4 or standard-v4-residual, ${BLOCK_SITES_EXACT_READOUT_ABI})`,
+        `real-browser instruments require a v5 library (standard-v5 or standard-v5-residual, ${BLOCK_SITES_EXACT_READOUT_ABI})`,
       );
     }
     const webLlmUrl = "/webllm.js";
@@ -233,7 +233,7 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
       };
     });
     currentCheck = "load";
-    const unitsProfile = event.data.structuredHookProfile === "standard-v4";
+    const unitsProfile = event.data.structuredHookProfile === "standard-v5";
     const packFiles: Record<PackKind, FileEntry[]> = {
       jlens: event.data.jlensFiles,
       slens: event.data.slensFiles,
@@ -244,8 +244,8 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
     if (unitsProfile ? !(has("jlens") && has("slens") && has("units")) : has("slens") || has("units")) {
       throw new Error(
         unitsProfile
-          ? "a standard-v4 library runs with its R, S and units packs"
-          : "a standard-v4-residual library has no S lens or units pack",
+          ? "a standard-v5 library runs with its R, S and units packs"
+          : "a standard-v5-residual library has no S lens or units pack",
       );
     }
     const presentKinds = PACK_KINDS.filter(has);
@@ -1175,7 +1175,7 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
     });
 
     // The block sites' own members (B1 §2-§5): an ablation, the unit taps, one anatomy replay,
-    // one static read and the S readout on standard-v4; on standard-v4-residual every unit member
+    // one static read and the S readout on standard-v5; on standard-v5-residual every unit member
     // answers the lock's refusal.
     let topUnit: string | null = null;
     if (unitsProfile) {
@@ -1334,7 +1334,7 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
         currentCheck = "unit_refusal";
         const refusal = event.data.unitRefusal;
         if (typeof refusal !== "string" || !refusal) {
-          throw new Error("a standard-v4-residual run needs the lock's unitRefusal");
+          throw new Error("a standard-v5-residual run needs the lock's unitRefusal");
         }
         const refused: string[] = [];
         for (const [method, args] of [
@@ -1629,7 +1629,7 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
       const offlineSlensReading = unitsProfile
         ? offlineMeasurements?.instruments?.lens?.readings?.browser_e2e_slens_offline?.value
         : null;
-      // On standard-v4 a static unit read offline: its lens and units layers come from OPFS.
+      // On standard-v5 a static unit read offline: its lens and units layers come from OPFS.
       let offlineUnitRead: string | null = null;
       if (unitsProfile) {
         const unit = topUnit ?? `neuron/L${Math.floor(event.data.runtimeIdentity.layerMap.length / 2)}n0`;
@@ -1960,7 +1960,7 @@ async function setLive(
  *  app's backend keeps it (drowseWebLlmBackend.ts `blockSites`). */
 const blockSitesSurfaces = new WeakMap<object, BrowserBlockSitesBackend>();
 const predatesBlockSites = rejectingBlockSitesBackend(
-  () => new UnsupportedBlockError("the loaded model library predates hook ABI block-sites-v5"),
+  () => new UnsupportedBlockError("the loaded model library predates hook ABI block-sites-v6"),
 );
 function blockSitesFor(loaded: DrowseWebLlmRuntime): BrowserBlockSitesBackend {
   const capabilities = loaded.blockSitesCapabilities();

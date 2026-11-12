@@ -9,8 +9,8 @@ export const EXACT_READOUT_REQUIRED_WEBGPU_LIMITS = Object.freeze({
     EXACT_READOUT_MIN_COMPUTE_INVOCATIONS_PER_WORKGROUP,
 } as const);
 
-/** A hook ABI v5 capacity profile (B1 §3.5): `standard-v4` (unit sites) or
- *  `standard-v4-residual`, whose library attests `unitSites: 0` and every unit capacity 0. */
+/** A hook ABI v6 capacity profile (B1 §3.5): `standard-v5` (unit sites) or
+ *  `standard-v5-residual`, whose library attests `unitSites: 0` and every unit capacity 0. */
 export interface StructuredHookCapacityProfile {
   readonly id: BlockSitesProfileId;
   readonly maxAffineGroups: number;
@@ -58,20 +58,24 @@ export interface StructuredHookMemoryRequirements {
   readonly geometryPayloadBytes: number;
 }
 
-// ------------------------------------------------------------ hook ABI v5 ---
-// B1-hook-abi-v5.md §3.5 and §8.1; browser-runtime/HOOK_ABI.md is the contract.
+// ------------------------------------------------------------ hook ABI v6 ---
+// v5 (B1-hook-abi-v5.md §3.5, §8.1) plus typed frames; browser-runtime/HOOK_ABI.md is the contract.
 
-/** Hook ABI of every v5 library (B1 §8.1): in-block unit sites, replay, static reads. */
-export const BLOCK_SITES_HOOK_ABI = "block-sites-v5" as const;
-/** Runtime ABI of the v5 WebLLM bridge (B1 §8.1). */
-export const BLOCK_SITES_RUNTIME_ABI = "drowse-web-runtime-v2" as const;
-/** Readout ABI of every v5 library (B1 §8.1, §4.1): lens reads at both sites, k ≤ 256. */
+/** Hook ABI of every v6 library: in-block unit sites, replay, static reads, typed frames. */
+export const BLOCK_SITES_HOOK_ABI = "block-sites-v6" as const;
+/** Runtime ABI of the v6 WebLLM bridge. */
+export const BLOCK_SITES_RUNTIME_ABI = "drowse-web-runtime-v3" as const;
+/** Readout ABI of every v6 library (B1 §8.1, §4.1): lens reads at both sites, k ≤ 256. */
 export const BLOCK_SITES_EXACT_READOUT_ABI = "exact-readout-v2" as const;
 
-export type BlockSitesProfileId = Extract<
-  StructuredHookProfileId,
-  "standard-v4" | "standard-v4-residual"
->;
+/** The hook ABI v6 profiles. */
+export type BlockSitesProfileId = "standard-v5" | "standard-v5-residual";
+
+/** A v6 profile id where drowse's shared types want `StructuredHookProfileId`, which still names
+ *  the v5 profiles (`standard-v4*`, contracts.ts) until a drowse release renames them. */
+export function sharedProfileId(id: BlockSitesProfileId): StructuredHookProfileId {
+  return id as string as StructuredHookProfileId;
+}
 
 /** `UNIT_POSITIONS_FROM`: rows whose producing position is below it are excluded from unit
  *  ablation and activity (the sink at 0; unproduced rows below 0). B1 §2.3, §3.1. */
@@ -79,7 +83,7 @@ export const UNIT_POSITIONS_FROM = 1;
 /** Storage bindings every drowse kernel's emitted WGSL stays within (B1 §2.4). */
 export const DROWSE_KERNEL_STORAGE_BINDINGS = 8;
 
-/** The steering, probe and geometry capacities both v5 profiles share (unchanged since the v4
+/** The steering, probe and geometry capacities both v6 profiles share (unchanged since the v4
  *  ABI's geometry profile). */
 const STRUCTURED_HOOK_CAPACITIES = Object.freeze({
   maxAffineGroups: 4,
@@ -103,8 +107,8 @@ const STRUCTURED_HOOK_CAPACITIES = Object.freeze({
   maxComputeWorkgroupStorageSize: 32 * 1024,
 });
 
-export const STANDARD_STRUCTURED_HOOK_PROFILE_V4: StructuredHookCapacityProfile = Object.freeze({
-  id: "standard-v4",
+export const STANDARD_STRUCTURED_HOOK_PROFILE_V5: StructuredHookCapacityProfile = Object.freeze({
+  id: "standard-v5",
   ...STRUCTURED_HOOK_CAPACITIES,
   unitSites: 1,
   maxUnitGroups: 4,
@@ -121,9 +125,9 @@ export const STANDARD_STRUCTURED_HOOK_PROFILE_V4: StructuredHookCapacityProfile 
 });
 
 /** For `gpt2`, `gpt_neox` and `qwen3_5` (B1 §7). Lens reads stay k ≤ 256 (exact-readout-v2). */
-export const STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL: StructuredHookCapacityProfile =
+export const STANDARD_STRUCTURED_HOOK_PROFILE_V5_RESIDUAL: StructuredHookCapacityProfile =
   Object.freeze({
-    id: "standard-v4-residual",
+    id: "standard-v5-residual",
     ...STRUCTURED_HOOK_CAPACITIES,
     unitSites: 0,
     maxUnitGroups: 0,
@@ -178,11 +182,11 @@ const PROFILE_KEYS = Object.freeze([
 ] as const);
 
 const PROFILES: ReadonlyMap<string, StructuredHookCapacityProfile> = new Map([
-  [STANDARD_STRUCTURED_HOOK_PROFILE_V4.id, STANDARD_STRUCTURED_HOOK_PROFILE_V4],
-  [STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL.id, STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL],
+  [STANDARD_STRUCTURED_HOOK_PROFILE_V5.id, STANDARD_STRUCTURED_HOOK_PROFILE_V5],
+  [STANDARD_STRUCTURED_HOOK_PROFILE_V5_RESIDUAL.id, STANDARD_STRUCTURED_HOOK_PROFILE_V5_RESIDUAL],
 ]);
 
-/** The hook ABI v5 profile named `id` (`standard-v4` or `standard-v4-residual`); any other id,
+/** The hook ABI v6 profile named `id` (`standard-v5` or `standard-v5-residual`); any other id,
  *  including the v1-v3 profiles of retired libraries, is a TypeError. */
 export function resolveStructuredHookProfile(
   id: unknown,
@@ -224,7 +228,7 @@ export function validateStructuredHookProfile(
 export type BlockActivation = "silu" | "gelu_tanh";
 
 /** The lock's per-model block description (B1 §8.2), recorded from native `model_spec` and the
- *  source checkpoint's config; required with `standard-v4`, forbidden with `-residual`. Every
+ *  source checkpoint's config; required with `standard-v5`, forbidden with `-residual`. Every
  *  field is attested by the library's descriptor (schema 4). `null` means "none". */
 export interface BlockSpec {
   readonly dFF: number;
@@ -341,17 +345,17 @@ export function isLocalAttentionLayer(spec: BlockSpec, layer: number): boolean {
 
 export const HOOK_PROFILE_DESCRIPTOR_MAGIC = 0x53414b4c;
 export const HOOK_PROFILE_DESCRIPTOR_SCHEMA_VERSION = 4;
-/** Descriptor field 2 for both v4 profiles; `UNIT_SITES` says which of the two. */
-export const HOOK_PROFILE_DESCRIPTOR_PROFILE_V4 = 4;
-export const BLOCK_SITES_HOOK_ABI_VERSION = 5;
-export const STRUCTURED_HOOK_FORMAT_V4_VERSION = 4;
+/** Descriptor field 2 for both v5 profiles; `UNIT_SITES` says which of the two. */
+export const HOOK_PROFILE_DESCRIPTOR_PROFILE_V5 = 5;
+export const BLOCK_SITES_HOOK_ABI_VERSION = 6;
+export const STRUCTURED_HOOK_FORMAT_V5_VERSION = 5;
 export const BLOCK_SITES_EXACT_READOUT_ABI_VERSION = 2;
 /** The live readout's top-k (descriptor field 29, unchanged from v3). */
 export const LIVE_READOUT_TOP_K = 8;
 export const MAX_SAE_FEATURES_PER_CHUNK = 16384;
 
 /** `drowse_hook_profile`, schema 4 (B1 §3.5): an int32 vector in this order. The first 31
- *  fields are v3's, unchanged in meaning (hook ABI 5, format 4, exact readout 2); `*_F32_BITS`
+ *  fields are v3's, unchanged in meaning (hook ABI 6, format 5, exact readout 2); `*_F32_BITS`
  *  fields hold the IEEE-754 bits of `Math.fround(value)` as a signed int32, 0 meaning none. */
 export const HOOK_PROFILE_DESCRIPTOR_V4_FIELDS = Object.freeze([
   "MAGIC",
@@ -434,7 +438,7 @@ export interface HookProfileDescriptorModel {
   readonly contextTokens: number;
   /** The compiled prefill chunk: the lock's `prefillChunkSize` (at most its smallest context). */
   readonly prefillChunkSize: number;
-  /** Required with `standard-v4`, null with `standard-v4-residual`. */
+  /** Required with `standard-v5`, null with `standard-v5-residual`. */
   readonly blockSpec: BlockSpec | null;
 }
 
@@ -464,8 +468,8 @@ export function expectedHookProfileDescriptor(
   if (units !== (model.blockSpec !== null)) {
     throw new TypeError(
       units
-        ? "standard-v4 requires the model's block spec"
-        : "standard-v4-residual forbids a block spec",
+        ? "standard-v5 requires the model's block spec"
+        : "standard-v5-residual forbids a block spec",
     );
   }
   const spec = model.blockSpec === null ? null : validateBlockSpec(model.blockSpec);
@@ -474,9 +478,9 @@ export function expectedHookProfileDescriptor(
   const fields: Record<HookProfileDescriptorField, number> = {
     MAGIC: HOOK_PROFILE_DESCRIPTOR_MAGIC,
     SCHEMA_VERSION: HOOK_PROFILE_DESCRIPTOR_SCHEMA_VERSION,
-    PROFILE: HOOK_PROFILE_DESCRIPTOR_PROFILE_V4,
+    PROFILE: HOOK_PROFILE_DESCRIPTOR_PROFILE_V5,
     HOOK_ABI_VERSION: BLOCK_SITES_HOOK_ABI_VERSION,
-    FORMAT_VERSION: STRUCTURED_HOOK_FORMAT_V4_VERSION,
+    FORMAT_VERSION: STRUCTURED_HOOK_FORMAT_V5_VERSION,
     LAYER_COUNT: model.layerCount,
     HIDDEN_SIZE: model.hiddenSize,
     MAX_AFFINE_GROUPS: profile.maxAffineGroups,
@@ -563,7 +567,7 @@ export function hookProfileDescriptorMismatches(
   return mismatches;
 }
 
-/** Which v4 profile a schema-4 descriptor claims (`UNIT_SITES` decides), before the full check. */
+/** Which v5 profile a schema-4 descriptor claims (`UNIT_SITES` decides), before the full check. */
 export function hookProfileDescriptorProfileId(values: ArrayLike<number>): BlockSitesProfileId {
   const at = (name: HookProfileDescriptorField): number =>
     values[HOOK_PROFILE_DESCRIPTOR_V4_FIELDS.indexOf(name)];
@@ -571,12 +575,12 @@ export function hookProfileDescriptorProfileId(values: ArrayLike<number>): Block
     values.length !== HOOK_PROFILE_DESCRIPTOR_V4_LENGTH ||
     at("MAGIC") !== HOOK_PROFILE_DESCRIPTOR_MAGIC ||
     at("SCHEMA_VERSION") !== HOOK_PROFILE_DESCRIPTOR_SCHEMA_VERSION ||
-    at("PROFILE") !== HOOK_PROFILE_DESCRIPTOR_PROFILE_V4 ||
+    at("PROFILE") !== HOOK_PROFILE_DESCRIPTOR_PROFILE_V5 ||
     (at("UNIT_SITES") !== 0 && at("UNIT_SITES") !== 1)
   ) {
     throw new TypeError("The model library's hook profile descriptor is not schema 4");
   }
-  return at("UNIT_SITES") === 1 ? "standard-v4" : "standard-v4-residual";
+  return at("UNIT_SITES") === 1 ? "standard-v5" : "standard-v5-residual";
 }
 
 export function structuredCurveParameterStride(

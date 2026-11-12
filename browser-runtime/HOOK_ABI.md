@@ -1,47 +1,54 @@
-# Hook ABI v5: `block-sites-v5`
+# Hook ABI v6: `block-sites-v6`
 
 The contract between drowse.ai's TypeScript, the WebLLM bridge and the compiled MLC model
-libraries. v5 reads and writes inside each transformer block (the head site, `mid`, the neuron
-site), replays nodes with anatomy, activity and pattern taps, and runs static reads over the
-resident weights. It replaces `post-block-residual-v4`; the post-block hook and every v3
-structured buffer carry over unchanged.
+libraries. v6 is v5 (reads and writes inside each transformer block at the head site, `mid` and
+the neuron site; replay with anatomy, activity and pattern taps; static reads over the resident
+weights) with typed steering frames.
 
-Derivations and alternatives are in the parity handoff, `B1-hook-abi-v5.md` (cited as §n), with
-the toolchain corrections of `B40-toolchain.md` §7. Where the two differ, this document follows
-the decisions taken since: one hook ABI for all nine libraries, full-depth lens packs fetched per
-layer, patterns mandatory (no `standard-v4-nopatterns`), one units entry-point pair on the curved
-superset, and one runtime path. As built: the rank-one functions are gone from the MLC overlay
-(`drowse_prefill`/`decode`, the batch pair, the rank-one capture v1 functions), from the bridge
-(rank-one programs and captures, `drowse-structured-v2`, the legacy alias table) and from the
-adapter's runtime, which compiles and installs `drowse-structured-v4` programs under the v4
-profiles only. The v1-v3 profile records stay in `structuredHookProfile.ts` while the lock, the
-catalog and the release tooling still name them (W4 rewrites those); no v5 code path accepts them.
+**Typed frames (v6).** drowse 6.1 fits a subspace's write rows orthonormal in the Mahalanobis
+metric and reads its coordinates with their Σ⁻¹ images, so `read · basisᵀ = I` and a full
+ablation is LEACE against the neutral. Every entry point that takes `affine_basis` takes
+`affine_read f32 [L, G, R, d]` right after it, and every one that takes `curve_basis` takes
+`curve_read f32 [L, C, R, d]` right after it. The affine coordinate is `(h − neutral) · read`; the
+write stays `delta · basis`. A curve's `q = (h − neutral) · read`; `h⊥ = (h − neutral) − q · basis`
+and the write along `basis` keep their form, and the norm cap is full-width. The geometry readout
+is unchanged (its host Gram inverse already gives the Mahalanobis projection). The encoder checks
+duality (`read · basisᵀ = I`, atol and rtol 1e-3) where v5 required Euclidean-orthonormal rows. The
+affine kernel updates the residual in place, which keeps it at 8 storage bindings (§10).
+
+Derivations are in the 6.0 parity handoff, `B1-hook-abi-v5.md` (cited as §n), with the toolchain
+corrections of `B40-toolchain.md` §7. Where they differ, this document follows the decisions taken
+since: one hook ABI for all nine libraries, full-depth lens packs fetched per layer, patterns
+mandatory, one units entry-point pair on the curved superset, and one runtime path.
 
 The TypeScript side of this contract, pinned by script tests:
 
 | file | holds | test |
 |---|---|---|
 | `webui/src/hosted/runtime/structuredHookProfile.ts` | ABI names, profiles, `BlockSpec`, descriptor schema 4 | `structured-hook-units.test.mjs` |
-| `webui/src/hosted/runtime/structuredHookProgram.ts` | `drowse-structured-v4`: unit tables, encoder, controls, CPU ablation reference | `structured-hook-units.test.mjs` |
+| `webui/src/hosted/runtime/structuredHookProgram.ts` | `drowse-structured-v5`: read and write rows, unit tables, encoder (duality check), controls, CPU reference | `structured-hook-units.test.mjs` |
 | `webui/src/hosted/runtime/modelBackend.ts` | `BrowserBlockSitesBackend` (the device surface), typed tensors, replay layouts | `block-sites-backend.test.mjs` |
-| `webui/src/hosted/runtime/webLlmBlockSites.ts`, `webLlmStaticReads.ts` | the surface over the bridge (replay, residents, static reads) | `web-llm-block-sites.test.mjs`; WebGPU `browser-units-goldens.mjs --suite all` |
-| `browser-runtime/forks/units_goldens.py`, `static_reads.py` | the C TVM VM checks against the goldens | `verify-mlc-hook.py --units-fixtures` |
+| `webui/src/hosted/runtime/webLlmBlockSites.ts`, `webLlmStaticReads.ts` | the surface over the bridge (replay, residents, static reads) | `web-llm-block-sites.test.mjs` |
+| `browser-runtime/forks/units_vm.py` | a units library on the C TVM VM (paged KV cache, unit program, static reads) | used by `verify-production-library.py` |
 | `browser-runtime/forks/verify-production-library.py` | a production library on the CPU: export and shader checks, its descriptor, and (`--parity`) its block sites, greedy tokens and static reads on the C TVM VM against PyTorch on the dequantized MLC tensors (B1 §4.3) | run per library before release |
 
 ## 1. Names (§8.1)
 
-| layer | v4 | v5 |
+| layer | v5 | v6 |
 |---|---|---|
-| hook ABI (`DROWSE_HOOK_ABI`, lock `hookAbi`) | `post-block-residual-v4` | `block-sites-v5` |
-| runtime ABI (lock `runtimeAbi`) | `drowse-web-runtime-v1` | `drowse-web-runtime-v2` |
-| readout ABI (lock `exactReadoutAbi`) | `exact-readout-v1` | `exact-readout-v2` |
-| structured format | `drowse-structured-v3` (and v2) | `drowse-structured-v4` |
-| capacity profiles | `standard-v1`…`-v3` | `standard-v4` (units), `standard-v4-residual` (no units) |
-| descriptor schema | 3 (31 fields) | 4 (67 fields) |
+| hook ABI (`DROWSE_HOOK_ABI`, lock `hookAbi`) | `block-sites-v5` | `block-sites-v6` |
+| runtime ABI (lock `runtimeAbi`) | `drowse-web-runtime-v2` | `drowse-web-runtime-v3` |
+| readout ABI (lock `exactReadoutAbi`) | `exact-readout-v2` | `exact-readout-v2` |
+| structured format | `drowse-structured-v4` | `drowse-structured-v5` (adds `affineRead`, `curveRead`) |
+| capacity profiles | `standard-v4`, `standard-v4-residual` | `standard-v5` (units), `standard-v5-residual` (no units) |
+| descriptor schema 4 (67 fields) | `PROFILE` 4, ABI 5, format 4 | `PROFILE` 5, ABI 6, format 5 |
+
+drowse's shared `StructuredHookProfileId` (`contracts.ts`) still names the v5 profiles until a
+drowse release renames them; a v6 id crosses it through `sharedProfileId`.
 
 Eligible architectures (`gemma3_text`, `qwen3`: dense gated MLP, RMSNorm, RoPE, separate q/k/v
-in the HF checkpoint) compile under `standard-v4`. `gpt2`, `gpt_neox` and `qwen3_5` compile under
-`standard-v4-residual`: same hook ABI, `UNIT_SITES = 0`, and every unit, anatomy, activity and
+in the HF checkpoint) compile under `standard-v5`. `gpt2`, `gpt_neox` and `qwen3_5` compile under
+`standard-v5-residual`: same hook ABI, `UNIT_SITES = 0`, and every unit, anatomy, activity and
 `mid` call answers native's `UnsupportedBlockError` (422) with the lock's `unitRefusal` text.
 
 ## 2. Sites (§1)
@@ -88,26 +95,27 @@ changes later layers' K/V.
 
 ## 3. Entry points (§3.4)
 
-| function | `standard-v4` | `-residual` | role |
+| function | `standard-v5` | `-residual` | role |
 |---|---|---|---|
-| `drowse_structured_batch_{prefill,decode}` | yes | yes | v4-identical: affine and probes |
-| `drowse_curved_batch_{prefill,decode}` | yes | yes | v4-identical: and curves |
+| `drowse_structured_batch_{prefill,decode}` | yes | yes | affine and probes |
+| `drowse_curved_batch_{prefill,decode}` | yes | yes | and curves |
 | `drowse_units_batch_{prefill,decode}` | yes | no | curved superset, unit sites, unit tap |
 | `drowse_replay_batch_prefill` | yes | no | units superset, anatomy, activity, pattern taps |
 | unit static reads (§8 below) | yes | no | |
 | vocabulary, footprint, lens and utility functions (§8) | yes | yes | `exact-readout-v2` |
 | `drowse_hook_profile` | yes | yes | descriptor schema 4 |
 
-Routing: a program with no unit section runs the v4-identical functions and pays nothing; a
+Routing: a program with no unit section runs the structured or curved pair and pays nothing; a
 program with one runs the units pair. A units library must export every function marked yes, a
 residual library none of the unit ones; either mismatch fails the load (`HOOK_ABI_MISMATCH`).
 
 ```text
 drowse_units_batch_prefill(
   input_embeds [1, seq_len, d] f32, logit_positions [n] i32, paged_kv_cache,
-  affine_active, affine_basis, affine_neutral, affine_target, affine_along, affine_kappa,
-  probe_kind, probe_direction, probe_bias, probe_threshold,
-  curve_basis, curve_neutral, curve_domain_kind, curve_parameters, curve_feet,     # as v4 curved
+  affine_active, affine_basis, affine_read, affine_neutral, affine_target, affine_along,
+  affine_kappa, probe_kind, probe_direction, probe_bias, probe_threshold,
+  curve_basis, curve_read, curve_neutral, curve_domain_kind, curve_parameters,
+  curve_feet,                                                    # as the curved pair
   unit_meta u32 [UNIT_META_LEN], unit_coeff f32 [UNIT_COEFF_LEN], unit_active f32 [4],
   tap_grams f32 [16, hd, hd],
 ) -> (logits, paged_kv_cache, measurements [L, 8], next_feet [L, 4, 4], jlens_hidden [L, d],
@@ -142,15 +150,15 @@ window, so a replay holds only what it reads (a 4B model's keys at full context 
 `pattern_q` are fresh per forward, and the caller keeps the ones of the forward holding the
 anatomy position. `rows_meta` rows are `(slot, layer, head, p)`, slot −1 unused.
 
-## 4. `drowse-structured-v4` (§3.1, §3.4)
+## 4. `drowse-structured-v5` (§3.1, §3.4)
 
-A strict superset of v3: every v3 buffer is unchanged in shape and meaning, plus one unit section
-that is present whole or absent. Without it a v4 program's buffers are byte-identical to the v3
-program the same layers compile to (pinned). A `standard-v4-residual` library rejects any unit
-section (`UNIT_SECTION_UNSUPPORTED`, 422).
+v4 with the read rows: `affineRead` beside `affineBasis` and `curveRead` beside `curveBasis`, same
+shapes. v4 was v3 plus one unit section, present whole or absent; without it the other buffers are
+the ones the same layers compile to under v3, plus the read rows. A `standard-v5-residual` library
+rejects any unit section (`UNIT_SECTION_UNSUPPORTED`, 422).
 
-Host program (`StructuredHookProgramBuffers`, `format: "drowse-structured-v4"`,
-`hookAbi: "block-sites-v5"`) adds:
+Host program (`StructuredHookProgramBuffers`, `format: "drowse-structured-v5"`,
+`hookAbi: "block-sites-v6"`) adds:
 
 ```ts
 unitShape: { dFF; nHeads; headDim };
@@ -203,7 +211,7 @@ prefill state; a decode forward one state for all its rows. A unit gate reads th
 scaled unit reading through `priorScores[unit]`. Native's step count (`loom/replay.py`): the
 prefill is step 0 and the decode forward that reads the k-th generated token (1-based) is
 `gen_step = k`, so `@first:2` covers the first decode forward only and `@after:n` starts at the
-n-th; the goldens' `triggers` case pins this on both arches.
+n-th.
 
 **Position targeting** (browser only). `position_spans`/`position_indices` gate unit terms as they
 gate affine and curve terms: prefill splits chunks at span boundaries and outside a span the
@@ -266,8 +274,8 @@ gates read every attached probe on every forward, and the reply's aggregate carr
 meaning:
 
 ```text
- 0 MAGIC 0x53414B4C            1 SCHEMA_VERSION 4         2 PROFILE 4
- 3 HOOK_ABI_VERSION 5          4 FORMAT_VERSION 4         5 LAYER_COUNT
+ 0 MAGIC 0x53414B4C            1 SCHEMA_VERSION 4         2 PROFILE 5
+ 3 HOOK_ABI_VERSION 6          4 FORMAT_VERSION 5         5 LAYER_COUNT
  6 HIDDEN_SIZE                 7 MAX_AFFINE_GROUPS 4      8 MAX_RANK 8
  9 MAX_PROBES 8               10 MAX_CURVES 4            11 MAX_CURVE_NODES 32
 12 MAX_INTRINSIC_DIM 4        13 MAX_EMBED_DIM 8         14 CURVE_PARAMETER_STRIDE 671
@@ -296,7 +304,7 @@ meaning:
 - `*_F32_BITS` hold the IEEE-754 bits of `Math.fround(value)` reinterpreted as a signed int32
   (`float32Bits`); 0 means none (no softcap, no local θ). The library must emit the same
   reinterpretation (`op.full` takes int32).
-- `PROFILE` is 4 for both v4 profiles; `UNIT_SITES` says which. A residual library reports 0 in
+- `PROFILE` is 5 for both v5 profiles; `UNIT_SITES` says which. A residual library reports 0 in
   fields 32-50, every unit capacity (52-60), `ANATOMY_STRIDE`, `UNIT_POSITIONS_FROM` and
   `MAX_ANATOMY_UNITS`; it keeps `MAX_LENS_READ_TOP_K = 256` (lens reads at `out` run everywhere).
 - `ANATOMY_STRIDE = 6·d + d_ff + H·hd`. `CONTEXT_TOKENS` is the compiled context window, the
@@ -317,16 +325,16 @@ rope scaling factor come from the HF config, not `model_spec`). A mismatch names
 (`hookProfileDescriptorMismatches`) and fails the load with `HOOK_ABI_MISMATCH`.
 
 The descriptor catches a library compiled with the wrong constants. It cannot see a wrong graph
-with the right constants (a swapped `gate_up` split, a misplaced norm): the `block-sites` goldens on
-the tiny libraries and the production q4 parity gate's per-layer `act`/`z`/`mid` error catch those.
+with the right constants (a swapped `gate_up` split, a misplaced norm): the production q4 parity
+gate's per-layer `act`/`z`/`mid` error catches those.
 
-**Lock** (`runtime-lock.schema.json`, §8.2): `hookAbi: "block-sites-v5"`,
-`exactReadoutAbi: "exact-readout-v2"`, `runtimeAbi: "drowse-web-runtime-v2"`;
-`models[].structuredHookProfile ∈ {standard-v4, standard-v4-residual}`; `models[].blockSpec`
+**Lock** (`runtime-lock.schema.json`, §8.2): `hookAbi: "block-sites-v6"`,
+`exactReadoutAbi: "exact-readout-v2"`, `runtimeAbi: "drowse-web-runtime-v3"`;
+`models[].structuredHookProfile ∈ {standard-v5, standard-v5-residual}`; `models[].blockSpec`
 (`BLOCK_SPEC_KEYS`: `dFF, nHeads, nKvHeads, headDim, sandwich, normOffset, activation, embedScale,
 rmsEps, qkNorm, attnScaling, attnLogitSoftcap, finalLogitSoftcap, ropeTheta, ropeLocalTheta,
 ropeGlobalScale, ropeInGraph, slidingWindow, slidingPattern`; booleans for the flags,
-`"silu" | "gelu_tanh"`, `null` for none) required with `standard-v4` and forbidden with
+`"silu" | "gelu_tanh"`, `null` for none) required with `standard-v5` and forbidden with
 `-residual`; `models[].unitRefusal` (native's full message) required with `-residual`;
 `models[].prefillChunkSize` required everywhere (`validateRuntimeLock` bounds it by the smallest
 context). `prepare-hosted-candidate-lock.mjs` refuses a publish directory whose
@@ -374,7 +382,7 @@ the captures and drops the sequence (`cancel()` drops it unread).
 - **Peaks, as built.** One thread per unit walks the forward's rows in order with a strict `>`,
   so within a forward the first maximum wins and across forwards the earlier one keeps a tie:
   native's `rank.max(dim=0)` then `best > held` exactly.
-- **`replay_meta`** (i32, `replayMetaLayout`/`encodeReplayMeta`, 134 values under `standard-v4`):
+- **`replay_meta`** (i32, `replayMetaLayout`/`encodeReplayMeta`, 134 values under `standard-v5`):
   `[0]` anatomy position (−1 none), `[1]` span count, `[2..18)` four spans of
   `(first_row, rows, first_position, unproduced)`, `[18]` population row (−1 none), `[19]` trace
   count, `[20..116)` 32 traces of `(layer, kind 0 neuron | 1 head, index)`, `[116]` pattern layer
@@ -384,7 +392,7 @@ the captures and drops the sequence (`cancel()` drops it unread).
   (one worker message kind): `headGrams`, `uploadUnitScales`, `release`, `openReplay`
   (`replayMeta`, `unitScales` resident id, `rowCount`, `tokenCount`), `replayForward` (tokens and
   one control state), `finishReplay`, `cancelReplay`, `attentionRows`. `openReplay` needs a
-  drowse-structured-v4 program with a unit section installed (the adapter installs the node's,
+  drowse-structured-v5 program with a unit section installed (the adapter installs the node's,
   adding an empty unit section, or an empty program for an unsteered replay), validates the meta
   fail-closed, resets the KV cache and allocates the threaded buffers; a forward is chunked at
   `PREFILL_CHUNK_SIZE` and reads back its last chunk's probe slots and unit taps in one sync;
@@ -458,7 +466,7 @@ fp32. Functions as built (MLC overlay `drowse_reads.py`; adapter `webLlmStaticRe
 | `drowse_grouped_row_norms` | `x [n, g, w]` → `[n, g]` | | `groupedRowNorms` |
 | `drowse_chan_merge` | `count [1]`, `mean [d]`, `m2 [d]`, `rows [r, d]` → `(mean, m2)` | Chan's merge of the rows' own two-pass statistics | `chanMerge` |
 
-Every v5 library exports the twelve `exact-readout-v2` functions (embedding rows through Chan's
+Every v6 library exports the twelve `exact-readout-v2` functions (embedding rows through Chan's
 merge); exactly the libraries with unit sites export the nine unit reads (neuron rows through the
 cotangent; gather included). The bridge fails a load that breaks either rule (`HOOK_ABI_MISMATCH`).
 Compositions run in the adapter as one bridge request each: `drowseBlockSites({ op: "read", steps,
@@ -518,7 +526,7 @@ any layer. A pattern request names at most `MAX_PATTERN_LAYERS = 16` layers, as 
 2026-11-02). The heads are known only after the anatomy's contributions, so the worker runs one
 pattern pass: a second replay of the same segments asking only for those layers (§6 alternative
 (a), exact).
-Patterns are mandatory under `standard-v4`; a library that cannot capture them fails attestation.
+Patterns are mandatory under `standard-v5`; a library that cannot capture them fails attestation.
 
 ## 10. Binding budget (§2.4)
 
@@ -530,6 +538,7 @@ keeps every unit kernel within 8:
 
 | kernel (per layer) | bindings |
 |---|---|
+| `drowse_structured_affine_L` (after the block) | residual in/out, `active`, `basis`, `read`, `neutral`, `target`, `along`, `kappa` = 8 (in place) |
 | `drowse_head_ablate_L` (before `o_proj`) | `z` in/out, `positions`, `unit_meta`, `unit_coeff`, `unit_active` = 5 (in place) |
 | `drowse_neuron_ablate_L` (before `down_proj`) | `act` in/out, `positions`, `unit_meta`, `unit_coeff`, `unit_active` = 5 (in place) |
 | `drowse_unit_tap_L` (after the ablations) | `z`, `attn_o`, `act`, `unit_meta`, `tap_grams`, `unit_taps` in/out = 6 (both families; Qwen3 binds `attn_o` without reading it) |
@@ -547,9 +556,10 @@ share one kernel run after both ablations, so it reads the ablated `z` and `act`
 pre-norm `attn_o` (Gemma's `r_ao`); one workgroup per tap slot, barriers only under control flow
 that depends on the workgroup id (WGSL uniformity), and the ablations are in place, so a row
 whose position is below `UNIT_POSITIONS_FROM` is untouched. The upstream graph is otherwise
-unchanged: every v4 kernel is byte-identical in a v5 library (binding names aside).
+unchanged: every v4 kernel is byte-identical in a v5 library (binding names aside); v6 changes
+only the affine and curved hooks.
 
-**The library's binding.** `libraryBindingBytes` (`modelBackend.ts`) is the largest buffer a v5
+**The library's binding.** `libraryBindingBytes` (`modelBackend.ts`) is the largest buffer a v6
 library allocates at its largest context and prefill chunk, the larger of:
 
 - its largest weight tensor as the GPU holds it (`float32` for a bf16-encoded record);
@@ -606,7 +616,7 @@ hidden]`; a tuple's element zero is the residual. Decode capture reads `[0, sequ
 Hook-disabled execution allocates no steering or probe buffers and leaves logits unchanged.
 
 **Affine and curved terms.** Affine injection in fp32,
-`delta = along · (target − collapse · dot(h − neutral, basis))`, `h' = h + delta · basis`,
+`delta = along · (target − collapse · dot(h − neutral, read))`, `h' = h + delta · basis` (v6),
 deliberately uncapped (Python's `subspace_inject`). Curved terms keep Python's safety cap, carry
 the final prompt foot into the first decode step and then the previous decode foot; each curve
 slot is a fixed 671-float record (rank 8, 32 RBF nodes, 4 intrinsic and 8 embedded dimensions;
@@ -639,4 +649,4 @@ generation id; a gap requires a full tree snapshot.
 **Runtime identity.** An artifact binding names the source commit, converted manifest digest,
 quantization, tokenizer and chat-template digests, compiled library digest, runtime ABI, this hook
 ABI, layer map, hidden size and context profile. A friendly model id is never enough. Evidence
-recorded against `post-block-residual-v4` does not carry to v5.
+recorded against an earlier hook ABI does not carry to v6.

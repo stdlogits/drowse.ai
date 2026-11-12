@@ -26,7 +26,7 @@ const executionProfiles = lockedModelExecutionProfiles(qwen4b, {
   quantization: qwen4b.quantization,
 });
 assert.deepEqual(executionProfiles, {
-  structuredHookProfile: "standard-v4",
+  structuredHookProfile: "standard-v5",
   thinkingProfile: qwen4b.thinkingProfile,
   quantization: "q4f32_1",
   requiredFeatures: [],
@@ -44,20 +44,20 @@ assert.throws(
   () => lockedModelExecutionProfiles(qwen4b, { ...executionProfiles, prefillChunkSize: 1024 }),
   /prefill chunk does not match/,
 );
-// A v5 library: the block spec travels with standard-v4, the refusal with -residual.
+// A v5 library: the block spec travels with standard-v5, the refusal with -residual.
 const blockSpec = { dFF: 9728, nHeads: 32 };
 const { blockSpec: _lockedSpec, unitRefusal: _lockedRefusal, ...bareQwen4b } = qwen4b;
 const v5 = (profile, extra) => lockedModelExecutionProfiles(
   { ...bareQwen4b, structuredHookProfile: profile, ...extra },
   { structuredHookProfile: profile, thinkingProfile: qwen4b.thinkingProfile, quantization: qwen4b.quantization },
 );
-assert.deepEqual(v5("standard-v4", { blockSpec }).blockSpec, blockSpec);
-assert.equal(v5("standard-v4-residual", { unitRefusal: "fused qkv" }).unitRefusal, "fused qkv");
+assert.deepEqual(v5("standard-v5", { blockSpec }).blockSpec, blockSpec);
+assert.equal(v5("standard-v5-residual", { unitRefusal: "fused qkv" }).unitRefusal, "fused qkv");
 for (const [profile, extra] of [
-  ["standard-v4", {}],
-  ["standard-v4", { blockSpec, unitRefusal: "fused qkv" }],
-  ["standard-v4-residual", {}],
-  ["standard-v4-residual", { blockSpec, unitRefusal: "fused qkv" }],
+  ["standard-v5", {}],
+  ["standard-v5", { blockSpec, unitRefusal: "fused qkv" }],
+  ["standard-v5-residual", {}],
+  ["standard-v5-residual", { blockSpec, unitRefusal: "fused qkv" }],
 ]) {
   assert.throws(() => v5(profile, extra), /blockSpec and unitRefusal/, `${profile} ${JSON.stringify(extra)}`);
 }
@@ -65,7 +65,7 @@ for (const [profile, extra] of [
 assert.throws(() => v5("unknown-profile", { blockSpec }), /structuredHookProfile is not allow-listed/);
 assert.throws(
   () => lockedModelExecutionProfiles(qwen4b, {
-    structuredHookProfile: "standard-v4-residual",
+    structuredHookProfile: "standard-v5-residual",
     thinkingProfile: qwen4b.thinkingProfile,
     quantization: qwen4b.quantization,
   }),
@@ -112,7 +112,7 @@ const loaded = await exec(python, [
     "from pathlib import Path",
     "from drowse.store.manifold_folder import ManifoldFolder",
     "folder = ManifoldFolder.load(Path(sys.argv[1]))",
-    "print(json.dumps({'name': folder.name, 'fit_mode': folder.fit_mode, 'nodes': folder.node_labels, 'groups': [len(rows) for _, rows in folder.node_groups()], 'files': folder.files}))",
+    "print(json.dumps({'name': folder.name, 'fit_mode': folder.fit_mode, 'nodes': folder.node_labels, 'groups': [len(rows) for _, rows in folder.node_groups()]}))",
   ].join("; "),
   seedSource,
 ], { cwd: repositoryRoot, env: { ...process.env, PYTHONPATH: resolve(repositoryRoot, "drowse") } });
@@ -121,7 +121,6 @@ assert.deepEqual(JSON.parse(loaded.stdout), {
   fit_mode: "pca",
   nodes: ["welcoming", "detached"],
   groups: [48, 48],
-  files: {},
 });
 assert.throws(
   () => lockedModelExecutionProfiles(qwen4b, {
@@ -221,7 +220,7 @@ try {
       "w = LayerWhitener.from_neutral_activations(rows, means)",
       "d = {L: torch.tensor(c, dtype=torch.float32) - means[L] for L, c in enumerate(x['concept'])}",
       "m = fold_directions_to_subspace('c', d, means, whitener=w, label='c')",
-      "print(json.dumps({str(L): {'basis': s.basis.reshape(-1).tolist(), 'mean': s.mean.tolist(), 'coord': float(s.node_coords.reshape(-1)[0]), 'share': m.mahalanobis_share[L]} for L, s in m.layers.items()}))",
+      "print(json.dumps({str(L): {'basis': s.basis.reshape(-1).tolist(), 'read': s.read.reshape(-1).tolist(), 'mean': s.mean.tolist(), 'coord': float(s.node_coords.reshape(-1)[0]), 'share': m.mahalanobis_share[L]} for L, s in m.layers.items()}))",
     ].join("\n"), join(scratch, "inputs.json")], {
       cwd: repositoryRoot,
       env: { ...process.env, PYTHONPATH: resolve(repositoryRoot, "drowse") },
@@ -235,6 +234,7 @@ try {
       const ours = foundation.finalAffineLayers.get(layer);
       const theirs = reference[String(layer)];
       close(ours.basis, theirs.basis, `L${layer} basis`);
+      close(ours.read, theirs.read, `L${layer} read`);
       close(ours.mean, theirs.mean, `L${layer} mean`);
       close(ours.nodeCoordinates, [theirs.coord], `L${layer} pole`);
       close([ours.mahalanobisShare], [theirs.share], `L${layer} share`);
@@ -291,6 +291,7 @@ try {
     centroidMean: new Float64Array(2),
     mean: new Float64Array(2),
     basis: new Float64Array([1, 0]),
+    read: new Float64Array([1, 0]),
     nodeCoordinates: new Float64Array([-1, 1]),
     muCoordinates: new Float64Array([-1, 1]),
     whitenedGram: new Float64Array([1, -1, -1, 1]),

@@ -93,7 +93,7 @@ assert.deepEqual(normalized, runtimeLock);
 // configuration would not attest, a closure without its library.
 const refusals = [
   [{ closure: { hookAbi: "post-block-residual-v4" } }, /hookAbi differs/],
-  [{ closure: { structuredHookProfile: "standard-v4-residual" } }, /structuredHookProfile differs/],
+  [{ closure: { structuredHookProfile: "standard-v5-residual" } }, /structuredHookProfile differs/],
   [{ closure: { architecture: "llama" } }, /architecture differs/],
   [{ closure: { contextWindowSize: 2048 } }, /contextWindowSize differs/],
   [{ closure: { layerMap: [0, 1] } }, /layerMap differs/],
@@ -184,7 +184,7 @@ assert.doesNotThrow(() => validateRuntimeLock(adopted));
 // The lock still describes base-model architectures and their execution profiles.
 for (const id of ["gpt2-base", "pythia-70m-base", "qwen35-2b-base"]) {
   const pin = model(id);
-  assert.equal(lockedModelExecutionProfiles(pin, pin).structuredHookProfile, "standard-v4-residual");
+  assert.equal(lockedModelExecutionProfiles(pin, pin).structuredHookProfile, "standard-v5-residual");
   const base = structuredClone(runtimeLock);
   delete base.models.find((entry) => entry.id === id).modelType;
   assert.throws(() => validateRuntimeLock(base), /invalid|unknown or missing/);

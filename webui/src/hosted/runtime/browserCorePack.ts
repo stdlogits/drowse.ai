@@ -184,6 +184,19 @@ interface StructuredAffineTermGroup {
   terms: ResolvedCoreTerm[];
 }
 
+/** Every curved manifold's frame at one layer, stacked: write rows and their dual reads. */
+interface CurvedFrame {
+  basis: readonly ArrayLike<number>[];
+  read: readonly ArrayLike<number>[];
+}
+
+// drowse's steering gains (steering/hooks.py), calibrated for typed frames:
+// `eff_along_L = share_L · SUBSPACE_GAIN` for an affine group, `along · share_L ·
+// MANIFOLD_ALONG_GAIN` for a curved one, `clamp(onto · share_L · MANIFOLD_ONTO_GAIN, 0, 1)`.
+const SUBSPACE_GAIN = 8;
+const MANIFOLD_ALONG_GAIN = 2;
+const MANIFOLD_ONTO_GAIN = 0.5;
+
 export class BrowserFeasibilityCorePackCompiler {
   private neutralStatisticsRead: Promise<BrowserNeutralStatistics | null> | null;
 
@@ -195,6 +208,11 @@ export class BrowserFeasibilityCorePackCompiler {
   private unitSource: BrowserUnitProgramSource | null = null;
   private unitSourceVersion = 0;
   private readonly attachedProbes = new Map<string, ProbeInfo>();
+  /** Each lens atom's read covectors (by their map's identity) raised to steering writes. */
+  private readonly raisedReads = new WeakMap<
+    ReadonlyMap<number, Float32Array>,
+    ReadonlyMap<number, Float32Array>
+  >();
 
   private constructor(
     private readonly modelId: string,
@@ -967,6 +985,10 @@ export class BrowserFeasibilityCorePackCompiler {
         `${prefix}.basis`,
         [rank, this.hiddenSize],
       ).data);
+      updateFp32Hash(hash, manifold.tensors.tensor(
+        `${prefix}.read`,
+        [rank, this.hiddenSize],
+      ).data);
       if (manifold.tensors.keys.includes(`${prefix}.node_coords`)) {
         updateFp32Hash(hash, manifold.tensors.tensor(
           `${prefix}.node_coords`,
@@ -1006,7 +1028,6 @@ export class BrowserFeasibilityCorePackCompiler {
           feature_space: manifold.featureSpace,
           variant: manifold.variant,
           variant_identity: manifold.variantIdentity,
-          share_metric: "mahalanobis",
         },
       },
       directions,
@@ -1221,15 +1242,16 @@ export class BrowserFeasibilityCorePackCompiler {
     }
 
     const curveMaps = curved.map((term) => this.structuredCurves(term));
-    const curvedBasisByLayer = new Map<number, ArrayLike<number>[]>();
+    const curvedFrameByLayer = new Map<number, CurvedFrame>();
     // drowse's `OverlappingManifoldError` (steering/hooks.py), naming the layer's first curved
-    // manifold and the one that overlaps it.
+    // manifold and the one that overlaps it. The cosines are Mahalanobis: a frame's write rows
+    // against the earlier frames' reads.
     const curvedOwner = new Map<number, string>();
     curveMaps.forEach((curves, curveIndex) => {
       const name = (curved[curveIndex].base as ResolvedManifoldAtom).manifold.name;
       for (const [programIndex, curve] of curves) {
-        const previous = curvedBasisByLayer.get(programIndex) ?? [];
-        const overlap = maximumBasisOverlap(curve.basis, previous);
+        const previous = curvedFrameByLayer.get(programIndex) ?? { basis: [], read: [] };
+        const overlap = maximumBasisOverlap(curve.basis, previous.read);
         if (overlap > 1e-3) {
           throw Object.assign(coreError(
             "CORE_PACK_CURVED_OVERLAP",
@@ -1237,14 +1259,17 @@ export class BrowserFeasibilityCorePackCompiler {
           ), { status: 422, recoverable: false });
         }
         if (!curvedOwner.has(programIndex)) curvedOwner.set(programIndex, name);
-        curvedBasisByLayer.set(programIndex, [...previous, ...curve.basis]);
+        curvedFrameByLayer.set(programIndex, {
+          basis: [...previous.basis, ...curve.basis],
+          read: [...previous.read, ...curve.read],
+        });
       }
     });
 
     affineTermGroups.forEach((termGroup, groupIndex) => {
       const groupByLayer = this.structuredAffineGroups(termGroup.terms);
       for (const [programIndex, group] of groupByLayer) {
-        const lowered = orthogonalizeAffineGroup(group, curvedBasisByLayer.get(programIndex));
+        const lowered = orthogonalizeAffineGroup(group, curvedFrameByLayer.get(programIndex));
         if (lowered === null) continue;
         (layers[programIndex].affineGroups as StructuredAffineGroup[])[groupIndex] = lowered;
         affineControls[programIndex * this.structuredHookProfile.maxAffineGroups + groupIndex] =
@@ -1534,6 +1559,7 @@ export class BrowserFeasibilityCorePackCompiler {
   ): ReadonlyMap<number, StructuredAffineGroup> {
     const lowered = new Map<number, {
       basis: Float64Array[];
+      read: Float64Array[];
       target: Float64Array;
       requestedKappa: Float64Array;
       share: number;
@@ -1560,98 +1586,115 @@ export class BrowserFeasibilityCorePackCompiler {
       }
     }
 
+    // Native `synthesize_subspace`, all in the Mahalanobis metric: each row's read is its `Σ⁻¹`
+    // image, frames are Gram-Schmidt on write/read pairs (`orthoFrame`), push wins a shared
+    // direction Mahalanobis-orthogonally, an ablation axis writes along its direction and reads
+    // with its covector (a full `!` is LEACE), and the target is `read · Δ`.
     this.layerMap.forEach((layer, programIndex) => {
       const whitener = this.whiteners.get(layer)!;
       const pushRows: Float64Array[] = [];
-      const pushFragments: Array<{
-        coefficient: number;
-        direction: Float64Array;
-        metricNorm: number;
-      }> = [];
-      const ablationFragments: Array<{
-        coefficient: number;
-        direction: Float64Array;
-      }> = [];
-      let ablationShare = 0;
+      const pushFragments: Array<{ coefficient: number; direction: Float64Array }> = [];
+      const ablationRows: Array<{ coefficient: number; direction: Float64Array }> = [];
 
       for (const term of terms) {
         if (Math.abs(term.coefficient) < 1e-9 || !termActsAt(term, layer)) continue;
         if (term.ablation) {
           const direction = this.atomNodeDirection(term.base, layer);
-          if (direction === null) continue;
-          const norm = euclideanNorm(direction);
-          if (norm < 1e-12) continue;
-          ablationFragments.push({
-            coefficient: term.coefficient,
-            direction: Float64Array.from(direction, (value) => value / norm),
-          });
-          ablationShare += Math.abs(term.coefficient) *
-            Math.max(mahalanobisNorm(whitener, direction), 1e-9);
+          if (direction === null || euclideanNorm(direction) < 1e-9) continue;
+          ablationRows.push({ coefficient: term.coefficient, direction });
           continue;
         }
 
         const fragment = this.structuredPushFragment(term, layer, whitener);
         if (fragment === null) continue;
+        const rowsNorm = Math.sqrt(fragment.basis.reduce((sum, row) => sum + dot(row, row), 0));
+        if (rowsNorm < 1e-9) continue;
         pushRows.push(...fragment.basis);
-        pushFragments.push({
-          coefficient: term.coefficient,
-          direction: fragment.direction,
-          metricNorm: mahalanobisNorm(whitener, fragment.direction),
-        });
+        pushFragments.push({ coefficient: term.coefficient, direction: fragment.direction });
       }
+
+      const inverse = (row: ArrayLike<number>) => applySerializedInverse(whitener, row);
+      const metricNorm = (row: ArrayLike<number>, read: ArrayLike<number>) =>
+        Math.sqrt(Math.max(dot(row, read), 0));
+      const pushReads = pushRows.map(inverse);
+      const ablationReads = ablationRows.map((row) => inverse(row.direction));
+      const ablationNorms = ablationRows.map((row, index) =>
+        metricNorm(row.direction, ablationReads[index])
+      );
+      const fragmentNorms = pushFragments.map((fragment) =>
+        mahalanobisNorm(whitener, fragment.direction)
+      );
+      // A strictly positive proxy is enough for a pure-ablation share: hook-time gain
+      // compensation cancels share from the ablation amount.
+      const ablationShare = ablationRows.reduce(
+        (sum, row, index) => sum + Math.abs(row.coefficient) * Math.max(ablationNorms[index], 1e-9),
+        0,
+      );
 
       const worldTarget = new Float64Array(this.hiddenSize);
       const rawDelta = new Float64Array(this.hiddenSize);
-      for (const fragment of pushFragments) {
+      pushFragments.forEach((fragment, index) => {
+        const norm = fragmentNorms[index];
         for (let column = 0; column < this.hiddenSize; column += 1) {
           rawDelta[column] += fragment.coefficient * fragment.direction[column];
-          if (fragment.metricNorm > 1e-9) {
-            worldTarget[column] += fragment.coefficient / fragment.metricNorm *
-              fragment.direction[column];
+          if (norm > 1e-9) {
+            worldTarget[column] += fragment.coefficient / norm * fragment.direction[column];
           }
         }
-      }
+      });
 
       const hasPush = euclideanNorm(worldTarget) >= 1e-9;
-      const pushBasis = hasPush ? orthonormalizeRows(pushRows) : [];
+      const push = hasPush ? orthoFrame(pushRows, pushReads) : { basis: [], read: [] };
+      // Push wins shared directions: each Mahalanobis-unit ablation row loses its push-span
+      // component (coefficients `P_push · u`), and the remaining ablation operator is
+      // diagonalized in its own small span so coefficients survive exactly.
       const projectedAblations: Array<{
         coefficient: number;
         direction: Float64Array;
+        read: Float64Array;
       }> = [];
-      for (const fragment of ablationFragments) {
-        const residual = Float64Array.from(fragment.direction);
-        for (const row of pushBasis) {
-          const projection = dot(residual, row);
+      ablationRows.forEach((row, index) => {
+        const norm = ablationNorms[index];
+        if (norm < 1e-9) return;
+        const residual = Float64Array.from(row.direction, (value) => value / norm);
+        const residualRead = Float64Array.from(ablationReads[index], (value) => value / norm);
+        const coefficients = push.read.map((pushRead) => dot(pushRead, residual));
+        coefficients.forEach((coefficient, axis) => {
           for (let column = 0; column < this.hiddenSize; column += 1) {
-            residual[column] -= projection * row[column];
+            residual[column] -= coefficient * push.basis[axis][column];
+            residualRead[column] -= coefficient * push.read[axis][column];
           }
-        }
-        const norm = euclideanNorm(residual);
-        if (norm >= 1e-9) {
+        });
+        const residualNorm = metricNorm(residual, residualRead);
+        if (residualNorm >= 1e-9) {
           projectedAblations.push({
-            coefficient: fragment.coefficient,
-            direction: Float64Array.from(residual, (value) => value / norm),
+            coefficient: row.coefficient,
+            direction: residual.map((value) => value / residualNorm),
+            read: residualRead.map((value) => value / residualNorm),
           });
         }
-      }
+      });
 
       let ablationBasis: Float64Array[] = [];
+      let ablationRead: Float64Array[] = [];
       let ablationEigenvalues = new Float64Array();
       if (projectedAblations.length > 0) {
-        const span = orthonormalizeRows(
+        const span = orthoFrame(
           projectedAblations.map((fragment) => fragment.direction),
+          projectedAblations.map((fragment) => fragment.read),
         );
-        const reduced = new Float64Array(span.length * span.length);
+        const size = span.basis.length;
+        const reduced = new Float64Array(size * size);
         for (const fragment of projectedAblations) {
-          const coordinates = Float64Array.from(span, (row) => dot(row, fragment.direction));
-          for (let left = 0; left < span.length; left += 1) {
-            for (let right = 0; right < span.length; right += 1) {
-              reduced[left * span.length + right] += fragment.coefficient *
+          const coordinates = Float64Array.from(span.read, (read) => dot(read, fragment.direction));
+          for (let left = 0; left < size; left += 1) {
+            for (let right = 0; right < size; right += 1) {
+              reduced[left * size + right] += fragment.coefficient *
                 coordinates[left] * coordinates[right];
             }
           }
         }
-        const eigensystem = symmetricEigen(reduced, span.length);
+        const eigensystem = symmetricEigen(reduced, size);
         const kept = Array.from(eigensystem.values.keys()).filter(
           (index) => Math.abs(eigensystem.values[index]) >= 1e-9,
         );
@@ -1659,19 +1702,22 @@ export class BrowserFeasibilityCorePackCompiler {
           kept,
           (index) => eigensystem.values[index],
         );
-        ablationBasis = kept.map((eigenIndex) => {
+        const rotate = (frame: readonly Float64Array[]) => kept.map((eigenIndex) => {
           const row = new Float64Array(this.hiddenSize);
-          for (let spanIndex = 0; spanIndex < span.length; spanIndex += 1) {
-            const coefficient = eigensystem.vectors[spanIndex * span.length + eigenIndex];
+          for (let spanIndex = 0; spanIndex < size; spanIndex += 1) {
+            const coefficient = eigensystem.vectors[spanIndex * size + eigenIndex];
             for (let column = 0; column < this.hiddenSize; column += 1) {
-              row[column] += coefficient * span[spanIndex][column];
+              row[column] += coefficient * frame[spanIndex][column];
             }
           }
           return row;
         });
+        ablationBasis = rotate(span.basis);
+        ablationRead = rotate(span.read);
       }
 
-      const basis = [...pushBasis, ...ablationBasis];
+      const basis = [...push.basis, ...ablationBasis];
+      const read = [...push.read, ...ablationRead];
       if (basis.length === 0) return;
       if (basis.length > this.structuredHookProfile.maxRank) {
         throw coreError(
@@ -1683,14 +1729,16 @@ export class BrowserFeasibilityCorePackCompiler {
       let share: number;
       const target = new Float64Array(basis.length);
       if (hasPush) {
+        // The whitened raw displacement is the per-layer profile weight; the target is the
+        // whitened-unit push's coordinate in the merged frame (ablation axes ≈ 0).
         share = mahalanobisNorm(whitener, rawDelta);
         if (share < 1e-9) {
           share = pushFragments.reduce(
-            (sum, fragment) => sum + Math.abs(fragment.coefficient) * fragment.metricNorm,
+            (sum, fragment, index) => sum + Math.abs(fragment.coefficient) * fragmentNorms[index],
             0,
           );
         }
-        basis.forEach((row, axis) => {
+        read.forEach((row, axis) => {
           target[axis] = dot(row, worldTarget);
         });
       } else {
@@ -1699,12 +1747,13 @@ export class BrowserFeasibilityCorePackCompiler {
       if (share < 1e-9) return;
       lowered.set(programIndex, {
         basis,
+        read,
         target,
         requestedKappa: Float64Array.from(
           { length: basis.length },
-          (_, axis) => axis < pushBasis.length
+          (_, axis) => axis < push.basis.length
             ? 0
-            : ablationEigenvalues[axis - pushBasis.length],
+            : ablationEigenvalues[axis - push.basis.length],
         ),
         share,
       });
@@ -1713,10 +1762,11 @@ export class BrowserFeasibilityCorePackCompiler {
     const totalShare = [...lowered.values()].reduce((sum, layer) => sum + layer.share, 0);
     const groups = new Map<number, StructuredAffineGroup>();
     for (const [programIndex, layer] of lowered) {
-      const along = layer.share / totalShare * lowered.size * 16;
+      const along = layer.share / totalShare * lowered.size * SUBSPACE_GAIN;
       groups.set(programIndex, {
         active: true,
         basis: layer.basis,
+        read: layer.read,
         neutral: this.whiteners.get(this.layerMap[programIndex])!.mean,
         target: layer.target,
         along,
@@ -1840,6 +1890,7 @@ export class BrowserFeasibilityCorePackCompiler {
         active: true,
         domainKind: domain.kind,
         basis: rows(manifold.tensors.tensor(`${prefix}.basis`, [rank, this.hiddenSize]).data, rank, this.hiddenSize),
+        read: rows(manifold.tensors.tensor(`${prefix}.read`, [rank, this.hiddenSize]).data, rank, this.hiddenSize),
         neutral: manifold.tensors.tensor(`${prefix}.mean`, [this.hiddenSize]).data,
         nodeParameters: rows(
           manifold.tensors.tensor(`${prefix}.node_params`, [nodeCount, domain.embedDim]).data,
@@ -1864,11 +1915,11 @@ export class BrowserFeasibilityCorePackCompiler {
         target,
         axes: domain.axes,
         along: periodic
-          ? Math.max(0, Math.min(1, Math.max(0, Math.min(1, term.coefficient)) * 4))
+          ? Math.max(0, Math.min(1, Math.max(0, Math.min(1, term.coefficient)) * MANIFOLD_ALONG_GAIN))
           : Math.max(0, Math.min(1, term.coefficient)) *
-            (manifold.mahalanobisShares.get(layer)! / shareMean) * 4,
+            (manifold.mahalanobisShares.get(layer)! / shareMean) * MANIFOLD_ALONG_GAIN,
         onto: Math.max(0, Math.min(1, onto *
-          (manifold.mahalanobisShares.get(layer)! / shareMean) * 0.5)),
+          (manifold.mahalanobisShares.get(layer)! / shareMean) * MANIFOLD_ONTO_GAIN)),
         sigmaRbfWeights: sigmaWeights,
         sigmaPolynomial,
         damping: 1e-3,
@@ -2515,6 +2566,31 @@ export class BrowserFeasibilityCorePackCompiler {
     };
   }
 
+  /** Native `LensInstrument._raised`: a `jlens/` atom (`W_U[v] J_l`) or an `slens/` atom
+   *  (`K_l ẽ_v`) is a read, and its steering profile is the vector it raises to, `Σu`: the write
+   *  that moves the reading furthest per unit of Mahalanobis displacement. Folded, it reads with
+   *  `u` again, so `!` zeroes exactly the token's reading (LEACE). Probes keep the reads. */
+  private raisedLensReads(
+    key: string,
+    reads: ReadonlyMap<number, Float32Array>,
+  ): ReadonlyMap<number, Float32Array> {
+    const memo = this.raisedReads.get(reads);
+    if (memo !== undefined) return memo;
+    const layers = [...reads.keys()].sort((left, right) => left - right);
+    if (layers.some((layer) => !this.whiteners.has(layer))) {
+      throw coreError(
+        "CORE_PACK_WHITENER_UNAVAILABLE",
+        `${key} needs a Mahalanobis whitener covering its layers [${layers.join(", ")}]: a lens atom is a read, and steering writes along its whitener-raised vector`,
+      );
+    }
+    const raised = new Map(layers.map((layer) => [
+      layer,
+      Float32Array.from(raiseLensRead(this.whiteners.get(layer)!, reads.get(layer)!)),
+    ]));
+    this.raisedReads.set(reads, raised);
+    return raised;
+  }
+
   private resolveAtom(atom: SteeringAtom): ResolvedCoreAtom {
     if (atom.namespace === "sae") {
       if (atom.variant !== "raw") {
@@ -2538,7 +2614,7 @@ export class BrowserFeasibilityCorePackCompiler {
         kind: "instrument",
         key: token.key,
         family: "jlens",
-        directions: token.directions,
+        directions: this.raisedLensReads(token.key, token.directions),
         saeFeature: null,
       };
     }
@@ -2573,7 +2649,7 @@ export class BrowserFeasibilityCorePackCompiler {
         kind: "instrument",
         key: `slens/${atom.concept}`,
         family: "slens",
-        directions: prepared.directions,
+        directions: this.raisedLensReads(`slens/${atom.concept}`, prepared.directions),
         saeFeature: null,
       };
     }
@@ -2733,9 +2809,14 @@ async function loadInstalledManifolds(
 ): Promise<CoreManifold[]> {
   const verified = await validateDrowseArchive(archive, { signal: request.signal });
   const matches = matchingFittedArtifacts(verified, request, true);
-  return Promise.all(matches.map((candidate) =>
-    loadVerifiedManifold(verified, request, profile, candidate)
+  // A fit from before typed frames is a miss (native's stale fit), not a broken install.
+  const loaded = await Promise.all(matches.map((candidate) =>
+    loadVerifiedManifold(verified, request, profile, candidate).catch((error: unknown) => {
+      if ((error as { code?: unknown } | null)?.code === "CORE_PACK_FIT_STALE") return null;
+      throw error;
+    })
   ));
+  return loaded.filter((manifold): manifold is CoreManifold => manifold !== null);
 }
 
 async function loadVerifiedManifold(
@@ -2754,13 +2835,8 @@ async function loadVerifiedManifold(
     fitted.sidecarPath,
     request.signal,
   );
+  // Shares are Mahalanobis (the sidecar no longer says so: drowse 6.1 dropped `share_metric`).
   const sidecar = JSON.parse(new TextDecoder().decode(sidecarBytes)) as Record<string, unknown>;
-  if (sidecar.share_metric !== "mahalanobis") {
-    throw coreError(
-      "CORE_PACK_METRIC_INVALID",
-      "Core manifold lowering requires a Mahalanobis fitted sidecar",
-    );
-  }
   const rawShares = sidecar.mahalanobis_share_per_layer;
   if (typeof rawShares !== "object" || rawShares === null || Array.isArray(rawShares)) {
     throw coreError("CORE_PACK_METRIC_INVALID", "Core manifold shares are invalid");
@@ -2806,6 +2882,17 @@ async function loadVerifiedManifold(
   });
   const [namespace, name] = verified.primaryIdentity;
   const tensors = decodeFp32Safetensors(tensorBytes, fitted.tensorPath);
+  // Typed frames (fit policy 2): every layer's write rows carry their dual read rows.
+  for (const layer of fittedLayerNumbers(tensors)) {
+    const basisShape = tensors.description.shapes.get(`layer_${layer}.basis`);
+    const readShape = tensors.description.shapes.get(`layer_${layer}.read`);
+    if (readShape === undefined || readShape.join() !== basisShape?.join()) {
+      throw coreError(
+        "CORE_PACK_FIT_STALE",
+        `Manifold ${namespace}/${name} layer ${layer} has no read rows beside its basis (fitted before typed frames); refit it`,
+      );
+    }
+  }
   const nodeStatements = await readCoreNodeStatements(verified, request.signal, labels.length);
   const nodeCoordinates = coreNodeCoordinates(tensors, labels.length);
   const fitMode = String(verified.manifold.fit_mode);
@@ -3430,27 +3517,6 @@ function structuredTriggerKey(trigger: SteeringTrigger | null): string {
     : `${phaseKey}|${gate.probe}|${gate.operator}|${gate.threshold}`;
 }
 
-function orthonormalizeRows(
-  directions: readonly ArrayLike<number>[],
-): Float64Array[] {
-  const basis: Float64Array[] = [];
-  for (const direction of directions) {
-    const inputNorm = euclideanNorm(direction);
-    if (inputNorm < 1e-12) continue;
-    const residual = Float64Array.from(direction, (value) => value / inputNorm);
-    for (const row of basis) {
-      const projection = dot(residual, row);
-      for (let column = 0; column < residual.length; column += 1) {
-        residual[column] -= projection * row[column];
-      }
-    }
-    const norm = euclideanNorm(residual);
-    if (norm < 1e-6) continue;
-    basis.push(Float64Array.from(residual, (value) => value / norm));
-  }
-  return basis;
-}
-
 function symmetricEigen(
   matrix: Float64Array,
   dimensions: number,
@@ -3736,6 +3802,7 @@ function disabledStructuredGroup(hiddenSize: number): StructuredAffineGroup {
   return {
     active: false,
     basis: [basis],
+    read: [basis],
     neutral: new Float32Array(hiddenSize),
     target: [0],
     along: 0,
@@ -3940,6 +4007,11 @@ function coreGeometryCurve(
     domainKind: domain.kind,
     basis: rows(
       manifold.tensors.tensor(`${prefix}.basis`, [rank, hiddenSize]).data,
+      rank,
+      hiddenSize,
+    ),
+    read: rows(
+      manifold.tensors.tensor(`${prefix}.read`, [rank, hiddenSize]).data,
       rank,
       hiddenSize,
     ),
@@ -4401,58 +4473,142 @@ function maximumBasisOverlap(
   return maximum;
 }
 
+/** Native `_orthogonalize_affine_against`: the curved manifolds win the shared directions. The
+ *  affine write rows and push displacement lose their curved-span component
+ *  Mahalanobis-orthogonally (the curved frame's reads give the coefficients), and each new axis
+ *  inherits its squared Mahalanobis projection onto the old axes' collapse coefficients. Null
+ *  when the affine span lies inside the curved span. */
 function orthogonalizeAffineGroup(
   group: StructuredAffineGroup,
-  curvedBasis: readonly ArrayLike<number>[] | undefined,
+  curvedFrame: CurvedFrame | undefined,
 ): StructuredAffineGroup | null {
-  if (curvedBasis === undefined || curvedBasis.length === 0) return group;
+  if (curvedFrame === undefined || curvedFrame.basis.length === 0) return group;
   const width = group.neutral.length;
   const oldBasis = group.basis.map((row) => Float64Array.from(row));
-  const curves = curvedBasis.map((row) => Float64Array.from(row));
+  const oldRead = group.read.map((row) => Float64Array.from(row));
   if (
     oldBasis.some((row) => row.length !== width) ||
-    curves.some((row) => row.length !== width) ||
+    oldRead.length !== oldBasis.length || oldRead.some((row) => row.length !== width) ||
+    curvedFrame.read.length !== curvedFrame.basis.length ||
+    [...curvedFrame.basis, ...curvedFrame.read].some((row) => row.length !== width) ||
     group.target.length !== oldBasis.length || group.kappa.length !== oldBasis.length
   ) {
     throw coreError("CORE_PACK_CURVED_SHAPE_INVALID", "Affine and curved steering bases are incompatible");
   }
-  const projectOut = (source: ArrayLike<number>): Float64Array => {
-    const output = Float64Array.from(source);
-    for (const curve of curves) {
-      const projection = dot(output, curve);
-      for (let column = 0; column < width; column += 1) {
-        output[column] -= projection * curve[column];
-      }
-    }
+  const curve = orthoFrame(curvedFrame.basis, curvedFrame.read);
+  // `x − (x · Cᵣᵀ) C_b`: the part of a vector (or, applied with the reads, a covector) that is
+  // Mahalanobis-orthogonal to the curved span.
+  const projectOut = (vector: Float64Array, pairs: readonly Float64Array[], coefficients: Float64Array) => {
+    const output = Float64Array.from(vector);
+    coefficients.forEach((coefficient, axis) => {
+      for (let column = 0; column < width; column += 1) output[column] -= coefficient * pairs[axis][column];
+    });
     return output;
   };
-  const basis: Float64Array[] = [];
-  for (const row of oldBasis.map(projectOut)) {
-    for (const prior of basis) {
-      const projection = dot(row, prior);
-      for (let column = 0; column < width; column += 1) row[column] -= projection * prior[column];
-    }
-    const norm = euclideanNorm(row);
-    if (norm <= 1e-6) continue;
-    basis.push(Float64Array.from(row, (value) => value / norm));
-  }
-  if (basis.length === 0) return null;
-  const worldTarget = new Float64Array(width);
+  const rowsOut: Float64Array[] = [];
+  const readsOut: Float64Array[] = [];
   oldBasis.forEach((row, axis) => {
-    for (let column = 0; column < width; column += 1) {
-      worldTarget[column] += row[column] * group.target[axis];
-    }
+    const coefficients = Float64Array.from(curve.read, (read) => dot(row, read));
+    rowsOut.push(projectOut(row, curve.basis, coefficients));
+    readsOut.push(projectOut(oldRead[axis], curve.read, coefficients));
   });
-  const perpendicularTarget = projectOut(worldTarget);
-  const target = Float64Array.from(basis, (row) => dot(row, perpendicularTarget));
-  const kappa = Float64Array.from(basis, (row) => {
+  const { basis, read } = orthoFrame(rowsOut, readsOut);
+  if (basis.length === 0) return null;
+  const delta = new Float64Array(width);
+  oldBasis.forEach((row, axis) => {
+    for (let column = 0; column < width; column += 1) delta[column] += row[column] * group.target[axis];
+  });
+  const perpendicular = projectOut(delta, curve.basis, Float64Array.from(curve.read, (row) => dot(delta, row)));
+  const target = Float64Array.from(read, (row) => dot(row, perpendicular));
+  const kappa = Float64Array.from(read, (row) => {
     let inherited = 0;
     oldBasis.forEach((oldRow, axis) => {
       inherited += group.kappa[axis] * dot(row, oldRow) ** 2;
     });
     return inherited;
   });
-  return { ...group, basis, target, kappa };
+  return { ...group, basis, read, target, kappa };
+}
+
+/** `Σ u` for the neutral whitener's regularized covariance `Σ = λI + V diag(e) Vᵀ` (native
+ *  `LayerWhitener.apply`, the inverse of `applySerializedInverse`): the index-raising map from a
+ *  read covector to the write vector that moves its reading furthest per unit of Mahalanobis
+ *  displacement. */
+export function raiseLensRead(
+  whitener: SerializedMahalanobisWhitener,
+  read: ArrayLike<number>,
+): Float64Array {
+  if (read.length !== whitener.columns) {
+    throw new TypeError("Lens read does not match the whitener dimensions");
+  }
+  const output = Float64Array.from(read, (value) => value * whitener.ridge);
+  for (let component = 0; component < whitener.rank; component += 1) {
+    const offset = component * whitener.columns;
+    let coordinate = 0;
+    for (let column = 0; column < whitener.columns; column += 1) {
+      coordinate += read[column] * whitener.basis[offset + column];
+    }
+    const scaled = coordinate * whitener.eigenvalues[component];
+    for (let column = 0; column < whitener.columns; column += 1) {
+      output[column] += scaled * whitener.basis[offset + column];
+    }
+  }
+  return output;
+}
+
+/** Native `_ortho_frame`: ordered Gram-Schmidt of write `rows` in the metric their `reads`
+ *  define (`⟨u, v⟩_M = u · read(v)`, the Mahalanobis product when each read is `Σ⁻¹` of its
+ *  row). Every operation on a row is applied to its read, so the frame stays dual. Each row is
+ *  unit-normalized first, and one whose residual falls below `eps` is dropped (collinear rows
+ *  add no axis). Order matters: earlier rows keep their span. `reads = rows` is the Euclidean
+ *  case. The reads are corrected to exact duality (`read · basisᵀ = I`, `dual_read`). */
+function orthoFrame(
+  rows: readonly ArrayLike<number>[],
+  reads: readonly ArrayLike<number>[],
+  eps = 1e-6,
+): { basis: Float64Array[]; read: Float64Array[] } {
+  const basis: Float64Array[] = [];
+  const read: Float64Array[] = [];
+  rows.forEach((source, index) => {
+    const norm = dot(source, reads[index]);
+    if (norm < 1e-24) return;
+    const row = Float64Array.from(source, (value) => value / Math.sqrt(norm));
+    const rowRead = Float64Array.from(reads[index], (value) => value / Math.sqrt(norm));
+    basis.forEach((accepted, axis) => {
+      const coefficient = dot(read[axis], row);
+      for (let column = 0; column < row.length; column += 1) {
+        row[column] -= coefficient * accepted[column];
+        rowRead[column] -= coefficient * read[axis][column];
+      }
+    });
+    const residual = dot(row, rowRead);
+    if (residual < eps * eps) return;
+    basis.push(row.map((value) => value / Math.sqrt(residual)));
+    read.push(rowRead.map((value) => value / Math.sqrt(residual)));
+  });
+  return { basis, read: dualRead(basis, read) };
+}
+
+/** Native `dual_read`: `(read · basisᵀ)⁻¹ read`, the reads corrected to be exactly dual to the
+ *  write rows, in their own span. */
+function dualRead(basis: readonly Float64Array[], read: readonly Float64Array[]): Float64Array[] {
+  const rank = basis.length;
+  if (rank === 0) return [];
+  const gram = new Float64Array(rank * rank);
+  for (let left = 0; left < rank; left += 1) {
+    for (let right = 0; right < rank; right += 1) gram[left * rank + right] = dot(read[left], basis[right]);
+  }
+  const inverse = Array.from({ length: rank }, (_, column) =>
+    solveDenseSystem(gram, Float64Array.from({ length: rank }, (_, row) => row === column ? 1 : 0), rank)
+  );
+  return Array.from({ length: rank }, (_, row) => {
+    const output = new Float64Array(read[0].length);
+    for (let axis = 0; axis < rank; axis += 1) {
+      const coefficient = inverse[axis][row];
+      for (let column = 0; column < output.length; column += 1) output[column] += coefficient * read[axis][column];
+    }
+    return output;
+  });
 }
 
 function dot(left: ArrayLike<number>, right: ArrayLike<number>): number {

@@ -21,7 +21,8 @@ them into browser packs bound to one runtime identity, without refitting:
 The packs bind the runtime identity they are built for (``--runtime-identity``,
 written by ``webui/scripts/hosted-runtime-identity.mjs``) and, for units, the
 identities of the lens packs and statistics they average over.  Lens shards are
-the native files byte for byte, so a pack shard's digest is the native manifest's.
+the native files byte for byte; the pack manifest records each shard's digest
+(native lens manifests no longer carry one).
 Output goes to a staging directory; ``build-hosted-packs.sh`` assembles and
 validates it.  Nothing is published from here.
 """
@@ -288,8 +289,6 @@ def build_lens_pack(
             name = f"{site}.layer-{layer}.safetensors"
             shutil.copyfile(source, pack / name)
             digest = sha256_file(pack / name)
-            if digest != native["tensor_sha256"][str(layer)]:
-                raise PackBuildError(f"{source} does not match its manifest digest")
             files[str(layer)] = name
             digests[str(layer)] = digest
         sites[site] = {"layers": layers, "tensor_files": files, "tensor_sha256": digests}

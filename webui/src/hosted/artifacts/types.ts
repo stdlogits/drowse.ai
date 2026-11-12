@@ -42,7 +42,11 @@ export interface DrowseArchiveFileRecord {
   sha256: string;
 }
 
-export interface DrowseArchiveManifest {
+/**
+ * What a reader takes from `pack.json` (format v1): the closure's paths and provenance. The
+ * per-entry `files` map 6.0 wrote is provenance and goes unread, as drowse 6.1 reads it.
+ */
+export interface DrowseArchivePackManifest {
   format_version: 1;
   kind: "drowse-manifold";
   producer: { name: "drowse"; version: string };
@@ -53,6 +57,10 @@ export interface DrowseArchiveManifest {
     repository: string | null;
     revision: string | null;
   };
+}
+
+/** A verified closure: its `pack.json` and the entries the browser read, sized and hashed. */
+export interface DrowseArchiveManifest extends DrowseArchivePackManifest {
   files: Record<string, DrowseArchiveFileRecord>;
 }
 
@@ -66,7 +74,7 @@ export interface DrowseArchiveArchiveEntry {
 }
 
 export interface InspectedDrowseArchive {
-  readonly manifest: Readonly<DrowseArchiveManifest>;
+  readonly manifest: Readonly<DrowseArchivePackManifest>;
   readonly exactManifestBytes: Uint8Array;
   readonly entries: readonly DrowseArchiveArchiveEntry[];
   readonly expandedBytes: number;
@@ -108,10 +116,14 @@ export interface DrowseArchiveFittedArtifact {
 }
 
 export interface VerifiedDrowseArchive extends InspectedDrowseArchive {
+  readonly manifest: Readonly<DrowseArchiveManifest>;
   readonly verifiedAt: number;
+  /** The closure entries read and staged, with the digests computed while reading them. */
   readonly files: Readonly<Record<string, DrowseArchiveFileRecord>>;
+  /** `manifold.json` read tolerantly: the fields drowse reads, optional ones defaulted. */
   readonly manifold: Readonly<Record<string, unknown>>;
   readonly template: Readonly<Record<string, unknown>> | null;
+  /** Complete fitted pairs current for this closure's corpus (a stale pair is a miss). */
   readonly fittedArtifacts: readonly Readonly<DrowseArchiveFittedArtifact>[];
   readonly fittedRuntimeFingerprints: readonly string[];
 }
