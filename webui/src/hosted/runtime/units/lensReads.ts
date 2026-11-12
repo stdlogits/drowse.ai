@@ -51,8 +51,7 @@ export function sWeights(layers: readonly number[], nLayers: number, band: LensB
   return total > 0 ? raw.map((w) => w / total) : raw.map(() => 0);
 }
 
-/** Python's `round(x, 6)` for record fields (half-even on the decimal; the goldens compare
- *  rounded fields within 2e-6, never by string). */
+/** Python's `round(x, 6)` for record fields, to within 2e-6 (never compared by string). */
 export function round6(x: number): number {
   return Math.round(x * 1e6) / 1e6;
 }

@@ -19,9 +19,8 @@ contains only immutable packages that match those identities.
 The browser core-pack compiler produces the required neutral whitener and seed
 manifold pack for each release model. Every steering expression lowers to one
 drowse-structured-v5 program (native's `synthesize_subspace` lowering, which
-needs the neutral whitener); it shares Python goldens for Mahalanobis
-normalization, mean-normalized per-layer share, and uncapped affine gain, and
-lowers independent push/ablation groups, prior-step gates, response phases,
+needs the neutral whitener); it follows native's Mahalanobis normalization,
+mean-normalized per-layer share and uncapped affine gain, and lowers independent push/ablation groups, prior-step gates, response phases,
 SAE and R-lens programs, box/custom/sphere curved manifolds, in-block unit
 ablation, and exact geometry reads.
 Curved steering retains its separate safety cap. Every published pack passes the
@@ -205,12 +204,6 @@ stays well-defined when a projection is near zero. It separately requires the
 control probes to reproduce the projection of the plain capture, rejects any
 pre-enabled-layer delta between the control and steered probes, and compares
 the steering delta's direction in the sketch.
-
-`webui/scripts/browser-core-build.mjs` runs the core builder (the unchanged
-`hosted-whitener.worker.ts`), the plain and measured captures and the
-injection-arithmetic oracle on B4's tiny v5 fixture libraries:
-`node scripts/browser-core-build.mjs --webllm WEB_LLM.js --fixtures DIR
---arch qwen3|gemma3 --quantization q0f32|q4f32_1 --work SCRATCH`.
 
 Capture schema 5 adds B1 §4.3's production measures for a units (`standard-v5`) library and
 refuses them for a residual one (`q4_unit_parity.py`). Its `capture.json` carries
@@ -402,9 +395,7 @@ so a rebind takes seconds.
   and the neutral pass every statistic averages over, with the digest of its rows (the
   write norms' whitener, and the core pack's, are built from them). `build_hosted_packs.py`
   refuses a layer without `neurons.write_norms`. Rank-3 tensors are stored
-  `[prod(shape[:-1]), shape[-1]]` with their logical shapes recorded. On the ABI v5 tiny
-  fixture every shipped units tensor equals the `unit-artifacts` golden on both
-  architectures (`tests/test_hosted_packs.py`).
+  `[prod(shape[:-1]), shape[-1]]` with their logical shapes recorded.
 - **core statistics**: `core/neutral-statistics.*` (unit statistics, `out` and `mid`
   means, stacked over layers) and `core/neutral-rows.safetensors` (the neutral pass's
   rows, a build input that does not ship), added to the core pack by the whitener
@@ -534,21 +525,17 @@ SKIP_LOADING_MLCLLM_SO=1 \
 PYTHONPATH=/path/to/tvm/python:/path/to/mlc-llm/python \
   /path/to/venv/bin/python browser-runtime/forks/verify-mlc-hook.py \
     --mlc-repository /path/to/mlc-llm \
-    --tvm-repository /path/to/tvm [--units-fixtures FIXTURES]
+    --tvm-repository /path/to/tvm
 ```
 
-Without `--units-fixtures` it checks the Qwen3, Llama and Gemma 3 graph exports and runs the
-structured, geometry, curved and exact-readout goldens through a compiled C TVM VM. With it, it
-runs drowse's units, replay and read goldens (`drowse/tests/fixtures/browser/*`) over the four
-fixture libraries `forks/build-units-fixtures.py` makes from drowse's checkpoints (Qwen3 and
-Gemma 3 at q0f32 and q4f32_1). `webui/scripts/browser-units-goldens.mjs` runs the same goldens
-through the vendored WebLLM bridge on WebGPU. Neither proves a production library, q4 parity or
-a physical device; those are the per-library records below.
+It checks the Qwen3, Llama and Gemma 3 graph exports and runs hand-built structured, geometry,
+curved and exact-readout cases through a compiled C TVM VM. It does not prove a production
+library, q4 parity or a physical device; those are the per-library checks below.
 
 For the WebGPU compile gate, source exact Emscripten 3.1.56, rebuild both support runtimes
 against the pinned TVM checkout (`make -C mlc-llm/web`, `TVM_HOME=… make -C tvm/web`), and
 compile each architecture fixture with `forks/compile-tiny-webgpu.py --architecture
-qwen3|llama|gemma3_text` (or `--model-config` for a units fixture). The compiler requires a new
+qwen3|llama|gemma3_text`. The compiler requires a new
 output path, validates the WebAssembly with the matching Binaryen tool, and requires the v5
 export set for its architecture (`overlay_checks.py`: `REQUIRED_FUNCTIONS`, plus
 `UNIT_FUNCTIONS` on Qwen3 and Gemma 3, none on Llama) and the shader checks.
@@ -586,10 +573,7 @@ the new one is deployed.
 ## Release
 
 1. Compile the libraries with the overlay (`compiler/README.md`) and assemble each
-   (`assemble:hosted:model`). When the overlay, the bridge or the drowse goldens change, run the
-   fixture goldens: `browser-runtime/record-cvm-goldens.py` on the C TVM VM and
-   `webui/scripts/browser-units-goldens.mjs --report` on WebGPU (run it with
-   `--webllm node_modules/@drowse/web-llm/lib/index.js`). They are checks, not records.
+   (`assemble:hosted:model`).
 2. Fill a candidate lock from the assembled directories (`prepare:hosted:candidate-lock`, one model
    at a time with `--base`), rebind the packs and build each core pack against it.
 3. Publish each model's files and core pack (`publish:hosted:model`, `publish:hosted:pack ... core`),

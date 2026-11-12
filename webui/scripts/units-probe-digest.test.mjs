@@ -2,9 +2,16 @@
 // (`UnitsInstrument.probe_hash`, `LensInstrument.probe_hash` and `_centre_digest`). The
 // expected strings and digests were printed by CPython 3.13 from the same tuples.
 import assert from "node:assert/strict";
-import { viteServer } from "./support/units-goldens.mjs";
+import { fileURLToPath } from "node:url";
+import { createServer } from "vite";
 
-const server = await viteServer();
+const server = await createServer({
+  root: fileURLToPath(new URL("..", import.meta.url)),
+  configFile: false,
+  appType: "custom",
+  logLevel: "silent",
+  server: { middlewareMode: true, watch: null },
+});
 try {
   const digest = await server.ssrLoadModule("/src/hosted/runtime/units/probeDigest.ts");
   const unitTuple = [
