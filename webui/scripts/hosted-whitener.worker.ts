@@ -10,6 +10,7 @@ import {
 import { BrowserActivationSpool } from "../src/hosted/fitting/activationSpool";
 import {
   BrowserFittingCoordinator,
+  FIT_POLICY_VERSION,
   type BrowserFittingCoordinatorProgress,
 } from "../src/hosted/fitting/coordinator";
 import { monopolarFoundation } from "../src/hosted/fitting/monopolar";
@@ -335,7 +336,7 @@ async function fitCoreManifold(
       captureVersion: 3,
       captureRenderSha256: rendered.captureRenderSha256,
       baselinePromptsSha256: digest(baselinePrompts),
-      fitPolicyVersion: 1,
+      fitPolicyVersion: FIT_POLICY_VERSION,
     },
     topology: foundation.topology,
     consensusGram: foundation.consensusGram,

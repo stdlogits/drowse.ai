@@ -170,40 +170,67 @@ fn affine_fisher_fit_matches_python_golden() {
     let fit = fit_affine_fisher(&centroids, 4, 3, &whitener, 2, 0).unwrap();
     assert_eq!(fit.components, 2);
     close(&fit.centroid_mean, &[2.75, 2.5, 3.0], 2e-6);
+    // drowse 6.1's typed frame: write rows Xᵀa/√μ, reads their exact duals.
     close(
         &fit.mean,
-        &[1.2346981763839722, 2.5237584114074707, 0.07898344099521637],
-        3e-6,
+        &[1.8822275400161743, 2.184915781021118, 0.7836301922798157],
+        5e-6,
     );
     close(
         &fit.basis,
         &[
-            0.43905341625213623,
-            -0.5828602313995361,
-            -0.6837441325187683,
-            -0.6327729821205139,
-            -0.7408590316772461,
-            0.22522473335266113,
+            0.08855901658535004,
+            -1.0993337631225586,
+            -1.1802712678909302,
+            -1.3194433450698853,
+            -0.991281270980835,
+            -0.002233356237411499,
         ],
-        3e-6,
+        5e-6,
+    );
+    close(
+        &fit.read,
+        &[
+            0.29533177614212036,
+            -0.3920646607875824,
+            -0.4599246382713318,
+            -0.4960780739784241,
+            -0.3491402268409729,
+            0.2879756987094879,
+        ],
+        5e-6,
     );
     close(
         &fit.node_coordinates,
         &[
-            0.054469551891088486,
-            2.450920343399048,
-            1.033460259437561,
-            0.21929070353507996,
-            -1.2045018672943115,
-            -2.818382978439331,
-            -5.155755043029785,
-            -0.9852488040924072,
+            0.03663991391658783,
+            1.5507805347442627,
+            0.6951634287834167,
+            -0.07849155366420746,
+            -0.8102163076400757,
+            -1.5421169996261597,
+            -3.468050241470337,
+            0.460904061794281,
+        ],
+        5e-6,
+    );
+    close(
+        &fit.mu_coordinates,
+        &[
+            0.9232556819915771,
+            1.4530115127563477,
+            1.5817792415618896,
+            -0.1762605905532837,
+            0.07639949023723602,
+            -1.6398860216140747,
+            -2.581434488296509,
+            0.36313506960868835,
         ],
         5e-6,
     );
     close(
         &[fit.explained_variance, fit.mahalanobis_share],
-        &[0.9989494040944763, 3.9487561597350385],
+        &[0.9989493407302187, 3.8713648573157595],
         5e-6,
     );
     close(
@@ -215,6 +242,67 @@ fn affine_fisher_fit_matches_python_golden() {
             -2.325171947479248,
         ],
         5e-6,
+    );
+}
+
+/// The frame is typed (drowse 6.1): write rows are Mahalanobis-orthonormal vectors, the reads
+/// their exact duals, and a two-node fit writes along the difference of means (PCA@2 ≡ DiM).
+/// A regression to reading and writing along one Euclidean basis would steer along Σ⁻¹δ.
+#[test]
+fn affine_fisher_frame_is_typed() {
+    let neutral = [
+        1.0, 2.0, 0.0, 2.0, 0.0, 1.0, 4.0, 1.0, 3.0, 3.0, 3.0, 2.0, 5.0, 2.0, 4.0,
+    ];
+    let whitener = fit_mahalanobis_whitener(&neutral, 5, 3, 1.0).unwrap();
+    let mahalanobis_gram = |rows: &[f64], count: usize| -> Vec<f64> {
+        let shifted: Vec<f64> = rows
+            .iter()
+            .enumerate()
+            .map(|(index, value)| value + whitener.mean[index % 3])
+            .collect();
+        let whitened = apply_mahalanobis_whitener(&whitener, &shifted, count).unwrap();
+        let mut gram = vec![0.0; count * count];
+        for left in 0..count {
+            for right in 0..count {
+                gram[left * count + right] = (0..3)
+                    .map(|column| whitened[left * 3 + column] * whitened[right * 3 + column])
+                    .sum();
+            }
+        }
+        gram
+    };
+    let centroids = [1.0, 0.0, 2.0, 3.0, 1.0, 1.0, 5.0, 4.0, 3.0, 2.0, 5.0, 6.0];
+    let fit = fit_affine_fisher(&centroids, 4, 3, &whitener, 2, 0).unwrap();
+    close(
+        &mahalanobis_gram(&fit.basis, 2),
+        &[1.0, 0.0, 0.0, 1.0],
+        1e-9,
+    );
+    let mut duality = vec![0.0; 4];
+    for left in 0..2 {
+        for right in 0..2 {
+            duality[left * 2 + right] = (0..3)
+                .map(|column| fit.read[left * 3 + column] * fit.basis[right * 3 + column])
+                .sum();
+        }
+    }
+    close(&duality, &[1.0, 0.0, 0.0, 1.0], 1e-12);
+
+    let pair = [3.0, 1.0, 1.0, 1.0, 0.0, 2.0];
+    let fit = fit_affine_fisher(&pair, 2, 3, &whitener, 4, 0).unwrap();
+    assert_eq!(fit.components, 1);
+    let delta = [2.0, 1.0, -1.0];
+    let norm = mahalanobis_gram(&delta, 1)[0].sqrt();
+    close(
+        &fit.basis,
+        &delta.iter().map(|value| value / norm).collect::<Vec<_>>(),
+        1e-12,
+    );
+    // The pole pair reads ‖δ‖_M apart: δ · Σ⁻¹δ/‖δ‖_M.
+    close(
+        &[fit.mu_coordinates[0] - fit.mu_coordinates[1]],
+        &[norm],
+        1e-12,
     );
 }
 

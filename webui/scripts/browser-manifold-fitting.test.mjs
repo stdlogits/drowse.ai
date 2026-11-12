@@ -594,6 +594,7 @@ function flatLayer() {
     centroidMean: new Float64Array(2),
     mean: new Float64Array(2),
     basis: new Float64Array([1, 0]),
+    read: new Float64Array([1, 0]),
     nodeCoordinates: new Float64Array([-1, 1]),
     muCoordinates: new Float64Array([-1, 1]),
     whitenedGram: new Float64Array([1, -1, -1, 1]),
@@ -1160,6 +1161,7 @@ function authoredCurvedLayer(withSigma) {
     centroidMean: new Float64Array(2),
     mean: new Float64Array(2),
     basis: new Float64Array([1, 0, 0, 1]),
+    read: new Float64Array([1, 0, 0, 1]),
     nodeCoordinates: new Float64Array([-1, 0, 0, 0, 1, 0]),
     muCoordinates: new Float64Array([-1, 0, 0, 0, 1, 0]),
     whitenedGram: new Float64Array([
@@ -1256,10 +1258,15 @@ async function monopolarExtractionCheck(
   assert.equal(harness.published[0].nodes[0].role, null);
   assert.equal(harness.generationPlans[0].generationRoleName, "someone_calm");
   assert.equal(flatInputs.length, 1);
+  // The typed fold (drowse 6.1): d = (2, 3) against Σ = 1.1·I writes d/‖d‖_M, reads
+  // Σ⁻¹d/‖d‖_M, and puts the pole at ‖d‖_M.
   const layer = flatInputs[0].layers.get(0);
-  assert.ok(Math.abs(layer.nodeCoordinates[0] - Math.sqrt(13)) < 1e-12);
-  assert.ok(Math.abs(layer.basis[0] - 2 / Math.sqrt(13)) < 1e-12);
-  assert.ok(Math.abs(layer.basis[1] - 3 / Math.sqrt(13)) < 1e-12);
+  const norm = Math.sqrt(13 / 1.1);
+  assert.ok(Math.abs(layer.nodeCoordinates[0] - norm) < 1e-12);
+  assert.ok(Math.abs(layer.basis[0] - 2 / norm) < 1e-12);
+  assert.ok(Math.abs(layer.basis[1] - 3 / norm) < 1e-12);
+  assert.ok(Math.abs(layer.read[0] - 2 / 1.1 / norm) < 1e-12);
+  assert.ok(Math.abs(layer.read[1] - 3 / 1.1 / norm) < 1e-12);
   assert.deepEqual([...flatInputs[0].nodeCoordinates], [1]);
 }
 

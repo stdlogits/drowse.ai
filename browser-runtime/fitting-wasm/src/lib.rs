@@ -222,6 +222,9 @@ impl AffineFisherFit {
     pub fn basis(&self) -> Vec<f64> {
         self.0.basis.clone()
     }
+    pub fn read(&self) -> Vec<f64> {
+        self.0.read.clone()
+    }
     #[wasm_bindgen(js_name = nodeCoordinates)]
     pub fn node_coordinates(&self) -> Vec<f64> {
         self.0.node_coordinates.clone()

@@ -47,7 +47,8 @@ export type FittingWorkerJob =
       source: Extract<FittingMatrixSource, { kind: "activation_spool" }>;
       offsets: Uint32Array;
       mean: Float64Array;
-      basis: Float64Array;
+      /** The frame's read rows (covectors): reduced coordinates are `(h − mean) · readᵀ`. */
+      read: Float64Array;
       components: number;
     }
   | {
@@ -226,8 +227,13 @@ export interface AffineFisherResult {
   components: number;
   centroidMean: Float64Array;
   mean: Float64Array;
+  /** Write rows (vectors), Mahalanobis-orthonormal. */
   basis: Float64Array;
+  /** Read rows (covectors), their Σ⁻¹ images: `read · basisᵀ = I`. */
+  read: Float64Array;
+  /** `(centroid − neutral) · readᵀ`: whitened, neutral-anchored reduced coordinates. */
   nodeCoordinates: Float64Array;
+  /** `(centroid − centroid mean) · readᵀ`. */
   muCoordinates: Float64Array;
   whitenedGram: Float64Array;
   neutralCrossGram: Float64Array;
@@ -422,6 +428,7 @@ function isFittingWorkerResult(value: unknown): value is FittingWorkerResult {
         isFloat64(value.centroidMean) && value.centroidMean.length === value.columns &&
         isFloat64(value.mean) && value.mean.length === value.columns &&
         isFloat64(value.basis) && value.basis.length === value.components * value.columns &&
+        isFloat64(value.read) && value.read.length === value.components * value.columns &&
         isFloat64(value.nodeCoordinates) &&
         value.nodeCoordinates.length === value.nodeCount * value.components &&
         isFloat64(value.muCoordinates) &&

@@ -30,6 +30,7 @@ import {
 } from "../artifacts/authoring";
 import {
   BrowserFittingCoordinator,
+  FIT_POLICY_VERSION,
   embedBrowserAuthoredCoordinates,
   type BrowserAuthoredFittingPlan,
   type BrowserCentroidTransform,
@@ -67,7 +68,6 @@ import type {
 import type { StructuredHookProgramBuffers } from "./structuredHookProgram";
 
 const CAPTURE_VERSION = 3;
-const FIT_POLICY_VERSION = 1;
 const LENGTH_DIRECTIVE = "Answer in one short paragraph.";
 const RESPONSE_MAX_TOKENS = 256;
 const DEFAULT_NAMESPACE = "local";
