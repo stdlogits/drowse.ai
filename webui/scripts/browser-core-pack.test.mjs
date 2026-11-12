@@ -248,9 +248,7 @@ try {
       capture_version: null,
       capture_render_sha256: null,
       baseline_prompts_sha256: null,
-      fit_policy_version: 1,
-      share_metric: "mahalanobis",
-      subspace_metric: "mahalanobis",
+      fit_policy_version: 2,
       rbf_smoothing_per_layer: curved ? {
         "0": { lambda: 0, edf: 2, gcv: 0 },
         "1": { lambda: 0, edf: 2, gcv: 0 },
@@ -384,9 +382,7 @@ try {
         capture_version: null,
         capture_render_sha256: null,
         baseline_prompts_sha256: null,
-        fit_policy_version: 1,
-        share_metric: "mahalanobis",
-        subspace_metric: "mahalanobis",
+        fit_policy_version: 2,
         rbf_smoothing_per_layer: {},
         sigma_field_per_layer: {},
         resolved_fit_mode: null,
@@ -2804,10 +2800,6 @@ try {
       ["local/demo", "local/focus"],
     );
     assert.deepEqual(compiler.getProfile("local/demo").layers, [0, 1]);
-    assert.equal(
-      compiler.getProfile("local/demo").metadata.share_metric,
-      "mahalanobis",
-    );
 
     const correlation = compiler.profileCorrelation();
     assert.deepEqual(correlation.names, ["local/demo", "local/focus"]);

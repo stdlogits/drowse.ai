@@ -1028,7 +1028,6 @@ export class BrowserFeasibilityCorePackCompiler {
           feature_space: manifold.featureSpace,
           variant: manifold.variant,
           variant_identity: manifold.variantIdentity,
-          share_metric: "mahalanobis",
         },
       },
       directions,
