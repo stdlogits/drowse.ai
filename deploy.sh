@@ -60,4 +60,9 @@ npm run build:hosted:release
   --commit-message "$(git log -1 --format=%s)" --commit-dirty=false
 # A public release check must run without Access credentials.
 unset CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET
-npm run verify:hosted:deployment -- "$DROWSE_PUBLIC_ORIGIN" --channel release --revision "$rev"
+# The custom domain can serve the previous deployment for a little while after the upload.
+for attempt in 1 2 3 4 5 6; do
+  npm run --silent verify:hosted:deployment -- "$DROWSE_PUBLIC_ORIGIN" --channel release --revision "$rev" && exit 0
+  (( attempt < 6 )) && { echo "Live site not on $rev yet; checking again in 20 s"; sleep 20; }
+done
+exit 1
