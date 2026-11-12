@@ -22,6 +22,8 @@ interface StoredClosure {
   manifold: Record<string, unknown>;
   nodeCorpora: string[][];
   fitted: ManifoldFitInfo[];
+  /** The closure's fitted tensor filenames (each beside its sidecar). */
+  tensorFiles: readonly string[];
 }
 
 export async function authoredManifoldPack(
@@ -42,7 +44,6 @@ export async function authoredManifoldPack(
       role: node.role ?? null,
       kind: null,
     })),
-    files: {},
     source: "local",
     tags: [],
     template_ref: null,
@@ -105,7 +106,6 @@ export async function discoverManifoldPack(
       role: node.role ?? null,
       kind: null,
     })),
-    files: {},
     source: "local",
     tags: [],
     template_ref: null,
@@ -149,7 +149,6 @@ export async function mergedDiscoverManifoldPack(
       role: node.role,
       kind: node.kind,
     })),
-    files: {},
     source: "local",
     tags: [],
     template_ref: null,
@@ -183,7 +182,6 @@ export async function templateManifoldPack(
     fit_mode: request.fit_mode,
     hyperparams: request.hyperparams ?? {},
     nodes: labels.map((label) => ({ label, role: null, kind: null })),
-    files: {},
     source: "local",
     tags: [],
     template_ref: `${templateNamespace}/${template.name}`,
@@ -262,8 +260,7 @@ export function manifoldInfo(
   const intrinsicDim = hasAuthoredGeometry ? domainDimension(domain) : 0;
   const fittedModels: string[] = [];
   const tensorVariants: Record<string, string[]> = {};
-  for (const filename of Object.keys(value.files as Record<string, string>)) {
-    if (!filename.endsWith(".safetensors")) continue;
+  for (const filename of closure.tensorFiles) {
     const parsed = parseDrowseTensorFilename(filename);
     if (!parsed) continue;
     if (!fittedModels.includes(parsed.safeModelId)) fittedModels.push(parsed.safeModelId);

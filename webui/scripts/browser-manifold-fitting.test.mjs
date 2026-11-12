@@ -1251,7 +1251,6 @@ async function monopolarExtractionCheck(
     metadata: {
       method: "manifold_pca",
       name: "calm",
-      share_metric: "mahalanobis",
     },
   });
   assert.equal(harness.published[0].nodes.length, 1);

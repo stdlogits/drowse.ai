@@ -26,6 +26,7 @@ import {
   templatePayload,
   templateSummary,
 } from "./authoring";
+import { drowseFittedTensorNames, readManifoldManifest } from "./drowseArchive";
 import {
   BrowserTemplateRepository,
   type BrowserTemplateRepositoryPort,
@@ -80,6 +81,7 @@ export interface DrowseArchiveRepositoryPort {
   ): Promise<InstalledDrowseArchive>;
   list(): Promise<InstalledDrowseArchive[]>;
   remove(primary: string): Promise<boolean>;
+  paths(primary: string): Promise<string[] | null>;
   file(primary: string, path: string): Promise<Blob | null>;
   export(primary: string): Promise<File>;
   withExport<T>(
@@ -451,7 +453,12 @@ export class BrowserDrowseArchiveService {
     const [, namespace] = primary.split("/");
     const metadataFile = await this.repository.file(primary, `${primary}/manifold.json`);
     if (!metadataFile) throw new Error(`Installed Drowse pack ${primary} is missing manifold.json`);
-    const manifold = await parseJsonFile(metadataFile, `${primary}/manifold.json`);
+    const manifold = readManifoldManifest(
+      await parseJsonFile(metadataFile, `${primary}/manifold.json`),
+      `${primary}/manifold.json`,
+    ).value;
+    // Fitted pairs are found as drowse's folder scan finds them: a tensor beside its sidecar.
+    const tensorFiles = drowseFittedTensorNames(await this.repository.paths(primary) ?? [], primary);
     const nodes = manifold.nodes as Array<{ label: string }>;
     const nodeCorpora = full && manifold.fit_mode !== "baked"
       ? await Promise.all(nodes.map(async (node, index) => {
@@ -467,8 +474,7 @@ export class BrowserDrowseArchiveService {
       : nodes.map(() => []);
     const fitted: ManifoldFitInfo[] = [];
     if (full) {
-      for (const filename of Object.keys(manifold.files as Record<string, string>)) {
-        if (!filename.endsWith(".safetensors")) continue;
+      for (const filename of tensorFiles) {
         const sidecarName = filename.replace(/\.safetensors$/, ".json");
         const path = `${primary}/${sidecarName}`;
         const file = await this.repository.file(primary, path);
@@ -492,7 +498,7 @@ export class BrowserDrowseArchiveService {
       }
     }
     return {
-      ...manifoldInfo(namespace, { manifold, nodeCorpora, fitted }, full),
+      ...manifoldInfo(namespace, { manifold, nodeCorpora, fitted, tensorFiles }, full),
       archive_source: structuredClone(pack.source),
     };
   }

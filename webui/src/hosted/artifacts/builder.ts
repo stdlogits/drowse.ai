@@ -1,5 +1,3 @@
-import { sha256 } from "@noble/hashes/sha2.js";
-import { bytesToHex } from "@noble/hashes/utils.js";
 import { zipSync } from "fflate";
 import { validateDrowseArchive } from "./drowseArchive";
 import {
@@ -7,14 +5,14 @@ import {
   DROWSE_ARCHIVE_MAX_ENTRIES,
   DROWSE_ARCHIVE_MAX_FILE_BYTES,
   DrowseArchiveError,
-  type DrowseArchiveManifest,
+  type DrowseArchivePackManifest,
 } from "./types";
 
 export interface BuildDrowseArchiveInput {
   primary: string;
   template: string | null;
   producerVersion: string;
-  source: DrowseArchiveManifest["source"];
+  source: DrowseArchivePackManifest["source"];
   files: Readonly<Record<string, Uint8Array>>;
 }
 
@@ -47,18 +45,14 @@ export async function buildDrowseArchive(input: BuildDrowseArchiveInput): Promis
       );
     }
   }
-  const files = Object.fromEntries(paths.map((path) => {
-    const bytes = input.files[path];
-    return [path, { size: bytes.length, sha256: bytesToHex(sha256(bytes)) }];
-  }));
-  const manifest: DrowseArchiveManifest = {
+  // drowse 6.1's pack.json: the closure and its provenance, no per-entry digests.
+  const manifest: DrowseArchivePackManifest = {
     format_version: 1,
     kind: "drowse-manifold",
     producer: { name: "drowse", version: input.producerVersion },
     primary: input.primary,
     template: input.template,
     source: { ...input.source },
-    files,
   };
   const manifestBytes = jsonBytes(manifest);
   if (manifestBytes.length > DROWSE_ARCHIVE_MANIFEST_MAX_BYTES) {
