@@ -171,7 +171,7 @@ test("streams reduced covariances and fits a curved sigma field", async ({ page 
         source: { kind: "activation_spool", identity, layer: 3 },
         offsets: new Uint32Array([0, 2, 4, 6]),
         mean: new Float64Array([0, 0]),
-        basis: new Float64Array([1, 0, 0, 1]),
+        read: new Float64Array([1, 0, 0, 1]),
         components: 2,
       });
       if (covariance.operation !== "reduced_covariances") {
