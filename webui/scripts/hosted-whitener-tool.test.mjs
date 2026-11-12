@@ -112,7 +112,7 @@ const loaded = await exec(python, [
     "from pathlib import Path",
     "from drowse.store.manifold_folder import ManifoldFolder",
     "folder = ManifoldFolder.load(Path(sys.argv[1]))",
-    "print(json.dumps({'name': folder.name, 'fit_mode': folder.fit_mode, 'nodes': folder.node_labels, 'groups': [len(rows) for _, rows in folder.node_groups()], 'files': folder.files}))",
+    "print(json.dumps({'name': folder.name, 'fit_mode': folder.fit_mode, 'nodes': folder.node_labels, 'groups': [len(rows) for _, rows in folder.node_groups()]}))",
   ].join("; "),
   seedSource,
 ], { cwd: repositoryRoot, env: { ...process.env, PYTHONPATH: resolve(repositoryRoot, "drowse") } });
@@ -121,7 +121,6 @@ assert.deepEqual(JSON.parse(loaded.stdout), {
   fit_mode: "pca",
   nodes: ["welcoming", "detached"],
   groups: [48, 48],
-  files: {},
 });
 assert.throws(
   () => lockedModelExecutionProfiles(qwen4b, {

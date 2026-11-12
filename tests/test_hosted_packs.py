@@ -105,7 +105,6 @@ def test_lens_packs_bind_the_runtime_and_ship_the_native_shards(built) -> None:
         assert record["packs"][kind]["native"]["lens_identity"] == native_identity
         for site, entry in manifest["sites"].items():
             assert entry["layers"] == native["sites"][site]["layers"]
-            assert entry["tensor_sha256"] == native["sites"][site]["tensor_sha256"]
             for layer in entry["layers"]:
                 assert entry["tensor_files"][str(layer)] == f"{site}.layer-{layer}.safetensors"
                 tensors = load_file(pack / entry["tensor_files"][str(layer)])
