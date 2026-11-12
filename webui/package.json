@@ -74,7 +74,7 @@
   "dependencies": {
     "@drowse/web-llm": "file:../browser-runtime/vendor/drowse-web-llm-0.2.84-drowse.50.tgz",
     "@noble/hashes": "2.3.0",
-    "@stdlogits/ledger": "https://codeload.github.com/stdlogits/ledger/tar.gz/refs/tags/v0.1.5",
+    "@stdlogits/ledger": "https://codeload.github.com/stdlogits/ledger/tar.gz/refs/tags/v0.1.11",
     "fflate": "0.8.3",
     "yaml": "2.9.0"
   }
