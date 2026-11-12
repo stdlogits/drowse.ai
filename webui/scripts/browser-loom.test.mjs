@@ -2943,7 +2943,7 @@ try {
   // refused in drowse's words (the browser measures no prompts, so it holds no prompt capture).
   {
     const { compileStructuredHookProgram } = await server.ssrLoadModule("/src/hosted/runtime/structuredHookProgram.ts");
-    const { STANDARD_STRUCTURED_HOOK_PROFILE_V4 } = await server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts");
+    const { STANDARD_STRUCTURED_HOOK_PROFILE_V5 } = await server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts");
     const rendered = [];
     const unitsEngine = {
       async streamGeneration(plan, onToken) {
@@ -2969,7 +2969,7 @@ try {
       createId: ids("units-replay"),
       compileSteering: (expression) => {
         compiled.push(expression);
-        return compileStructuredHookProgram(2, [{}, {}], STANDARD_STRUCTURED_HOOK_PROFILE_V4);
+        return compileStructuredHookProgram(2, [{}, {}], STANDARD_STRUCTURED_HOOK_PROFILE_V5);
       },
     });
     await unitsRuntime.generate(

@@ -20,9 +20,9 @@ try {
     server.ssrLoadModule("/src/hosted/runtime/structuredHookProgram.ts"),
     server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts"),
   ]);
-  const standardProfile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4;
-  const geometryProfile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4;
-  const exactReadoutProfile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4;
+  const standardProfile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V5;
+  const geometryProfile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V5;
+  const exactReadoutProfile = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V5;
   const program = hooks.compileStructuredHookProgram(2, [
     {
       affineGroups: [{
@@ -232,7 +232,7 @@ try {
     productionLayerCount,
   ));
   assert.doesNotThrow(() => validateDrowseJlensDictionary({
-    hookAbi: "block-sites-v5",
+    hookAbi: "block-sites-v6",
     bindingId: productionBindingId,
     hiddenSize: 2,
     layerIndices: productionLayerIndices,
@@ -509,7 +509,7 @@ try {
     profiles.structuredHookMemoryRequirements(exactReadoutProfile, 2, 960),
     profiles.structuredHookMemoryRequirements(geometryProfile, 2, 960),
   );
-  assert.equal(profiles.resolveStructuredHookProfile("standard-v4"), exactReadoutProfile);
+  assert.equal(profiles.resolveStructuredHookProfile("standard-v5"), exactReadoutProfile);
   assert.throws(
     () => profiles.validateStructuredHookProfile({ ...standardProfile, maxRank: 9 }),
     /modified/,

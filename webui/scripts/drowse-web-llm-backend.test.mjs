@@ -251,8 +251,8 @@ try {
           profiles: steeringCompiler.listProfiles().profiles.map((profile) => profile.name),
         });
         return context.expression.includes("head/")
-          ? { format: "drowse-structured-v4", hookAbi: "block-sites-v5", unitMeta: new Int32Array(1) }
-          : { format: "drowse-structured-v4", hookAbi: "block-sites-v5" };
+          ? { format: "drowse-structured-v5", hookAbi: "block-sites-v6", unitMeta: new Int32Array(1) }
+          : { format: "drowse-structured-v5", hookAbi: "block-sites-v6" };
       },
       steeringDelta(context) {
         deltas.push(context);
@@ -304,10 +304,10 @@ try {
   // The load wires the units members and hands the compiler their unit source: this library
   // predates hook ABI v5, so the source carries native's refusal and every member answers 422.
   assert.equal(instrumentCompiler.unitSource.spec, null);
-  assert.equal(instrumentCompiler.unitSource.refusal, "the loaded model library predates hook ABI block-sites-v5");
+  assert.equal(instrumentCompiler.unitSource.refusal, "the loaded model library predates hook ABI block-sites-v6");
   await assert.rejects(
     backend.request(service("instruments", "unitRead", ["neuron/L0n0"]), () => {}, new AbortController().signal),
-    (error) => error.status === 422 && error.message === "the loaded model library predates hook ABI block-sites-v5",
+    (error) => error.status === 422 && error.message === "the loaded model library predates hook ABI block-sites-v6",
   );
   assert.deepEqual(loadProgress, [
     {
@@ -777,7 +777,7 @@ try {
   assert.equal(compiled[0].expression, "0.5 local/fitted");
   assert.equal(compiled[0].loadRequest, request);
   assert.deepEqual(compiled[0].profiles, ["local/demo", "local/fitted"]);
-  assert.equal(calls.find((call) => call[0] === "generate")[1].hookProgram.hookAbi, "block-sites-v5");
+  assert.equal(calls.find((call) => call[0] === "generate")[1].hookProgram.hookAbi, "block-sites-v6");
 
   const tree = await backend.request(
     service("tree", "get"),

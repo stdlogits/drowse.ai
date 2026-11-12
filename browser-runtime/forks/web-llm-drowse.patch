@@ -1,5 +1,5 @@
 diff --git a/package-lock.json b/package-lock.json
-index 0070bde..ea2a000 100644
+index 0070bde..55a8802 100644
 --- a/package-lock.json
 +++ b/package-lock.json
 @@ -1,21 +1,21 @@
@@ -7,7 +7,7 @@ index 0070bde..ea2a000 100644
 -  "name": "@mlc-ai/web-llm",
 -  "version": "0.2.84",
 +  "name": "@drowse/web-llm",
-+  "version": "0.2.84-drowse.49",
++  "version": "0.2.84-drowse.50",
    "lockfileVersion": 3,
    "requires": true,
    "packages": {
@@ -15,7 +15,7 @@ index 0070bde..ea2a000 100644
 -      "name": "@mlc-ai/web-llm",
 -      "version": "0.2.84",
 +      "name": "@drowse/web-llm",
-+      "version": "0.2.84-drowse.49",
++      "version": "0.2.84-drowse.50",
        "license": "Apache-2.0",
        "dependencies": {
 -        "loglevel": "^1.9.1"
@@ -170,7 +170,7 @@ index 0070bde..ea2a000 100644
        "version": "9.3.0",
        "resolved": "https://registry.npmjs.org/v8-to-istanbul/-/v8-to-istanbul-9.3.0.tgz",
 diff --git a/package.json b/package.json
-index cabfc3d..06cec60 100644
+index cabfc3d..a05f189 100644
 --- a/package.json
 +++ b/package.json
 @@ -1,12 +1,12 @@
@@ -178,7 +178,7 @@ index cabfc3d..06cec60 100644
 -  "name": "@mlc-ai/web-llm",
 -  "version": "0.2.84",
 +  "name": "@drowse/web-llm",
-+  "version": "0.2.84-drowse.49",
++  "version": "0.2.84-drowse.50",
    "description": "Hardware accelerated language model chats on browsers",
    "main": "lib/index.js",
    "types": "lib/index.d.ts",
@@ -803,11 +803,11 @@ index 122e933..83964fe 100644
    const iterEnd = includeLastMsg ? input.length : input.length - 1;
 diff --git a/src/drowse.ts b/src/drowse.ts
 new file mode 100644
-index 0000000..bc02db8
+index 0000000..5584035
 --- /dev/null
 +++ b/src/drowse.ts
-@@ -0,0 +1,1774 @@
-+export const DROWSE_HOOK_ABI = "block-sites-v5" as const;
+@@ -0,0 +1,1780 @@
++export const DROWSE_HOOK_ABI = "block-sites-v6" as const;
 +export const DROWSE_EXACT_READOUT_ABI = "exact-readout-v2" as const;
 +
 +export type DrowsePositionSpan = [number, number];
@@ -930,12 +930,12 @@ index 0000000..bc02db8
 +  saeTopFeatures?: DrowseSaeTopFeatureReadout;
 +}
 +
-+export type DrowseStructuredProfileId = "standard-v4" | "standard-v4-residual";
++export type DrowseStructuredProfileId = "standard-v5" | "standard-v5-residual";
 +
 +export interface DrowseStructuredHookProfile {
 +  schemaVersion: 4;
 +  id: DrowseStructuredProfileId;
-+  /** 1 when the library compiles the in-block unit sites (`standard-v4`). */
++  /** 1 when the library compiles the in-block unit sites (`standard-v5`). */
 +  unitSites: 0 | 1;
 +  /** The library's whole schema-4 descriptor, for the caller's element-by-element attestation
 +   *  against the model's lock entry (block spec, context, capacities). */
@@ -971,7 +971,7 @@ index 0000000..bc02db8
 +  maxSaeFeaturesPerChunk: number;
 +}
 +
-+export const DROWSE_STRUCTURED_HOOK_FORMAT = "drowse-structured-v4" as const;
++export const DROWSE_STRUCTURED_HOOK_FORMAT = "drowse-structured-v5" as const;
 +export type DrowseStructuredHookFormat = typeof DROWSE_STRUCTURED_HOOK_FORMAT;
 +export const DROWSE_STRUCTURED_MAX_AFFINE_GROUPS = 4;
 +export const DROWSE_STRUCTURED_MAX_RANK = 8;
@@ -993,15 +993,15 @@ index 0000000..bc02db8
 +export const DROWSE_STRUCTURED_GEOMETRY_KERNEL_STORAGE_BINDINGS = 8;
 +export const DROWSE_STRUCTURED_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE = 8;
 +export const DROWSE_STRUCTURED_PROFILE_SCHEMA_VERSION = 4 as const;
-+export const DROWSE_STRUCTURED_PROFILE_ID = "standard-v4" as const;
++export const DROWSE_STRUCTURED_PROFILE_ID = "standard-v5" as const;
 +export const DROWSE_STRUCTURED_RESIDUAL_PROFILE_ID =
-+  "standard-v4-residual" as const;
++  "standard-v5-residual" as const;
 +export const DROWSE_STRUCTURED_PROFILE_MAGIC = 0x53414b4c;
 +/** Descriptor schema 4: v3's 31 fields, then the block spec and unit capacities (HOOK_ABI.md §6). */
 +export const DROWSE_STRUCTURED_PROFILE_DESCRIPTOR_LENGTH = 67;
-+export const DROWSE_HOOK_PROFILE_ID_FIELD = 4 as const;
-+export const DROWSE_HOOK_ABI_VERSION = 5 as const;
-+export const DROWSE_STRUCTURED_FORMAT_VERSION = 4 as const;
++export const DROWSE_HOOK_PROFILE_ID_FIELD = 5 as const;
++export const DROWSE_HOOK_ABI_VERSION = 6 as const;
++export const DROWSE_STRUCTURED_FORMAT_VERSION = 5 as const;
 +export const DROWSE_EXACT_READOUT_ABI_VERSION = 2 as const;
 +/** Descriptor indices the bridge itself reads (the rest is attested by the caller). */
 +export const DROWSE_DESCRIPTOR_UNIT_SITES = 31;
@@ -1013,13 +1013,13 @@ index 0000000..bc02db8
 +export const DROWSE_DESCRIPTOR_ANATOMY_STRIDE = 61;
 +export const DROWSE_DESCRIPTOR_PREFILL_CHUNK_SIZE = 51;
 +export const DROWSE_DESCRIPTOR_CONTEXT_TOKENS = 66;
-+/** Unit capacities of `standard-v4` (B1 §3.1, §3.5). */
++/** Unit capacities of `standard-v5` (B1 §3.1, §3.5). */
 +export const DROWSE_UNIT_MAX_GROUPS = 4;
 +export const DROWSE_UNIT_MAX_NEURON_ABLATIONS = 256;
 +export const DROWSE_UNIT_MAX_HEAD_ABLATIONS = 64;
 +export const DROWSE_UNIT_MAX_TAPS = 64;
 +export const DROWSE_UNIT_MAX_HEAD_TAPS = 16;
-+/** The unit pair every `standard-v4` library exports and every residual library lacks. */
++/** The unit pair every `standard-v5` library exports and every residual library lacks. */
 +export const DROWSE_UNIT_FUNCTIONS = Object.freeze([
 +  "drowse_units_batch_prefill",
 +  "drowse_units_batch_decode",
@@ -1027,7 +1027,7 @@ index 0000000..bc02db8
 +  "drowse_attention_rows",
 +  "drowse_head_write_grams",
 +] as const);
-+/** Replay capacities of `standard-v4` (B1 §2.3, §6; HOOK_ABI.md §7). */
++/** Replay capacities of `standard-v5` (B1 §2.3, §6; HOOK_ABI.md §7). */
 +export const DROWSE_UNIT_MAX_ACTIVITY_TRACES = 32;
 +export const DROWSE_UNIT_MAX_ACTIVITY_SPANS = 4;
 +export const DROWSE_UNIT_MAX_PATTERN_LAYERS = 16;
@@ -1153,7 +1153,7 @@ index 0000000..bc02db8
 +  tensors: Record<string, DrowseTensorOutput>;
 +}
 +
-+/** `exact-readout-v2`: every block-sites-v5 library exports these. */
++/** `exact-readout-v2`: every block-sites-v6 library exports these. */
 +export const DROWSE_READOUT_FUNCTIONS = Object.freeze([
 +  "drowse_embedding_rows",
 +  "drowse_unembedding_rows",
@@ -1501,6 +1501,8 @@ index 0000000..bc02db8
 +  layerCount: number;
 +  affineActive: Uint32Array;
 +  affineBasis: Float32Array;
++  /** Hook ABI v6: the coordinate rows, dual to `affineBasis` (`read · basisᵀ = I`). */
++  affineRead: Float32Array;
 +  affineNeutral: Float32Array;
 +  affineTarget: Float32Array;
 +  affineAlong: Float32Array;
@@ -1515,6 +1517,8 @@ index 0000000..bc02db8
 +  curveEmbedDim: Uint32Array;
 +  curveNodeCount: Uint32Array;
 +  curveBasis: Float32Array;
++  /** Hook ABI v6: the coordinate rows, dual to `curveBasis`. */
++  curveRead: Float32Array;
 +  curveNeutral: Float32Array;
 +  curveNodeParameters: Float32Array;
 +  curveRbfWeights: Float32Array;
@@ -1563,7 +1567,7 @@ index 0000000..bc02db8
 +  saeBindingId?: string;
 +  /** Keep each forward's `[L, d]` capture for the host (the measurement bundle's `hidden`). */
 +  hiddenCapture?: boolean;
-+  /** drowse-structured-v4's unit section (B1 §3.1, §3.4): present together or not at all. */
++  /** drowse-structured-v5's unit section (B1 §3.1, §3.4): present together or not at all. */
 +  unitMeta?: Uint32Array;
 +  unitCoeff?: Float32Array;
 +  unitActive?: Float32Array;
@@ -2103,6 +2107,7 @@ index 0000000..bc02db8
 +    l * g * r * d,
 +    "affineBasis",
 +  );
++  requireTypedLength(program.affineRead, Float32Array, l * g * r * d, "affineRead");
 +  requireTypedLength(
 +    program.affineNeutral,
 +    Float32Array,
@@ -2167,6 +2172,7 @@ index 0000000..bc02db8
 +    curveSlots * r * d,
 +    "curveBasis",
 +  );
++  requireTypedLength(program.curveRead, Float32Array, curveSlots * r * d, "curveRead");
 +  requireTypedLength(
 +    program.curveNeutral,
 +    Float32Array,
@@ -2848,7 +2854,7 @@ index 0000000..74d754a
 +  }
 +}
 diff --git a/src/engine.ts b/src/engine.ts
-index 1934771..6900412 100644
+index 1934771..aacc700 100644
 --- a/src/engine.ts
 +++ b/src/engine.ts
 @@ -45,6 +45,7 @@ import {
@@ -3576,7 +3582,7 @@ index 1934771..6900412 100644
 +    }
 +  }
 +
-+  /** Hook ABI v5's block-sites device surface (replay, residents, attention rows). */
++  /** Hook ABI v6's block-sites device surface (replay, residents, attention rows). */
 +  async drowseBlockSites(
 +    request: DrowseBlockSitesRequest,
 +    modelId?: string,
@@ -4159,7 +4165,7 @@ index d583419..9a057a6 100644
    hasModelInCache,
    deleteChatConfigInCache,
 diff --git a/src/llm_chat.ts b/src/llm_chat.ts
-index 616cff4..3336e91 100644
+index 616cff4..0258e70 100644
 --- a/src/llm_chat.ts
 +++ b/src/llm_chat.ts
 @@ -1,20 +1,28 @@
@@ -4286,7 +4292,7 @@ index 616cff4..3336e91 100644
  
  type ImageURL = ChatCompletionContentPartImage.ImageURL;
  
-@@ -47,6 +134,469 @@ type VMFunctionAvailability = {
+@@ -47,6 +134,471 @@ type VMFunctionAvailability = {
  
  type VMFunctionRegistry = Record<string, tvmjs.PackedFunc | undefined>;
  
@@ -4452,6 +4458,7 @@ index 616cff4..3336e91 100644
 +type DrowseStructuredBuffers = {
 +  affineActive: tvmjs.Tensor;
 +  affineBasis: tvmjs.Tensor;
++  affineRead: tvmjs.Tensor;
 +  affineNeutral: tvmjs.Tensor;
 +  affineTarget: tvmjs.Tensor;
 +  affineAlong: tvmjs.Tensor;
@@ -4461,6 +4468,7 @@ index 616cff4..3336e91 100644
 +  probeBias: tvmjs.Tensor;
 +  probeThreshold: tvmjs.Tensor;
 +  curveBasis?: tvmjs.Tensor;
++  curveRead?: tvmjs.Tensor;
 +  curveNeutral?: tvmjs.Tensor;
 +  curveParameters?: tvmjs.Tensor;
 +  curveActive?: tvmjs.Tensor;
@@ -4756,7 +4764,7 @@ index 616cff4..3336e91 100644
  type ResolvedModelABI = {
    kvStateKind: Exclude<KVStateKind, "none">;
    prefillABI: ComputeABIKind;
-@@ -67,6 +617,21 @@ export class LLMChatPipeline {
+@@ -67,6 +619,21 @@ export class LLMChatPipeline {
    private vm: tvmjs.VirtualMachine;
    private prefill: tvmjs.PackedFunc;
    private decoding: tvmjs.PackedFunc;
@@ -4778,7 +4786,7 @@ index 616cff4..3336e91 100644
    private resolvedModelABI!: ResolvedModelABI;
    private kvStateKind: KVStateKind = "kv_cache";
    private image_embed: tvmjs.PackedFunc | undefined;
-@@ -94,7 +659,82 @@ export class LLMChatPipeline {
+@@ -94,7 +661,82 @@ export class LLMChatPipeline {
    private prefillLogitPositionHost = new Int32Array(1);
    private maxHistorySize = 1;
    private logitsOnCPU?: tvmjs.Tensor = undefined;
@@ -4861,7 +4869,7 @@ index 616cff4..3336e91 100644
  
    // meta data
    private bosTokenId = 1;
-@@ -109,8 +749,12 @@ export class LLMChatPipeline {
+@@ -109,8 +751,12 @@ export class LLMChatPipeline {
    // states
    private outputMessage = "";
    private outputIds: Array<number> = [];
@@ -4874,7 +4882,7 @@ index 616cff4..3336e91 100644
    // frequency of appeared token ids till now (refresh after PrefillStep); token_id mapped to freq
    private appearedTokensFreq = new Map<number, number>();
    private imageDataCache = new Map<string, ImageData>();
-@@ -130,6 +774,10 @@ export class LLMChatPipeline {
+@@ -130,6 +776,10 @@ export class LLMChatPipeline {
    private curRoundPrefillTotalTokens = 0;
    private curRoundDecodingTotalTime = 0;
    private curRoundPrefillTotalTime = 0;
@@ -4885,7 +4893,7 @@ index 616cff4..3336e91 100644
  
    // additional stats, reset at every prefillStep()
    public curRoundLatencyBreakdown: LatencyBreakdown = {
-@@ -181,12 +829,14 @@ export class LLMChatPipeline {
+@@ -181,12 +831,14 @@ export class LLMChatPipeline {
      tokenizer: Tokenizer,
      config: ChatConfig,
      logitProcessor?: LogitProcessor,
@@ -4900,7 +4908,7 @@ index 616cff4..3336e91 100644
      this.fullVocabSize = this.config.vocab_size;
      this.bitmaskSize = Math.ceil(this.fullVocabSize / 32);
  
-@@ -233,6 +883,26 @@ export class LLMChatPipeline {
+@@ -233,6 +885,26 @@ export class LLMChatPipeline {
        "batch_prefill",
        "decode",
        "batch_decode",
@@ -4927,7 +4935,7 @@ index 616cff4..3336e91 100644
        "create_tir_paged_kv_cache",
        "create_rnn_state",
        "sample_with_top_p",
-@@ -253,9 +923,15 @@ export class LLMChatPipeline {
+@@ -253,9 +925,15 @@ export class LLMChatPipeline {
  
      const vmFunctionAvailability =
        LLMChatPipeline.getVMFunctionAvailability(vmFunctionRegistry);
@@ -4943,7 +4951,7 @@ index 616cff4..3336e91 100644
      );
      const stateKinds: string[] = [];
      if (this.resolvedModelABI.needsKVCache) {
-@@ -287,6 +963,130 @@ export class LLMChatPipeline {
+@@ -287,6 +965,130 @@ export class LLMChatPipeline {
          vmFunctionRegistry,
        ),
      );
@@ -5074,7 +5082,7 @@ index 616cff4..3336e91 100644
      if (this.resolvedModelABI.prefillABI === "batch") {
        log.info("Using batch_prefill kernel.");
      }
-@@ -489,6 +1289,43 @@ export class LLMChatPipeline {
+@@ -489,6 +1291,43 @@ export class LLMChatPipeline {
      this.params.dispose();
      this.decoding.dispose();
      this.prefill.dispose();
@@ -5118,7 +5126,7 @@ index 616cff4..3336e91 100644
      this.embed.dispose();
      this.image_embed?.dispose();
      this.prefillLogitPositions?.dispose();
-@@ -507,6 +1344,2625 @@ export class LLMChatPipeline {
+@@ -507,6 +1346,2643 @@ export class LLMChatPipeline {
      this.grammarCompiler?.dispose();
    }
  
@@ -5137,7 +5145,7 @@ index 616cff4..3336e91 100644
 +    );
 +  }
 +
-+  /** The units pair (hook ABI v5, `standard-v4`): mean-ablation and the live unit tap. */
++  /** The units pair (hook ABI v6, `standard-v5`): mean-ablation and the live unit tap. */
 +  supportsDrowseUnitSites(): boolean {
 +    return (
 +      this.drowseUnitsPrefill !== undefined &&
@@ -5217,13 +5225,13 @@ index 616cff4..3336e91 100644
 +    }
 +  }
 +
-+  /** Hook ABI v5's block-sites device surface (HOOK_ABI.md §7-§9), one request per call. */
++  /** Hook ABI v6's block-sites device surface (HOOK_ABI.md §7-§9), one request per call. */
 +  async drowseBlockSites(
 +    request: DrowseBlockSitesRequest,
 +  ): Promise<DrowseBlockSitesResult> {
 +    if (this.drowseHookDescriptor === undefined) {
 +      throw new Error(
-+        "BLOCK_SITES_UNAVAILABLE: the loaded model library does not attest hook ABI v5",
++        "BLOCK_SITES_UNAVAILABLE: the loaded model library does not attest hook ABI v6",
 +      );
 +    }
 +    switch (request.op) {
@@ -5611,7 +5619,7 @@ index 616cff4..3336e91 100644
 +  }
 +
 +  /** Open a KV-continuing replay (B1 §2.3, HOOK_ABI.md §7) on a fresh sequence. The installed
-+   *  program (drowse-structured-v4 with a unit section) steers it; `replayMeta` names the taps. */
++   *  program (drowse-structured-v5 with a unit section) steers it; `replayMeta` names the taps. */
 +  private async openDrowseReplay(
 +    request: Extract<DrowseBlockSitesRequest, { op: "openReplay" }>,
 +  ): Promise<void> {
@@ -5620,7 +5628,7 @@ index 616cff4..3336e91 100644
 +    }
 +    if (this.drowseStructuredMode !== "units") {
 +      throw new Error(
-+        "REPLAY_PROGRAM_REQUIRED: install a drowse-structured-v4 program with a unit section first",
++        "REPLAY_PROGRAM_REQUIRED: install a drowse-structured-v5 program with a unit section first",
 +      );
 +    }
 +    const dims = this.drowseBlockDims();
@@ -6374,6 +6382,15 @@ index 616cff4..3336e91 100644
 +          ],
 +          program.affineBasis,
 +        ),
++        affineRead: f32(
++          [
++            layerCount,
++            DROWSE_STRUCTURED_MAX_AFFINE_GROUPS,
++            DROWSE_STRUCTURED_MAX_RANK,
++            hiddenSize,
++          ],
++          program.affineRead,
++        ),
 +        affineNeutral: f32(
 +          [layerCount, DROWSE_STRUCTURED_MAX_AFFINE_GROUPS, hiddenSize],
 +          program.affineNeutral,
@@ -6431,6 +6448,15 @@ index 616cff4..3336e91 100644
 +              hiddenSize,
 +            ],
 +            program.curveBasis,
++          ),
++          curveRead: f32(
++            [
++              layerCount,
++              DROWSE_STRUCTURED_MAX_CURVES,
++              DROWSE_STRUCTURED_MAX_RANK,
++              hiddenSize,
++            ],
++            program.curveRead,
 +          ),
 +          curveNeutral: f32(
 +            [layerCount, DROWSE_STRUCTURED_MAX_CURVES, hiddenSize],
@@ -7744,7 +7770,7 @@ index 616cff4..3336e91 100644
    /**
     * Get the current message.
     */
-@@ -514,6 +3970,11 @@ export class LLMChatPipeline {
+@@ -514,6 +3990,11 @@ export class LLMChatPipeline {
      return this.outputMessage;
    }
  
@@ -7756,7 +7782,7 @@ index 616cff4..3336e91 100644
    /**
     * Reset the runtime statistics
     */
-@@ -535,6 +3996,7 @@ export class LLMChatPipeline {
+@@ -535,6 +4016,7 @@ export class LLMChatPipeline {
      }
      this.resetKVCache();
      this.filledKVCacheLength = 0;
@@ -7764,7 +7790,7 @@ index 616cff4..3336e91 100644
      this.logitProcessor?.resetState();
      this.tvm.endScope();
    }
-@@ -543,6 +4005,7 @@ export class LLMChatPipeline {
+@@ -543,6 +4025,7 @@ export class LLMChatPipeline {
     * Reset KV Cache
     */
    resetKVCache() {
@@ -7772,7 +7798,7 @@ index 616cff4..3336e91 100644
      const states = this.getActiveKVStates();
      for (const state of states) {
        this.fclearKVCaches(state);
-@@ -572,6 +4035,10 @@ export class LLMChatPipeline {
+@@ -572,6 +4055,10 @@ export class LLMChatPipeline {
      return this.finishReason;
    }
  
@@ -7783,7 +7809,7 @@ index 616cff4..3336e91 100644
    /**
     * @returns tokenLogprobArray for this current round of autoregressive generation.
     * Updated upon each sampled token, cleared upon each prefillStep().
-@@ -587,6 +4054,10 @@ export class LLMChatPipeline {
+@@ -587,6 +4074,10 @@ export class LLMChatPipeline {
      return this.curRoundDecodingTotalTokens;
    }
  
@@ -7794,7 +7820,7 @@ index 616cff4..3336e91 100644
    /**
     * @returns the number of tokens decoded for a single request or a single choice in the request.
     */
-@@ -665,10 +4136,10 @@ export class LLMChatPipeline {
+@@ -665,10 +4156,10 @@ export class LLMChatPipeline {
    }
  
    /**
@@ -7807,7 +7833,7 @@ index 616cff4..3336e91 100644
    }
  
    private getResponseFormatKey(
-@@ -721,13 +4192,17 @@ export class LLMChatPipeline {
+@@ -721,13 +4212,17 @@ export class LLMChatPipeline {
     */
    async prefillStep(
      inp: string,
@@ -7828,7 +7854,7 @@ index 616cff4..3336e91 100644
        );
      }
      if (this.resetStatsPerPrefill) {
-@@ -738,8 +4213,10 @@ export class LLMChatPipeline {
+@@ -738,8 +4233,10 @@ export class LLMChatPipeline {
  
      // cleanup the per convo states
      this.outputIds = [];
@@ -7839,7 +7865,7 @@ index 616cff4..3336e91 100644
      this.tokenLogprobArray = [];
      this.curRoundDecodingTotalTokens = 0;
      this.curRoundPrefillTotalTokens = 0;
-@@ -747,6 +4224,10 @@ export class LLMChatPipeline {
+@@ -747,6 +4244,10 @@ export class LLMChatPipeline {
      this.curRoundDecodingTotalTime = 0;
      this.curRoundGrammarInitTotalTime = 0;
      this.curRoundGrammarPerTokenTotalTime = 0;
@@ -7850,7 +7876,7 @@ index 616cff4..3336e91 100644
  
      this.curRoundLatencyBreakdown = {
        logitProcessorTime: [],
-@@ -758,6 +4239,8 @@ export class LLMChatPipeline {
+@@ -758,6 +4259,8 @@ export class LLMChatPipeline {
      };
  
      this.stopTriggered = false;
@@ -7859,7 +7885,7 @@ index 616cff4..3336e91 100644
      const conversation = this.conversation;
  
      // -1. Instantiate grammar matcher according to generation config. This step is overlapped
-@@ -831,23 +4314,13 @@ export class LLMChatPipeline {
+@@ -831,23 +4334,13 @@ export class LLMChatPipeline {
      }
  
      // 0. Get inputData from conversation
@@ -7890,7 +7916,7 @@ index 616cff4..3336e91 100644
      const [inputData, promptLen, getEmbedSize] = await this.getInputData();
  
      // Check if LLMChatPipeline fits for forwarding image input
-@@ -944,8 +4417,9 @@ export class LLMChatPipeline {
+@@ -944,8 +4437,9 @@ export class LLMChatPipeline {
      }
      this.stopTriggered = true;
      this.finishReason = "abort";
@@ -7901,7 +7927,7 @@ index 616cff4..3336e91 100644
      }
    }
  
-@@ -999,9 +4473,11 @@ export class LLMChatPipeline {
+@@ -999,9 +4493,11 @@ export class LLMChatPipeline {
      if (stopTokens.includes(nextToken)) {
        this.stopTriggered = true;
        this.finishReason = "stop";
@@ -7913,7 +7939,7 @@ index 616cff4..3336e91 100644
        // Update token appearance frequency
        const curFreq = this.appearedTokensFreq.get(nextToken);
        if (curFreq !== undefined) {
-@@ -1013,6 +4489,7 @@ export class LLMChatPipeline {
+@@ -1013,6 +4509,7 @@ export class LLMChatPipeline {
  
      // Stop condition 2: stop string; update `this.outputMessage` subsequently
      let outputMessage = this.tokenizer.decode(new Int32Array(this.outputIds));
@@ -7921,7 +7947,7 @@ index 616cff4..3336e91 100644
      let stopPos = -1;
      for (const stopStr of stopStrs) {
        // Stop at the first stopStr we find
-@@ -1021,32 +4498,36 @@ export class LLMChatPipeline {
+@@ -1021,32 +4518,36 @@ export class LLMChatPipeline {
          outputMessage = outputMessage.substring(0, stopPos);
          this.stopTriggered = true;
          this.finishReason = "stop";
@@ -7960,7 +7986,7 @@ index 616cff4..3336e91 100644
        }
      }
    }
-@@ -1227,7 +4708,87 @@ export class LLMChatPipeline {
+@@ -1227,7 +4728,87 @@ export class LLMChatPipeline {
    private async embedAndForward(
      inputData: Array<Array<number> | ImageURL>,
      inputDataLen: number,
@@ -8048,7 +8074,7 @@ index 616cff4..3336e91 100644
      if (inputDataLen > this.prefillChunkSize) {
        throw new Error(
          "InternalError: expect inputDataLen <= this.prefillChunkSize.",
-@@ -1238,51 +4799,140 @@ export class LLMChatPipeline {
+@@ -1238,51 +4819,140 @@ export class LLMChatPipeline {
  
      // 1. Embed all inputData
      this.tvm.beginScope();
@@ -8230,7 +8256,7 @@ index 616cff4..3336e91 100644
      this.tvm.attachToCurrentScope(logits);
      return logits;
    }
-@@ -1292,7 +4942,14 @@ export class LLMChatPipeline {
+@@ -1292,7 +4962,14 @@ export class LLMChatPipeline {
      names: string[],
    ): VMFunctionRegistry {
      const registry: VMFunctionRegistry = {};
@@ -8246,7 +8272,7 @@ index 616cff4..3336e91 100644
        try {
          const func = vm.getFunction(name) as unknown;
          if (typeof func === "function") {
-@@ -1365,6 +5022,7 @@ export class LLMChatPipeline {
+@@ -1365,6 +5042,7 @@ export class LLMChatPipeline {
    private static resolveModelABI(
      kvStateKind: KVStateKind,
      availability: VMFunctionAvailability,
@@ -8254,7 +8280,7 @@ index 616cff4..3336e91 100644
    ): ResolvedModelABI {
      const hasSingleKernelPair = availability.prefill && availability.decode;
      const hasBatchKernelPair =
-@@ -1450,6 +5108,17 @@ export class LLMChatPipeline {
+@@ -1450,6 +5128,17 @@ export class LLMChatPipeline {
      }
  
      // kv_cache
@@ -8272,7 +8298,7 @@ index 616cff4..3336e91 100644
      if (hasSingleKernelPair) {
        return {
          kvStateKind,
-@@ -1525,14 +5194,151 @@ export class LLMChatPipeline {
+@@ -1525,14 +5214,151 @@ export class LLMChatPipeline {
      return states;
    }
  
@@ -8425,7 +8451,7 @@ index 616cff4..3336e91 100644
          this.params,
        );
      }
-@@ -1549,27 +5355,42 @@ export class LLMChatPipeline {
+@@ -1549,27 +5375,42 @@ export class LLMChatPipeline {
        this.resolvedModelABI.needsKVCache &&
        this.resolvedModelABI.needsRNNState
      ) {
@@ -8472,7 +8498,7 @@ index 616cff4..3336e91 100644
          this.params,
        );
      }
-@@ -1577,20 +5398,68 @@ export class LLMChatPipeline {
+@@ -1577,20 +5418,70 @@ export class LLMChatPipeline {
        this.resolvedModelABI.needsKVCache &&
        this.resolvedModelABI.needsRNNState
      ) {
@@ -8500,6 +8526,7 @@ index 616cff4..3336e91 100644
 +    const affine = [
 +      program.affineActive,
 +      program.affineBasis,
++      program.affineRead,
 +      program.affineNeutral,
 +      program.affineTarget,
 +      program.affineAlong,
@@ -8512,6 +8539,7 @@ index 616cff4..3336e91 100644
 +    if (this.drowseStructuredMode === "structured") return affine;
 +    const curved = affine.concat([
 +      program.curveBasis!,
++      program.curveRead!,
 +      program.curveNeutral!,
 +      program.curveDomainKind!,
 +      program.curveParameters!,
@@ -8543,7 +8571,7 @@ index 616cff4..3336e91 100644
    // NOTE: caller must call device.sync()
    private updateLogitsOnCPU(logits: tvmjs.Tensor): tvmjs.Tensor {
      if (this.logitsOnCPU == undefined) {
-@@ -1610,7 +5479,7 @@ export class LLMChatPipeline {
+@@ -1610,7 +5501,7 @@ export class LLMChatPipeline {
      logitsOnGPU: tvmjs.Tensor,
      genConfig?: GenerationConfig,
    ) {
@@ -8552,7 +8580,7 @@ index 616cff4..3336e91 100644
      // Also load other genConfig items like logit_bias. Consume all fields of `genConfig` here.
      function _hasValue(value: any): boolean {
        // if we use `if value` directly, `value` being 0 evaluates to false, violating semantics
-@@ -1618,6 +5487,7 @@ export class LLMChatPipeline {
+@@ -1618,6 +5509,7 @@ export class LLMChatPipeline {
      }
      let temperature: number = this.config.temperature;
      let top_p: number = this.config.top_p;
@@ -8560,7 +8588,7 @@ index 616cff4..3336e91 100644
      let repetition_penalty: number = this.config.repetition_penalty;
      let frequency_penalty: number = this.config.frequency_penalty;
      let presence_penalty: number = this.config.presence_penalty;
-@@ -1633,6 +5503,9 @@ export class LLMChatPipeline {
+@@ -1633,6 +5525,9 @@ export class LLMChatPipeline {
        if (_hasValue(genConfig.top_p)) {
          top_p = genConfig.top_p!;
        }
@@ -8570,7 +8598,7 @@ index 616cff4..3336e91 100644
        // TODO: setting top_p to 1.0 by default might run into issues since
        // top_p masking in relax uses < instead of <=
        // Set default top_p to 1.0 if not set
-@@ -1675,26 +5548,24 @@ export class LLMChatPipeline {
+@@ -1675,26 +5570,24 @@ export class LLMChatPipeline {
        }
      }
      // Check range validity
@@ -8608,7 +8636,7 @@ index 616cff4..3336e91 100644
      }
  
      const outputTokenBegin = performance.now();
-@@ -1894,13 +5765,38 @@ export class LLMChatPipeline {
+@@ -1894,13 +5787,38 @@ export class LLMChatPipeline {
      // 4. Sample token from logits
      const sampleBegin = performance.now();
  
@@ -8651,7 +8679,7 @@ index 616cff4..3336e91 100644
  
      this.tvm.beginScope();
      const temperaturesDevice = this.tvm
-@@ -1913,79 +5809,131 @@ export class LLMChatPipeline {
+@@ -1913,79 +5831,131 @@ export class LLMChatPipeline {
      );
      probs = probs.view([numProbs, this.fullVocabSize]);
  
@@ -8833,7 +8861,7 @@ index 616cff4..3336e91 100644
    }
  
    /**
-@@ -2015,34 +5963,90 @@ export class LLMChatPipeline {
+@@ -2015,34 +5985,90 @@ export class LLMChatPipeline {
     *   imageUrl2,
     *   token array for "\nSome user input<|end|>\n"
     */
@@ -8947,7 +8975,7 @@ index 616cff4..3336e91 100644
  
      // 1.5. Preload image dimensions to compute per-image embed sizes
      const imageDimensions = new Map<string, [number, number]>();
-@@ -2082,7 +6086,7 @@ export class LLMChatPipeline {
+@@ -2082,7 +6108,7 @@ export class LLMChatPipeline {
  
      // 3. Encode all prompts. Iterate through each message in the prompt array, where each
      // prompt can either be a string, or an array of a mixture of string and ImageURLs.
@@ -8956,7 +8984,7 @@ index 616cff4..3336e91 100644
      for (let i = 0; i < prompts.length; i++) {
        const curPrompt = prompts[i];
        if (typeof curPrompt === "string") {
-@@ -2116,6 +6120,26 @@ export class LLMChatPipeline {
+@@ -2116,6 +6142,26 @@ export class LLMChatPipeline {
          }
        }
      }
@@ -8983,7 +9011,7 @@ index 616cff4..3336e91 100644
      // Deal with last curTokens
      if (curTokens.length !== 0) {
        ret.push([...curTokens]);
-@@ -2186,50 +6210,51 @@ export class LLMChatPipeline {
+@@ -2186,50 +6232,51 @@ export class LLMChatPipeline {
    }
  
    /**
@@ -9051,7 +9079,7 @@ index 616cff4..3336e91 100644
      } as ChatCompletionTokenLogprob;
    }
  
-@@ -2284,3 +6309,10 @@ export class LLMChatPipeline {
+@@ -2284,3 +6331,10 @@ export class LLMChatPipeline {
      log.info(msg);
    }
  }
@@ -9465,7 +9493,7 @@ index c91f751..d2ee04e 100644
  
  export {
 diff --git a/src/types.ts b/src/types.ts
-index ed79af5..3436cd5 100644
+index ed79af5..5823d6f 100644
 --- a/src/types.ts
 +++ b/src/types.ts
 @@ -15,6 +15,21 @@ import {
@@ -9497,7 +9525,7 @@ index ed79af5..3436cd5 100644
 +  supportsDrowseStructuredHooks(modelId?: string): Promise<boolean>;
 +
 +  supportsDrowseCurvedHooks(modelId?: string): Promise<boolean>;
-+  /** Hook ABI v5: the library compiles unit sites (`standard-v4`) and the units pair. */
++  /** Hook ABI v6: the library compiles unit sites (`standard-v5`) and the units pair. */
 +  supportsDrowseUnitSites(modelId?: string): Promise<boolean>;
 +
 +  supportsDrowseResidualCapture(modelId?: string): Promise<boolean>;
@@ -9549,7 +9577,7 @@ index ed79af5..3436cd5 100644
 +    unitActive?: Float32Array,
 +  ): Promise<void>;
 +
-+  /** Hook ABI v5's block-sites device surface: replay, residents, attention rows. */
++  /** Hook ABI v6's block-sites device surface: replay, residents, attention rows. */
 +  drowseBlockSites(
 +    request: DrowseBlockSitesRequest,
 +    modelId?: string,
@@ -10763,10 +10791,10 @@ index 8fa04b2..0d5455d 100644
    type ImageURL = ChatCompletionContentPartImage.ImageURL;
 diff --git a/tests/drowse.test.ts b/tests/drowse.test.ts
 new file mode 100644
-index 0000000..dea121b
+index 0000000..fcb1ede
 --- /dev/null
 +++ b/tests/drowse.test.ts
-@@ -0,0 +1,944 @@
+@@ -0,0 +1,953 @@
 +import { describe, expect, test } from "@jest/globals";
 +import {
 +  DROWSE_REPLAY_META,
@@ -10823,7 +10851,7 @@ index 0000000..dea121b
 +} from "../src/drowse";
 +
 +describe("Drowse structured hook profile", () => {
-+  // Schema 4: v3's fields with ABI 5 / format 4 / readout 2, then 36 block and unit fields
++  // Schema 4: v3's fields with ABI 6 / format 5 / readout 2, then 36 block and unit fields
 +  // (attested by the caller; the bridge reads UNIT_SITES and HEAD_DIM).
 +  const tail = new Array(36).fill(0);
 +  tail[0] = 1; // UNIT_SITES
@@ -10831,9 +10859,9 @@ index 0000000..dea121b
 +  const descriptor = Int32Array.from([
 +    DROWSE_STRUCTURED_PROFILE_MAGIC,
 +    4,
-+    4,
 +    5,
-+    4,
++    6,
++    5,
 +    12,
 +    768,
 +    DROWSE_STRUCTURED_MAX_AFFINE_GROUPS,
@@ -10866,7 +10894,7 @@ index 0000000..dea121b
 +  test("decodes the immutable compiled descriptor", () => {
 +    expect(decodeDrowseStructuredHookProfile(descriptor, 12, 768)).toEqual({
 +      schemaVersion: 4,
-+      id: "standard-v4",
++      id: "standard-v5",
 +      unitSites: 1,
 +      descriptor: Array.from(descriptor),
 +      hookAbi: DROWSE_HOOK_ABI,
@@ -10922,7 +10950,7 @@ index 0000000..dea121b
 +    const residual = descriptor.slice();
 +    residual[31] = 0;
 +    expect(decodeDrowseStructuredHookProfile(residual, 12, 768).id).toBe(
-+      "standard-v4-residual",
++      "standard-v5-residual",
 +    );
 +    const noMode = descriptor.slice();
 +    noMode[31] = 2;
@@ -10932,7 +10960,7 @@ index 0000000..dea121b
 +  });
 +});
 +
-+describe("Drowse unit section (drowse-structured-v4)", () => {
++describe("Drowse unit section (drowse-structured-v5)", () => {
 +  const layers = 2;
 +  const headDim = 4;
 +  const lengths = drowseUnitSectionLengths(layers, headDim);
@@ -11125,7 +11153,7 @@ index 0000000..dea121b
 +  });
 +});
 +
-+/** A drowse-structured-v4 program; every program carries the geometry buffers. */
++/** A drowse-structured-v5 program; every program carries the geometry buffers. */
 +function structuredProgram(): DrowseStructuredProgram {
 +  return structuredGeometryProgram();
 +}
@@ -11143,6 +11171,12 @@ index 0000000..dea121b
 +      layerCount * DROWSE_STRUCTURED_MAX_AFFINE_GROUPS,
 +    ),
 +    affineBasis: new Float32Array(
++      layerCount *
++        DROWSE_STRUCTURED_MAX_AFFINE_GROUPS *
++        DROWSE_STRUCTURED_MAX_RANK *
++        hiddenSize,
++    ),
++    affineRead: new Float32Array(
 +      layerCount *
 +        DROWSE_STRUCTURED_MAX_AFFINE_GROUPS *
 +        DROWSE_STRUCTURED_MAX_RANK *
@@ -11176,6 +11210,9 @@ index 0000000..dea121b
 +    curveEmbedDim: new Uint32Array(curveSlots),
 +    curveNodeCount: new Uint32Array(curveSlots),
 +    curveBasis: new Float32Array(
++      curveSlots * DROWSE_STRUCTURED_MAX_RANK * hiddenSize,
++    ),
++    curveRead: new Float32Array(
 +      curveSlots * DROWSE_STRUCTURED_MAX_RANK * hiddenSize,
 +    ),
 +    curveNeutral: new Float32Array(curveSlots * hiddenSize),
@@ -11653,7 +11690,7 @@ index 0000000..dea121b
 +    return out;
 +  };
 +
-+  test("is laid out as drowse.ai's replayMetaLayout (134 values under standard-v4)", () => {
++  test("is laid out as drowse.ai's replayMetaLayout (134 values under standard-v5)", () => {
 +    expect(m.length).toBe(134);
 +    expect([
 +      m.populationRow,

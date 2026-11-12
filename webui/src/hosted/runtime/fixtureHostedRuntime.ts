@@ -15,6 +15,7 @@ import type {
 import { rankCatalogModels } from "../../lib/runtime/recommendation";
 import { initialRuntimeSnapshot } from "../../lib/runtime/state";
 import { DeterministicFakeRuntime } from "./fakeRuntime";
+import { sharedProfileId } from "./structuredHookProfile";
 import type { HostedRuntimeBundle } from "./hostedController";
 
 const SHA = "a".repeat(64);
@@ -46,7 +47,7 @@ const fixtureModel: CatalogModel = {
   variants: [{
     id: VARIANT_ID,
     tier: "fastest",
-    structuredHookProfile: "standard-v4",
+    structuredHookProfile: sharedProfileId("standard-v5"),
     thinkingProfile: null,
     contextProfiles: [{
       contextTokens: 2048,

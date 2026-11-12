@@ -139,8 +139,8 @@ try {
   ]) {
     assert.doesNotThrow(() => assertHookFeaturesSupported(expression, structured), expression);
   }
-  // units and slens follow the library's block-sites profile: standard-v4 offers both,
-  // standard-v4-residual and a pre-v5 library neither.
+  // units and slens follow the library's block-sites profile: standard-v5 offers both,
+  // standard-v5-residual and a pre-v5 library neither.
   const { blockSitesHookCapabilities } = hookCapabilities;
   const v4 = blockSitesHookCapabilities(structured, { profile: { unitSites: 1 } });
   assert.equal(v4.units, true);

@@ -11,14 +11,14 @@ import {
   type StructuredHookCapacityProfile,
 } from "./structuredHookProfile";
 
-/** The one program format hook ABI `block-sites-v5` runs: the affine, curve, probe and geometry
+/** The one program format hook ABI `block-sites-v6` runs: the affine, curve, probe and geometry
  *  buffers, plus the optional unit section (B1 §3.1, §3.4). */
-export const STRUCTURED_HOOK_FORMAT = "drowse-structured-v4" as const;
+export const STRUCTURED_HOOK_FORMAT = "drowse-structured-v5" as const;
 export type StructuredHookFormat = typeof STRUCTURED_HOOK_FORMAT;
 export type StructuredHookAbi = typeof BLOCK_SITES_HOOK_ABI;
 
-/** The hook ABI and format of a program compiled under `profile` (`standard-v4` or
- *  `standard-v4-residual`, the only profiles that resolve). */
+/** The hook ABI and format of a program compiled under `profile` (`standard-v5` or
+ *  `standard-v5-residual`, the only profiles that resolve). */
 export function structuredHookIdentity(
   profile: StructuredHookCapacityProfile,
 ): { hookAbi: StructuredHookAbi; format: StructuredHookFormat } {
@@ -156,7 +156,7 @@ export interface StructuredMeasurementSchema {
   lensReadout?: boolean;
   saeReadout?: boolean;
   saeFeatureMetadata?: Record<string, { label: string | null; maxAct: number | null }>;
-  /** drowse-structured-v4: one entry per unit tap slot (`maxUnitTaps`), null when unused. */
+  /** drowse-structured-v5: one entry per unit tap slot (`maxUnitTaps`), null when unused. */
   unitTaps?: Array<StructuredUnitTap | null>;
   /** The attached `slens/` probes, which the host reads post-forward over the `[L, d]` capture
    *  (`hiddenCapture`, HOOK_ABI §5); a gate reads one by name. */
@@ -246,7 +246,7 @@ export interface StructuredHookProgramBuffers {
   /** The bridge keeps each forward's `[L, d]` capture and returns it with the measurement
    *  bundle (`hidden`): set exactly when the schema lists `slensProbes`. */
   hiddenCapture?: boolean;
-  /** drowse-structured-v4 unit section (B1 §3.1, §3.4), present together or not at all: a v4
+  /** drowse-structured-v5 unit section (B1 §3.1, §3.4), present together or not at all: a v4
    *  program without it is v3's buffers exactly and runs the v4-identical structured or curved
    *  functions; with it, the units pair (`drowse_units_batch_{prefill,decode}`). */
   unitShape?: StructuredUnitShape;
@@ -284,7 +284,7 @@ export interface StructuredHookControl {
 export interface StructuredHookControls {
   affine: readonly (StructuredHookControl | null)[];
   curve: readonly (StructuredHookControl | null)[];
-  /** drowse-structured-v4: one per unit trigger group (length `maxUnitGroups`). */
+  /** drowse-structured-v5: one per unit trigger group (length `maxUnitGroups`). */
   units?: readonly (StructuredHookControl | null)[];
 }
 
@@ -1283,7 +1283,7 @@ function compileLayer(
     geometryProbes.length > 0
   ) {
     if (program.format !== STRUCTURED_HOOK_FORMAT) {
-      throw new TypeError("Geometry probes require a drowse-structured-v4 program");
+      throw new TypeError("Geometry probes require a drowse-structured-v5 program");
     }
     if (input.geometryWhitener === undefined || input.geometryWhitener === null) {
       throw new TypeError("Geometry probes require one exact layer whitener");
@@ -2991,7 +2991,7 @@ function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
-// ------------------------------------------------- drowse-structured-v4 units ---
+// ------------------------------------------------- drowse-structured-v5 units ---
 // B1-hook-abi-v5.md §2.2 (the live unit tap), §3.1 (mean-ablation and the table layout) and
 // §3.4 (the host program). browser-runtime/HOOK_ABI.md is the contract.
 

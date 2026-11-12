@@ -233,7 +233,7 @@ for _head in (InstrumentedGPT2LMHeadModel, InstrumentedGPTNeoXForCausalLM):
             _name.startswith(("drowse_", "_drowse_")) or _name == "_get_logits"
         ):
             setattr(_head, _name, _method)
-    # Fused q/k/v and LayerNorm: no unit sites, the residual descriptor (`standard-v4-residual`).
+    # Fused q/k/v and LayerNorm: no unit sites, the residual descriptor (`standard-v5-residual`).
     _head._drowse_block_spec = lambda self: None
 
 

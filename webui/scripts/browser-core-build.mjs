@@ -47,7 +47,7 @@ const buildRequest = {
   runtimeIdentity,
   quantization: options.quantization,
   requiredFeatures: [],
-  structuredHookProfile: "standard-v4",
+  structuredHookProfile: "standard-v5",
   thinkingProfile: null,
   blockSpec,
   unitRefusal: null,
@@ -251,7 +251,7 @@ try {
       arithmetic,
     };
   }, { artifacts, request: buildRequest, ids: goldenIds });
-  check("hosted runtime attests the library as standard-v4", capture.profile === "standard-v4", String(capture.profile));
+  check("hosted runtime attests the library as standard-v5", capture.profile === "standard-v5", String(capture.profile));
   const shapeOk = capture.layerCount === layerCount && capture.hiddenSize === hiddenSize &&
     capture.positionCount === goldenIds.length;
   let worst = 0;

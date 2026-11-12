@@ -6,7 +6,7 @@
 - The descriptor (schema 4) the model's `drowse_hook_profile` returns, built for the C TVM VM and
   written to the report, for `expectedHookProfileDescriptor` (C0) to check against the lock's
   block spec.
-- Units models (`standard-v4`), with `--parity`: one forward of the parity input through
+- Units models (`standard-v5`), with `--parity`: one forward of the parity input through
   `drowse_block` on the C TVM VM against PyTorch on the dequantized MLC tensors (`mlc_q4_torch`):
   the per-layer relative error of `act`, `z`, `mid` and `out` and of the last position's logits
   at most 1% (B1 §4.3, the q4 parity gate's measure); greedy tokens through the units pair equal
@@ -105,7 +105,7 @@ def main() -> None:
     failures: list[str] = []
     if args.parity:
         if arch not in UNIT_ARCHITECTURES:
-            raise SystemExit(f"{arch} attests standard-v4-residual: no block sites to compare")
+            raise SystemExit(f"{arch} attests standard-v5-residual: no block sites to compare")
         parity_input = json.loads(args.input.read_text())
         report["checks"].update(parity(env, model_dir, args.input, parity_input, args.greedy_tokens,
                                        args.reference_python, failures))

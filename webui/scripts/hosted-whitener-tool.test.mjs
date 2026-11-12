@@ -26,7 +26,7 @@ const executionProfiles = lockedModelExecutionProfiles(qwen4b, {
   quantization: qwen4b.quantization,
 });
 assert.deepEqual(executionProfiles, {
-  structuredHookProfile: "standard-v4",
+  structuredHookProfile: "standard-v5",
   thinkingProfile: qwen4b.thinkingProfile,
   quantization: "q4f32_1",
   requiredFeatures: [],
@@ -44,20 +44,20 @@ assert.throws(
   () => lockedModelExecutionProfiles(qwen4b, { ...executionProfiles, prefillChunkSize: 1024 }),
   /prefill chunk does not match/,
 );
-// A v5 library: the block spec travels with standard-v4, the refusal with -residual.
+// A v5 library: the block spec travels with standard-v5, the refusal with -residual.
 const blockSpec = { dFF: 9728, nHeads: 32 };
 const { blockSpec: _lockedSpec, unitRefusal: _lockedRefusal, ...bareQwen4b } = qwen4b;
 const v5 = (profile, extra) => lockedModelExecutionProfiles(
   { ...bareQwen4b, structuredHookProfile: profile, ...extra },
   { structuredHookProfile: profile, thinkingProfile: qwen4b.thinkingProfile, quantization: qwen4b.quantization },
 );
-assert.deepEqual(v5("standard-v4", { blockSpec }).blockSpec, blockSpec);
-assert.equal(v5("standard-v4-residual", { unitRefusal: "fused qkv" }).unitRefusal, "fused qkv");
+assert.deepEqual(v5("standard-v5", { blockSpec }).blockSpec, blockSpec);
+assert.equal(v5("standard-v5-residual", { unitRefusal: "fused qkv" }).unitRefusal, "fused qkv");
 for (const [profile, extra] of [
-  ["standard-v4", {}],
-  ["standard-v4", { blockSpec, unitRefusal: "fused qkv" }],
-  ["standard-v4-residual", {}],
-  ["standard-v4-residual", { blockSpec, unitRefusal: "fused qkv" }],
+  ["standard-v5", {}],
+  ["standard-v5", { blockSpec, unitRefusal: "fused qkv" }],
+  ["standard-v5-residual", {}],
+  ["standard-v5-residual", { blockSpec, unitRefusal: "fused qkv" }],
 ]) {
   assert.throws(() => v5(profile, extra), /blockSpec and unitRefusal/, `${profile} ${JSON.stringify(extra)}`);
 }
@@ -65,7 +65,7 @@ for (const [profile, extra] of [
 assert.throws(() => v5("unknown-profile", { blockSpec }), /structuredHookProfile is not allow-listed/);
 assert.throws(
   () => lockedModelExecutionProfiles(qwen4b, {
-    structuredHookProfile: "standard-v4-residual",
+    structuredHookProfile: "standard-v5-residual",
     thinkingProfile: qwen4b.thinkingProfile,
     quantization: qwen4b.quantization,
   }),

@@ -67,8 +67,8 @@ const executionProfiles = lockedModelExecutionProfiles(
   lock,
   modelSet.manifest,
 );
-// The packs the library's profile runs with: core always; R, S and units on standard-v4; an R
-// pack optional and no S or units on standard-v4-residual; SAE optional.
+// The packs the library's profile runs with: core always; R, S and units on standard-v5; an R
+// pack optional and no S or units on standard-v5-residual; SAE optional.
 const packKinds = validateBrowserFullRuntimePackSets(
   executionProfiles.structuredHookProfile,
   {

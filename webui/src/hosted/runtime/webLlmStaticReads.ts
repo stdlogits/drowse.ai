@@ -1,4 +1,4 @@
-// Hook ABI v5's static reads and exact-readout-v2 over the WebLLM bridge (B1 §4.1,
+// Hook ABI v6's static reads and exact-readout-v2 over the WebLLM bridge (B1 §4.1,
 // browser-runtime/HOOK_ABI.md §8). Each member validates its arguments, sends one `read` request
 // (a short program of library calls over host tensors, residents and earlier outputs) and gets
 // its outputs back with one device sync, so a member costs one round trip as native's packed

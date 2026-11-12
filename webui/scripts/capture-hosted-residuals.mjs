@@ -448,7 +448,7 @@ function validNamedRoleCheck(value) {
 
 function validSteeringProgram(result, layerCount, hiddenSize) {
   const program = result.steeringProgram;
-  return program && program.format === "drowse-structured-v4" &&
+  return program && program.format === "drowse-structured-v5" &&
     Number.isSafeInteger(program.enabledLayer) && program.enabledLayer >= 0 &&
     program.enabledLayer < layerCount && Array.isArray(program.probeDirections) &&
     program.probeDirections.length === result.probeCount && result.probeCount >= 1 &&

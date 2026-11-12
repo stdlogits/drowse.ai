@@ -247,7 +247,7 @@ try {
   assert.deepEqual(compareRecord(await call("unitRead", again.unit, { k: again.k, hideHubs: again.hide_hubs }), again.read, { root: "reads[0].read", ties: reads.declared_ties, numberTol }), []);
 
   // ------------------------------------------------------- a residual library (422) ---
-  const residualBackend = cpu.cpuBlockSitesBackend(fx.model, { profile: profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL, contextTokens: 64 });
+  const residualBackend = cpu.cpuBlockSitesBackend(fx.model, { profile: profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V5_RESIDUAL, contextTokens: 64 });
   const residual = new service.BrowserUnitsService({
     modelId: "units-tiny",
     blockSites: () => residualBackend,

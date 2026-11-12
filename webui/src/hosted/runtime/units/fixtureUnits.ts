@@ -4,7 +4,7 @@
 // byte vocabulary, an identity whitener and no null basis). Answers are drowse-shaped and
 // deterministic, not a model's: they let the Units room, token anatomy and the S lens render.
 import type { LoomTreeJSON } from "../../../../../drowse/webui/src/lib/types";
-import { STANDARD_STRUCTURED_HOOK_PROFILE_V4, STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL } from "../structuredHookProfile";
+import { STANDARD_STRUCTURED_HOOK_PROFILE_V5, STANDARD_STRUCTURED_HOOK_PROFILE_V5_RESIDUAL } from "../structuredHookProfile";
 import { cpuBlockSitesBackend } from "./cpuBackend";
 import { DenseSequence, finalLogits, rmsScale, type DenseModelWeights } from "./denseModel";
 import { embeddingStatistics } from "./referenceContext";
@@ -279,7 +279,7 @@ function fixtureReplay(tree: () => LoomTreeJSON, tokenizer: TinyTokenizer): Unit
 }
 
 /** The fixture's units members over `tree` (the fake runtime's loom). With `unitRefusal` the
- *  library is a residual one (`standard-v4-residual`): every member answers that refusal. */
+ *  library is a residual one (`standard-v5-residual`): every member answers that refusal. */
 export function createFixtureUnitsService(modelId: string, tree: () => LoomTreeJSON, unitRefusal: string | null = null): {
   request(method: string, args: readonly unknown[]): Promise<unknown>;
 } {
@@ -287,8 +287,8 @@ export function createFixtureUnitsService(modelId: string, tree: () => LoomTreeJ
   const open = () => {
     service ??= fixtureUnits().then(({ model, tokenizer, packs }) => {
       const backend = cpuBlockSitesBackend(model, unitRefusal === null
-        ? { profile: STANDARD_STRUCTURED_HOOK_PROFILE_V4, contextTokens: 2 * MAX_ROWS + 2 }
-        : { profile: STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL, contextTokens: 2 * MAX_ROWS + 2, unitRefusal });
+        ? { profile: STANDARD_STRUCTURED_HOOK_PROFILE_V5, contextTokens: 2 * MAX_ROWS + 2 }
+        : { profile: STANDARD_STRUCTURED_HOOK_PROFILE_V5_RESIDUAL, contextTokens: 2 * MAX_ROWS + 2, unitRefusal });
       const replay = fixtureReplay(tree, tokenizer);
       return new BrowserUnitsService({
         modelId,

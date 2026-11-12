@@ -60,9 +60,9 @@ try {
     join(converted, "drowse-build.json"),
     JSON.stringify({
       schemaVersion: 1,
-      runtimeAbi: "drowse-web-runtime-v2",
-      hookAbi: "block-sites-v5",
-      structuredHookProfile: "standard-v4",
+      runtimeAbi: "drowse-web-runtime-v3",
+      hookAbi: "block-sites-v6",
+      structuredHookProfile: "standard-v5",
       thinkingProfile,
       architecture: "qwen3",
       quantization: "q4f16_1",
@@ -99,17 +99,17 @@ try {
   const { required, unit } = OVERLAY_VM_FUNCTIONS;
   // A v4 build manifest, and a qwen3 build claiming the residual profile, are refused.
   await build({ hookAbi: "post-block-residual-v4", runtimeAbi: "drowse-web-runtime-v1" });
-  await assert.rejects(assemble(), /predates hook ABI block-sites-v5/);
-  await build({ structuredHookProfile: "standard-v4-residual" });
-  await assert.rejects(assemble(), /qwen3 libraries attest standard-v4, not standard-v4-residual/);
+  await assert.rejects(assemble(), /predates hook ABI block-sites-v6/);
+  await build({ structuredHookProfile: "standard-v5-residual" });
+  await assert.rejects(assemble(), /qwen3 libraries attest standard-v5, not standard-v5-residual/);
   await build({});
-  await assert.rejects(assemble(), /standard-v4 model library lacks required VM function drowse_attention_rows, /);
+  await assert.rejects(assemble(), /standard-v5 model library lacks required VM function drowse_attention_rows, /);
   // A units library without one unit function, then a residual one exporting a unit function.
   await library_([...required, ...unit.slice(1)]);
   await assert.rejects(assemble(), new RegExp(`lacks required VM function ${unit[0]}$`, "m"));
-  await build({ architecture: "gpt2", structuredHookProfile: "standard-v4-residual", modelType: "base" });
+  await build({ architecture: "gpt2", structuredHookProfile: "standard-v5-residual", modelType: "base" });
   await library_([...required, unit[0]]);
-  await assert.rejects(assemble(), new RegExp(`standard-v4-residual model library exports unit VM function ${unit[0]}`));
+  await assert.rejects(assemble(), new RegExp(`standard-v5-residual model library exports unit VM function ${unit[0]}`));
   await build({});
   await library_([...required, ...unit]);
   await exec(process.execPath, [
@@ -121,8 +121,8 @@ try {
   const manifest = JSON.parse(
     await readFile(join(output, "hosted-artifacts.json"), "utf8"),
   );
-  assert.equal(manifest.structuredHookProfile, "standard-v4");
-  assert.equal(manifest.hookAbi, "block-sites-v5");
+  assert.equal(manifest.structuredHookProfile, "standard-v5");
+  assert.equal(manifest.hookAbi, "block-sites-v6");
   assert.equal(manifest.hiddenSize, 4);
   assert.deepEqual(manifest.layerMap, [0, 1]);
   assert.deepEqual(manifest.thinkingProfile, thinkingProfile);

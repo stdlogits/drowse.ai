@@ -1,8 +1,8 @@
 // Hook ABI v5's VM function sets, read from the MLC overlay's own definition rather than copied:
 // `browser-runtime/forks/overlay_checks.py` (REQUIRED_FUNCTIONS, UNIT_FUNCTIONS,
 // UNIT_ARCHITECTURES), the module every compile gate imports. A library of a unit architecture
-// exports REQUIRED ∪ UNIT and attests `standard-v4`; any other architecture exports REQUIRED, no
-// unit function, and attests `standard-v4-residual` (B1 §7, HOOK_ABI.md §3).
+// exports REQUIRED ∪ UNIT and attests `standard-v5`; any other architecture exports REQUIRED, no
+// unit function, and attests `standard-v5-residual` (B1 §7, HOOK_ABI.md §3).
 
 import { readFileSync } from "node:fs";
 
@@ -57,15 +57,15 @@ export const OVERLAY_VM_FUNCTIONS = parseOverlayVmFunctions(readFileSync(overlay
 
 /** The structured hook profile a library of `architecture` attests under hook ABI v5. */
 export function structuredHookProfileForArchitecture(architecture, sets = OVERLAY_VM_FUNCTIONS) {
-  return sets.unitArchitectures.includes(architecture) ? "standard-v4" : "standard-v4-residual";
+  return sets.unitArchitectures.includes(architecture) ? "standard-v5" : "standard-v5-residual";
 }
 
 /** `{present, absent}`: the VM functions a v5 library of `profile` must and must not export. */
 export function vmFunctionsForProfile(profile, sets = OVERLAY_VM_FUNCTIONS) {
-  if (profile === "standard-v4") {
+  if (profile === "standard-v5") {
     return { present: Object.freeze([...sets.required, ...sets.unit].sort()), absent: Object.freeze([]) };
   }
-  if (profile === "standard-v4-residual") {
+  if (profile === "standard-v5-residual") {
     return { present: sets.required, absent: sets.unit };
   }
   throw new Error(`structured hook profile ${JSON.stringify(profile)} predates hook ABI v5`);

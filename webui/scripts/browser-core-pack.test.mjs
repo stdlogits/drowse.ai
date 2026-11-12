@@ -730,7 +730,7 @@ try {
     const request = {
       model: { id: "fixture-model" },
       variant: {
-        structuredHookProfile: options.structuredHookProfile ?? "standard-v4",
+        structuredHookProfile: options.structuredHookProfile ?? "standard-v5",
         runtimeIdentity,
         runtimeIdentitySha256: fingerprint,
         contextProfiles: [
@@ -781,7 +781,7 @@ try {
     const { request } = await fixture({ isotropicWhitener: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const program = compiler.compile("0.5 alert");
-    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.format, "drowse-structured-v5");
     assert.equal(program.hiddenSize, 2);
     assert.equal(program.layerCount, 2);
     const axis = affineAxis(program);
@@ -883,7 +883,7 @@ try {
     }
   });
 
-  test("lowers unit ablations, neuron pushes, unit probes and unit gates (drowse-structured-v4)", async () => {
+  test("lowers unit ablations, neuron pushes, unit probes and unit gates (drowse-structured-v5)", async () => {
     const { decodeStructuredUnitTables } = await server.ssrLoadModule("/src/hosted/runtime/structuredHookProgram.ts");
     const { readingScales } = await server.ssrLoadModule("/src/hosted/runtime/units/scales.ts");
     const { request } = await fixture({ withWhitener: true });
@@ -908,7 +908,7 @@ try {
     };
     compiler.setUnitSource(source);
     const program = compiler.compile("0.5 !neuron/L1n2 + !head/L0h1@before");
-    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.format, "drowse-structured-v5");
     const tables = decodeStructuredUnitTables(program);
     const neuron = tables.find((table) => table.site === "act");
     const head = tables.find((table) => table.site === "z");
@@ -918,7 +918,7 @@ try {
     assert.equal(program.controls.units[1].phase.kind, "prompt_only");
     // A neuron push is a one-layer instrument atom: an affine group at its layer, no unit table.
     const push = compiler.compile("0.3 neuron/L1n2");
-    assert.equal(push.format, "drowse-structured-v4");
+    assert.equal(push.format, "drowse-structured-v5");
     assert.equal(decodeStructuredUnitTables(push).length, 0);
     assert.ok([...push.affineActive].some((value) => value === 1));
     assert.throws(() => compiler.compile("0.3 neuron/L0n1"), (error) => error.code === "UNIT_DIRECTION_UNPREPARED");
@@ -987,7 +987,7 @@ try {
       .concat(["head/L0h0", "head/L0h1"])
       .filter((selector) => selector !== "neuron/L0n1");
     for (const selector of units) compiler.attachProbe({ selector });
-    assert.ok(compiler.listProbes().length > 8, "more probes than standard-v4's 8 device slots");
+    assert.ok(compiler.listProbes().length > 8, "more probes than standard-v5's 8 device slots");
     for (const selector of units) compiler.detachProbe(selector);
     // A unit outside the model is native's 400; a library without unit sites is native's 422.
     assert.throws(() => compiler.compile("!neuron/L1n9"), (error) => error.status === 400 && /neuron 9 is outside block 1/.test(error.message));
@@ -1195,7 +1195,7 @@ try {
     const { request } = await fixture({ withWhitener: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const program = compiler.compile(ablationGolden.expression);
-    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.format, "drowse-structured-v5");
     const axis = affineAxis(program);
     assert.deepEqual(axis.active, [1, 1]);
     assert.deepEqual(axis.target, [0, 0]);
@@ -1217,7 +1217,7 @@ try {
       );
     }
     const mixed = compiler.compile("0.5 !alert + 0.25 calm");
-    assert.equal(mixed.format, "drowse-structured-v4");
+    assert.equal(mixed.format, "drowse-structured-v5");
     assert.deepEqual([...mixed.affineActive.slice(0, 2)], [1, 0]);
   });
 
@@ -1227,7 +1227,7 @@ try {
     const input = new Float32Array([0.4, -0.2]);
     const execute = (expression) => {
       const program = compiler.compile(expression);
-      assert.equal(program.format, "drowse-structured-v4");
+      assert.equal(program.format, "drowse-structured-v5");
       return runStructuredHookLayer(
         program,
         initialStructuredHookState(program),
@@ -1405,7 +1405,7 @@ try {
     const { request } = await fixture({ withWhitener: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const phased = compiler.compile("0.5 alert@response");
-    assert.equal(phased.format, "drowse-structured-v4");
+    assert.equal(phased.format, "drowse-structured-v5");
     assert.equal(structuredHookControlsFor(phased, {
       prefill: true,
       thinking: false,
@@ -1456,7 +1456,7 @@ try {
     const byCoordinates = compiler.compile("0.5 demo%1@response&when:demo>0");
 
     for (const program of [byLabel, byCoordinates]) {
-      assert.equal(program.format, "drowse-structured-v4");
+      assert.equal(program.format, "drowse-structured-v5");
       assert.deepEqual([...program.curveActive], new Array(program.curveActive.length).fill(0));
       assert.deepEqual([...program.affineActive], [...direct.affineActive]);
       assertFloatArray(program.affineBasis, direct.affineBasis);
@@ -1481,7 +1481,7 @@ try {
     const bare = compiler.compile("0.5 east");
     const explicit = compiler.compile("0.5 demo%east");
 
-    assert.equal(bare.format, "drowse-structured-v4");
+    assert.equal(bare.format, "drowse-structured-v5");
     assert.deepEqual([...bare.curveActive], new Array(bare.curveActive.length).fill(0));
     assertFloatArray(bare.affineBasis, explicit.affineBasis);
     assertFloatArray(bare.affineTarget, explicit.affineTarget);
@@ -1528,11 +1528,11 @@ try {
     const { request } = await fixture({ curved: true, withWhitener: true, withSae: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const bareLabel = compiler.compile("calm");
-    assert.equal(bareLabel.format, "drowse-structured-v4");
+    assert.equal(bareLabel.format, "drowse-structured-v5");
     assert.equal(bareLabel.curveActive.some(Boolean), true);
     compiler.attachProbe({ selector: "sae/0" });
     const program = compiler.compile("0.5,1 demo%alert@response&when:sae/0>0.2");
-    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.format, "drowse-structured-v5");
     assert.deepEqual([...program.curveRank.filter(Boolean)], [2, 2]);
     assert.deepEqual([...program.curveNodeCount.filter(Boolean)], [2, 2]);
     assert.deepEqual([...program.curveSigmaPresent.filter(Boolean)], [1, 1]);
@@ -1613,7 +1613,7 @@ try {
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     compiler.attachProbe({ selector: "sae/0" });
     const program = compiler.compile("0.5 sae/0@when:sae/0>0.2");
-    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.format, "drowse-structured-v5");
     assert.equal(structuredHookControlsFor(program, {
       prefill: true,
       thinking: false,
@@ -2009,7 +2009,7 @@ try {
     const { request } = await fixture({ withWhitener: true, withJlens: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const program = compiler.compile("0.5 jlens/hello");
-    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.format, "drowse-structured-v5");
     assert.deepEqual([...program.affineActive.filter(Boolean)], [1, 1]);
     // A lens atom is a read u: it steers along its raised vector Σu (Σ = diag(2.25, 0.25) and
     // diag(0.5, 3.5) here), Mahalanobis-unit, and reads with u again (‖Σu‖_M² = u·Σu).
@@ -2240,7 +2240,7 @@ try {
     const { request } = await fixture({ withWhitener: true, withSae: true, withJlens: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const program = compiler.compile("0.25 alert + 0.1 sae/1 + 0.2 jlens/world + 0.5 !calm");
-    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.format, "drowse-structured-v5");
     assert.equal(program.affineActive.filter(Boolean).length, 2);
   });
 
@@ -2255,7 +2255,7 @@ try {
     compiler.setInstrumentLive("sae", true);
     const program = compiler.compile("");
 
-    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.format, "drowse-structured-v5");
     assert.equal(program.measurementSchema.probes.some((probe) => probe?.family === "lens"), false);
     assert.equal(program.measurementSchema.probes.some((probe) => probe?.family === "sae"), false);
     assert.equal(program.measurementSchema.lensReadout, true);
@@ -2640,7 +2640,7 @@ try {
     assert.equal(compiler.hasAttachedProbes(), true);
 
     const program = compiler.compile("");
-    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.format, "drowse-structured-v5");
     assert.equal(program.measurementSchema.probes[0], null);
     assert.equal(program.measurementSchema.geometryProbes[0].name, "calm scale");
     assert.deepEqual(program.measurementSchema.geometryProbes[0].scoreKeys, ["calm scale"]);
@@ -2680,7 +2680,7 @@ try {
     const attached = compiler.attachProbe({ selector: "local/demo", top_n: 3 });
     assert.equal(attached.intrinsic_dim, 1);
     const program = compiler.compile("");
-    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.format, "drowse-structured-v5");
     assert.equal(program.profile.geometryOutputStride, 41);
     assert.deepEqual([...program.whitenerRank], [1, 1]);
     assert.deepEqual([...program.geometryKind.filter(Boolean)], [2, 2]);
@@ -2771,7 +2771,7 @@ try {
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     compiler.attachProbe({ selector: "local/demo" });
     const program = compiler.compile("0.5 local/demo%alert");
-    assert.equal(program.format, "drowse-structured-v4");
+    assert.equal(program.format, "drowse-structured-v5");
     assert.deepEqual([...program.curveDomainKind.filter(Boolean)], [2, 2]);
     assert.deepEqual([...program.geometryDomainKind.filter(Boolean)], [2, 2]);
     const result = runStructuredHookLayer(
@@ -3099,7 +3099,7 @@ try {
 
       compiler.attachProbe({ selector: "demo", name: "structured parity" });
       const structured = compiler.compile(golden.expression);
-      assert.equal(structured.format, "drowse-structured-v4");
+      assert.equal(structured.format, "drowse-structured-v5");
       golden.expectedLayers.forEach((expected, programIndex) => {
         const residual = runStructuredHookLayer(
           structured,

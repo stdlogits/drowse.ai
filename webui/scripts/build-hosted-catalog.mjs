@@ -221,10 +221,10 @@ async function prepareModel(entry, runtimeLock, specDirectory, semanticValidator
     // Hook ABI v5 parity: a units library ships the units, the token anatomy and the S lens, so
     // its R, S and units packs are in the release at every context; a residual library refuses
     // unit reads (the lock's unitRefusal) and has no native S lens or units.
-    if (lock.structuredHookProfile === "standard-v4") {
+    if (lock.structuredHookProfile === "standard-v5") {
       for (const [kind, label] of [["jlens", "R-lens"], ["slens", "S-lens"], ["units", "units"]]) {
         if (compatible(kind).length === 0) {
-          throw new Error(`${lock.id} context ${profile.contextTokens} has no ${label} pack (standard-v4 ships units and both lenses)`);
+          throw new Error(`${lock.id} context ${profile.contextTokens} has no ${label} pack (standard-v5 ships units and both lenses)`);
         }
       }
     } else if (compatible("slens").length > 0 || compatible("units").length > 0) {

@@ -10,8 +10,8 @@ import {
 import { structuredHookProfile, thinkingProfile } from "./hosted-model-profiles.mjs";
 import { expectedBuildToolchain } from "./hosted-model-closure.mjs";
 
-assert.equal(structuredHookProfile("standard-v4"), "standard-v4");
-assert.equal(structuredHookProfile("standard-v4-residual"), "standard-v4-residual");
+assert.equal(structuredHookProfile("standard-v5"), "standard-v5");
+assert.equal(structuredHookProfile("standard-v5-residual"), "standard-v5-residual");
 assert.throws(() => structuredHookProfile("unknown-profile"), /not allow-listed/);
 assert.throws(() => structuredHookProfile("adapter-derived"), /not allow-listed/);
 assert.equal(thinkingProfile(null), null);
@@ -103,9 +103,9 @@ try {
   }));
   const build = JSON.stringify({
     schemaVersion: 1,
-    runtimeAbi: "drowse-web-runtime-v2",
-    hookAbi: "block-sites-v5",
-    structuredHookProfile: "standard-v4",
+    runtimeAbi: "drowse-web-runtime-v3",
+    hookAbi: "block-sites-v6",
+    structuredHookProfile: "standard-v5",
     thinkingProfile: verifiedThinkingProfile,
     architecture: "qwen3",
     quantization: "q4f16_1",
@@ -141,9 +141,9 @@ try {
   }
   const manifest = {
     schemaVersion: 1,
-    runtimeAbi: "drowse-web-runtime-v2",
-    hookAbi: "block-sites-v5",
-    structuredHookProfile: "standard-v4",
+    runtimeAbi: "drowse-web-runtime-v3",
+    hookAbi: "block-sites-v6",
+    structuredHookProfile: "standard-v5",
     thinkingProfile: verifiedThinkingProfile,
     architecture: "qwen3",
     quantization: "q4f16_1",

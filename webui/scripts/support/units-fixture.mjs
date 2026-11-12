@@ -17,7 +17,7 @@ export async function unitsFixture(server, arch, options = {}) {
   const model = tiny.tinyModelWeights(file, arch);
   const tokenizer = tiny.tinyTokenizer(record);
   const backend = cpu.cpuBlockSitesBackend(model, {
-    profile: profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4,
+    profile: profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V5,
     contextTokens: 256,
   });
   const dropped = new Set([...DROPPED_SYMBOLS].map((symbol) => tokenizer.idOfByte(symbol.charCodeAt(0))));

@@ -111,9 +111,9 @@ try {
   ).map(({ path, bytes, sha256 }) => ({ path, bytes, sha256 }));
   const buildContents = JSON.stringify({
     schemaVersion: 1,
-    runtimeAbi: "drowse-web-runtime-v2",
-    hookAbi: "block-sites-v5",
-    structuredHookProfile: "standard-v4",
+    runtimeAbi: "drowse-web-runtime-v3",
+    hookAbi: "block-sites-v6",
+    structuredHookProfile: "standard-v5",
     thinkingProfile,
     architecture: "qwen3",
     quantization: "q4f16_1",
@@ -170,14 +170,14 @@ try {
     quantization: "q4f16_1",
     contextProfiles: [2048, 4096],
     prefillChunkSize: 2048,
-    structuredHookProfile: "standard-v4",
+    structuredHookProfile: "standard-v5",
     blockSpec: { ...FIXTURE_BLOCK_SPEC },
     thinkingProfile,
   };
   await writeFile(join(modelDirectory, "hosted-artifacts.json"), JSON.stringify({
     schemaVersion: 1,
-    runtimeAbi: "drowse-web-runtime-v2",
-    hookAbi: "block-sites-v5",
+    runtimeAbi: "drowse-web-runtime-v3",
+    hookAbi: "block-sites-v6",
     structuredHookProfile: model.structuredHookProfile,
     thinkingProfile: model.thinkingProfile,
     architecture: model.architecture,
@@ -190,8 +190,8 @@ try {
     files: base,
   }));
   const runtimeLock = {
-    runtimeAbi: "drowse-web-runtime-v2",
-    hookAbi: "block-sites-v5",
+    runtimeAbi: "drowse-web-runtime-v3",
+    hookAbi: "block-sites-v6",
     toolchain: {
       forkManifestSha256: createHash("sha256").update(forkManifestBytes).digest("hex"),
     },
@@ -327,7 +327,7 @@ try {
     ],
   );
   assert.equal(catalog.models[0].variants[0].requiredCorePackBytes, sum(core));
-  assert.equal(catalog.models[0].variants[0].structuredHookProfile, "standard-v4");
+  assert.equal(catalog.models[0].variants[0].structuredHookProfile, "standard-v5");
   assert.deepEqual(catalog.models[0].variants[0].thinkingProfile, model.thinkingProfile);
   assert.equal(catalog.models[0].variants[0].packs[1].bytes, sum(jlens));
   assert.equal(catalog.models[0].variants[0].packs[2].bytes, sum(slens));
@@ -374,8 +374,8 @@ try {
   // Both v5 profiles export exact-readout-v2; no older profile is accepted.
   assert.throws(
     () => prepareRequirements({ features: [], limits: { maxStorageBuffersPerShaderStage: 10 } },
-      "residual", "standard-v4-residual"),
-    /maxComputeWorkgroupSizeX must explicitly declare at least 256 for standard-v4-residual/,
+      "residual", "standard-v5-residual"),
+    /maxComputeWorkgroupSizeX must explicitly declare at least 256 for standard-v5-residual/,
   );
   assert.throws(
     () => prepareRequirements({ features: [], limits: {} }, "legacy", "unknown-profile"),
@@ -387,7 +387,7 @@ try {
     missing.models[0].packs = missing.models[0].packs.filter((pack) => pack.kind !== kind);
     await assert.rejects(
       () => prepareCatalog(missing, runtimeLock, root, validateSemantics),
-      kind === "units" ? /has no units pack \(standard-v4 ships units and both lenses\)/ : /units pack without its R and S lens packs|has no S-lens pack/,
+      kind === "units" ? /has no units pack \(standard-v5 ships units and both lenses\)/ : /units pack without its R and S lens packs|has no S-lens pack/,
     );
   }
   const narrow = structuredClone(spec);

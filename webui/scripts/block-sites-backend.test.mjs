@@ -20,8 +20,8 @@ try {
     server.ssrLoadModule("/src/hosted/runtime/fakeModelBackend.ts"),
     server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts"),
   ]);
-  const v4 = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4;
-  const residual = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL;
+  const v4 = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V5;
+  const residual = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V5_RESIDUAL;
   const members = backend.BLOCK_SITES_BACKEND_MEMBERS;
   assert.equal(new Set(members).size, members.length);
   assert.ok(backend.BLOCK_SITES_UNIT_MEMBERS.every((member) => members.includes(member)));
@@ -61,7 +61,7 @@ try {
     ropeGlobalScale: 1, ropeInGraph: false, slidingWindow: null, slidingPattern: null,
   });
   const capabilities = {
-    hookAbi: "block-sites-v5", runtimeAbi: "drowse-web-runtime-v2", exactReadoutAbi: "exact-readout-v2",
+    hookAbi: "block-sites-v6", runtimeAbi: "drowse-web-runtime-v3", exactReadoutAbi: "exact-readout-v2",
     profile: v4, layerCount: 36, hiddenSize: 2560, vocabSize: 151936, contextTokens: 4096,
     prefillChunkSize: 2048, blockSpec: spec, unitRefusal: null,
   };

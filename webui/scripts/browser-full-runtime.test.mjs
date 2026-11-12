@@ -136,28 +136,28 @@ test("requires the model and core artifacts and rejects bypass flags", () => {
   );
 });
 
-test("a standard-v4 run carries its R, S and units packs; a residual run no S or units pack", () => {
+test("a standard-v5 run carries its R, S and units packs; a residual run no S or units pack", () => {
   const all = { jlens: "/r", slens: "/s", units: "/u", sae: "/sae" };
-  assert.deepEqual(validateBrowserFullRuntimePackSets("standard-v4", all), ["jlens", "slens", "units", "sae"]);
+  assert.deepEqual(validateBrowserFullRuntimePackSets("standard-v5", all), ["jlens", "slens", "units", "sae"]);
   assert.deepEqual(
-    validateBrowserFullRuntimePackSets("standard-v4", { ...all, sae: null }),
+    validateBrowserFullRuntimePackSets("standard-v5", { ...all, sae: null }),
     ["jlens", "slens", "units"],
   );
   for (const [kind, flag] of [["jlens", "--jlens-directory"], ["slens", "--slens-directory"], ["units", "--units-directory"]]) {
     assert.throws(
-      () => validateBrowserFullRuntimePackSets("standard-v4", { ...all, [kind]: null }),
+      () => validateBrowserFullRuntimePackSets("standard-v5", { ...all, [kind]: null }),
       new RegExp(`${flag} is required`),
     );
   }
   const none = { jlens: null, slens: null, units: null, sae: null };
-  assert.deepEqual(validateBrowserFullRuntimePackSets("standard-v4-residual", none), []);
+  assert.deepEqual(validateBrowserFullRuntimePackSets("standard-v5-residual", none), []);
   assert.deepEqual(
-    validateBrowserFullRuntimePackSets("standard-v4-residual", { ...none, jlens: "/r", sae: "/sae" }),
+    validateBrowserFullRuntimePackSets("standard-v5-residual", { ...none, jlens: "/r", sae: "/sae" }),
     ["jlens", "sae"],
   );
   for (const [kind, flag] of [["slens", "--slens-directory"], ["units", "--units-directory"]]) {
     assert.throws(
-      () => validateBrowserFullRuntimePackSets("standard-v4-residual", { ...none, [kind]: "/x" }),
+      () => validateBrowserFullRuntimePackSets("standard-v5-residual", { ...none, [kind]: "/x" }),
       new RegExp(`${flag} is refused`),
     );
   }
@@ -457,26 +457,26 @@ test("cross-verifies only exact artifact EOF aborts after server and OPFS proof"
 
 test("accepts only one measured pass for every required check in order", () => {
   const events = transcript();
-  const checks = validateBrowserFullRuntimeTranscript(events, "standard-v4");
-  assert.deepEqual(Object.keys(checks), requiredBrowserFullRuntimeChecks("standard-v4"));
+  const checks = validateBrowserFullRuntimeTranscript(events, "standard-v5");
+  assert.deepEqual(Object.keys(checks), requiredBrowserFullRuntimeChecks("standard-v5"));
   assert.ok(Object.values(checks).every((check) => check.passed === true));
   // A units library runs the units check; a residual one the refusal check; no other profile.
-  assert.equal(requiredBrowserFullRuntimeChecks("standard-v4").includes("units"), true);
-  assert.equal(requiredBrowserFullRuntimeChecks("standard-v4-residual").includes("unit_refusal"), true);
-  assert.equal(requiredBrowserFullRuntimeChecks("standard-v4-residual").includes("units"), false);
+  assert.equal(requiredBrowserFullRuntimeChecks("standard-v5").includes("units"), true);
+  assert.equal(requiredBrowserFullRuntimeChecks("standard-v5-residual").includes("unit_refusal"), true);
+  assert.equal(requiredBrowserFullRuntimeChecks("standard-v5-residual").includes("units"), false);
   assert.throws(() => requiredBrowserFullRuntimeChecks("unknown-profile"), /predates hook ABI v5/);
   assert.throws(
-    () => validateBrowserFullRuntimeTranscript(events, "standard-v4-residual"),
+    () => validateBrowserFullRuntimeTranscript(events, "standard-v5-residual"),
     /unit_refusal did not start in the required order/,
   );
 
   const report = createBrowserFullRuntimeReport({
     events,
-    structuredHookProfile: "standard-v4",
+    structuredHookProfile: "standard-v5",
     environment: { browser: "Chrome", version: "140.0.0.0" },
     producedAt: new Date("2026-08-29T12:00:00.000Z"),
   });
-  assert.equal(report.structuredHookProfile, "standard-v4");
+  assert.equal(report.structuredHookProfile, "standard-v5");
   assert.equal(report.toolVersion, BROWSER_FULL_RUNTIME_TOOL_VERSION);
   assert.equal(report.passed, true);
   assert.equal(report.releaseEvidence, false);
@@ -488,34 +488,34 @@ test("fails closed on skipped, reordered, unmeasured, duplicate, or extra checks
   const missing = transcript();
   missing.splice(5, 1);
   assert.throws(
-    () => validateBrowserFullRuntimeTranscript(missing, "standard-v4"),
+    () => validateBrowserFullRuntimeTranscript(missing, "standard-v5"),
     /did not produce a measured pass/,
   );
 
   const reordered = transcript();
   [reordered[2], reordered[4]] = [reordered[4], reordered[2]];
   assert.throws(
-    () => validateBrowserFullRuntimeTranscript(reordered, "standard-v4"),
+    () => validateBrowserFullRuntimeTranscript(reordered, "standard-v5"),
     /required order/,
   );
 
   const unmeasured = transcript();
   unmeasured[1] = { ...unmeasured[1], measurements: {} };
   assert.throws(
-    () => validateBrowserFullRuntimeTranscript(unmeasured, "standard-v4"),
+    () => validateBrowserFullRuntimeTranscript(unmeasured, "standard-v5"),
     /has no measurements/,
   );
 
   const nonfinite = transcript();
   nonfinite[1] = { ...nonfinite[1], measurements: { observed: Number.NaN } };
   assert.throws(
-    () => validateBrowserFullRuntimeTranscript(nonfinite, "standard-v4"),
+    () => validateBrowserFullRuntimeTranscript(nonfinite, "standard-v5"),
     /non-finite/,
   );
 
   const extra = [...transcript(), { type: "check_started", check: "invented" }];
   assert.throws(
-    () => validateBrowserFullRuntimeTranscript(extra, "standard-v4"),
+    () => validateBrowserFullRuntimeTranscript(extra, "standard-v5"),
     /extra events/,
   );
 });
@@ -576,7 +576,7 @@ test("streams physical check progress before the terminal report", async () => {
 });
 
 function transcript() {
-  return requiredBrowserFullRuntimeChecks("standard-v4").flatMap((check, index) => [
+  return requiredBrowserFullRuntimeChecks("standard-v5").flatMap((check, index) => [
     { type: "check_started", check },
     { type: "check_passed", check, measurements: { observed: index + 1 } },
   ]);

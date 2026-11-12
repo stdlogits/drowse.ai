@@ -55,7 +55,7 @@ def capture_metadata(
         "control_probe_sha256": "6" * 64,
         "steered_probe_sha256": "3" * 64,
         "steering_program": {
-            "format": "drowse-structured-v4",
+            "format": "drowse-structured-v5",
             "enabledLayer": 1,
             "probeDirections": [[0.6, 0.8], [0.8, -0.6]],
             "target": 1.25,

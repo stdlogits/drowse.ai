@@ -44,7 +44,7 @@ try {
   await rm(root, { recursive: true, force: true });
 }
 
-// Capture schema 5: a standard-v4 capture carries its block sites and one static read per layer;
+// Capture schema 5: a standard-v5 capture carries its block sites and one static read per layer;
 // a residual one carries neither.
 {
   assert.equal(CAPTURE_SCHEMA_VERSION, 5);
@@ -70,7 +70,7 @@ try {
     staticReads: [read(0, 1), read(1, 4)],
   };
   const check = (overrides) => unitsCaptureFailures({
-    structuredHookProfile: "standard-v4",
+    structuredHookProfile: "standard-v5",
     units,
     sitesBytes,
     lock,
@@ -107,11 +107,11 @@ try {
     /1 to 64 static reads/,
   );
   assert.deepEqual(
-    unitsCaptureFailures({ structuredHookProfile: "standard-v4-residual", units: undefined, sitesBytes: undefined, lock, positions }),
+    unitsCaptureFailures({ structuredHookProfile: "standard-v5-residual", units: undefined, sitesBytes: undefined, lock, positions }),
     [],
   );
   assert.match(
-    unitsCaptureFailures({ structuredHookProfile: "standard-v4-residual", units, sitesBytes, lock, positions }).join(),
+    unitsCaptureFailures({ structuredHookProfile: "standard-v5-residual", units, sitesBytes, lock, positions }).join(),
     /carries no block sites/,
   );
   assert.match(

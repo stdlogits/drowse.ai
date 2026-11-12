@@ -1,4 +1,4 @@
-"""C TVM VM checks of hook ABI v5 (`block-sites-v5`) against drowse's units goldens.
+"""C TVM VM checks of hook ABI v6 (`block-sites-v6`) against drowse's units goldens.
 
 `verify-mlc-hook.py --units-fixtures DIR` runs these over the MLC fixture models that
 `build-units-fixtures.py` writes (`DIR/units-<arch>-<quantization>`). Each model is compiled for
@@ -696,7 +696,9 @@ def push_affine(vm, push: dict, expression: str) -> dict:
     for layer in case["layers"]:
         index = layer["layer"]
         affine["affine_active"][index, 0] = 1.0
-        affine["affine_basis"][index, 0, 0] = np.asarray(layer["basis"], np.float32)
+        basis = np.asarray(layer["basis"], np.float32)
+        affine["affine_basis"][index, 0, 0] = basis
+        affine["affine_read"][index, 0, 0] = basis / np.dot(basis, basis)
         affine["affine_neutral"][index, 0] = np.asarray(layer["neutral"], np.float32)
         affine["affine_target"][index, 0, 0] = np.float32(layer["target"])
         affine["affine_along"][index, 0] = np.float32(layer["along"])

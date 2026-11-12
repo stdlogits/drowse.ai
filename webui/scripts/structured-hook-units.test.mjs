@@ -1,5 +1,5 @@
-// Hook ABI v5 (block-sites-v5): the standard-v4 profiles, descriptor schema 4 and the
-// drowse-structured-v4 unit section, pinned against B1-hook-abi-v5.md §3.1/§3.4/§3.5 and the
+// Hook ABI v5 (block-sites-v6): the standard-v5 profiles, descriptor schema 4 and the
+// drowse-structured-v5 unit section, pinned against B1-hook-abi-v5.md §3.1/§3.4/§3.5 and the
 // drowse unit-ablation goldens (drowse/tests/fixtures/browser/unit-ablation-<arch>-v1.json).
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -32,8 +32,8 @@ try {
     server.ssrLoadModule("/src/hosted/runtime/structuredHookProfile.ts"),
     server.ssrLoadModule("/src/hosted/runtime/structuredHookProgram.ts"),
   ]);
-  const v4 = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4;
-  const residual = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V4_RESIDUAL;
+  const v4 = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V5;
+  const residual = profiles.STANDARD_STRUCTURED_HOOK_PROFILE_V5_RESIDUAL;
 
   // ---------------------------------------------------------------- profiles (§3.5) ---
   // The two v5 profiles share the steering, probe and geometry capacities and differ in units.
@@ -66,17 +66,17 @@ try {
     maxPatternLayers: 0, maxPatternHeads: 0, maxLensReadTopK: 256, maxAnatomyUnits: 0,
   });
   assert.equal(profiles.validateStructuredHookProfile({ ...v4 }), v4);
-  assert.equal(profiles.resolveStructuredHookProfile("standard-v4-residual"), residual);
+  assert.equal(profiles.resolveStructuredHookProfile("standard-v5-residual"), residual);
   assert.throws(() => profiles.validateStructuredHookProfile({ ...v4, maxUnitTaps: 65 }), /was modified/);
   const { maxPatternHeads: _dropped, ...missing } = v4;
   assert.throws(() => profiles.validateStructuredHookProfile(missing), /unsupported shape/);
   assert.throws(() => profiles.validateStructuredHookProfile(shared(v4)), /Unsupported structured hook capacity profile/);
   // Only the two v5 profiles resolve.
-  for (const id of ["unknown-profile", "standard-v4-units", ""]) {
+  for (const id of ["unknown-profile", "standard-v5-units", ""]) {
     assert.throws(() => profiles.resolveStructuredHookProfile(id), /Unsupported structured hook capacity profile/);
   }
-  assert.equal(profiles.BLOCK_SITES_HOOK_ABI, "block-sites-v5");
-  assert.equal(profiles.BLOCK_SITES_RUNTIME_ABI, "drowse-web-runtime-v2");
+  assert.equal(profiles.BLOCK_SITES_HOOK_ABI, "block-sites-v6");
+  assert.equal(profiles.BLOCK_SITES_RUNTIME_ABI, "drowse-web-runtime-v3");
   assert.equal(profiles.BLOCK_SITES_EXACT_READOUT_ABI, "exact-readout-v2");
 
   // ------------------------------------------------------------- BlockSpec (§8.2) ---
@@ -169,7 +169,7 @@ try {
   const named = (values) => Object.fromEntries(fields.map((name, i) => [name, values[i]]));
   const qwen = named(profiles.expectedHookProfileDescriptor(v4, model("qwen3")));
   assert.deepEqual(Object.values(qwen).slice(0, 31), [
-    0x53414b4c, 4, 4, 5, 4, 4, 64, 4, 8, 8, 4, 32, 4, 8, 671, 32768, 8, 96, 33, 41, 3, 12, 2, 4,
+    0x53414b4c, 4, 5, 6, 5, 4, 64, 4, 8, 8, 4, 32, 4, 8, 671, 32768, 8, 96, 33, 41, 3, 12, 2, 4,
     8, 8, 7, payload(4, 64), 2, 8, 16384,
   ]);
   assert.deepEqual(Object.values(qwen).slice(31), [
@@ -217,12 +217,12 @@ try {
   ]);
   assert.deepEqual(profiles.hookProfileDescriptorMismatches(expected, expected), []);
   assert.deepEqual(profiles.hookProfileDescriptorMismatches(expected.slice(0, 31), expected), ["LENGTH"]);
-  assert.equal(profiles.hookProfileDescriptorProfileId(expected), "standard-v4");
+  assert.equal(profiles.hookProfileDescriptorProfileId(expected), "standard-v5");
   assert.equal(
     profiles.hookProfileDescriptorProfileId(
       profiles.expectedHookProfileDescriptor(residual, { ...model("qwen3"), blockSpec: null }),
     ),
-    "standard-v4-residual",
+    "standard-v5-residual",
   );
   assert.throws(() => profiles.hookProfileDescriptorProfileId(expected.slice(0, 31)), /not schema 4/);
 
@@ -331,14 +331,14 @@ try {
     /Unsupported structured hook capacity profile/,
   );
   const programV4 = hooks.compileStructuredHookProgram(2, layers, v4);
-  assert.equal(programV4.format, "drowse-structured-v4");
-  assert.equal(programV4.hookAbi, "block-sites-v5");
+  assert.equal(programV4.format, "drowse-structured-v5");
+  assert.equal(programV4.hookAbi, "block-sites-v6");
   assert.equal(hooks.withStructuredUnitSection(programV4, shape, { ablations: [], taps: [], controls: [] }), programV4);
   assert.equal(hooks.hasStructuredUnitSection(programV4), false);
   assert.deepEqual(hooks.structuredTapGramHeads(programV4), []);
   assert.deepEqual(hooks.decodeStructuredUnitTables(programV4), []);
   const residualProgram = hooks.compileStructuredHookProgram(2, layers, residual);
-  assert.equal(residualProgram.format, "drowse-structured-v4");
+  assert.equal(residualProgram.format, "drowse-structured-v5");
   assert.throws(
     () => hooks.withStructuredUnitSection(residualProgram, shape, units),
     (error) => error.code === "UNIT_SECTION_UNSUPPORTED" && error.status === 422,
@@ -465,7 +465,7 @@ try {
   // ------------------- the unit-ablation goldens: native tables round-trip the v4 layout ---
   for (const arch of ["qwen3", "gemma3"]) {
     const ablation = golden(`unit-ablation-${arch}-v1.json`);
-    assert.equal(ablation.hookAbi, "block-sites-v5");
+    assert.equal(ablation.hookAbi, "block-sites-v5"); // the golden's recorded tag
     const config = tiny[arch].config;
     const archShape = { dFF: config.intermediate_size, nHeads: config.num_attention_heads, headDim: config.head_dim };
     const base = hooks.compileStructuredHookProgram(config.hidden_size, Array.from({ length: config.num_hidden_layers }, () => ({})), v4);

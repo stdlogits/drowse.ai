@@ -1,7 +1,7 @@
 // Capture schema 5's `units` member (browser-runtime/README.md, "production-q4 comparator"): on a
-// `standard-v4` library the block sites (`sites.f32`, fp32 `[layers, positions, d_ff + H·hd + d]`,
+// `standard-v5` library the block sites (`sites.f32`, fp32 `[layers, positions, d_ff + H·hd + d]`,
 // act | z | mid) and 1-64 neuron-write static reads, at least one at every captured layer; on a
-// `standard-v4-residual` library no member. `q4_unit_parity.py` reads what this writes.
+// `standard-v5-residual` library no member. `q4_unit_parity.py` reads what this writes.
 import { createHash } from "node:crypto";
 
 export const CAPTURE_SCHEMA_VERSION = 5;
@@ -10,16 +10,16 @@ export const MAXIMUM_STATIC_READS = 64;
 
 /** What is wrong with a worker's units result against the lock and the capture input. */
 export function unitsCaptureFailures({ structuredHookProfile, units, sitesBytes, lock, positions }) {
-  if (structuredHookProfile === "standard-v4-residual") {
+  if (structuredHookProfile === "standard-v5-residual") {
     return units === undefined && sitesBytes === undefined
       ? []
-      : ["a standard-v4-residual capture carries no block sites or static reads"];
+      : ["a standard-v5-residual capture carries no block sites or static reads"];
   }
-  if (structuredHookProfile !== "standard-v4") {
+  if (structuredHookProfile !== "standard-v5") {
     return [`structured hook profile ${String(structuredHookProfile)} predates capture schema 5`];
   }
   const failures = [];
-  if (!isRecord(units)) return ["a standard-v4 capture's units result is missing"];
+  if (!isRecord(units)) return ["a standard-v5 capture's units result is missing"];
   const spec = lock.blockSpec;
   const block = units.block;
   if (
@@ -49,7 +49,7 @@ export function unitsCaptureFailures({ structuredHookProfile, units, sitesBytes,
   }
   const reads = units.staticReads;
   if (!Array.isArray(reads) || reads.length < 1 || reads.length > MAXIMUM_STATIC_READS) {
-    failures.push(`a standard-v4 capture needs 1 to ${MAXIMUM_STATIC_READS} static reads`);
+    failures.push(`a standard-v5 capture needs 1 to ${MAXIMUM_STATIC_READS} static reads`);
     return failures;
   }
   const seen = new Set();
@@ -79,7 +79,7 @@ export function unitsCaptureFailures({ structuredHookProfile, units, sitesBytes,
   return failures;
 }
 
-/** `capture.json`'s `units` member for a checked standard-v4 result (`q4_unit_parity.py`
+/** `capture.json`'s `units` member for a checked standard-v5 result (`q4_unit_parity.py`
  *  `validate_units_member`). */
 export function captureUnitsMember(units) {
   return {

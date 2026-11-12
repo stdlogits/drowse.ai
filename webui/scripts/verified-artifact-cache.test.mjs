@@ -355,7 +355,7 @@ try {
     model: { id: "fixture-model" },
     variant: {
       id: "fixture-q4",
-      structuredHookProfile: "standard-v4-residual",
+      structuredHookProfile: "standard-v5-residual",
       thinkingProfile: null,
       runtimeIdentity: {
         hookAbi: "post-block-residual-v4",
