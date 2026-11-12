@@ -75,6 +75,7 @@ interface AffineFisherWasm extends DisposableWasmValue {
   centroidMean(): Float64Array;
   mean(): Float64Array;
   basis(): Float64Array;
+  read(): Float64Array;
   nodeCoordinates(): Float64Array;
   muCoordinates(): Float64Array;
   whitenedGram(): Float64Array;
@@ -519,6 +520,7 @@ async function execute(
             centroidMean: value.centroidMean(),
             mean: value.mean(),
             basis: value.basis(),
+            read: value.read(),
             nodeCoordinates: value.nodeCoordinates(),
             muCoordinates: value.muCoordinates(),
             whitenedGram: value.whitenedGram(),
@@ -545,7 +547,7 @@ async function execute(
         const accumulator = new bindings.GroupedReducedCovarianceAccumulator(
           spec.width,
           job.mean,
-          job.basis,
+          job.read,
           job.components,
           job.offsets,
         );

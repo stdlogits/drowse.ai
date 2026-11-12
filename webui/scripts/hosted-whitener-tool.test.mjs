@@ -220,7 +220,7 @@ try {
       "w = LayerWhitener.from_neutral_activations(rows, means)",
       "d = {L: torch.tensor(c, dtype=torch.float32) - means[L] for L, c in enumerate(x['concept'])}",
       "m = fold_directions_to_subspace('c', d, means, whitener=w, label='c')",
-      "print(json.dumps({str(L): {'basis': s.basis.reshape(-1).tolist(), 'mean': s.mean.tolist(), 'coord': float(s.node_coords.reshape(-1)[0]), 'share': m.mahalanobis_share[L]} for L, s in m.layers.items()}))",
+      "print(json.dumps({str(L): {'basis': s.basis.reshape(-1).tolist(), 'read': s.read.reshape(-1).tolist(), 'mean': s.mean.tolist(), 'coord': float(s.node_coords.reshape(-1)[0]), 'share': m.mahalanobis_share[L]} for L, s in m.layers.items()}))",
     ].join("\n"), join(scratch, "inputs.json")], {
       cwd: repositoryRoot,
       env: { ...process.env, PYTHONPATH: resolve(repositoryRoot, "drowse") },
@@ -234,6 +234,7 @@ try {
       const ours = foundation.finalAffineLayers.get(layer);
       const theirs = reference[String(layer)];
       close(ours.basis, theirs.basis, `L${layer} basis`);
+      close(ours.read, theirs.read, `L${layer} read`);
       close(ours.mean, theirs.mean, `L${layer} mean`);
       close(ours.nodeCoordinates, [theirs.coord], `L${layer} pole`);
       close([ours.mahalanobisShare], [theirs.share], `L${layer} share`);
@@ -290,6 +291,7 @@ try {
     centroidMean: new Float64Array(2),
     mean: new Float64Array(2),
     basis: new Float64Array([1, 0]),
+    read: new Float64Array([1, 0]),
     nodeCoordinates: new Float64Array([-1, 1]),
     muCoordinates: new Float64Array([-1, 1]),
     whitenedGram: new Float64Array([1, -1, -1, 1]),

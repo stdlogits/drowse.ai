@@ -3,15 +3,16 @@ import type {
   BrowserFittingTopologyFoundation,
   FinalizedBrowserAffineLayer,
 } from "./coordinator";
-import { mahalanobisNorm } from "./mahalanobis";
+import { applySerializedInverse } from "./mahalanobis";
 import type { SerializedMahalanobisWhitener, TopologyResult } from "./workerContracts";
 
 /**
  * A one-node ``pca`` concept against the neutral baseline, as drowse's ``_fit_monopolar``
- * folds it (``fold_directions_to_subspace``): per layer the direction is the concept centroid
- * minus the neutral mean, the basis its unit vector, the mean the neutral mean projected onto
- * it, the pole one step of the direction's norm from the neutral origin, and the share its
- * whitened norm. No discover coordinates, no DLS: every evaluated layer folds verbatim.
+ * folds it (``fold_directions_to_subspace``): per layer the direction d is the concept centroid
+ * minus the neutral mean; the frame writes along d/‖d‖_M and reads with Σ⁻¹d/‖d‖_M, the mean is
+ * the neutral mean projected into the span through the read row, the pole sits at ‖d‖_M (so at
+ * ν + d), and the share is ‖d‖_M. No discover coordinates, no DLS: every evaluated layer folds
+ * verbatim.
  * The in-app fit and the core-pack builder both take this path.
  */
 export function monopolarFoundation(
@@ -32,16 +33,22 @@ export function monopolarFoundation(
       pooled.values,
       (value, index) => value - whitener.mean[index],
     );
-    const norm = Math.hypot(...direction);
-    if (norm <= 1e-12) continue;
-    const basis = Float64Array.from(direction, (value) => value / norm);
+    if (Math.hypot(...direction) <= 1e-12) continue;
+    // A typed, Mahalanobis-unit frame: write along d, read with its covector Σ⁻¹d.
+    const inverseDirection = applySerializedInverse(whitener, direction);
+    let squared = 0;
+    for (let index = 0; index < pooled.columns; index += 1) {
+      squared += direction[index] * inverseDirection[index];
+    }
+    const share = Math.sqrt(Math.max(squared, 0));
+    if (!Number.isFinite(share) || share <= 1e-12) continue;
+    const basis = Float64Array.from(direction, (value) => value / share);
+    const read = Float64Array.from(inverseDirection, (value) => value / share);
     let neutralCoordinate = 0;
     for (let index = 0; index < pooled.columns; index += 1) {
-      neutralCoordinate += whitener.mean[index] * basis[index];
+      neutralCoordinate += whitener.mean[index] * read[index];
     }
     const mean = Float64Array.from(basis, (value) => value * neutralCoordinate);
-    const share = mahalanobisNorm(whitener, direction);
-    if (!Number.isFinite(share) || share <= 0) continue;
     layers.set(layer, {
       operation: "affine_fisher",
       nodeCount: 1,
@@ -50,7 +57,9 @@ export function monopolarFoundation(
       centroidMean: pooled.values.slice(),
       mean,
       basis,
-      nodeCoordinates: new Float64Array([norm]),
+      read,
+      // The pole sits at ν + d: ‖d‖_M along the Mahalanobis-unit write row.
+      nodeCoordinates: new Float64Array([share]),
       muCoordinates: new Float64Array([0]),
       whitenedGram: new Float64Array([share * share]),
       neutralCrossGram: new Float64Array([0]),

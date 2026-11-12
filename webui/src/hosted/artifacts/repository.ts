@@ -152,6 +152,15 @@ export class BrowserDrowseArchiveRepository {
     });
   }
 
+  /** The closure paths an installed pack staged, sorted; `null` when it is not installed. */
+  async paths(primary: string): Promise<string[] | null> {
+    await this.initialize();
+    return this.withLock(async () => {
+      const resolved = await this.resolveCommitted(primary);
+      return resolved ? Object.keys(resolved.transaction.manifest.files).sort() : null;
+    });
+  }
+
   async file(primary: string, path: string): Promise<File | null> {
     await this.initialize();
     return this.withLock(async () => {
@@ -263,7 +272,8 @@ export class BrowserDrowseArchiveRepository {
       state: "staging",
       primary: pack.manifest.primary,
       template: pack.manifest.template,
-      manifest: structuredClone(pack.manifest) as DrowseArchiveManifest,
+      // The closure's files are known once it verifies; commit records them.
+      manifest: { ...structuredClone(pack.manifest), files: {} },
       exactManifestBytes: pack.exactManifestBytes.slice(),
       refCount: 0,
       createdAt: Date.now(),
@@ -281,7 +291,7 @@ export class BrowserDrowseArchiveRepository {
 
   async commitStageLocked(id: string, verified: VerifiedDrowseArchive, force: boolean): Promise<void> {
     const database = this.requireDatabase();
-    for (const [path, expected] of Object.entries(verified.manifest.files)) {
+    for (const [path, expected] of Object.entries(verified.files)) {
       const file = await this.stageFile(id, path, false);
       if (!file || file.size !== expected.size) {
         throw new Error(`Staged Drowse file ${path} is missing or has the wrong size`);
@@ -305,6 +315,7 @@ export class BrowserDrowseArchiveRepository {
       transaction.abort();
       throw new Error(`Drowse manifold pack ${verified.manifest.primary} is already installed`);
     }
+    staged.manifest = structuredClone(verified.manifest) as DrowseArchiveManifest;
     if (staged.template !== null) {
       const templateFile = `${staged.template}/template.json`;
       const digest = staged.manifest.files[templateFile]?.sha256;
@@ -815,18 +826,23 @@ function validateTransactionRecord(
     value.state === "staging" && (value.refCount !== 0 || value.committedAt !== null) ||
     value.state === "committed" && !validTimestamp(value.committedAt)
   ) return null;
-  const manifest = validateStoredManifest(value.manifest);
+  // A staging record learns its files when the closure verifies; a committed one carries them.
+  const manifest = validateStoredManifest(value.manifest, value.state === "staging");
   if (
     manifest === null || manifest.primary !== value.primary || manifest.template !== value.template ||
     manifestPayloadBytes(manifest) + value.exactManifestBytes.byteLength > DROWSE_ARCHIVE_MAX_TOTAL_BYTES
   ) return null;
-  let exactManifest: DrowseArchiveManifest | null;
+  // The stored pack.json must name the same closure; its other fields are provenance.
+  let exactManifest: unknown;
   try {
-    exactManifest = validateStoredManifest(parseExactJson(value.exactManifestBytes, "stored pack.json"));
+    exactManifest = parseExactJson(value.exactManifestBytes, "stored pack.json");
   } catch {
     return null;
   }
-  if (exactManifest === null || !sameJson(manifest, exactManifest)) return null;
+  if (
+    !isRecord(exactManifest) || exactManifest.primary !== manifest.primary ||
+    (exactManifest.template ?? null) !== manifest.template
+  ) return null;
   return {
     id: value.id,
     state: value.state,
@@ -855,7 +871,7 @@ function validateInstallRecord(value: unknown, key: IDBValidKey): ArtifactInstal
   };
 }
 
-function validateStoredManifest(value: unknown): DrowseArchiveManifest | null {
+function validateStoredManifest(value: unknown, staging: boolean): DrowseArchiveManifest | null {
   if (!isRecord(value) || !exactKeys(value, [
     "files", "format_version", "kind", "primary", "producer", "source", "template",
   ])) return null;
@@ -869,6 +885,21 @@ function validateStoredManifest(value: unknown): DrowseArchiveManifest | null {
     !validStoredSource(value.source) || !isRecord(value.files)
   ) return null;
   const entries = Object.entries(value.files);
+  if (staging && entries.length === 0) {
+    return {
+      format_version: DROWSE_ARCHIVE_FORMAT_VERSION,
+      kind: "drowse-manifold",
+      producer: { name: "drowse", version: value.producer.version as string },
+      primary: value.primary as string,
+      template: value.template as string | null,
+      source: {
+        uri: value.source.uri as string,
+        repository: value.source.repository as string | null,
+        revision: value.source.revision as string | null,
+      },
+      files: {},
+    };
+  }
   if (entries.length === 0 || entries.length + 1 > DROWSE_ARCHIVE_MAX_ENTRIES) return null;
   const files: DrowseArchiveManifest["files"] = Object.create(null) as DrowseArchiveManifest["files"];
   const foldedPaths = new Set<string>();
@@ -954,20 +985,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function exactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
   const keys = Object.keys(value).sort();
   return keys.length === expected.length && expected.every((key, index) => keys[index] === key);
-}
-
-function sameJson(left: unknown, right: unknown): boolean {
-  if (left === right) return true;
-  if (Array.isArray(left) && Array.isArray(right)) {
-    return left.length === right.length && left.every((value, index) => sameJson(value, right[index]));
-  }
-  if (isRecord(left) && isRecord(right)) {
-    const leftKeys = Object.keys(left).sort();
-    const rightKeys = Object.keys(right).sort();
-    return leftKeys.length === rightKeys.length &&
-      leftKeys.every((key, index) => key === rightKeys[index] && sameJson(left[key], right[key]));
-  }
-  return false;
 }
 
 async function openDatabase(): Promise<IDBDatabase> {

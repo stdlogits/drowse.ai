@@ -340,6 +340,7 @@ try {
       centroidMean: new Float64Array(layer.components),
       mean: new Float64Array(layer.components),
       basis: new Float64Array(layer.components * layer.components),
+      read: new Float64Array(layer.components * layer.components),
       nodeCoordinates: new Float64Array(layer.nodeCoordinates),
       muCoordinates: new Float64Array(layer.nodeCoordinates.length),
       whitenedGram: new Float64Array(layer.nodeCount * layer.nodeCount),
@@ -360,7 +361,7 @@ try {
 
   test("matches Python neutral anchoring in the shared consensus layout", async () => {
     const fixture = JSON.parse(await readFile(new URL(
-      "../../drowse/tests/fixtures/browser/affine-fisher-fit-v1.json",
+      "../../drowse/tests/fixtures/browser/affine-fisher-fit-v2.json",
       import.meta.url,
     )));
     const expected = fixture.expected;
@@ -372,6 +373,7 @@ try {
       centroidMean: new Float64Array(expected.centroidMean),
       mean: new Float64Array(expected.mean),
       basis: new Float64Array(expected.basis),
+      read: new Float64Array(expected.read),
       nodeCoordinates: new Float64Array(expected.nodeCoordinates),
       muCoordinates: new Float64Array(expected.muCoordinates),
       whitenedGram: new Float64Array(expected.whitenedGram),
@@ -417,6 +419,7 @@ try {
     ).get(0);
     close(finalized.mean, expected.axisZeroFinal.mean, 2e-6);
     close(finalized.basis, expected.axisZeroFinal.basis, 2e-6);
+    close(finalized.read, expected.axisZeroFinal.read, 2e-6);
     close(finalized.nodeCoordinates, expected.axisZeroFinal.nodeCoordinates, 2e-6);
     close(finalized.muCoordinates, expected.axisZeroFinal.muCoordinates, 2e-6);
     close(finalized.affineMap, [1, 0], 0);
@@ -692,6 +695,8 @@ function affineFit(nodeCoordinates, components) {
     mean: new Float64Array(components),
     basis: Float64Array.from({ length: components * components }, (_, index) =>
       index % (components + 1) === 0 ? 1 : 0),
+    read: Float64Array.from({ length: components * components }, (_, index) =>
+      index % (components + 1) === 0 ? 1 : 0),
     nodeCoordinates: new Float64Array(nodeCoordinates),
     muCoordinates: new Float64Array(nodeCount * components),
     whitenedGram: new Float64Array(nodeCount * nodeCount),
@@ -885,6 +890,7 @@ function coordinatorHarness(BrowserFittingCoordinator, options = {}) {
           centroidMean,
           mean: new Float64Array(columns),
           basis: new Float64Array([1, ...new Array(columns - 1).fill(0)]),
+          read: new Float64Array([1, ...new Array(columns - 1).fill(0)]),
           nodeCoordinates,
           muCoordinates,
           whitenedGram: new Float64Array(nodeCount * nodeCount).fill(

@@ -137,6 +137,10 @@ export async function browserFittedFlatDiscoverPack(
       shape: [fit.components, fit.columns],
       data: fp32(fit.basis, `layer ${layer} basis`),
     };
+    tensors[`layer_${layer}.read`] = {
+      shape: [fit.components, fit.columns],
+      data: fp32(fit.read, `layer ${layer} read`),
+    };
     tensors[`layer_${layer}.node_coords`] = {
       shape: [fit.nodeCount, fit.components],
       data: fp32(fit.nodeCoordinates, `layer ${layer} node coordinates`),
@@ -202,8 +206,6 @@ export async function browserFittedFlatDiscoverPack(
     capture_render_sha256: identity.captureRenderSha256 ?? null,
     baseline_prompts_sha256: identity.baselinePromptsSha256 ?? null,
     fit_policy_version: identity.fitPolicyVersion,
-    share_metric: "mahalanobis",
-    subspace_metric: isMonopolar ? "euclidean" : "mahalanobis",
     rbf_smoothing_per_layer: {},
     sigma_field_per_layer: {},
     resolved_fit_mode: isAuto ? "pca" : null,
@@ -236,10 +238,6 @@ export async function browserFittedFlatDiscoverPack(
       role: node.role,
       kind: node.kind,
     })),
-    files: {
-      [tensorName]: bytesToHex(sha256(tensorBytes)),
-      [sidecarName]: bytesToHex(sha256(sidecarBytes)),
-    },
     source: closure.source.uri,
     tags: closure.tags,
     template_ref: closure.templateReference,
@@ -311,6 +309,10 @@ export async function browserFittedCurvedDiscoverPack(
     tensors[`${prefix}.basis`] = {
       shape: [fit.components, fit.columns],
       data: fp32(fit.basis, `${prefix} basis`),
+    };
+    tensors[`${prefix}.read`] = {
+      shape: [fit.components, fit.columns],
+      data: fp32(fit.read, `${prefix} read`),
     };
     tensors[`${prefix}.node_params`] = {
       shape: [fit.nodeCount, fit.surface.inputDimensions],
@@ -404,8 +406,6 @@ export async function browserFittedCurvedDiscoverPack(
     capture_render_sha256: identity.captureRenderSha256 ?? null,
     baseline_prompts_sha256: identity.baselinePromptsSha256 ?? null,
     fit_policy_version: identity.fitPolicyVersion,
-    share_metric: "mahalanobis",
-    subspace_metric: "mahalanobis",
     rbf_smoothing_per_layer: smoothing,
     sigma_field_per_layer: sigma,
     resolved_fit_mode: isAuto ? "spectral" : null,
@@ -434,10 +434,6 @@ export async function browserFittedCurvedDiscoverPack(
     fit_mode: manifold.fitMode,
     hyperparams: manifold.hyperparams,
     nodes: manifold.nodes.map((node) => ({ label: node.label, role: node.role, kind: node.kind })),
-    files: {
-      [tensorName]: bytesToHex(sha256(tensorBytes)),
-      [sidecarName]: bytesToHex(sha256(sidecarBytes)),
-    },
     source: closure.source.uri,
     tags: closure.tags,
     template_ref: closure.templateReference,
@@ -502,6 +498,10 @@ export async function browserFittedAuthoredPack(
     tensors[`${prefix}.basis`] = {
       shape: [fit.components, fit.columns],
       data: fp32(fit.basis, `${prefix} basis`),
+    };
+    tensors[`${prefix}.read`] = {
+      shape: [fit.components, fit.columns],
+      data: fp32(fit.read, `${prefix} read`),
     };
     tensors[`${prefix}.node_params`] = {
       shape: [fit.nodeCount, fit.surface.inputDimensions],
@@ -584,8 +584,6 @@ export async function browserFittedAuthoredPack(
     capture_render_sha256: identity.captureRenderSha256 ?? null,
     baseline_prompts_sha256: identity.baselinePromptsSha256 ?? null,
     fit_policy_version: identity.fitPolicyVersion,
-    share_metric: "mahalanobis",
-    subspace_metric: "mahalanobis",
     rbf_smoothing_per_layer: smoothing,
     sigma_field_per_layer: sigma,
     resolved_fit_mode: null,
@@ -610,10 +608,6 @@ export async function browserFittedAuthoredPack(
       role: node.role,
       kind: node.kind,
     })),
-    files: {
-      [tensorName]: bytesToHex(sha256(tensorBytes)),
-      [sidecarName]: bytesToHex(sha256(sidecarBytes)),
-    },
     source: closure.source.uri,
     tags: closure.tags,
     template_ref: null,
@@ -816,6 +810,7 @@ function validateInput(input: BrowserFittedFlatDiscoverPackInput): void {
     if (!Number.isSafeInteger(layer) || layer < 0 || fit.nodeCount !== nodeCount ||
       fit.components <= 0 || fit.components > dimensions || fit.columns < fit.components ||
       fit.mean.length !== fit.columns || fit.basis.length !== fit.components * fit.columns ||
+      fit.read.length !== fit.components * fit.columns ||
       fit.nodeCoordinates.length !== nodeCount * fit.components ||
       !Number.isFinite(fit.mahalanobisShare) || fit.mahalanobisShare <= 0 ||
       (fit.affineMap === null
@@ -904,6 +899,7 @@ function validateCurvedInput(input: BrowserFittedCurvedDiscoverPackInput): void 
       !Number.isSafeInteger(layer) || layer < 0 || fit.nodeCount !== nodeCount ||
       fit.components <= 0 || fit.columns < fit.components ||
       fit.mean.length !== fit.columns || fit.basis.length !== fit.components * fit.columns ||
+      fit.read.length !== fit.components * fit.columns ||
       !Number.isFinite(fit.mahalanobisShare) || fit.mahalanobisShare <= 0 ||
       surface.nodeCount !== nodeCount || surface.inputDimensions !== embeddedDimensions ||
       surface.outputDimensions !== fit.components ||
@@ -915,7 +911,7 @@ function validateCurvedInput(input: BrowserFittedCurvedDiscoverPackInput): void 
       (input.sae == null ? !sigmaValid : sigma !== null || sigmaSummary !== null) ||
       fit.origin.length !== intrinsicDimensions || !Number.isFinite(fit.originDistance) ||
       fit.originDistance < 0 ||
-      ![fit.origin, fit.mean, fit.basis, surface.nodes, surface.weights,
+      ![fit.origin, fit.mean, fit.basis, fit.read, surface.nodes, surface.weights,
         surface.polynomial, surface.coordinateOffset, surface.coordinateScale].every(finiteValues) ||
       !surface.coordinateScale.every((value) => value > 0) ||
       ![surface.lambda, surface.effectiveDegreesOfFreedom, surface.gcv].every(Number.isFinite)
@@ -955,6 +951,7 @@ function validateAuthoredInput(input: BrowserFittedAuthoredPackInput): void {
       !Number.isSafeInteger(layer) || layer < 0 || fit.nodeCount !== input.manifold.nodes.length ||
       fit.components <= 0 || fit.columns < fit.components ||
       fit.mean.length !== fit.columns || fit.basis.length !== fit.components * fit.columns ||
+      fit.read.length !== fit.components * fit.columns ||
       !Number.isFinite(fit.mahalanobisShare) || fit.mahalanobisShare <= 0 ||
       surface.nodeCount !== fit.nodeCount || surface.inputDimensions !== embeddedDimensions ||
       surface.outputDimensions !== fit.components ||
@@ -966,7 +963,7 @@ function validateAuthoredInput(input: BrowserFittedAuthoredPackInput): void {
       fit.origin.length !== intrinsicDimensions || !Number.isFinite(fit.originDistance) ||
       fit.originDistance < 0 ||
       (input.sae == null ? !sigmaValid : sigma !== null || sigmaSummary !== null) ||
-      ![fit.origin, fit.mean, fit.basis, surface.nodes, surface.weights,
+      ![fit.origin, fit.mean, fit.basis, fit.read, surface.nodes, surface.weights,
         surface.polynomial, surface.coordinateOffset, surface.coordinateScale].every(finiteValues) ||
       !surface.coordinateScale.every((value) => value > 0)
     ) {

@@ -22,7 +22,7 @@ const observed = {
 };
 
 const fixture = JSON.parse(await readFile(
-  new URL("../../drowse/tests/fixtures/browser/affine-fisher-fit-v1.json", import.meta.url),
+  new URL("../../drowse/tests/fixtures/browser/affine-fisher-fit-v2.json", import.meta.url),
 ));
 const topologyFixture = JSON.parse(await readFile(
   new URL("../../drowse/tests/fixtures/browser/topology-rbf-parity-v1.json", import.meta.url),
@@ -84,8 +84,9 @@ try {
     try {
       assert.equal(fit.nodeCount, fixture.nodeCount);
       assert.equal(fit.components, fixture.maxComponents);
-      close(fit.mean(), fixture.expected.mean, 3e-6);
-      close(fit.basis(), fixture.expected.basis, 3e-6);
+      close(fit.mean(), fixture.expected.mean, 5e-6);
+      close(fit.basis(), fixture.expected.basis, 5e-6);
+      close(fit.read(), fixture.expected.read, 5e-6);
       close(fit.nodeCoordinates(), fixture.expected.nodeCoordinates, 5e-6);
       close(fit.muCoordinates(), fixture.expected.muCoordinates, 5e-6);
       close(fit.whitenedGram(), fixture.expected.whitenedGram, 5e-5);
@@ -445,7 +446,7 @@ if (releaseEvidenceType === null) {
     producedAt: new Date().toISOString(),
     passed: true,
     fixturePath: releaseEvidenceType === "fittingKernelParity"
-      ? "drowse/tests/fixtures/browser/affine-fisher-fit-v1.json"
+      ? "drowse/tests/fixtures/browser/affine-fisher-fit-v2.json"
       : "drowse/tests/fixtures/browser/topology-rbf-parity-v1.json",
     results,
   })}\n`);

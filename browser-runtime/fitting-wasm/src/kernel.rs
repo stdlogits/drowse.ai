@@ -1,8 +1,8 @@
 use crate::error::{invalid, KernelResult};
 use crate::linalg::{
     center_rows, checked_finite, checked_matrix, checked_output, checked_vector, checked_work,
-    matrix_rank, mean_rows, orthonormalize_rows, solve, symmetric_eigen,
-    thin_covariance_components, thin_principal_components, validate_orthonormal,
+    dual_read, matrix_rank, mean_rows, solve, symmetric_eigen, thin_covariance_components,
+    thin_principal_components, validate_orthonormal,
 };
 
 const NEAR_ZERO_VARIANCE: f64 = 1e-12;
@@ -65,7 +65,10 @@ pub struct AffineFisherFit {
     pub components: usize,
     pub centroid_mean: Vec<f64>,
     pub mean: Vec<f64>,
+    /// Write rows (vectors), Mahalanobis-orthonormal.
     pub basis: Vec<f64>,
+    /// Read rows (covectors), their Σ⁻¹ images: `read · basisᵀ = I`.
+    pub read: Vec<f64>,
     pub node_coordinates: Vec<f64>,
     pub mu_coordinates: Vec<f64>,
     pub whitened_gram: Vec<f64>,
@@ -704,35 +707,45 @@ pub fn fit_affine_fisher(
         .filter(|value| value.max(0.0) > 1e-6 * leading.max(1e-12))
         .count();
     let components = max_components.min(node_count - 1).min(stable_rank).max(1);
-    let mut directions = vec![0.0; checked_output("Fisher directions", &[components, columns])?];
+    // A typed frame: PCA in the whitened space mapped back with the right types. For the
+    // eigenpairs (a, μ) of G = X Σ⁻¹ Xᵀ the write rows are the vectors Xᵀa/√μ (Mahalanobis-
+    // orthonormal, since aᵀGa = μ) and the read rows their covectors aᵀ(Σ⁻¹X)/√μ, made exactly
+    // dual. Two nodes write along δ and read with Σ⁻¹δ.
+    let frame_elements = checked_output("affine frame", &[components, columns])?;
+    let mut basis = vec![0.0; frame_elements];
+    let mut raw_read = vec![0.0; frame_elements];
     for component in 0..components {
+        let scale = 1.0 / eigenvalues[component].max(1e-30).sqrt();
         for column in 0..columns {
-            directions[component * columns + column] = (0..node_count)
-                .map(|row| {
-                    eigenvectors[row * node_count + component]
-                        * inverse_rows[row * columns + column]
-                })
-                .sum::<f64>();
+            let mut write = 0.0;
+            let mut read = 0.0;
+            for row in 0..node_count {
+                let coefficient = eigenvectors[row * node_count + component];
+                write += coefficient * centered[row * columns + column];
+                read += coefficient * inverse_rows[row * columns + column];
+            }
+            basis[component * columns + column] = write * scale;
+            raw_read[component * columns + column] = read * scale;
         }
     }
-    let mut basis = orthonormalize_rows(&directions, components, columns)?;
+    let mut read = dual_read(&basis, &raw_read, components, columns)?;
     for component in 0..components {
         let projection = (0..columns)
             .map(|column| {
-                basis[component * columns + column]
-                    * (centroids[orient_to * columns + column] - centroid_mean[column])
+                read[component * columns + column] * centered[orient_to * columns + column]
             })
             .sum::<f64>();
         if projection < 0.0 {
             for column in 0..columns {
                 basis[component * columns + column] = -basis[component * columns + column];
+                read[component * columns + column] = -read[component * columns + column];
             }
         }
     }
     let mut mean = vec![0.0; columns];
     for component in 0..components {
         let coordinate = (0..columns)
-            .map(|column| whitener.mean[column] * basis[component * columns + column])
+            .map(|column| whitener.mean[column] * read[component * columns + column])
             .sum::<f64>();
         for column in 0..columns {
             mean[column] += coordinate * basis[component * columns + column];
@@ -745,12 +758,12 @@ pub fn fit_affine_fisher(
             node_coordinates[node * components + component] = (0..columns)
                 .map(|column| {
                     (centroids[node * columns + column] - whitener.mean[column])
-                        * basis[component * columns + column]
+                        * read[component * columns + column]
                 })
                 .sum::<f64>();
             mu_coordinates[node * components + component] = (0..columns)
                 .map(|column| {
-                    centered[node * columns + column] * basis[component * columns + column]
+                    centered[node * columns + column] * read[component * columns + column]
                 })
                 .sum::<f64>();
         }
@@ -790,6 +803,7 @@ pub fn fit_affine_fisher(
         .sum::<f64>();
     let explained_variance = if total > 1e-12 { retained / total } else { 1.0 };
     checked_finite("affine Fisher basis", &basis)?;
+    checked_finite("affine Fisher read rows", &read)?;
     checked_finite("affine Fisher coordinates", &node_coordinates)?;
     Ok(AffineFisherFit {
         node_count,
@@ -798,6 +812,7 @@ pub fn fit_affine_fisher(
         centroid_mean,
         mean,
         basis,
+        read,
         node_coordinates,
         mu_coordinates,
         whitened_gram,
