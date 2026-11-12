@@ -11,7 +11,7 @@ the browser.
 
 | Path | What it holds |
 | --- | --- |
-| `drowse/` | Submodule pinned to [stdlogits/drowse](https://github.com/stdlogits/drowse): the shared dashboard source (`drowse/webui/src`), the Python reference implementation, and the parity goldens (`drowse/tests/fixtures/browser`) the browser runtime replays. |
+| `drowse/` | Submodule pinned to [stdlogits/drowse](https://github.com/stdlogits/drowse): the shared dashboard source (`drowse/webui/src`) and the Python reference implementation the browser runtime follows. |
 | `webui/` | The hosted shell (`hosted/`), site-only UI and runtime (`src/`), static assets (`public-hosted/`), build, release, and test scripts (`scripts/`), Playwright specs (`e2e/`), and the `/api/contact` Worker (`contact-worker/`). |
 | `browser-runtime/` | The WebGPU runtime: WebLLM/MLC forks and compiler, the Rust/WASM fitting kernel, runtime and distribution locks, and release inputs. |
 | `tests/` | Python tests for the browser-runtime build and validation tools. |

@@ -77,8 +77,7 @@ export class UnitWhitenerError extends Error {
 /** One layer's offline artifacts, keyed as native `UnitReader.population_artifacts` keys them. */
 export type UnitLayerArtifacts = ReadonlyMap<string, Float32Array>;
 
-/** What the reader needs besides the device: B6's units and core packs (or, in tests, drowse's
- *  unit-stats / unit-artifacts goldens and the fixture whitener). */
+/** What the reader needs besides the device: B6's units and core packs. */
 export interface UnitsArtifacts {
   readonly statistics: UnitStatistics | null;
   /** Why `statistics` is null (native `UnitsUnavailableError`'s text). */

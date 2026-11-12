@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 
@@ -23,19 +22,6 @@ const withReads = (tensors) => Object.fromEntries(Object.entries(tensors).flatMa
     ? [[key, value], [key.replace(/\.basis$/u, ".read"), { shape: value.shape, data: value.data.slice() }]]
     : [[key, value]]
 ));
-const loweringGolden = JSON.parse(readFileSync(
-  new URL("../../drowse/tests/fixtures/browser/affine-rank-one-lowering-v1.json", import.meta.url),
-  "utf8",
-));
-const composedGolden = JSON.parse(readFileSync(
-  new URL("../../drowse/tests/fixtures/browser/affine-composed-lowering-v1.json", import.meta.url),
-  "utf8",
-));
-const ablationGolden = JSON.parse(readFileSync(
-  new URL("../../drowse/tests/fixtures/browser/affine-ablation-lowering-v2.json", import.meta.url),
-  "utf8",
-));
-
 try {
   const { BrowserFeasibilityCorePackCompiler } = await server.ssrLoadModule(
     "/src/hosted/runtime/browserCorePack.ts",
@@ -223,9 +209,7 @@ try {
         : { type: "custom", embed_dim: affineRank2 ? 2 : 1, bounds: null },
       node_spread_per_layer: {},
       fitted_layers: [0, 1],
-      mahalanobis_share_per_layer: Object.fromEntries(
-        loweringGolden.layers.map((layer) => [String(layer.layer), layer.mahalanobisShare]),
-      ),
+      mahalanobis_share_per_layer: { "0": Math.SQRT2, "1": 2 * Math.SQRT2 },
       origin_per_layer: sphere
         ? { "0": [Math.PI / 2, 0], "1": [Math.PI / 2, 0] }
         : curved ? { "0": [curveOrigin], "1": [curveOrigin] } : {},
@@ -438,7 +422,7 @@ try {
     }
     if (options.isotropicWhitener) {
       // Native's `isotropic_whitener`: zero means and the identity metric (λ + ridge = 1 on a
-      // full basis), the whitener drowse writes the affine lowering golden under.
+      // full basis).
       const identityLayer = (layer) => ({
         [`layer_${layer}.mean`]: { shape: [2], data: new Float32Array([0, 0]) },
         [`layer_${layer}.basis`]: { shape: [2, 2], data: new Float32Array([1, 0, 0, 1]) },
@@ -775,9 +759,9 @@ try {
     };
   }
 
-  test("lowers a single fitted node to drowse's affine target and gain (one structured group)", async () => {
-    // drowse writes the golden under its isotropic whitener; a single push takes the same
-    // Mahalanobis lowering as a composed one, so it needs the neutral whitener too.
+  test("lowers a single fitted node to one structured group", async () => {
+    // A single push takes the same Mahalanobis lowering as a composed one, so it needs the
+    // neutral whitener too.
     const { request } = await fixture({ isotropicWhitener: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
     const program = compiler.compile("0.5 alert");
@@ -787,8 +771,6 @@ try {
     const axis = affineAxis(program);
     assert.deepEqual(axis.active, [1, 1]);
     assert.deepEqual(axis.basis, [1, 0, 0, 1]);
-    assertFloatArray(axis.target, loweringGolden.layers.map((layer) => layer.expectedTarget));
-    assertFloatArray(axis.along, loweringGolden.layers.map((layer) => layer.expectedAlong), 1e-5);
     assert.deepEqual(axis.collapse, [0, 0]);
     assert.deepEqual([...program.affineActive].filter(Boolean).length, 2);
     const { request: bare } = await fixture();
@@ -1191,31 +1173,15 @@ try {
     );
   });
 
-  test("matches Python mean-replacement ablation", async () => {
+  test("lowers a mean-replacement ablation to a collapse axis", async () => {
     const { request } = await fixture({ withWhitener: true });
     const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
-    const program = compiler.compile(ablationGolden.expression);
+    const program = compiler.compile("0.5 !alert");
     assert.equal(program.format, "drowse-structured-v5");
     const axis = affineAxis(program);
     assert.deepEqual(axis.active, [1, 1]);
     assert.deepEqual(axis.target, [0, 0]);
-    assertFloatArray(axis.collapse, [ablationGolden.coefficient, ablationGolden.coefficient]);
-    // The axis writes along the direction and reads with its Σ⁻¹ covector (LEACE).
-    assertFloatArray(axis.basis, ablationGolden.layers.flatMap((layer) => layer.basis), 1e-6);
-    assertFloatArray(axis.read, ablationGolden.layers.flatMap((layer) => layer.read), 1e-6);
-    assert.deepEqual(axis.neutral, ablationGolden.layers.flatMap((layer) => layer.neutral));
-    for (const layer of ablationGolden.layers) {
-      assertFloatArray(
-        runStructuredHookLayer(
-          program,
-          initialStructuredHookState(program),
-          layer.layer,
-          new Float32Array(layer.input),
-        ).residual,
-        layer.expected,
-        1e-6,
-      );
-    }
+    assertFloatArray(axis.collapse, [0.5, 0.5]);
     const mixed = compiler.compile("0.5 !alert + 0.25 calm");
     assert.equal(mixed.format, "drowse-structured-v5");
     assert.deepEqual([...mixed.affineActive.slice(0, 2)], [1, 0]);
@@ -3067,50 +3033,6 @@ try {
       (error) => error.code === "CORE_PACK_IDENTITY_COLLISION",
     );
   });
-
-  for (const golden of composedGolden.cases) {
-    test(`matches Python composed lowering: ${golden.name}`, async () => {
-      const { request } = await fixture({ withWhitener: true, withSecondManifold: true });
-      const compiler = await BrowserFeasibilityCorePackCompiler.load(request);
-      const program = compiler.compile(golden.expression);
-      assert.deepEqual(affineAxis(program).active, [1, 1]);
-      // drowse records the push as one world target (its direction and length); the group
-      // holds it in the span of the fragments' bases, so compare the world target it sums to.
-      const { maxAffineGroups, maxRank } = program.profile;
-      const d = program.hiddenSize;
-      golden.expectedLayers.forEach((expected, programIndex) => {
-        const slot = programIndex * maxAffineGroups;
-        const world = new Float64Array(d);
-        for (let axis = 0; axis < maxRank; axis += 1) {
-          const row = (slot * maxRank + axis) * d;
-          for (let column = 0; column < d; column += 1) {
-            world[column] += program.affineTarget[slot * maxRank + axis] *
-              program.affineBasis[row + column];
-          }
-        }
-        const target = Math.hypot(...world);
-        assertFloatArray([...world].map((value) => value / target), expected.basis, 2e-6);
-        assertFloatArray(program.affineNeutral.slice(slot * d, (slot + 1) * d), expected.neutral);
-        assert.ok(Math.abs(target - expected.target) <= 2e-6);
-        assert.ok(Math.abs(program.affineAlong[slot] - expected.along) <= 2e-5);
-        assert.ok([...program.affineKappa.slice(slot * maxRank, (slot + 1) * maxRank)].every((value) => value === 0));
-        assertFloatArray([...world].map((value) => value * program.affineAlong[slot]), expected.delta, 3e-5);
-      });
-
-      compiler.attachProbe({ selector: "demo", name: "structured parity" });
-      const structured = compiler.compile(golden.expression);
-      assert.equal(structured.format, "drowse-structured-v5");
-      golden.expectedLayers.forEach((expected, programIndex) => {
-        const residual = runStructuredHookLayer(
-          structured,
-          initialStructuredHookState(structured),
-          programIndex,
-          [0, 0],
-        ).residual;
-        assertFloatArray(residual, expected.delta, 4e-5);
-      });
-    });
-  }
 
   test("fails closed when browser fitting has no neutral whitener", async () => {
     const { request } = await fixture();

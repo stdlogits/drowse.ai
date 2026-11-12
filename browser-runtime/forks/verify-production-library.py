@@ -141,7 +141,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def environment(tvm, relax, nn, op):
-    """What `units_goldens.FixtureVM` needs (the same namespace verify-mlc-hook.py builds)."""
+    """What `units_vm.UnitsVM` needs."""
     from mlc_llm import compiler_pass as _compiler_pass  # noqa: F401  (registers the pipeline)
     from mlc_llm import op as op_ext
     from mlc_llm.interface.compiler_flags import IPCAllReduceStrategyType
@@ -203,18 +203,17 @@ def parity(env, model_dir: Path, input_path: Path, parity_input: dict, greedy_to
     import subprocess
     import tempfile
 
-    import units_goldens as ug
-    from static_reads import Device
+    from units_vm import Device, UnitProgram, UnitsVM, load_tensor_cache
 
     ids = [int(value) for value in parity_input["inputIds"]]
     checks: dict = {}
 
     timer = time.time()
-    vm = ug.FixtureVM(env, model_dir)
+    vm = UnitsVM(env, model_dir)
     checks["cvmBuildSeconds"] = round(time.time() - timer, 1)
     block, layers = vm.block, vm.num_layers
     caps = {"groups": env.UNIT_MAX_GROUPS, "head_taps": env.UNIT_MAX_HEAD_TAPS}
-    empty = ug.UnitProgram(env.unit_meta_layout(layers), env.unit_coeff_layout(block["head_dim"]),
+    empty = UnitProgram(env.unit_meta_layout(layers), env.unit_coeff_layout(block["head_dim"]),
                            layers, block["head_dim"], caps).buffers([])
     timer = time.time()
     vm_logits, sites = vm.forward_sites(vm.new_cache(), ids, empty)
@@ -256,7 +255,7 @@ def parity(env, model_dir: Path, input_path: Path, parity_input: dict, greedy_to
         failures.append(f"greedy tokens differ: cvm {vm_greedy}, torch {torch_greedy}")
 
     timer = time.time()
-    tensors = ug.load_tensor_cache(model_dir)
+    tensors = load_tensor_cache(model_dir)
     weights = ProductionWeights(tensors, block, layers)
     checks["staticReads"] = static_reads(Device(vm), weights, sites, failures)
     checks["staticReads"]["seconds"] = round(time.time() - timer, 1)
@@ -338,13 +337,13 @@ def cvm_greedy(vm, ids: list[int], empty, count: int, eos_ids: set) -> list[int]
 # ------------------------------------------------------------------------- static reads ---
 
 class ProductionWeights:
-    """`static_reads.Weights` over a production tensor cache, one layer resident at a time and the
+    """`units_vm.Weights` over a production tensor cache, one layer resident at a time and the
     vocabulary dequantized in chunks (a 4B model's embedding is 5.4 GB in fp64)."""
 
     CHUNK = 16384
 
     def __init__(self, tensors: dict, block: dict, num_layers: int):
-        from static_reads import Weights
+        from units_vm import Weights
 
         self.inner = Weights(tensors, block, num_layers)
         self.tensors, self.block, self.prefix = tensors, block, self.inner.prefix

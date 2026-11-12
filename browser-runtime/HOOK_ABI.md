@@ -28,8 +28,8 @@ The TypeScript side of this contract, pinned by script tests:
 | `webui/src/hosted/runtime/structuredHookProfile.ts` | ABI names, profiles, `BlockSpec`, descriptor schema 4 | `structured-hook-units.test.mjs` |
 | `webui/src/hosted/runtime/structuredHookProgram.ts` | `drowse-structured-v5`: read and write rows, unit tables, encoder (duality check), controls, CPU reference | `structured-hook-units.test.mjs` |
 | `webui/src/hosted/runtime/modelBackend.ts` | `BrowserBlockSitesBackend` (the device surface), typed tensors, replay layouts | `block-sites-backend.test.mjs` |
-| `webui/src/hosted/runtime/webLlmBlockSites.ts`, `webLlmStaticReads.ts` | the surface over the bridge (replay, residents, static reads) | `web-llm-block-sites.test.mjs`; WebGPU `browser-units-goldens.mjs --suite all` |
-| `browser-runtime/forks/units_goldens.py`, `static_reads.py` | the C TVM VM checks against the goldens | `verify-mlc-hook.py --units-fixtures` |
+| `webui/src/hosted/runtime/webLlmBlockSites.ts`, `webLlmStaticReads.ts` | the surface over the bridge (replay, residents, static reads) | `web-llm-block-sites.test.mjs` |
+| `browser-runtime/forks/units_vm.py` | a units library on the C TVM VM (paged KV cache, unit program, static reads) | used by `verify-production-library.py` |
 | `browser-runtime/forks/verify-production-library.py` | a production library on the CPU: export and shader checks, its descriptor, and (`--parity`) its block sites, greedy tokens and static reads on the C TVM VM against PyTorch on the dequantized MLC tensors (B1 §4.3) | run per library before release |
 
 ## 1. Names (§8.1)
@@ -211,7 +211,7 @@ prefill state; a decode forward one state for all its rows. A unit gate reads th
 scaled unit reading through `priorScores[unit]`. Native's step count (`loom/replay.py`): the
 prefill is step 0 and the decode forward that reads the k-th generated token (1-based) is
 `gen_step = k`, so `@first:2` covers the first decode forward only and `@after:n` starts at the
-n-th; the goldens' `triggers` case pins this on both arches.
+n-th.
 
 **Position targeting** (browser only). `position_spans`/`position_indices` gate unit terms as they
 gate affine and curve terms: prefill splits chunks at span boundaries and outside a span the
@@ -325,8 +325,8 @@ rope scaling factor come from the HF config, not `model_spec`). A mismatch names
 (`hookProfileDescriptorMismatches`) and fails the load with `HOOK_ABI_MISMATCH`.
 
 The descriptor catches a library compiled with the wrong constants. It cannot see a wrong graph
-with the right constants (a swapped `gate_up` split, a misplaced norm): the `block-sites` goldens on
-the tiny libraries and the production q4 parity gate's per-layer `act`/`z`/`mid` error catch those.
+with the right constants (a swapped `gate_up` split, a misplaced norm): the production q4 parity
+gate's per-layer `act`/`z`/`mid` error catches those.
 
 **Lock** (`runtime-lock.schema.json`, §8.2): `hookAbi: "block-sites-v6"`,
 `exactReadoutAbi: "exact-readout-v2"`, `runtimeAbi: "drowse-web-runtime-v3"`;

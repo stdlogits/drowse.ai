@@ -30,10 +30,8 @@ colima start --vm-type vz --vz-rosetta
 
 The build pins the Ubuntu base digest, LLVM archives and source, Emscripten SDK commit,
 TVM/TVM-FFI sources, MLC source, and both Drowse overlays. Its final build gate runs the C VM
-structured, geometry and readout goldens, then compiles fp32 and q4 Qwen3, Llama and Gemma 3
-WebGPU fixture libraries under the v5 export check. The units goldens need the fixture models
-`forks/build-units-fixtures.py` makes from drowse's checkpoints; they run outside the image
-(`browser-runtime/record-cvm-goldens.py`, README "Release").
+structured, geometry and readout cases, then compiles fp32 and q4 Qwen3, Llama and Gemma 3
+WebGPU fixture libraries under the v5 export check.
 
 The local image ID is feasibility evidence only. A production runtime lock must
 name an immutable registry reference and manifest digest for the published

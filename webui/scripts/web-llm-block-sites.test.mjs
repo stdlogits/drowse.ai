@@ -9,7 +9,6 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const goldens = new URL("../../drowse/tests/fixtures/browser/", import.meta.url);
 const server = await createServer({
   root,
   configFile: false,
@@ -27,7 +26,7 @@ try {
     server.ssrLoadModule("/src/hosted/runtime/structuredHookProgram.ts"),
     server.ssrLoadModule("/src/hosted/runtime/modelBackend.ts"),
   ]);
-  const tiny = JSON.parse(readFileSync(new URL("units-tiny-models-v1.json", goldens), "utf8")).arches;
+  const tiny = JSON.parse(readFileSync(new URL("../src/hosted/runtime/fixtures/units-tiny-models-v1.json", import.meta.url), "utf8")).arches;
   const qwen = tiny.qwen3.config;
   const spec = profiles.validateBlockSpec({
     dFF: qwen.intermediate_size,

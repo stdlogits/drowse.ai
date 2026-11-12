@@ -2598,8 +2598,8 @@ export interface ComposedCall {
   sampling: WSSampling | null;
 }
 
-/** drowse/loom/recipe.py `compose_call`: the one composition rule (golden:
- *  `recipe-compose-v1.json`). Steering, thinking and the system prompt rank
+/** drowse/loom/recipe.py `compose_call`: the one composition rule.
+ *  Steering, thinking and the system prompt rank
  *  cast < call < anchor < modifier: a set field wins (steering and thinking
  *  when not null, the system prompt when not inherited). Sampling ranks cast <
  *  anchor < call < modifier and merges field by field, so a tier cannot reset

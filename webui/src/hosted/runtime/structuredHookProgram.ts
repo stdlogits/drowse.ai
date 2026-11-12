@@ -3455,7 +3455,7 @@ export function assertStructuredTapGramsBound(
   });
 }
 
-/** Native's unit tables (`UnitOp` per module and trigger), as the B3 goldens record them:
+/** Native's unit tables (`UnitOp` per module and trigger):
  *  coordinate entries of a site of width `width`, one keep and bias per coordinate. */
 export interface StructuredNativeUnitTable {
   readonly layer: number;

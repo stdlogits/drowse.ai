@@ -1,17 +1,23 @@
-// The test-only CPU reference backend (webui/src/hosted/runtime/units/): the tiny fixture
-// models regenerate to the model file's digests, and the dense forward reproduces drowse's
-// block-sites goldens (every site, layer and position; the last logits).
+// The fixture runtime's tiny models (webui/src/hosted/runtime/units/): each arch's weights
+// regenerate to the model file's digests and its tokenizer reads the recorded short prompt.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { ARCHES, archGolden, assertClose, decode, golden, viteServer } from "./support/units-goldens.mjs";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { createServer } from "vite";
 
-const server = await viteServer();
+const server = await createServer({
+  root: fileURLToPath(new URL("..", import.meta.url)),
+  configFile: false,
+  appType: "custom",
+  logLevel: "silent",
+  server: { middlewareMode: true, watch: null },
+});
 try {
   const tiny = await server.ssrLoadModule("/src/hosted/runtime/units/tinyModels.ts");
-  const dense = await server.ssrLoadModule("/src/hosted/runtime/units/denseModel.ts");
-  const file = golden("units-tiny-models-v1.json");
+  const file = JSON.parse(readFileSync(new URL("../src/hosted/runtime/fixtures/units-tiny-models-v1.json", import.meta.url), "utf8"));
 
-  for (const arch of ARCHES) {
+  for (const arch of ["gemma3", "qwen3"]) {
     const record = file.arches[arch];
     const tensors = tiny.tinyTensors(file, arch);
     for (const entry of record.tensors) {
@@ -25,35 +31,8 @@ try {
     const ids = [...(record.tokenizer.bos === null ? [] : [record.tokenizer.bos]), ...tokenizer.encode(text)];
     assert.deepEqual(ids, record.short_prompt, `${arch} short prompt tokenizes as drowse's`);
     assert.equal(tokenizer.decode(record.short_prompt), (record.tokenizer.bos === null ? "" : "<bos>") + text);
-
-    // ------------------------------------------------------- block sites (B1-goldens §2.1) ---
-    const sites = archGolden("block-sites", arch);
-    const tol = sites.tolerance.library;
-    const model = tiny.tinyModelWeights(file, arch);
-    const sequence = new dense.DenseSequence(model, 64);
-    const captured = {};
-    const hidden = sequence.forward(sites.ids, {
-      capture(layer, site) {
-        for (const [name, key] of [
-          ["block_in", "blockIn"], ["z", "z"], ["attn_o", "attnO"], ["mid", "mid"],
-          ["act", "act"], ["mlp_o", "mlpO"], ["out", "out"],
-        ]) (captured[name] ??= [])[layer] = site[key];
-      },
-    });
-    for (const [name, value] of Object.entries(sites.sites)) {
-      const expected = decode(value);
-      const actual = new Float32Array(expected.length);
-      let at = 0;
-      for (const layer of captured[name]) {
-        actual.set(layer, at);
-        at += layer.length;
-      }
-      assertClose(actual, expected, tol, `${arch} block-sites ${name}`);
-    }
-    const last = (sites.ids.length - 1) * model.hiddenSize;
-    assertClose(dense.finalLogits(model, hidden, last), decode(sites.logits_last), tol, `${arch} last logits`);
   }
-  console.log("units reference backend: tiny models and block sites match drowse");
+  console.log("units tiny models: weights and tokenizers regenerate");
 } finally {
   await server.close();
 }

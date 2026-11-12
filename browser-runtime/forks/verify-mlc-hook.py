@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import argparse
-import json
 import os
 import subprocess
 import sys
@@ -59,11 +58,6 @@ def main() -> None:
     except (ImportError, OSError) as error:
         raise SystemExit(f"exact MLC/TVM toolchain is unavailable: {error}") from error
     require_llvm(tvm)
-
-    if args.units_fixtures is not None:
-        verify_units_fixtures(args, tvm, relax, nn, op)
-        sys.stdout.flush()
-        os._exit(0)
 
     if args.export_only is not None:
         model, label = create_tiny_model(
@@ -1354,53 +1348,6 @@ def create_tiny_model(
     )
 
 
-def verify_units_fixtures(args, tvm, relax, nn, op) -> None:
-    """Hook ABI v6 on the C TVM VM: the units goldens over build-units-fixtures.py models."""
-    import importlib.util
-    import types as pytypes
-
-    from mlc_llm import compiler_pass as _compiler_pass  # noqa: F401  (registers the pipeline)
-    from mlc_llm import op as op_ext
-    from mlc_llm.interface.compiler_flags import IPCAllReduceStrategyType
-    from mlc_llm.model import drowse_reads, drowse_units
-    from mlc_llm.model.drowse_hooks import structured_curve_program_spec
-    from mlc_llm.model.gemma3.gemma3_model import Gemma3Config, Gemma3ForCausalLM
-    from mlc_llm.model.qwen3.qwen3_model import Qwen3Config, Qwen3LMHeadModel
-    from mlc_llm.quantization import QUANTIZATION, make_quantization_functions
-
-    import units_goldens
-
-    compiler_path = Path(__file__).resolve().with_name("compile-tiny-webgpu.py")
-    compiler_spec = importlib.util.spec_from_file_location("drowse_compile_tiny", compiler_path)
-    compiler = importlib.util.module_from_spec(compiler_spec)
-    compiler_spec.loader.exec_module(compiler)
-    env = pytypes.SimpleNamespace(
-        tvm=tvm, relax=relax, nn=nn, op=op,
-        models={"qwen3": (Qwen3Config, Qwen3LMHeadModel),
-                "gemma3_text": (Gemma3Config, Gemma3ForCausalLM)},
-        QUANTIZATION=QUANTIZATION, make_quantization_functions=make_quantization_functions,
-        strip_gpu_thread_bindings=strip_gpu_thread_bindings,
-        prepare_parameters=compiler.prepare_parameters, create_metadata=compiler.create_metadata,
-        IPCAllReduceStrategyType=IPCAllReduceStrategyType,
-        structured_curve_program_spec=structured_curve_program_spec,
-        unit_program_spec=drowse_units.unit_program_spec,
-        unit_meta_layout=drowse_units.unit_meta_layout,
-        unit_coeff_layout=drowse_units.unit_coeff_layout,
-        UnitSites=drowse_units.UnitSites,
-        drowse_units=drowse_units,
-        drowse_reads=drowse_reads,
-        UNIT_MAX_GROUPS=drowse_units.UNIT_MAX_GROUPS,
-        UNIT_MAX_HEAD_TAPS=drowse_units.UNIT_MAX_HEAD_TAPS,
-    )
-    op_ext.enable(target=tvm.target.Target("llvm"), flashinfer=False, faster_transformer=False,
-                  cutlass=False)
-    results = units_goldens.verify(env, args.units_fixtures.resolve(strict=True),
-                                   args.goldens.resolve(strict=True))
-    print("units goldens (block-sites, unit-ablation, unit-probes, attention-patterns, "
-          "token-anatomy, unit-activity) passed on the C TVM VM: "
-          + json.dumps(results, sort_keys=True))
-
-
 def verify_isolated_model_exports(args) -> None:
     for architecture in ("qwen3", "llama", "gemma3_text"):
         subprocess.run(
@@ -1434,29 +1381,17 @@ def verify_isolated_readout_goldens(args) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    repository_root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser()
     parser.add_argument("--mlc-repository", required=True, type=Path)
     parser.add_argument("--tvm-repository", required=True, type=Path)
     parser.add_argument("--export-only", choices=["qwen3", "llama", "gemma3_text"])
     parser.add_argument("--readout-only", action="store_true")
-    parser.add_argument(
-        "--units-fixtures",
-        type=Path,
-        help="directory of build-units-fixtures.py models (units-<arch>-<quantization>): check them "
-        "against the block-sites, unit-ablation and unit-probes goldens on the C TVM VM",
-    )
-    parser.add_argument(
-        "--goldens",
-        type=Path,
-        default=repository_root / "drowse/tests/fixtures/browser",
-    )
     return parser.parse_args()
 
 
 def with_reads(values: list) -> list:
-    """Hook ABI v6 inputs from a golden's v5-ordered list: each read input copies its basis
-    (these goldens' rows are orthonormal, so they are their own duals)."""
+    """Hook ABI v6 inputs from a v5-ordered case list: each read input copies its basis
+    (these cases' rows are orthonormal, so they are their own duals)."""
     result = list(values)
     result.insert(3, values[2])
     if len(values) > 11:

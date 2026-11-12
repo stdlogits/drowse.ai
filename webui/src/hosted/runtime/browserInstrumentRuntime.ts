@@ -51,7 +51,7 @@ export class BrowserInstrumentRuntime {
     private readonly contextBindingSha256: string | null = null,
     enableLiveReadout = true,
     /** The S→R crossover band the units reads weigh by (native `session.lens.band`): the
-     *  default, unless a harness sets another the way drowse's goldens set theirs. */
+     *  default, unless a harness sets another. */
     private readonly lensBand: LensBand = DEFAULT_LENS_BAND,
   ) {
     const descriptor = this.compiler.instrumentDescriptor();
