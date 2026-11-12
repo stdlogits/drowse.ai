@@ -299,10 +299,17 @@ const mixedAffine = mixedAffineDoc.arches[options.arch];
 function affineTerms(doc, expression) {
   const found = doc.cases.find((c) => c.expression === expression);
   if (found.trigger.gate !== null || !found.trigger.prompt) throw new Error("affineTerms handles always-on pushes only");
-  return found.layers.map((term) => ({
-    layer: term.layer,
-    group: { active: true, basis: [term.basis], neutral: term.neutral, target: [term.target], along: term.along, kappa: [0] },
-  }));
+  return found.layers.map((term) => {
+    // Hook ABI v6: the read row is the write row's dual (kappa 0, so the push never reads it).
+    const norm = term.basis.reduce((sum, value) => sum + value * value, 0);
+    return {
+      layer: term.layer,
+      group: {
+        active: true, basis: [term.basis], read: [term.basis.map((value) => value / norm)],
+        neutral: term.neutral, target: [term.target], along: term.along, kappa: [0],
+      },
+    };
+  });
 }
 const library = sites.tolerance.library;
 const prompt = sites.ids;
