@@ -60,9 +60,10 @@ test("SEO and social metadata use the requested description and Ledger's colours
   assert.equal(siteAccent, token(light, "--deep"));
   assert.deepEqual(themeColors, { light: token(light, "--paper"), dark: token(dark, "--paper") });
   assert.ok((await readFile("../drowse/webui/public/favicon.svg", "utf8")).includes(`stop-color: ${siteAccent}`), "the mark's ramp starts at the brand colour");
-  // The link card is drowse's, byte for byte: drawn in Ledger by drowse's scripts/social-card.mjs, whose
-  // HTML carries the alt text. The site serves the PNG (a flat card is smaller and sharper as PNG).
-  assert.equal(socialImagePath, "/social/drowse.png?v=ledger-card");
+  // The link card is drowse's, byte for byte: painted and set in Ledger by drowse's scripts/social-card.mjs,
+  // whose HTML carries the alt text. The site serves that PNG; its query names the card, so a new card is a
+  // new address to whatever cached the last.
+  assert.equal(socialImagePath, "/social/drowse.png?v=harbour");
   assert.equal(socialImageType, "image/png");
   const card = await readFile("../drowse/webui/scripts/social-card.html", "utf8");
   const cardAlt = card.match(/Alt text: "([^"]+)"/)?.[1].replace(/\s+/g, " ");
